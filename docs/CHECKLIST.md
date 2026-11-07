@@ -6,7 +6,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 - [x] git init, directory layout, CLAUDE.md, SPEC/DECISIONS/CHECKLIST
 - [x] .gitignore, XcodeGen project, CueCore package skeleton (Geometry contracts TDD, 9 tests green)
 - [x] Empty app builds + launches on iOS 27 simulator (unit + UI test pass)
-- [!] Device install: needs Apple ID in Xcode → Settings → Accounts, phone unlocked (17 Pro Max now; 15 Pro Max after iOS 27 update)
+- [x] Signed build installs on iPhone 17 Pro Max (user must Trust developer cert once)
 - [x] Public GitHub repo created, bootstrap pushed (github.com/aritroBh/cuecoach)
 - [x] Research The Rive (UIUC) table size → D7: table exists, size not found online
 - [x] pooltool 0.6.0 env (tools/physics_fixtures, uv)
@@ -16,7 +16,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 - [x] docs/SCHEMA.md (SwiftData, two stores)
 - [~] docs/INTERFACES.md (doc done; Swift stubs after approval)
 - [x] docs/RULES.md bar-rule conventions draft (+ docs/research/rules-notes.md, WPA 2026-10-21)
-- [!] User approves schema, interfaces, bar conventions
+- [x] User approves schema, interfaces, bar conventions (D11–D14)
 
 ## Phase 1 — Core
 - [ ] Rules: WPA PDFs + Dr. Dave read, rule numbers cited

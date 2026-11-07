@@ -36,7 +36,11 @@ WPA text used: **Rules of Play effective 2026-10-21** (wpapool.com/rules-of-play
 - Lowest ball first. 9 legally pocketed (incl. on the break) wins. The 9 is the only ball spotted.
 - Push-out on the shot right after the break; opponent picks who shoots next.
 - 3 consecutive fouls lose; the on-screen foul count is the required warning (Reg 8).
-- Three-ball break rule (5.3(c)): **off by default**, toggle in Settings.
+- **House break rule (user, D13): anti-soft-break ON by default.** Break must pocket a ball or send ≥3 object balls
+  (pocketed or past the head string) — WPA 5.3(c)/Reg 16. Illegal break → incoming player accepts the table or hands it back.
+- **Exception:** a 9 made on the break **wins even on an otherwise "soft" break** (overrides Reg 16(5)) — unless the
+  breaker fouls (scratch etc.): then the 9 is spotted and the opponent gets ball in hand anywhere (WPA 5.3/5.7).
+- Combos, caroms, kisses that put the 9 in after legally hitting the lowest ball first win (WPA 5, 5.5).
 
 ## Interpretations where WPA is silent (my picks)
 1. 4.3(e): after a legal 8-on-break and spot, the breaker keeps shooting.
