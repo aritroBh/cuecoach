@@ -86,6 +86,16 @@ struct AutoTableLocatorRound2Tests {
         #expect(f.generation - (firstLockGen ?? 0) <= 1, "seed \(seed): generation \(f.generation)")
     }
 
+    @Test func aHeldPresetWithSupportSurvivesACompetingPreset() throws {
+        var f = AutoTableFusion()
+        for _ in 0..<20 { f.add(Self.m(TableSize.nineFoot.playingLength, .nineFoot)) }
+        #expect(f.locked)
+        // Split support: ~50 % 8 ft vs ~47 % 9 ft — 9 ft keeps more than share − band, so it is held.
+        for i in 0..<60 { f.add(i % 2 == 0 ? Self.m(TableSize.eightFoot.playingLength, .eightFoot) : Self.m(TableSize.nineFoot.playingLength, .nineFoot)) }
+        #expect(try #require(f.fused).snappedSize == .nineFoot)
+        #expect(f.generation == 1)
+    }
+
     @Test func aGenuineSizeChangeIsStillAdoptedOnce() throws {
         var f = AutoTableFusion()
         for _ in 0..<20 { f.add(Self.m(TableSize.nineFoot.playingLength, .nineFoot)) }
@@ -265,6 +275,19 @@ struct AutoTableLocatorRound2Tests {
         for i in 0..<12 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i), withDepth: false, planeBias: 0)) }
         #expect(last?.state != .locked)
         #expect(last?.pose == nil)
+    }
+
+    @Test func offFrameKeypointsAreNotAWholeTable() {
+        // A provider that extrapolates confident nose corners outside the image must not single-view lock.
+        let scene = AutoTableLocatorReviewTests.greyScene()
+        let cam = scene.camera(elevationDeg: 50, margin: -150)
+        let lb = AutoTableKeypointModel.Letterbox(imageWidth: Double(scene.width), imageHeight: Double(scene.height))
+        let rows = Self.modelRows(scene, camera: cam, lb: lb)
+        let locator = ClassicalAutoTableLocator(keypoints: ModelKeypoints(rows: rows, letterbox: lb))
+        var last: AutoTableEstimate?
+        for i in 0..<12 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i), withDepth: false, planeBias: 0)) }
+        #expect(last?.state != .locked)
+        #expect(last?.frame.rejection == "keypoint off frame")
     }
 
     @Test func cornerMouthKeypointsRefineAnEdgeFit() throws {

@@ -363,6 +363,11 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                 ?? AutoClothModel.learn(img, stride: stride) ?? s.model else {
             diag.rejection = "no cloth colour"; return nil
         }
+        // A neutral model matches any grey surface, so it only counts pixels LiDAR positively puts at table height.
+        if model.neutral, let d = f.depth {
+            gate = AutoPlaneRefiner.gate(depth: d, camera: camera, imageWidth: img.width, imageHeight: img.height,
+                                         plane: plane, tolerance: 0.12, grow: 3, trustUnknown: false)
+        }
         let raw = AutoClothSegmenter.mask(img, model: model, stride: stride, gate: gate, gateWidth: dw, gateHeight: dh)
         let (comp, size) = AutoClothSegmenter.largestComponent(AutoClothSegmenter.open(raw))
         let expected = expectedTableArea(f, camera: camera, plane: plane)
@@ -496,8 +501,15 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
 
     private func keypointOnly(_ kps: [AutoTableKeypoint], camera: AutoCamera, plane: AutoTablePlane,
                               profile prof: AutoTableProfile, diag: inout AutoFrameDiagnostics) -> Detection? {
-        let corners = kps.filter { $0.kind == .noseCorner && $0.confidence >= 0.3 }
-            .compactMap { plane.lift($0.pixel, camera: camera, height: prof.noseHeight) }
+        let seen = kps.filter { $0.kind == .noseCorner && $0.confidence >= 0.3 }
+        // Every nose corner must be in the frame: an extrapolated off-frame corner is a partial view, and
+        // the keypoint path has no partial-view lock rule.
+        let edge = 2.0
+        guard seen.allSatisfy({ $0.pixel.x >= edge && $0.pixel.y >= edge && $0.pixel.x <= camera.k.width - 1 - edge
+                                && $0.pixel.y <= camera.k.height - 1 - edge }) else {
+            diag.rejection = "keypoint off frame"; return nil
+        }
+        let corners = seen.compactMap { plane.lift($0.pixel, camera: camera, height: prof.noseHeight) }
         guard corners.count == 4 else { return nil }
         let c = corners.reduce(AutoP2.zero, +) / 4
         // Major axis = direction of the longest centre-to-corner-pair sum: PCA of the 4 corners.
@@ -586,6 +598,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             // Outward = away from the cloth: probe the mask on both sides of the run's middle.
             let mid = (a + b) / 2
             func onMask(_ p: AutoP2) -> Bool {
+                guard p.x.isFinite, p.y.isFinite, abs(p.x) < 1e6, abs(p.y) < 1e6 else { return false }
                 let x = Int((p.x / st).rounded()), y = Int((p.y / st).rounded())
                 guard x >= 0, y >= 0, x < seed.mask.width, y < seed.mask.height else { return false }
                 return seed.mask.bits[y * seed.mask.width + x] != 0
@@ -658,6 +671,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var samples: [AutoRectFitter.EdgeSample] = []
         for r in rails {
             let ang = autoWrapPi(atan2(r.outward.y, r.outward.x) - rect.theta)
+            guard ang.isFinite else { diag.rejection = "partial: fit"; return nil }
             let side = ((Int((ang / (.pi / 2)).rounded()) % 4) + 4) % 4
             for p in r.lifted { samples.append(.init(p: p, side: side, offset: c)) }
         }

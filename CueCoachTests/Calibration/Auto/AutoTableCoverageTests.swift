@@ -122,6 +122,21 @@ struct AutoTableCoverageTests {
         #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.01)
     }
 
+    @Test func greyClothOnAGreyFloorWithPatchyDepthNeverLocksWrong() {
+        // Device-like depth leaves much of the far floor without confidence; a grey floor must not join a
+        // neutral cloth mask through those holes.
+        var scene = AutoSyntheticScene()
+        scene.feltColor = (118, 118, 116)
+        scene.floorColor = (116, 116, 114)
+        scene.realisticDepth = AutoSyntheticScene.RealisticDepth()
+        let run = autoRun(scene, elevation: 40, frames: 14)
+        if run.estimate.state == .locked, let pose = run.estimate.pose {
+            #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.02)
+        }
+        #expect(run.perFrame.allSatisfy { e in
+            e.pose.map { AutoTestMetrics.maxCornerError($0.corners, scene.trueCorners) < 0.05 } ?? true })
+    }
+
     @Test func greyClothWithoutDepthIsNotGuessed() {
         var scene = AutoSyntheticScene()
         scene.feltColor = (118, 118, 116)

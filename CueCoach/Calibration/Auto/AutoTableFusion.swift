@@ -152,11 +152,20 @@ struct AutoTableFusion: Sendable {
         var spec: TableSpec
         var snapped: TableSize?
         let mL = autoMedian(window.map(\.measuredLength)), mW = autoMedian(window.map(\.measuredWidth))
-        var share = config.snapVoteShare
+        let n = Double(window.count), top = votes.max(by: { $0.value < $1.value })
+        var preset: TableSize?
         if locked, let held = heldSize {
-            share += held.snapped != nil ? -config.snapVoteBand : config.snapVoteBand
+            // A held preset stays while it keeps ≥ share − band of the votes (whoever else leads); any other
+            // preset, or a preset after a measured size, needs ≥ share + band.
+            if let hp = held.snapped, Double(votes[hp] ?? 0) >= (config.snapVoteShare - config.snapVoteBand) * n {
+                preset = hp
+            } else if let (s, c) = top, Double(c) >= (config.snapVoteShare + config.snapVoteBand) * n {
+                preset = s
+            }
+        } else if let (s, c) = top, Double(c) >= config.snapVoteShare * n {
+            preset = s
         }
-        if let (s, n) = votes.max(by: { $0.value < $1.value }), Double(n) >= share * Double(window.count) {
+        if let s = preset {
             spec = TableSpec(size: s); snapped = s
         } else {
             let (s, _) = AutoRectFitter.snap(length: mL, width: mW)
