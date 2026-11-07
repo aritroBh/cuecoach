@@ -15,7 +15,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 ## Step 1 — Proposals (gate: user review)
 - [x] docs/SCHEMA.md (SwiftData, two stores)
 - [~] docs/INTERFACES.md (doc done; Swift stubs after approval)
-- [~] docs/RULES.md bar-rule conventions draft (research agent running)
+- [x] docs/RULES.md bar-rule conventions draft (+ docs/research/rules-notes.md, WPA 2026-10-21)
 - [!] User approves schema, interfaces, bar conventions
 
 ## Phase 1 — Core
