@@ -32,6 +32,8 @@ protocol MeshSession: AnyObject, Sendable {
     func sendCalibration(_ report: CalibrationReport) async
     /// Offer this phone's view after balls settle; the host pulls the best one (D3).
     func offerClip(shotID: UUID, data: Data, viewScore: Double) async
+    /// Session-only profile summary for the other members (SPEC §5.7). Arrives as `.profile(from:_:)`.
+    func shareProfile(_ summary: Data) async
     func snapshot() async -> MeshSnapshot
 }
 
@@ -55,11 +57,15 @@ actor MultipeerMeshSession: MeshSession {
         (updates, continuation) = AsyncStream.makeStream(of: MeshUpdate.self, bufferingPolicy: .bufferingNewest(256))
     }
 
-    /// Production wiring: Multipeer Connectivity, this device's class.
-    static func multipeer(batteryPercent: Int, onPower: Bool) -> MultipeerMeshSession {
-        MultipeerMeshSession(transport: MPCTransport(),
-                             status: PeerStatus(deviceClass: DeviceClass.current, batteryPercent: batteryPercent,
-                                                onPower: onPower))
+    /// Production wiring: Multipeer Connectivity, this device's class. `sessionTag` is the lobby's table pick
+    /// (glyph + colour): only phones with the same tag connect.
+    static func multipeer(batteryPercent: Int, onPower: Bool, sessionTag: UInt16) -> MultipeerMeshSession {
+        var config = MeshConfig()
+        config.sessionTag = sessionTag
+        return MultipeerMeshSession(transport: MPCTransport(sessionTag: sessionTag),
+                                    status: PeerStatus(deviceClass: DeviceClass.current,
+                                                       batteryPercent: batteryPercent, onPower: onPower),
+                                    config: config)
     }
 
     /// Host clock in seconds: `CLOCK_UPTIME_RAW` = mach absolute time = `CMClockGetHostTimeClock`.
@@ -107,6 +113,8 @@ actor MultipeerMeshSession: MeshSession {
         apply(node.offerClip(shotID: shotID, data: data, viewScore: viewScore, now: now))
     }
 
+    func shareProfile(_ summary: Data) async { apply(node.shareProfile(summary, now: now)) }
+
     func snapshot() async -> MeshSnapshot {
         MeshSnapshot(role: node.role, term: node.term, roster: node.roster, log: node.log, commitSeq: node.commitSeq,
                      phase: node.phase, clock: node.clock.estimate, undecodable: undecodable,
@@ -139,7 +147,8 @@ actor MultipeerMeshSession: MeshSession {
             guard let data = try? MeshCodec.encode(env) else { continue }
             queue.enqueue(OutboundQueue.Item(to: out.to, lane: out.lane, data: data))
         }
-        for item in queue.drain(now: now) {
+        // D3: chunks already queued wait while anyone is aiming; a lost send is resent by the clip ack timeout.
+        for item in queue.drain(now: now, allowBulk: ClipSender.mayTransmit(node.phase)) {
             try? transport.send(item.data, to: item.to, channel: item.channel)
         }
     }

@@ -21,6 +21,20 @@ struct MeshConfig: Sendable {
     var pingInterval = 1.0
     /// Log entries per message, so catch-up stays under `MeshCodec.maxMessageBytes`.
     var logBatch = 8
+    /// Which table's session this phone joins: the lobby's glyph + colour pick (mesh-identity.md §2.3).
+    /// Phones with different tags never connect (transport) and drop each other's envelopes (node).
+    var sessionTag: UInt16 = 0
+    /// Own clips kept for the host to pull (≈ 4–10 MB each). Oldest are evicted first.
+    var maxStoredClips = 3
+    /// Session-only profile summary (SPEC §5.7) size cap.
+    var maxProfileBytes = 64 * 1024
+    /// Unacknowledged clip chunks are resent after this much transmittable time with no ack.
+    var clipAckTimeout = 2.0
+    /// Whole-clip retries after a failed final hash before the host gives up on that view.
+    var clipRetries = 2
+    /// New host: after `collectTimeout`, keeps waiting for a majority of the old roster's log tails;
+    /// gives up waiting only after this much longer (a survivor alive but silent).
+    var collectHardTimeout = 3.0
 }
 
 enum MeshRole: Hashable, Sendable {
@@ -41,6 +55,8 @@ enum MeshUpdate: Hashable, Sendable {
     case ruleVoteClosed(RuleSetID)
     case clipReceived(shotID: UUID, from: PeerID, data: Data)
     case rejected(RejectReason)
+    /// Session-only profile summary from a peer (SPEC §5.7). Opaque to the mesh; the identity module owns it.
+    case profile(from: PeerID, Data)
 }
 
 struct Outbound: Hashable, Sendable {
@@ -78,7 +94,8 @@ struct MeshNode: Sendable {
     let id: PeerID
     private(set) var status: PeerStatus
     let config: MeshConfig
-    let sessionID = UUID()
+    /// Same for every phone with the same `config.sessionTag`; envelopes with another ID are dropped.
+    let sessionID: UUID
 
     private(set) var role: MeshRole = .discovering
     private(set) var term: UInt64 = 0
@@ -91,6 +108,10 @@ struct MeshNode: Sendable {
     private(set) var clock = ClockSyncEstimator()
     private(set) var ignoredMessages = 0
     private(set) var rejected: RejectReason?
+    /// Peers' session-only profile summaries. Never persisted.
+    private(set) var profiles: [PeerID: Data] = [:]
+    /// After `leave` the node is inert.
+    private(set) var left = false
 
     private var statuses: [PeerID: PeerStatus] = [:]
     private var connected: Set<PeerID> = []
@@ -108,11 +129,27 @@ struct MeshNode: Sendable {
     private var openVoteID: UInt64?
     private var clipSender: ClipSender?
     private var localClips: [UUID: Data] = [:]
+    private var localClipOrder: [UUID] = []
+    private var clipProgressAt = 0.0
+    private var myProfile: Data?
+    private var profileSentTo: Set<PeerID> = []
 
     // host
     private var acks: [PeerID: UInt64] = [:]
     private var collecting: Set<PeerID>?
     private var collectDeadline = 0.0
+    /// Reports (me + survivors' hellos) needed before resuming: a majority of the old roster, so the
+    /// collected tails always include a holder of every committed entry.
+    private var collectNeed = 0
+    private var collectReports = 0
+    /// Survivors' full logs, gathered while collecting.
+    private var tails: [PeerID: [LogEntry]] = [:]
+    /// Roster size before the last host loss (incl. the lost host), set by `hostLost`.
+    private var lostRosterSize = 0
+    /// Commit denominator. Silent drops don't shrink it unless a majority of it is still here, so an
+    /// isolated minority host can't commit (graceful leaves do shrink it).
+    private var quorumBase = 1
+    private var clipAttempts: [UUID: Int] = [:]
     private var pendingHellos: [PeerID] = []
     private var pendingAppends: [GameEvent] = []
     private var voteID: UInt64 = 0
@@ -130,10 +167,16 @@ struct MeshNode: Sendable {
         self.config = config
         detector = FailureDetector(timeout: config.failTimeout)
         statuses[id] = status
+        sessionID = Self.sessionID(tag: config.sessionTag)
+    }
+
+    static func sessionID(tag: UInt16) -> UUID {
+        UUID(uuid: (0x43, 0x55, 0x45, 0x53, 0x45, 0x53, 0x53, 0x4E, 0, 0, 0, 0, 0, 0, UInt8(tag >> 8), UInt8(tag & 0xFF)))
     }
 
     var lastSeq: UInt64 { log.last?.seq ?? 0 }
     var isHost: Bool { role == .host }
+    var storedClipCount: Int { localClips.count }
 
     // MARK: - Inputs
 
@@ -143,7 +186,7 @@ struct MeshNode: Sendable {
     }
 
     mutating func peerConnected(_ p: PeerID, now: Double) -> MeshStep {
-        guard rejected == nil else { return flush() }
+        guard rejected == nil, !left else { return flush() }
         connected.insert(p)
         detector.heard(p, at: now)
         send(.peerStatus(status), to: [p])
@@ -152,15 +195,19 @@ struct MeshNode: Sendable {
     }
 
     mutating func peerDisconnected(_ p: PeerID, now: Double) -> MeshStep {
+        disconnect(p, graceful: false, now: now)
+        return flush()
+    }
+
+    private mutating func disconnect(_ p: PeerID, graceful: Bool, now: Double) {
         connected.remove(p)
         detector.forget(p)
-        guard rejected == nil else { return flush() }
+        guard rejected == nil, !left else { return }
         if isHost {
-            dropMembers([p], now: now)
+            dropMembers([p], graceful: graceful, now: now)
         } else if p == hostID {
             hostLost(now: now)
         }
-        return flush()
     }
 
     mutating func updateStatus(_ s: PeerStatus, now: Double) -> MeshStep {
@@ -180,14 +227,16 @@ struct MeshNode: Sendable {
 
     mutating func handle(_ env: MeshEnvelope, now: Double) -> MeshStep {
         if case .unknown = env.message { ignoredMessages += 1; return flush() }
-        guard rejected == nil, env.sender != id else { return flush() }
+        guard rejected == nil, !left, env.sender != id else { return flush() }
+        // Another table's session (or a forged sender) — never mix games.
+        guard env.sessionID == sessionID else { ignoredMessages += 1; return flush() }
         let from = env.sender
         detector.heard(from, at: now)
         switch env.message {
         case .hello(let h): onHello(h, from: from, now: now)
         case .welcome(let w): onWelcome(w, from: from, now: now)
         case .reject(let r): onReject(r, from: from)
-        case .leave: _ = peerDisconnected(from, now: now)
+        case .leave: disconnect(from, graceful: true, now: now)
         case .heartbeat(let hb): onHeartbeat(hb, from: from, now: now)
         case .peerStatus(let s): statuses[from] = s
         case .roster(let r): onRoster(r, from: from)
@@ -225,8 +274,9 @@ struct MeshNode: Sendable {
         case .clipOffer(let o):
             if isHost, roster.contains(from) { registerOffer(o.shotID, from: from, score: o.viewScore, now: now) }
         case .clipRequest(let r):
-            if from == hostID, let d = localClips[r.shotID] {
+            if from == hostID, let d = localClips[r.shotID], !d.isEmpty {
                 clipSender = ClipSender(shotID: r.shotID, data: d)
+                clipProgressAt = now
                 pumpClip()
             }
         case .clipChunk(let c):
@@ -238,18 +288,29 @@ struct MeshNode: Sendable {
         case .clipChunkAck(let a):
             if from == hostID, clipSender?.shotID == a.shotID {
                 clipSender?.handle(a)
+                clipProgressAt = now
                 pumpClip()
             }
         case .clipComplete(let c):
             if isHost, let entry = clipReceivers[c.shotID], entry.from == from {
                 if entry.receiver.finish(c), let d = entry.receiver.assembled {
                     clipReceivers[c.shotID] = nil
+                    clipAttempts[c.shotID] = nil
                     step.updates.append(.clipReceived(shotID: c.shotID, from: from, data: d))
-                } else {
-                    // Whole-clip hash failed: ask again from scratch.
+                } else if (clipAttempts[c.shotID] ?? 0) < config.clipRetries {
+                    // Whole-clip hash failed: ask again from scratch, a bounded number of times.
+                    clipAttempts[c.shotID, default: 0] += 1
                     clipReceivers[c.shotID] = (from, ClipReceiver(shotID: c.shotID))
                     send(.clipRequest(ClipRequest(shotID: c.shotID)), to: [from])
+                } else {
+                    clipReceivers[c.shotID] = nil
+                    clipAttempts[c.shotID] = nil
                 }
+            }
+        case .profile(let p):
+            if p.summary.count <= config.maxProfileBytes, profiles[from] != p.summary {
+                profiles[from] = p.summary
+                step.updates.append(.profile(from: from, p.summary))
             }
         case .unknown: break
         }
@@ -257,7 +318,7 @@ struct MeshNode: Sendable {
     }
 
     mutating func tick(now: Double) -> MeshStep {
-        guard rejected == nil else { return flush() }
+        guard rejected == nil, !left else { return flush() }
         if now - lastLiveness >= config.heartbeatInterval {
             lastLiveness = now
             if isHost { send(heartbeat, to: Array(connected)) }
@@ -329,7 +390,8 @@ struct MeshNode: Sendable {
 
     /// Offer this phone's view of a shot. The host pulls the best one after balls settle (D3).
     mutating func offerClip(shotID: UUID, data: Data, viewScore: Double, now: Double) -> MeshStep {
-        localClips[shotID] = data
+        guard !data.isEmpty else { return flush() }   // failed capture: nothing to offer
+        storeClip(shotID, data)
         if isHost {
             registerOffer(shotID, from: id, score: viewScore, now: now)
         } else if let h = hostID {
@@ -339,8 +401,41 @@ struct MeshNode: Sendable {
     }
 
     mutating func leave(now: Double) -> MeshStep {
+        guard !left else { return flush() }
         send(.leave, to: Array(connected))
+        left = true
         return flush()
+    }
+
+    /// Share this player's profile summary with the session's members only (SPEC §5.7). Opaque bytes:
+    /// what goes in (and whether an embedding may, given join authentication) is the identity module's call.
+    mutating func shareProfile(_ summary: Data, now: Double) -> MeshStep {
+        guard summary.count <= config.maxProfileBytes else { return flush() }
+        myProfile = summary
+        profileSentTo = []
+        sendProfileToNewMembers()
+        return flush()
+    }
+
+    private mutating func sendProfileToNewMembers() {
+        guard let p = myProfile else { return }
+        profileSentTo.formIntersection(roster)
+        let fresh = roster.filter { $0 != id && !profileSentTo.contains($0) }
+        guard !fresh.isEmpty else { return }
+        profileSentTo.formUnion(fresh)
+        send(.profile(ProfileShare(summary: p)), to: fresh)
+    }
+
+    private mutating func storeClip(_ shot: UUID, _ data: Data) {
+        if localClips.updateValue(data, forKey: shot) == nil { localClipOrder.append(shot) }
+        while localClipOrder.count > max(1, config.maxStoredClips) {
+            localClips[localClipOrder.removeFirst()] = nil
+        }
+    }
+
+    private mutating func releaseClip(_ shot: UUID) {
+        localClips[shot] = nil
+        localClipOrder.removeAll { $0 == shot }
     }
 
     // MARK: - Election + migration
@@ -363,6 +458,7 @@ struct MeshNode: Sendable {
 
     private mutating func hostLost(now: Double) {
         let gone = hostID
+        lostRosterSize = roster.count
         if let gone { roster.removeAll { $0 == gone }; detector.forget(gone) }
         hostID = nil
         if role != .discovering { role = .discovering; step.updates.append(.roleChanged(.discovering, term: term)) }
@@ -382,7 +478,14 @@ struct MeshNode: Sendable {
         clipOffers = [:]
         clipOfferDeadline = [:]
         clipReceivers = [:]
+        let priorMembers = everJoined ? max(roster.count, 1) : 1
         roster = [id] + c.keys.filter { $0 != id && everJoined }.sorted()
+        // A claim by a minority island keeps the old roster as its commit denominator.
+        quorumBase = max(roster.count, priorMembers)
+        collectNeed = everJoined ? lostRosterSize / 2 + 1 : 0
+        collectReports = 1
+        tails = [:]
+        lostRosterSize = 0
         everJoined = true
         let survivors = Set(roster).subtracting([id])
         collecting = survivors.isEmpty ? nil : survivors
@@ -408,13 +511,20 @@ struct MeshNode: Sendable {
         clipReceivers = [:]
         clipSender = nil
         openVoteID = nil
+        tails = [:]
+        clipAttempts = [:]
         if wasHost { pendingAppends.forEach { send(.proposal($0), to: [h]) }; pendingAppends = [] }
         clock.reset()
         pingsLeftInBurst = config.pingBurst
         nextPing = now
-        // Give the new host anything it may lack (ordered before the hello on the reliable channel),
-        // then ask to be welcomed; the welcome carries the authoritative log.
-        send(.logEntries(log.filter { $0.seq > commitSeq }), to: [h])
+        // Give the new host my whole log (ordered before the hello on the reliable channel): it was elected
+        // by device, not by log, so it may lack entries I know are committed. It keeps the most up-to-date
+        // log among a majority, then welcomes everyone with it.
+        var i = 0
+        while i < log.count {
+            send(.logEntries(Array(log[i..<min(i + config.logBatch, log.count)])), to: [h])
+            i += config.logBatch
+        }
         send(.hello(hello), to: [h])
         step.updates.append(.roleChanged(role, term: term))
     }
@@ -465,7 +575,8 @@ struct MeshNode: Sendable {
         log = w.log
         synced = true
         commitSeq = min(w.commitSeq, lastSeq)
-        roster = w.roster
+        if roster != w.roster { roster = w.roster; step.updates.append(.rosterChanged(w.roster)) }
+        sendProfileToNewMembers()
         sendAck()
     }
 
@@ -482,6 +593,7 @@ struct MeshNode: Sendable {
         for m in r.members where m.peer != id { statuses[m.peer] = m.status }
         let members = r.members.map(\.peer)
         if members != roster { roster = members; step.updates.append(.rosterChanged(members)) }
+        sendProfileToNewMembers()
     }
 
     // MARK: - Host
@@ -497,10 +609,11 @@ struct MeshNode: Sendable {
         if !roster.contains(from) {
             guard roster.count < config.maxPeers else { send(.reject(.sessionFull), to: [from]); return }
             roster.append(from)
+            quorumBase = max(quorumBase, roster.count)
         }
         statuses[from] = PeerStatus(deviceClass: h.deviceClass, batteryPercent: h.batteryPercent, onPower: h.onPower)
         if var c = collecting {
-            c.remove(from)
+            if c.remove(from) != nil { collectReports += 1 }
             collecting = c
             if !pendingHellos.contains(from) { pendingHellos.append(from) }
             if c.isEmpty { finishCollecting(now: now) }
@@ -529,6 +642,15 @@ struct MeshNode: Sendable {
 
     private mutating func finishCollecting(now: Double) {
         collecting = nil
+        // Most up-to-date log (last term, then length) among me and the survivors' complete tails.
+        func rank(_ l: [LogEntry]) -> (UInt64, UInt64) { (l.last?.term ?? 0, l.last?.seq ?? 0) }
+        for t in tails.values {
+            let sorted = t.sorted { $0.seq < $1.seq }
+            guard sorted.enumerated().allSatisfy({ $0.element.seq == UInt64($0.offset + 1) }),
+                  sorted.allSatisfy({ $0.term < term }) else { continue }
+            if rank(sorted) > rank(log) { log = sorted }
+        }
+        tails = [:]
         let hellos = pendingHellos
         pendingHellos = []
         for p in hellos { welcome(p) }
@@ -558,19 +680,31 @@ struct MeshNode: Sendable {
     private mutating func onLogEntries(_ es: [LogEntry], from: PeerID, now: Double) {
         let sorted = es.sorted { $0.seq < $1.seq }
         if isHost {
-            // A survivor's (or a stepped-down host's) tail: adopt only what extends my log contiguously.
-            var added: [LogEntry] = []
-            for e in sorted where e.seq == lastSeq + 1 {
-                log.append(e)
-                added.append(e)
+            // Only the host writes. The one exception: a survivor's log while this new host collects
+            // (merged in `finishCollecting`). Everyone else — strangers, rejected phones, a stepped-down
+            // host from a split — is ignored.
+            if collecting?.contains(from) == true {
+                tails[from, default: []] += sorted
+            } else {
+                ignoredMessages += 1
             }
-            if !added.isEmpty, collecting == nil { send(.logEntries(added), to: clients) }
-            advanceCommit()
             return
         }
-        guard from == hostID, synced, let first = sorted.first else { return }
-        if first.seq > lastSeq + 1 { requestTail(now: now); return }
-        log = log.filter { $0.seq < first.seq } + sorted
+        guard from == hostID, synced, !sorted.isEmpty else { return }
+        for e in sorted where e.seq >= 1 {
+            if e.seq <= lastSeq {
+                let i = Int(e.seq - 1)
+                // Same entry again (duplicate / stale batch): keep what I have. A different one: the host's
+                // log wins from here on.
+                if log[i] != e { log.removeSubrange(i...); log.append(e) }
+            } else if e.seq == lastSeq + 1 {
+                log.append(e)
+            } else {
+                requestTail(now: now)
+                break
+            }
+        }
+        commitSeq = min(commitSeq, lastSeq)
         sendAck()
     }
 
@@ -587,16 +721,25 @@ struct MeshNode: Sendable {
 
     private mutating func advanceCommit() {
         guard isHost, !roster.isEmpty else { return }
-        let acked = roster.map { $0 == id ? lastSeq : (acks[$0] ?? 0) }.sorted(by: >)
-        commitSeq = max(commitSeq, acked[roster.count / 2])
+        let base = max(quorumBase, roster.count)
+        var acked = roster.map { $0 == id ? lastSeq : (acks[$0] ?? 0) }
+        acked += Array(repeating: 0, count: base - acked.count)   // missing members count as "not acked"
+        acked.sort(by: >)
+        commitSeq = max(commitSeq, acked[base / 2])
     }
 
-    private mutating func dropMembers(_ gone: [PeerID], now: Double) {
+    private mutating func dropMembers(_ gone: [PeerID], graceful: Bool = false, now: Double) {
         let before = roster
         let me = id
         roster.removeAll { gone.contains($0) && $0 != me }
         for p in gone { acks[p] = nil; ballots[p] = nil }
         guard roster != before else { return }
+        let left = before.count - roster.count
+        if graceful {
+            quorumBase = max(roster.count, quorumBase - left)
+        } else if roster.count >= quorumBase / 2 + 1 {
+            quorumBase = roster.count   // a majority is still here: the silent ones are really gone
+        }
         if var c = collecting {
             c.subtract(gone)
             collecting = c
@@ -612,12 +755,16 @@ struct MeshNode: Sendable {
         let members = roster.map { RosterMember(peer: $0, status: statuses[$0] ?? status) }
         send(.roster(RosterUpdate(term: term, members: members)), to: clients)
         step.updates.append(.rosterChanged(roster))
+        sendProfileToNewMembers()
     }
 
     private mutating func hostTick(now: Double) {
         let dead = roster.filter { $0 != id && !detector.isAlive($0, now: now) }
         if !dead.isEmpty { dropMembers(dead, now: now) }
-        if collecting != nil, now >= collectDeadline { finishCollecting(now: now) }
+        if collecting != nil, now >= collectDeadline,
+           collectReports >= collectNeed || now >= collectDeadline + config.collectHardTimeout {
+            finishCollecting(now: now)
+        }
         if let d = voteDeadline, now >= d { closeVote(now: now) }
         for (shot, d) in clipOfferDeadline where now >= d { decideClip(shot) }
     }
@@ -650,7 +797,9 @@ struct MeshNode: Sendable {
         let winner = top.contains(id) ? id : top.min()!
         if winner == id {
             if let d = localClips[shot] { step.updates.append(.clipReceived(shotID: shot, from: id, data: d)) }
+            releaseClip(shot)
         } else {
+            releaseClip(shot)
             clipReceivers[shot] = (winner, ClipReceiver(shotID: shot))
             send(.clipRequest(ClipRequest(shotID: shot)), to: [winner])
         }
@@ -669,6 +818,16 @@ struct MeshNode: Sendable {
                 nextPing = now + config.pingInterval
             }
         }
+        if var s = clipSender {
+            if !ClipSender.mayTransmit(phase) || s.inFlight == 0 {
+                clipProgressAt = now
+            } else if now - clipProgressAt >= config.clipAckTimeout {
+                // A chunk or its ack was lost (failed send, dropped link): resend what is unacknowledged.
+                s.resendUnacked()
+                clipSender = s
+                clipProgressAt = now
+            }
+        }
         pumpClip()
     }
 
@@ -678,6 +837,7 @@ struct MeshNode: Sendable {
         if s.isAcknowledged {
             send(.clipComplete(s.completion), to: [h])
             clipSender = nil
+            releaseClip(s.shotID)
         } else {
             clipSender = s
         }

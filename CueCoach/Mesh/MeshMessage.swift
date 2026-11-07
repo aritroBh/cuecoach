@@ -131,6 +131,10 @@ struct ClipComplete: Hashable, Codable, Sendable {
     var sha256: Data
 }
 
+/// Session-only profile summary (SPEC §5.7), sent only to roster members and never persisted by the mesh.
+/// Opaque here: the identity module decides the contents (an embedding only per its auth/consent rules).
+struct ProfileShare: Hashable, Codable, Sendable { var summary: Data }
+
 // MARK: - Message
 
 enum MeshMessage: Hashable, Sendable {
@@ -162,13 +166,15 @@ enum MeshMessage: Hashable, Sendable {
     case clipChunk(ClipChunk)
     case clipChunkAck(ClipChunkAck)
     case clipComplete(ClipComplete)
+    /// Peer → roster members: profile summary for this session only (minor-version addition).
+    case profile(ProfileShare)
     /// A type from a newer minor version. Ignored (and counted in the debug HUD).
     case unknown(type: String)
 
     enum Kind: String, CaseIterable, Sendable {
         case hello, welcome, reject, leave, heartbeat, peerStatus, roster, hostClaim, timePing, timePong
         case ruleVoteOpen, ruleBallot, ruleVoteResult, tableState, proposal, logEntries, logAck, logTailRequest
-        case calibration, phaseChange, clipOffer, clipRequest, clipChunk, clipChunkAck, clipComplete, unknown
+        case calibration, phaseChange, clipOffer, clipRequest, clipChunk, clipChunkAck, clipComplete, profile, unknown
     }
 
     var kind: Kind {
@@ -198,6 +204,7 @@ enum MeshMessage: Hashable, Sendable {
         case .clipChunk: .clipChunk
         case .clipChunkAck: .clipChunkAck
         case .clipComplete: .clipComplete
+        case .profile: .profile
         case .unknown: .unknown
         }
     }
@@ -248,6 +255,7 @@ extension MeshMessage: Codable {
         case .clipChunk: self = .clipChunk(try body(ClipChunk.self))
         case .clipChunkAck: self = .clipChunkAck(try body(ClipChunkAck.self))
         case .clipComplete: self = .clipComplete(try body(ClipComplete.self))
+        case .profile: self = .profile(try body(ProfileShare.self))
         case .unknown: self = .unknown(type: type)
         }
     }
@@ -285,6 +293,7 @@ extension MeshMessage: Codable {
         case .clipChunk(let v): try c.encode(v, forKey: .body)
         case .clipChunkAck(let v): try c.encode(v, forKey: .body)
         case .clipComplete(let v): try c.encode(v, forKey: .body)
+        case .profile(let v): try c.encode(v, forKey: .body)
         }
     }
 }

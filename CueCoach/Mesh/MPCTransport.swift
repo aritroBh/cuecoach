@@ -15,9 +15,10 @@ import MultipeerConnectivity
 final class MPCTransport: NSObject, MeshTransport, @unchecked Sendable {
     static let serviceType = "cuecoach"
     static let maxPeers = 8   // kMCSessionMaximumNumberOfPeers
-    static let invitationContext = Data("cuecoach-v1".utf8)
 
     let localPeer: PeerID
+    /// Only peers advertising (and inviting with) this tag are connected: separate tables never merge.
+    let sessionTag: UInt16
     let events: AsyncStream<TransportEvent>
     let session: MCSession
     private let mcPeer: MCPeerID
@@ -27,11 +28,12 @@ final class MPCTransport: NSObject, MeshTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var peers: [PeerID: MCPeerID] = [:]
 
-    init(localPeer: PeerID = PeerID()) {
+    init(localPeer: PeerID = PeerID(), sessionTag: UInt16 = 0) {
         self.localPeer = localPeer
+        self.sessionTag = sessionTag
         mcPeer = MCPeerID(displayName: localPeer.raw.uuidString)
         session = MCSession(peer: mcPeer, securityIdentity: nil, encryptionPreference: .required)
-        advertiser = MCNearbyServiceAdvertiser(peer: mcPeer, discoveryInfo: ["v": "\(ProtocolVersion.current.major)"],
+        advertiser = MCNearbyServiceAdvertiser(peer: mcPeer, discoveryInfo: Self.discoveryInfo(sessionTag: sessionTag),
                                                serviceType: Self.serviceType)
         browser = MCNearbyServiceBrowser(peer: mcPeer, serviceType: Self.serviceType)
         (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
@@ -47,8 +49,20 @@ final class MPCTransport: NSObject, MeshTransport, @unchecked Sendable {
         local < remote && connectedCount < maxPeers - 1
     }
 
-    static func shouldAccept(connectedCount: Int, context: Data?) -> Bool {
-        context == invitationContext && connectedCount < maxPeers - 1
+
+    /// TXT record: protocol major + the session tag the lobby picked (no profile or device data).
+    static func discoveryInfo(sessionTag: UInt16) -> [String: String] {
+        ["v": "\(ProtocolVersion.current.major)", "s": "\(sessionTag)"]
+    }
+
+    static func sameSession(_ info: [String: String]?, sessionTag: UInt16) -> Bool {
+        info?["v"] == "\(ProtocolVersion.current.major)" && info?["s"] == "\(sessionTag)"
+    }
+
+    static func invitationContext(sessionTag: UInt16) -> Data { Data("cuecoach-v1-s\(sessionTag)".utf8) }
+
+    static func shouldAccept(connectedCount: Int, context: Data?, sessionTag: UInt16) -> Bool {
+        context == invitationContext(sessionTag: sessionTag) && connectedCount < maxPeers - 1
     }
 
     static func peerID(fromDisplayName name: String) -> PeerID? { UUID(uuidString: name).map(PeerID.init) }
@@ -117,10 +131,10 @@ extension MPCTransport: MCNearbyServiceBrowserDelegate {
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID,
                  withDiscoveryInfo info: [String: String]?) {
         guard let remote = Self.peerID(fromDisplayName: peerID.displayName),
-              info?["v"] == "\(ProtocolVersion.current.major)",
+              Self.sameSession(info, sessionTag: sessionTag),
               !session.connectedPeers.contains(peerID),
               Self.shouldInvite(local: localPeer, remote: remote, connectedCount: connectedCount) else { return }
-        browser.invitePeer(peerID, to: session, withContext: Self.invitationContext, timeout: 10)
+        browser.invitePeer(peerID, to: session, withContext: Self.invitationContext(sessionTag: sessionTag), timeout: 10)
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {}
@@ -134,7 +148,7 @@ extension MPCTransport: MCNearbyServiceAdvertiserDelegate {
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID,
                     withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
         let ok = Self.peerID(fromDisplayName: peerID.displayName) != nil
-            && Self.shouldAccept(connectedCount: connectedCount, context: context)
+            && Self.shouldAccept(connectedCount: connectedCount, context: context, sessionTag: sessionTag)
         invitationHandler(ok, ok ? session : nil)
     }
 

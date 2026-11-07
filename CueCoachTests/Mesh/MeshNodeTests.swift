@@ -298,7 +298,7 @@ import Rules
         let host = PeerID()
         _ = node.start(now: 0)
         _ = node.peerConnected(host, now: 0)
-        let hb = MeshEnvelope(version: .current, sessionID: UUID(), sender: host, seq: 1, sentAt: 0,
+        let hb = MeshEnvelope(version: .current, sessionID: node.sessionID, sender: host, seq: 1, sentAt: 0,
                               message: .heartbeat(Heartbeat(term: 1, host: host, lastSeq: 0, commitSeq: 0,
                                                             phase: .aiming)))
         _ = node.handle(hb, now: 0.01)

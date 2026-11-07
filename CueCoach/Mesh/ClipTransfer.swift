@@ -78,6 +78,7 @@ struct ClipReceiver: Sendable {
     private var total: Int?
     private var totalBytes: Int?
     private var chunks: [Int: Data] = [:]
+    private var storedBytes = 0
 
     init(shotID: UUID) { self.shotID = shotID }
 
@@ -92,14 +93,20 @@ struct ClipReceiver: Sendable {
 
     mutating func receive(_ c: ClipChunk) -> ClipChunkAck {
         let nack = ClipChunkAck(shotID: c.shotID, index: c.index, ok: false)
-        guard c.shotID == shotID, c.total >= 1, c.totalBytes >= 0, c.totalBytes <= Self.maxClipBytes,
-              (0..<c.total).contains(c.index), c.bytes.count <= MeshCodec.maxMessageBytes,
+        // Every chunk carries ≥ 1 byte, so `total ≤ totalBytes`; and what is stored never exceeds the
+        // declared size. Together they bound host memory by `maxClipBytes` whatever a peer sends.
+        guard c.shotID == shotID, c.total >= 1, c.totalBytes >= 1, c.totalBytes <= Self.maxClipBytes,
+              c.total <= c.totalBytes, (0..<c.total).contains(c.index), !c.bytes.isEmpty,
+              c.bytes.count <= MeshCodec.maxMessageBytes,
               Data(SHA256.hash(data: c.bytes)) == c.sha256 else { return nack }
         if let total, total != c.total { return nack }
         if let totalBytes, totalBytes != c.totalBytes { return nack }
+        let after = storedBytes - (chunks[c.index]?.count ?? 0) + c.bytes.count
+        guard after <= c.totalBytes else { return nack }
         total = c.total
         totalBytes = c.totalBytes
         chunks[c.index] = c.bytes
+        storedBytes = after
         return ClipChunkAck(shotID: c.shotID, index: c.index, ok: true)
     }
 
@@ -161,23 +168,24 @@ struct OutboundQueue: Sendable {
         }
     }
 
-    /// Items allowed out now, in priority order. Tokens may go negative (an oversize item is never starved;
+    /// Items allowed out now, in priority order. `allowBulk: false` (someone is aiming, D3) holds already
+    /// queued clip chunks until the next settled window. Tokens may go negative (an oversize item is never starved;
     /// the debt is repaid before anything else leaves).
-    mutating func drain(now: Double) -> [Item] {
+    mutating func drain(now: Double, allowBulk: Bool = true) -> [Item] {
         if let last = lastRefill { tokens = min(burst, tokens + max(0, now - last) * bytesPerSecond) }
         lastRefill = now
         var out: [Item] = []
-        while tokens > 0, let next = popNext() {
+        while tokens > 0, let next = popNext(allowBulk: allowBulk) {
             tokens -= Double(next.data.count)
             out.append(next)
         }
         return out
     }
 
-    private mutating func popNext() -> Item? {
+    private mutating func popNext(allowBulk: Bool) -> Item? {
         if !control.isEmpty { return control.removeFirst() }
         if !realtime.isEmpty { return realtime.removeFirst() }
-        if !bulk.isEmpty { return bulk.removeFirst() }
+        if allowBulk, !bulk.isEmpty { return bulk.removeFirst() }
         return nil
     }
 }

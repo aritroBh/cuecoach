@@ -177,10 +177,11 @@ func waitUntil(_ timeout: Double = 5, _ cond: () async -> Bool) async -> Bool {
 
     @Test func maxEightPeersIncludingMe() {
         #expect(MPCTransport.maxPeers == 8)
-        #expect(MPCTransport.shouldAccept(connectedCount: 6, context: MPCTransport.invitationContext))
-        #expect(!MPCTransport.shouldAccept(connectedCount: 7, context: MPCTransport.invitationContext))
-        #expect(!MPCTransport.shouldAccept(connectedCount: 0, context: Data("other-app".utf8)))
-        #expect(!MPCTransport.shouldAccept(connectedCount: 0, context: nil))
+        let ctx = MPCTransport.invitationContext(sessionTag: 3)
+        #expect(MPCTransport.shouldAccept(connectedCount: 6, context: ctx, sessionTag: 3))
+        #expect(!MPCTransport.shouldAccept(connectedCount: 7, context: ctx, sessionTag: 3))
+        #expect(!MPCTransport.shouldAccept(connectedCount: 0, context: Data("other-app".utf8), sessionTag: 3))
+        #expect(!MPCTransport.shouldAccept(connectedCount: 0, context: nil, sessionTag: 3))
     }
 
     /// Only the lower PeerID invites, so two phones never cross-invite into duplicate links.

@@ -53,6 +53,7 @@ import Rules
                                  bytes: Data([1, 2, 3]), sha256: Data(repeating: 7, count: 32))),
             .clipChunkAck(ClipChunkAck(shotID: shot, index: 2, ok: true)),
             .clipComplete(ClipComplete(shotID: shot, sha256: Data(repeating: 9, count: 32))),
+            .profile(ProfileShare(summary: Data([1, 2, 3]))),
         ]
     }
 
