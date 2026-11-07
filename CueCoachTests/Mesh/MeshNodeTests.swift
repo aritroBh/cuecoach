@@ -292,6 +292,21 @@ import Rules
         #expect(abs(Double(f.captureTime) / 1e9 - hostTimeAtCapture) < 0.005)
     }
 
+    /// Without a clock fit a client's capture times are meaningless to the host's fusion: drop, don't guess.
+    @Test func detectionsBeforeClockSyncAreDropped() {
+        var node = MeshNode(status: PeerStatus(deviceClass: 15, batteryPercent: 50, onPower: false))
+        let host = PeerID()
+        _ = node.start(now: 0)
+        _ = node.peerConnected(host, now: 0)
+        let hb = MeshEnvelope(version: .current, sessionID: UUID(), sender: host, seq: 1, sentAt: 0,
+                              message: .heartbeat(Heartbeat(term: 1, host: host, lastSeq: 0, commitSeq: 0,
+                                                            phase: .aiming)))
+        _ = node.handle(hb, now: 0.01)
+        #expect(node.role == .client(host: host))
+        let step = node.sendTableState(TableStateFrame(captureTime: 5, balls: []), now: 0.02)
+        #expect(!step.outbound.contains { if case .tableState = $0.message { true } else { false } })
+    }
+
     @Test func clockResetsAfterHostChange() {
         let (net, ids) = Self.mesh(3)
         let old = net.hosts.first!

@@ -313,9 +313,10 @@ struct MeshNode: Sendable {
     mutating func sendTableState(_ f: TableStateFrame, now: Double) -> MeshStep {
         if isHost {
             step.updates.append(.tableState(from: id, f))
-        } else if let h = hostID {
+        } else if let h = hostID, let t = clock.hostTime(fromLocal: f.captureTime) {
+            // No clock fit yet → the host couldn't place this frame in time; drop it rather than guess.
             var g = f
-            if let t = clock.hostTime(fromLocal: f.captureTime) { g.captureTime = t }
+            g.captureTime = t
             send(.tableState(g), to: [h])
         }
         return flush()
