@@ -197,10 +197,12 @@ final class ARLiveController: NSObject {
             overlay?.setDimmed(st.showsRecalibratePulse)
             lastStatus = st
         }
-        // Tap-4 only as a last resort: after 12 s with a plane but no confident ghost.
-        if !model.calibrated, !model.showTapFallback, let t = planeFoundAt, Date().timeIntervalSince(t) > 12,
-           model.ghostConfidence < 0.5 {
+        // Tap-4 as the last resort: offered automatically after ~8 s with a plane but no converging ghost.
+        if !model.calibrated, !model.showTapFallback,
+           FallbackPolicy.offer(planeFoundFor: planeFoundAt.map { Date().timeIntervalSince($0) },
+                                confidence: model.ghostConfidence) {
             model.showTapFallback = true
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
         }
     }
 
@@ -208,17 +210,25 @@ final class ARLiveController: NSObject {
 
     private func handleEstimate(_ e: TableEstimate?, _ s: FrameTap.Status) {
         guard let tap, estimateOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
+        if !model.calibrated { model.lockFailure = e?.failure }
         if revalidating, let e, e.locked, let current = tableFrame {
             // After relocalization: keep the lock if the table is where we left it, else re-anchor.
             let now = current.corners.map { current.world($0) }
             let moved = e.corners.map { c in now.map { simd_distance($0, c) }.min() ?? 0 }.max() ?? 0
-            revalidating = false
-            model.relocking = false
-            if moved > 0.06, let fit = TableFitter.fit(corners: e.corners, viewer: viewerPosition(), size: current.spec.size) {
-                install(fit.frame)
+            var frame = current
+            if moved > 0.06 {
+                guard let fit = TableFitter.fit(corners: e.corners, viewer: viewerPosition(), size: current.spec.size) else {
+                    // Moved but can't fit: stay relocking (dimmed, no perception) and keep searching.
+                    Task { await locator.reset() }
+                    return
+                }
+                frame = fit.frame
             }
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            self.tap?.setMode(.detecting)
+            revalidating = false
+            installThenDetect(frame) { [weak self] in
+                self?.model.relocking = false
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
             return
         }
         if revalidating { return }   // still relocking: keep the old table hidden, don't treat as a new table
@@ -281,22 +291,30 @@ final class ARLiveController: NSObject {
             if model.manualCorrection || model.tapMode { UINotificationFeedbackGenerator().notificationOccurred(.error) }
             return
         }
-        install(fit.frame)
         model.tableSize = fit.frame.spec.size
         model.calibrated = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        tap?.setMode(.detecting)
+        installThenDetect(fit.frame) {}
     }
 
-    private func install(_ frame: TableFrame) {
+    /// Shows the table overlay (with the lock-in settle animation) and only starts detecting once the
+    /// perception pipeline has the new table — never against a stale frame.
+    private func installThenDetect(_ frame: TableFrame, then done: @escaping @MainActor () -> Void) {
         guard let v = view else { return }
         if let o = overlay { v.scene.removeAnchor(o.anchor) }
-        let o = TableOverlay(frame: frame)
+        let o = TableOverlay(frame: frame, visibility: model.visibility)
         v.scene.addAnchor(o.anchor)
+        o.playLockIn()
         overlay = o
         tableFrame = frame
+        tap?.setMode(.idle)
         let pipeline = pipeline
-        Task { await pipeline.setTable(frame) }
+        Task { @MainActor [weak self] in
+            await pipeline.setTable(frame)
+            guard let self, self.tableFrame == nil || self.overlay === o else { return }
+            self.tap?.setMode(.detecting)
+            done()
+        }
     }
 
     private func viewerPosition() -> SIMD3<Double>? {
@@ -368,7 +386,9 @@ final class ARLiveController: NSObject {
             if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
             if r.shot != nil { UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6) }
             let now = CACurrentMediaTime()
-            if convergenceLatch.update(r.liveAim == nil ? 0 : r.convergence, at: now) {
+            // Game mode never hints at the suggested shot, not even by haptic.
+            let showsSuggestion = model.visibility.line1
+            if convergenceLatch.update(r.liveAim == nil || !showsSuggestion ? 0 : r.convergence, at: now) {
                 UISelectionFeedbackGenerator().selectionChanged()   // aim locked onto the suggested line
             }
             let style = LiveAimStyle.of(hitTrackID: r.liveAim == nil ? nil : r.liveTargetID, marks: r.marks,
@@ -397,7 +417,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     private let onResult: @MainActor (PerceptionResult?, Status) -> Void
     private let onEstimate: @MainActor (TableEstimate?, Status) -> Void
     private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
-                               interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [Vec2](),
+                               interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [[Vec2]](),
                                seq: 0, epoch: 0, lastTracking: true))
 
     /// Current epoch: results stamped with an older one are stale.
@@ -485,9 +505,9 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
             }
             return
         }
-        let wrists = bodyPoseWrists(frame)
+        let people = bodyPoseWrists(frame)
         let pf = PerceptionFrame(image: img, camera: cam, timestamp: frame.timestamp, depth: Self.depthMap(frame),
-                                 wrists: wrists)
+                                 wristsByPerson: people)
         let pipeline = pipeline
         var rs = status
         rs.isResult = true
@@ -508,8 +528,9 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         session.run(c)
     }
 
-    /// Shooter wrists (source pixels) from Vision body pose, refreshed at ~6 Hz on the ANE.
-    private func bodyPoseWrists(_ frame: ARFrame) -> [Vec2] {
+    /// Wrists per person (source pixels) from Vision body pose, refreshed at ~6 Hz on the ANE.
+    /// The pipeline picks the shooter (person nearest the cue ball).
+    private func bodyPoseWrists(_ frame: ARFrame) -> [[Vec2]] {
         let now = frame.timestamp
         let due = state.withLock { s -> Bool in
             guard now - s.lastPose > 0.16 else { return false }
@@ -519,14 +540,16 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         guard due else { return state.withLock { $0.wrists } }
         let w = Double(CVPixelBufferGetWidth(frame.capturedImage)), h = Double(CVPixelBufferGetHeight(frame.capturedImage))
         let handler = VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: .up)
-        var found: [Vec2] = []
+        var found: [[Vec2]] = []
         if (try? handler.perform([poseRequest])) != nil {
             for obs in poseRequest.results ?? [] {
+                var person: [Vec2] = []
                 for joint in [VNHumanBodyPoseObservation.JointName.leftWrist, .rightWrist] {
                     if let p = try? obs.recognizedPoint(joint), p.confidence > 0.3 {
-                        found.append(Vec2(Double(p.location.x) * w, (1 - Double(p.location.y)) * h))
+                        person.append(Vec2(Double(p.location.x) * w, (1 - Double(p.location.y)) * h))
                     }
                 }
+                if !person.isEmpty { found.append(person) }
             }
         }
         state.withLock { $0.wrists = found }
@@ -613,6 +636,8 @@ final class CornerMarkers {
 @MainActor
 final class TableOverlay {
     let anchor: AnchorEntity
+    /// Everything hangs off this so the lock-in can animate as one.
+    private let root = Entity()
     private let spec: TableSpec
     private var outline: [ModelEntity] = []
     private var ballRings: [ModelEntity] = []
@@ -638,21 +663,29 @@ final class TableOverlay {
     static let yellow = UIColor(red: 0.98, green: 0.8, blue: 0.08, alpha: 1)   // #FACC15
     static let red = UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)     // #F87171
 
-    init(frame: TableFrame) {
+    private let vis: OverlayVisibility
+
+    init(frame: TableFrame, visibility: OverlayVisibility = .of(.training(level: 3))) {
+        vis = visibility
         spec = frame.spec
         anchor = AnchorEntity(world: frame.tableToWorld.toFloat)
+        anchor.addChild(root)
         let L = Float(spec.length), W = Float(spec.width)
         let edges: [(SIMD2<Float>, SIMD2<Float>)] = [([0, 0], [L, 0]), ([L, 0], [L, W]), ([L, W], [0, W]), ([0, W], [0, 0])]
         for (a, b) in edges {
             let e = OverlayMesh.segment(from: a, to: b, z: 0.002, width: 0.006, material: OverlayMesh.material(.white, 0.55))
-            outline.append(e); anchor.addChild(e)
+            outline.append(e); root.addChild(e)
         }
         for p in spec.pockets {
             let c = spec.pocketCenter(p)
             let r = Float((p.isSide ? spec.sideMouth : spec.cornerMouth) / 2)
-            let e = ModelEntity(mesh: OverlayMesh.ring(inner: r - 0.006, outer: r), materials: [OverlayMesh.material(.white, 0.7)])
+            let e = ModelEntity(mesh: OverlayMesh.ring(inner: r - 0.008, outer: r), materials: [OverlayMesh.material(.white, 0.9)])
             e.position = [Float(c.x), Float(c.y), 0.003]
-            outline.append(e); anchor.addChild(e)
+            outline.append(e); root.addChild(e)
+            // Soft glow in the pocket mouth.
+            let glow = ModelEntity(mesh: OverlayMesh.ring(inner: r, outer: r + 0.018), materials: [OverlayMesh.material(Self.green, 0.35)])
+            glow.position = [Float(c.x), Float(c.y), 0.002]
+            root.addChild(glow)
         }
         let solid = OverlayMesh.ring(inner: R * 1.12, outer: R * 1.34)
         solidRing = solid
@@ -660,26 +693,35 @@ final class TableOverlay {
         for _ in 0..<16 {
             let e = ModelEntity(mesh: solid, materials: [OverlayMesh.material(.white, 0.45)])
             e.isEnabled = false
-            anchor.addChild(e); ballRings.append(e); ringShape.append(.solid)
+            root.addChild(e); ballRings.append(e); ringShape.append(.solid)
         }
         cueLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.9))
         objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
         ghost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.9, outer: R), materials: [OverlayMesh.material(.white, 0.9)])
-        for e in [cueLine, objectLine, ghost] { e.isEnabled = false; anchor.addChild(e) }
+        for e in [cueLine, objectLine, ghost] { e.isEnabled = false; root.addChild(e) }
         liveLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.006, material: OverlayMesh.material(.white, 1))
         liveObject = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.7))
         liveGhost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.88, outer: R), materials: [OverlayMesh.material(.white, 1)])
-        for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false; anchor.addChild(e) }
+        for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false; root.addChild(e) }
         for _ in 0..<16 {
             let e = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
             e.isEnabled = false
-            anchor.addChild(e); objectSegs.append(e)
+            root.addChild(e); objectSegs.append(e)
         }
         for _ in 0..<14 {
             let d = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.45))
             d.isEnabled = false
-            anchor.addChild(d); dashes.append(d)
+            root.addChild(d); dashes.append(d)
         }
+    }
+
+    /// "Table found": the whole overlay settles onto the cloth (from slightly raised and enlarged).
+    func playLockIn() {
+        var start = Transform.identity
+        start.scale = [1.05, 1.05, 1]
+        start.translation = [Float(spec.length) * -0.025, Float(spec.width) * -0.025, 0.04]
+        root.transform = start
+        root.move(to: Transform.identity, relativeTo: anchor, duration: 0.6, timingFunction: .easeOut)
     }
 
     func setDimmed(_ d: Bool) {
@@ -712,7 +754,7 @@ final class TableOverlay {
             ring.scale = [Float(st.scale), Float(st.scale), 1]
         }
         // Live aim from the cue stick: bright, turns green as it merges with the suggestion.
-        let live = r?.liveAim
+        let live = vis.liveCueLine ? r?.liveAim : nil
         if let live {
             let c: UIColor = switch liveStyle { case .illegal: Self.red; case .merged: Self.green; case .neutral: .white }
             OverlayMesh.place(liveLine, from: live.cue.f, to: live.end.f, z: R)
@@ -730,7 +772,7 @@ final class TableOverlay {
         } else {
             for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false }
         }
-        guard let aim = r?.aim else {
+        guard let aim = r?.aim, vis.line1 || vis.line2 || vis.line3 else {
             for e in dashes + objectSegs + [cueLine, objectLine, ghost] { e.isEnabled = false }
             return
         }
@@ -752,9 +794,11 @@ final class TableOverlay {
             } else { e.isEnabled = false }
         }
         ghost.position = [Float(aim.ghost.x), Float(aim.ghost.y), R]
-        for e in [cueLine, ghost] { e.isEnabled = true }
+        cueLine.isEnabled = vis.line1
+        ghost.isEnabled = vis.suggestedGhost
+        if !vis.line2 { for e in objectSegs { e.isEnabled = false } }
         // Line 3: dashed cue path after contact (follows cushions when simulated).
-        let segs = OverlayPath.dashes(aim.cuePath, dash: 0.04, gap: 0.03, skip: TableSpec.ballRadius, max: dashes.count)
+        let segs = !vis.line3 ? [] : OverlayPath.dashes(aim.cuePath, dash: 0.04, gap: 0.03, skip: TableSpec.ballRadius, max: dashes.count)
             .map { ($0.0.f, $0.1.f) }
         let dashMat = OverlayMesh.material(.white, 0.45 * guide)
         for (i, d) in dashes.enumerated() {

@@ -1,86 +1,129 @@
 import Foundation
 import Geometry
 
-/// Auto calibration proposal: find the cloth (dominant saturated hue around the image centre),
-/// take its largest connected region, and fit a quadrilateral to its outline.
-/// Returns the 4 corners of the felt boundary (cushion tops included) in source-image pixels.
+/// Why the table isn't locked yet (shown as a glyph; logged in the dev HUD).
+enum LockFailure: String, Sendable, Equatable {
+    case noPlane        // ARKit hasn't found a horizontal surface
+    case noFelt         // no uniform cloth region at the image centre
+    case partialTable   // the cloth runs off the image edge: step back / tilt
+    case tooFar         // the cloth is a small part of the image: move closer
+    case tooClose       // the cloth fills the frame on 3+ sides
+    case badShape       // quad doesn't validate as a table
+    case unstable       // estimates still disagree frame to frame: hold steady
+}
+
+struct FeltAnalysis: Sendable {
+    var quad: [Vec2]?
+    var failure: LockFailure?
+}
+
+/// Auto calibration proposal: segment the cloth by chromaticity relative to the cloth at the image centre
+/// (works for green, blue, red or grey felt and tolerates lamp hotspots), take the region containing the
+/// centre, and fit a quadrilateral to its outline. Corners are the felt boundary (cushion tops included),
+/// in source-image pixels.
 enum FeltQuadProposer {
-    static func propose(_ full: PixelImage) -> [Vec2]? {
-        let k = max(1, full.width / 320)
+    static func propose(_ full: PixelImage) -> [Vec2]? { analyze(full).quad }
+
+    static func analyze(_ full: PixelImage) -> FeltAnalysis {
+        let k = max(1, full.width / 480)   // ~480 px analysis: corner precision ≈ 1 cm at 3 m
         let img = full.decimated(by: k)
         let w = img.width, h = img.height
-        guard w > 16, h > 16 else { return nil }
+        guard w > 16, h > 16 else { return FeltAnalysis(quad: nil, failure: .noFelt) }
 
-        // 1. Dominant hue in the central region.
-        var hist = [Double](repeating: 0, count: 72)
+        // 1. Reference cloth colour: median of the central 30–70 % window.
+        var rs: [Int] = [], gs: [Int] = [], bs: [Int] = []
         for y in (h * 3 / 10)..<(h * 7 / 10) {
             for x in (w * 3 / 10)..<(w * 7 / 10) {
-                let p = img.pixel(x, y)
-                let c = ColorMath.hsv(p.0, p.1, p.2)
-                if c.s > 0.22 && c.v > 0.12 { hist[min(71, Int(c.h / 5))] += c.s }
+                let p = img.pixel(x, y); rs.append(Int(p.0)); gs.append(Int(p.1)); bs.append(Int(p.2))
             }
         }
-        guard let peak = hist.indices.max(by: { hist[$0] < hist[$1] }), hist[peak] > 0 else { return nil }
-        // Refine hue as the weighted mean of the peak ±2 bins.
-        var hx = 0.0, hy = 0.0
-        for d in -2...2 {
-            let b = (peak + d + 72) % 72, a = (Double(b) * 5 + 2.5) * .pi / 180
-            hx += hist[b] * cos(a); hy += hist[b] * sin(a)
-        }
-        var feltHue = atan2(hy, hx) * 180 / .pi
-        if feltHue < 0 { feltHue += 360 }
+        func med(_ a: [Int]) -> Double { Double(a.sorted()[a.count / 2]) }
+        let rr = med(rs), rg = med(gs), rb = med(bs), rsum = rr + rg + rb
+        guard rsum > 45 else { return FeltAnalysis(quad: nil, failure: .noFelt) }
+        let cr = rr / rsum, cg = rg / rsum
 
-        // 2. Felt mask.
+        // 2. Cloth mask: same chromaticity (tolerance grows under bright lamp hotspots), wide brightness band.
         var mask = [Bool](repeating: false, count: w * h)
+        var centreHits = 0, centreAll = 0
         for y in 0..<h {
             for x in 0..<w {
                 let p = img.pixel(x, y)
-                let c = ColorMath.hsv(p.0, p.1, p.2)
-                mask[y * w + x] = c.s > 0.18 && c.v > 0.1 && ColorMath.hueDistance(c.h, feltHue) < 20
+                let r = Double(p.0), g = Double(p.1), b = Double(p.2), sum = r + g + b
+                guard sum > 30 else { continue }
+                let kk = sum / rsum
+                guard kk > 0.35, kk < 2.8 else { continue }
+                let tol = 0.04 + 0.05 * max(0, kk - 1)
+                let on = hypot(r / sum - cr, g / sum - cg) < tol
+                mask[y * w + x] = on
+                if x >= w * 3 / 10 && x < w * 7 / 10 && y >= h * 3 / 10 && y < h * 7 / 10 {
+                    centreAll += 1; if on { centreHits += 1 }
+                }
             }
         }
+        // The centre must be mostly one uniform cloth.
+        guard centreAll > 0, Double(centreHits) / Double(centreAll) > 0.5 else {
+            return FeltAnalysis(quad: nil, failure: .noFelt)
+        }
 
-        // 3. Largest 4-connected component.
+        // 3. Connected components; keep the one covering the most centre pixels.
         var label = [Int32](repeating: 0, count: w * h)
-        var best = (id: Int32(0), size: 0)
+        var sizes: [Int32: Int] = [:], centreCount: [Int32: Int] = [:]
         var next: Int32 = 1
         var stack: [Int] = []
         for i in 0..<(w * h) where mask[i] && label[i] == 0 {
-            var size = 0
+            var size = 0, inCentre = 0
             stack.append(i); label[i] = next
             while let j = stack.popLast() {
                 size += 1
                 let x = j % w, y = j / w
+                if x >= w * 3 / 10 && x < w * 7 / 10 && y >= h * 3 / 10 && y < h * 7 / 10 { inCentre += 1 }
                 for n in [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, y > 0 ? j - w : -1, y < h - 1 ? j + w : -1]
                 where n >= 0 && mask[n] && label[n] == 0 {
                     label[n] = next; stack.append(n)
                 }
             }
-            if size > best.size { best = (next, size) }
+            sizes[next] = size; centreCount[next] = inCentre
             next += 1
         }
-        guard best.size > w * h / 20 else { return nil }
+        guard let bestID = centreCount.max(by: { $0.value < $1.value })?.key, let size = sizes[bestID] else {
+            return FeltAnalysis(quad: nil, failure: .noFelt)
+        }
+        let areaFrac = Double(size) / Double(w * h)
+        if areaFrac < 0.04 { return FeltAnalysis(quad: nil, failure: .tooFar) }
 
-        // 4. Boundary samples: extreme pixels per row and per column.
+        // 4. Boundary samples + which image edges the cloth touches.
         var boundary: [Vec2] = []
+        var touch = [0, 0, 0, 0]   // left, right, top, bottom (pixels of cloth on that edge)
         for y in 0..<h {
             var lo = -1, hi = -1
-            for x in 0..<w where label[y * w + x] == best.id { if lo < 0 { lo = x }; hi = x }
+            for x in 0..<w where label[y * w + x] == bestID { if lo < 0 { lo = x }; hi = x }
             if lo >= 0 { boundary.append(Vec2(Double(lo), Double(y))); boundary.append(Vec2(Double(hi), Double(y))) }
+            if lo == 0 { touch[0] += 1 }
+            if hi == w - 1 { touch[1] += 1 }
         }
         for x in 0..<w {
             var lo = -1, hi = -1
-            for y in 0..<h where label[y * w + x] == best.id { if lo < 0 { lo = y }; hi = y }
+            for y in 0..<h where label[y * w + x] == bestID { if lo < 0 { lo = y }; hi = y }
             if lo >= 0 { boundary.append(Vec2(Double(x), Double(lo))); boundary.append(Vec2(Double(x), Double(hi))) }
+            if lo == 0 { touch[2] += 1 }
+            if hi == h - 1 { touch[3] += 1 }
         }
+        let edgeLen = [h, h, w, w]
+        let cut = (0..<4).filter { Double(touch[$0]) > 0.08 * Double(edgeLen[$0]) }.count
+        // Touching every edge: that's the room (floor/wall), not a table seen from too close.
+        if cut == 4 { return FeltAnalysis(quad: nil, failure: .noFelt) }
+        if cut >= 3 { return FeltAnalysis(quad: nil, failure: .tooClose) }
+        if cut >= 1 { return FeltAnalysis(quad: nil, failure: .partialTable) }
+
         let hull = convexHull(boundary)
-        guard hull.count >= 4 else { return nil }
-        guard var quad = sidesQuad(hull) ?? reduceToQuad(hull) else { return nil }
+        guard hull.count >= 4, var quad = sidesQuad(hull) ?? reduceToQuad(hull) else {
+            return FeltAnalysis(quad: nil, failure: .badShape)
+        }
         quad = refineWithLines(quad, boundary: boundary) ?? quad
-        return quad.map { p in
+        return FeltAnalysis(quad: quad.map { p in
             let (sx, sy) = img.toSource(p.x, p.y)
             return Vec2(sx, sy)
-        }
+        }, failure: nil)
     }
 
     /// Andrew's monotone chain; counter-clockwise in a y-down image appears clockwise on screen.

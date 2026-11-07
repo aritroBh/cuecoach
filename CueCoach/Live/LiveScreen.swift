@@ -5,8 +5,13 @@ import SwiftUI
 /// No text anywhere except the dev HUD (D9, 3-finger long-press).
 struct LiveScreen: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var model = LiveModel()
+    @State private var model: LiveModel
     @AppStorage("dev.hud") private var showHUD = false
+
+    /// D24 contract for the app shell: `.game` (rules helpers + rating) or `.training(level:)` (aim lines).
+    init(mode: LiveMode = .training(level: 3)) {
+        _model = State(initialValue: LiveModel(mode: mode))
+    }
 
     /// Replay exists only in simulator builds (D20): device builds always run the AR pipeline.
     static var useReplay: Bool {
@@ -45,7 +50,7 @@ struct LiveScreen: View {
                 Spacer()
                 if !model.calibrated {
                     CoachingGlyph(status: st, confidence: model.ghostConfidence, placed: model.editor.corners.count,
-                                  tapMode: model.tapMode, shake: model.notReadyTick)
+                                  tapMode: model.tapMode, shake: model.notReadyTick, failure: model.lockFailure)
                         .accessibilityIdentifier("live.coach")
                         .accessibilityValue("\(st)")
                 }
@@ -66,23 +71,27 @@ struct LiveScreen: View {
                 } else if model.tapMode && !model.editor.corners.isEmpty {
                     CircleButton(symbol: "arrow.uturn.backward", id: "live.undo") { model.undo() }
                 } else if model.showTapFallback && !model.tapMode {
-                    CircleButton(symbol: "hand.tap", id: "live.tapMode", dim: true) { model.startTapMode() }
+                    PulsingButton(symbol: "hand.tap", tint: .white, id: "live.tapMode", size: 64) { model.startTapMode() }
                 }
                 Spacer()
                 if !model.calibrated && model.editor.isComplete && (model.manualCorrection || model.tapMode) {
                     ConfirmButton { model.confirm() }
                 }
-                if model.calibrated, model.status == .calibrated, let aim = model.aim {
+                if model.calibrated, model.status == .calibrated, model.visibility.shotDock, let aim = model.aim {
                     ShotDock(spin: aim.spin, power: aim.power)
                 }
             }
         }
         .padding(16)
+        .overlay {
+            if let b = model.badge { RatingBadge(style: b).transition(.scale(scale: 0.9).combined(with: .opacity)) }
+        }
+        .animation(.smooth(duration: 0.25), value: model.badge)
         .overlay(alignment: .bottomTrailing) {
             Color.clear.frame(width: 1, height: 1)
                 .accessibilityElement()
                 .accessibilityIdentifier("live.overlay")
-                .accessibilityValue("calibrated:\(model.calibrated) balls:\(model.ballCount) aim:\(model.aim != nil)")
+                .accessibilityValue("calibrated:\(model.calibrated) balls:\(model.ballCount) aim:\(model.aim != nil && model.visibility.line1) mode:\(model.mode == .game ? "game" : "training")")
         }
     }
 }
@@ -95,6 +104,7 @@ struct CoachingGlyph: View {
     var placed: Int
     var tapMode: Bool
     var shake: Int
+    var failure: LockFailure? = nil
     @State private var sweep = false
     @State private var shakeOffset: CGFloat = 0
 
@@ -122,10 +132,14 @@ struct CoachingGlyph: View {
             } else {
                 // Ghost table converging: felt fills with confidence.
                 RoundedRectangle(cornerRadius: 6).fill(green.opacity(0.35 * confidence)).frame(width: w, height: h)
-                Image(systemName: confidence >= 1 ? "checkmark" : "viewfinder")
+                // What's missing, as a glyph: step back, move closer, hold steady, point at the cloth…
+                let symbol = confidence >= 1 ? "checkmark" : (failure?.symbol ?? "viewfinder")
+                Image(systemName: symbol)
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(green)
+                    .foregroundStyle(failure == nil ? green : Color.white)
                     .symbolEffect(.pulse, isActive: confidence < 1)
+                    .accessibilityIdentifier("live.lockHint")
+                    .accessibilityValue(failure?.rawValue ?? "converging")
             }
         }
         .frame(width: w + 16, height: h + 16)
@@ -205,6 +219,26 @@ struct ShotDock: View {
     }
 }
 
+/// Post-shot badge (MASTER.md): 72-pt circle, SF Symbol + rating colour + ≤2 words. Shown after the balls settle.
+struct RatingBadge: View {
+    var style: BadgeStyle
+    var body: some View {
+        let c = Color(red: Double((style.color >> 16) & 0xFF) / 255, green: Double((style.color >> 8) & 0xFF) / 255,
+                      blue: Double(style.color & 0xFF) / 255)
+        VStack(spacing: 8) {
+            Image(systemName: style.symbol)
+                .font(.system(size: 30, weight: .bold))
+                .foregroundStyle(c)
+                .frame(width: 72, height: 72)
+                .background(Circle().fill(.black.opacity(0.55)))
+                .overlay(Circle().stroke(c, lineWidth: 3))
+            Text(style.word).font(.system(size: 13, weight: .semibold)).foregroundStyle(c)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("live.badge")
+    }
+}
+
 struct ConfirmButton: View {
     var action: () -> Void
     var body: some View {
@@ -223,14 +257,15 @@ struct PulsingButton: View {
     var symbol: String
     var tint: Color
     var id: String
+    var size: CGFloat = 96
     var action: () -> Void
     @State private var on = false
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 34, weight: .semibold))
+                .font(.system(size: size * 0.35, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 96, height: 96)
+                .frame(width: size, height: size)
                 .background(.ultraThinMaterial.opacity(0.7), in: Circle())
                 .overlay(Circle().stroke(tint, lineWidth: 3).scaleEffect(on ? 1.3 : 1).opacity(on ? 0 : 0.9))
         }
@@ -267,6 +302,7 @@ struct DebugHUD: View {
             Text("lidar balls \(model.depthBalls)")
             Text("balls \(model.ballCount) · rest \(model.atRest ? "y" : "n") · aim \(model.aim != nil ? "y" : "n")")
             Text("plane \(model.planeFound ? "y" : "n") · track \(model.trackingOK ? "ok" : "lim") · \(model.formatLabel)")
+            Text("lock \(model.lockFailure?.rawValue ?? (model.calibrated ? "locked" : "converging"))")
             Text("ghost \(Int(model.ghostConfidence * 100))% · depth \(model.depthConfidence.map { String(format: "%.0f%%", $0 * 100) } ?? "–")")
             Text("ball scale \(model.ballScale.map { String(format: "%.2f", $0) } ?? "–") · thermal \(model.thermal.rawValue) · \(model.tableSize?.rawValue ?? "–") · \(String(describing: model.status))")
         }
@@ -342,6 +378,7 @@ struct ReplayLiveView: View {
                     if !model.manualCorrection && !model.tapMode {
                         let e = await locator.ingest(LocatorFrame(image: px, camera: cam, planes: planes, timestamp: t))
                         if let e, table == nil, !model.manualCorrection {
+                            model.lockFailure = e.failure
                             model.editor.setProposal(e.corners)
                             model.ghostConfidence = e.confidence
                             if e.locked { confirm() }
@@ -414,7 +451,8 @@ struct ReplayLiveView: View {
             ctx.stroke(circle(t.position, TableSpec.ballRadius * 1.25, geo.cloth, map), with: .color(c.opacity(st.alpha)),
                        style: StrokeStyle(lineWidth: mark == .cue ? 3 : 2, dash: st.shape == .dashed ? [5, 4] : []))
         }
-        if let aim = result?.aim, let a = v(aim.cue, ball: true), let g = v(aim.ghost, ball: true),
+        let vis = model.visibility
+        if vis.line1, let aim = result?.aim, let a = v(aim.cue, ball: true), let g = v(aim.ghost, ball: true),
            let o = v(aim.object, ball: true), let pk = v(aim.pocketPoint, ball: true) {
             var l1 = Path(); l1.move(to: a); l1.addLine(to: g)
             ctx.stroke(l1, with: .color(.white.opacity(0.9)), lineWidth: 2)
@@ -423,7 +461,7 @@ struct ReplayLiveView: View {
             if aim.objectPath.count >= 2 { l2 = Path(); l2.addLines(aim.objectPath.compactMap { v($0, ball: true) }) }
             let c: Color = aim.ease > 0.35 ? green : aim.ease > 0.15 ? Color(red: 0.98, green: 0.8, blue: 0.08) : red
             ctx.stroke(l2, with: .color(c.opacity(0.85)), lineWidth: 2)
-            if aim.cuePath.count >= 2 {
+            if vis.line3, aim.cuePath.count >= 2 {
                 var l3 = Path(); l3.addLines(aim.cuePath.compactMap { v($0, ball: true) })
                 ctx.stroke(l3, with: .color(.white.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
             }

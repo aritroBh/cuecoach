@@ -12,13 +12,16 @@ struct ShotRecord: Sendable, Equatable {
     var firstContact: Int?
     /// Cushion contacts in time order (track id, rail).
     var rails: [(id: Int, rail: Rail)]
-    /// Tracks that disappeared inside a pocket's capture zone.
+    /// Tracks that disappeared inside a pocket's capture zone while heading into it.
     var pocketed: [Int: Pocket]
+    /// Balls that moved, vanished away from any pocket and never came back before the hard cap.
+    var missing: Set<Int> = []
 
     static func == (a: ShotRecord, b: ShotRecord) -> Bool {
         a.start == b.start && a.end == b.end && a.preState == b.preState && a.finalState == b.finalState
             && a.cueID == b.cueID && a.firstContact == b.firstContact && a.pocketed == b.pocketed
             && a.rails.map(\.id) == b.rails.map(\.id) && a.rails.map(\.rail) == b.rails.map(\.rail)
+            && a.missing == b.missing
     }
 }
 
@@ -43,7 +46,10 @@ struct ShotSegmenter: ShotSegmenting {
     var railSlack = 0.012      // m beyond R from the nose line
     var pocketZone = 0.07      // m from a pocket centre
     var movingSpeed = 0.08     // m/s: a ball counts as having moved this shot
-    var vanishTimeout = 1.5    // s: a moving ball that vanished away from pockets blocks the end this long
+    /// s: a moving ball that vanished without pocket evidence blocks the end this long, then the record
+    /// closes with it listed in `missing` (never silently dropped).
+    var vanishTimeout = 8.0
+    var pocketEntrySpeed = 0.1 // m/s toward the pocket when last seen
 
     private(set) var inShot = false
     private var fastFrames = 0
@@ -103,8 +109,15 @@ struct ShotSegmenter: ShotSegmenting {
         }
         // Pocketed: tracked before, gone now, last seen in a capture zone.
         for (id, seen) in lastSeen where byID[id] == nil && rec.pocketed[id] == nil {
-            if let p = spec.pockets.first(where: { seen.pos.distance(to: spec.pocketCenter($0)) < pocketZone }) {
+            // Pocketed only with evidence: last seen in a capture zone AND rolling into it. A ball that's just
+            // hidden near a pocket (an arm over the corner) is occluded, not pocketed.
+            let v = lastVel[id] ?? .zero
+            if let p = spec.pockets.first(where: { pk in
+                let c = spec.pocketCenter(pk)
+                return seen.pos.distance(to: c) < pocketZone && v.dot((c - seen.pos).normalized) > pocketEntrySpeed
+            }) {
                 rec.pocketed[id] = p
+                vanishedAt[id] = nil
             } else if vanishedAt[id] == nil {
                 vanishedAt[id] = t
             }
@@ -112,10 +125,10 @@ struct ShotSegmenter: ShotSegmenting {
         record = rec
         // The tracker's at-rest only covers balls it still sees. A ball that was moving and then vanished
         // (occluded, missed) blocks the end until it's back, pocketed, or the timeout passes.
-        let unresolved = moved.contains { id in
-            byID[id] == nil && rec.pocketed[id] == nil && (vanishedAt[id].map { t - $0 < vanishTimeout } ?? false)
-        }
+        let vanished = moved.filter { byID[$0] == nil && rec.pocketed[$0] == nil && vanishedAt[$0] != nil }
+        let unresolved = vanished.contains { t - vanishedAt[$0]! < vanishTimeout }
         guard atRest, !unresolved else { return nil }
+        rec.missing = Set(vanished)
         rec.end = t
         rec.finalState = Dictionary(uniqueKeysWithValues: confirmed.map { ($0.id, $0.position) })
         inShot = false

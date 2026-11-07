@@ -7,6 +7,26 @@ import Observation
 @MainActor @Observable
 final class LiveModel {
     let editor = CalibrationEditor()
+    let mode: LiveMode
+    var visibility: OverlayVisibility { OverlayVisibility.of(mode) }
+    /// Why the table isn't locked yet (glyph + dev HUD).
+    var lockFailure: LockFailure?
+    /// Post-shot rating badge (game mode), auto-dismissed.
+    var badge: BadgeStyle?
+    private var badgeToken = 0
+
+    init(mode: LiveMode = .training(level: 3)) { self.mode = mode }
+
+    func showBadge(for record: ShotRecord) {
+        guard visibility.ratingBadge else { return }
+        badge = BadgeStyle.of(PlaceholderRating.rate(record))
+        badgeToken += 1
+        let token = badgeToken
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1800))
+            if self?.badgeToken == token { self?.badge = nil }
+        }
+    }
 
     var calibrated = false
     var planeFound = false
@@ -67,6 +87,7 @@ final class LiveModel {
         ballCount = r.confirmed.count
         atRest = r.atRest
         aim = r.aim
+        if let shot = r.shot { showBadge(for: shot) }
         detectMs = detectMs * 0.8 + r.detectMs * 0.2
         if let s = r.ballScale { ballScale = s }
         totalMs = totalMs * 0.8 + r.totalMs * 0.2
@@ -77,6 +98,7 @@ final class LiveModel {
         editor.reset()
         ghostConfidence = 0
         manualCorrection = false
+        lockFailure = nil
         relocking = false
         tapMode = false
         showTapFallback = false

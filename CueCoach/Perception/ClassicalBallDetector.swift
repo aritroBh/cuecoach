@@ -137,6 +137,25 @@ struct ClassicalBallDetector: BallDetector {
         return ClassicalBallDetector().classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: felt)
     }
 
+    /// A lit sphere shows a brightness spread (highlight + shadowed lower part); a flat mark doesn't.
+    static func hasBallShading(_ img: PixelImage, sourcePoint p: Vec2, radiusPx: Double, minSpread: Double = 18) -> Bool {
+        let (cx, cy) = img.toWorking(p.x, p.y)
+        let r = 0.85 * radiusPx / img.scale
+        let ri = Int(r.rounded(.up))
+        var vs: [Int] = []
+        for y in (Int(cy) - ri)...(Int(cy) + ri) where y >= 0 && y < img.height {
+            for x in (Int(cx) - ri)...(Int(cx) + ri) where x >= 0 && x < img.width {
+                let dx = Double(x) - cx, dy = Double(y) - cy
+                guard dx * dx + dy * dy <= r * r else { continue }
+                let q = img.pixel(x, y)
+                vs.append(Int(max(q.0, q.1, q.2)))
+            }
+        }
+        guard vs.count >= 6 else { return true }   // too small to judge: don't reject
+        vs.sort()
+        return Double(vs[vs.count * 9 / 10] - vs[vs.count / 4]) >= minSpread
+    }
+
     // MARK: - Helpers
 
     private func bounds(geo: FrameGeometry, img: PixelImage) -> (Int, Int, Int, Int) {
@@ -182,15 +201,20 @@ struct ClassicalBallDetector: BallDetector {
         var sx = 0.0, sy = 0.0, n = 0.0
         var ax = 0.0, ay = 0.0, an = 0.0
         let ri = Int(r.rounded(.up)), r2 = r * r
+        let seedSum = Double(Int(seed.0) + Int(seed.1) + Int(seed.2)) + 1
+        let seedR = Double(seed.0) / seedSum, seedG = Double(seed.1) / seedSum
         let ix = Int(cx.rounded()), iy = Int(cy.rounded())
         for y in max(0, iy - ri)...min(h - 1, iy + ri) {
             for x in max(0, ix - ri)...min(w - 1, ix + ri) where mask[y * w + x] != 0 {
                 let dx = Double(x) - cx, dy = Double(y) - cy
                 guard dx * dx + dy * dy <= r2 else { continue }
                 ax += Double(x); ay += Double(y); an += 1
+                // Same colour = same chromaticity within a brightness band (shading on a ball keeps its hue).
                 let p = img.pixel(x, y)
-                let d = abs(Int(p.0) - Int(seed.0)) + abs(Int(p.1) - Int(seed.1)) + abs(Int(p.2) - Int(seed.2))
-                if d < 90 { sx += Double(x); sy += Double(y); n += 1 }
+                let ps = Double(Int(p.0) + Int(p.1) + Int(p.2)) + 1
+                let k = ps / seedSum
+                let dc = abs(Double(p.0) / ps - seedR) + abs(Double(p.1) / ps - seedG)
+                if k > 0.5 && k < 1.7 && dc < 0.07 { sx += Double(x); sy += Double(y); n += 1 }
             }
         }
         if n >= max(4, an * 0.35) { return (sx / n, sy / n) }

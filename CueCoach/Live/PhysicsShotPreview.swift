@@ -123,10 +123,12 @@ struct PreviewCache: Sendable {
     private var order: [String] = []
     var capacity = 32
 
-    static func key(cue: Vec2, object: BallID, pocket: Pocket, balls: [BallID: Vec2], quantum: Double = 0.005) -> String {
+    static func key(cue: Vec2, object: BallID, pocket: Pocket, balls: [BallID: Vec2], spec: TableSpec,
+                    quantum: Double = 0.005) -> String {
         func q(_ v: Vec2) -> String { "\(Int((v.x / quantum).rounded())),\(Int((v.y / quantum).rounded()))" }
         let layout = balls.keys.sorted().map { "\($0.number):\(q(balls[$0]!))" }.joined(separator: ";")
-        return "\(q(cue))|\(object.number)|\(pocket.rawValue)|\(layout)"
+        let table = "\(Int((spec.length * 1000).rounded()))x\(Int((spec.width * 1000).rounded()))"
+        return "\(table)|\(q(cue))|\(object.number)|\(pocket.rawValue)|\(layout)"
     }
 
     func get(_ k: String) -> ShotPreview?? { store[k] }

@@ -227,3 +227,94 @@ struct RingStyle: Equatable, Sendable {
         }
     }
 }
+
+/// D24: what the live screen is for. The app shell passes this to `LiveScreen(mode:)`.
+enum LiveMode: Equatable, Sendable {
+    /// A real game: rules helpers only (showing the shot would be cheating), post-shot rating badge.
+    case game
+    /// Coaching: suggested Line 1 + Line 2; Line 3 (cue path) and the spin/power dock from level 3.
+    case training(level: Int)
+}
+
+/// Visibility matrix per mode (D24).
+struct OverlayVisibility: Equatable, Sendable {
+    var line1: Bool            // suggested cue → ghost
+    var line2: Bool            // suggested object → pocket
+    var line3: Bool            // suggested cue path after contact
+    var suggestedGhost: Bool
+    var shotDock: Bool         // spin face + power meter
+    var liveCueLine: Bool      // the player's own cue line
+    var legalRings: Bool
+    var illegalWarning: Bool   // red pulsing ring + one buzz when the cue points at an illegal ball
+    var ratingBadge: Bool
+
+    static func of(_ mode: LiveMode) -> OverlayVisibility {
+        switch mode {
+        case .game:
+            OverlayVisibility(line1: false, line2: false, line3: false, suggestedGhost: false, shotDock: false,
+                              liveCueLine: false, legalRings: true, illegalWarning: true, ratingBadge: true)
+        case .training(let level):
+            OverlayVisibility(line1: true, line2: true, line3: level >= 3, suggestedGhost: true, shotDock: level >= 3,
+                              liveCueLine: true, legalRings: true, illegalWarning: true, ratingBadge: false)
+        }
+    }
+}
+
+/// Placeholder post-shot rating until the Engine (D18) is wired: derived from what the camera saw.
+enum PlaceholderRating {
+    static func rate(_ r: ShotRecord) -> DecisionRatingLite {
+        if r.pocketed[r.cueID] != nil { return .mistake }                 // scratch
+        if r.pocketed.keys.contains(where: { $0 != r.cueID }) { return .good }
+        if r.firstContact != nil { return .okay }
+        return .inaccuracy                                              // no contact
+    }
+}
+
+/// D18 classes (mirrors Engine.DecisionRating; kept local so Live doesn't depend on Engine yet).
+enum DecisionRatingLite: String, CaseIterable, Sendable {
+    case brilliant, great, best, good, okay, book, inaccuracy, miss, mistake, blunder
+}
+
+/// Badge look (MASTER.md post-shot badge): SF Symbol + colour + ≤2 words.
+struct BadgeStyle: Equatable, Sendable {
+    var symbol: String
+    var color: UInt32   // 0xRRGGBB
+    var word: String
+
+    static func of(_ r: DecisionRatingLite) -> BadgeStyle {
+        switch r {
+        case .brilliant: BadgeStyle(symbol: "sparkles", color: 0x22D3EE, word: "Brilliant")
+        case .great: BadgeStyle(symbol: "star.fill", color: 0x4ADE80, word: "Great")
+        case .best: BadgeStyle(symbol: "checkmark.seal.fill", color: 0x4ADE80, word: "Best")
+        case .good: BadgeStyle(symbol: "checkmark", color: 0xF2F5F3, word: "Good")
+        case .okay: BadgeStyle(symbol: "hand.thumbsup", color: 0xF2F5F3, word: "Okay")
+        case .book: BadgeStyle(symbol: "book.fill", color: 0xF2F5F3, word: "Book")
+        case .inaccuracy: BadgeStyle(symbol: "exclamationmark", color: 0xFACC15, word: "Inaccuracy")
+        case .miss: BadgeStyle(symbol: "circle.dashed", color: 0xFACC15, word: "Miss")
+        case .mistake: BadgeStyle(symbol: "questionmark", color: 0xFB923C, word: "Mistake")
+        case .blunder: BadgeStyle(symbol: "xmark", color: 0xF87171, word: "Blunder")
+        }
+    }
+}
+
+/// Glyph for each lock failure (icon only, no text).
+extension LockFailure {
+    var symbol: String {
+        switch self {
+        case .noPlane: "iphone.gen3"                                   // sweep the phone
+        case .noFelt: "rectangle.dashed"                               // point at the cloth
+        case .partialTable, .tooClose: "arrow.up.left.and.arrow.down.right"  // step back / tilt to fit it all
+        case .tooFar: "arrow.down.right.and.arrow.up.left"             // move closer
+        case .badShape: "viewfinder"
+        case .unstable: "hand.raised"                                  // hold steady
+        }
+    }
+}
+
+/// When to offer the corner fallback: the locator has had a fair chance (~8 s with a plane) and isn't converging.
+enum FallbackPolicy {
+    static func offer(planeFoundFor seconds: Double?, confidence: Double, after: Double = 8) -> Bool {
+        guard let s = seconds else { return false }
+        return s > after && confidence < 0.5
+    }
+}

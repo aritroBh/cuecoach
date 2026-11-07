@@ -23,6 +23,12 @@ struct SyntheticTableScene: Sendable {
     var camera: CameraModel
     var balls: [Ball]
     var stick: Stick? = nil
+    /// Cloth colour (playing surface); cushion tops are drawn ~10 % darker.
+    var feltColor: (UInt8, UInt8, UInt8) = SyntheticTableScene.felt
+    /// Overhead lamp hotspot: brightness gain at the table centre falling off radially (1 = none).
+    var lampGain: Double = 1
+    /// Rail colour.
+    var railColor: (UInt8, UInt8, UInt8) = (78, 48, 30)
 
     var plane: Plane3 { frame.plane }
 
@@ -116,9 +122,26 @@ struct SyntheticTableScene: Sendable {
             guard let path else { return }
             ctx.addPath(path); ctx.setFillColor(color(c)); ctx.fillPath()
         }
-        fill(poly(rect(0.16)), (78, 48, 30))                   // wooden rail
-        fill(poly(rect(Self.cushionWidth)), Self.cushionFelt)  // cushion tops
-        fill(poly(rect(0)), Self.felt)                         // playing surface
+        func darker(_ c: (UInt8, UInt8, UInt8), _ f: Double) -> (UInt8, UInt8, UInt8) {
+            (UInt8(Double(c.0) * f), UInt8(Double(c.1) * f), UInt8(Double(c.2) * f))
+        }
+        fill(poly(rect(0.16)), railColor)                         // rail
+        fill(poly(rect(Self.cushionWidth)), darker(feltColor, 0.88))  // cushion tops
+        fill(poly(rect(0)), feltColor)                            // playing surface
+        if lampGain > 1 {
+            // Lamp hotspot: concentric brighter ellipses over the cloth (clipped to the felt).
+            ctx.saveGState()
+            if let felt = poly(rect(Self.cushionWidth)) { ctx.addPath(felt); ctx.clip() }
+            for i in stride(from: 10, through: 1, by: -1) {
+                let f = 1 + (lampGain - 1) * (1 - Double(i) / 10)
+                let c = (UInt8(min(255, Double(feltColor.0) * f)), UInt8(min(255, Double(feltColor.1) * f)),
+                         UInt8(min(255, Double(feltColor.2) * f)))
+                let r = s.width * 0.45 * Double(i) / 10
+                let ring = (0..<24).map { Vec2(s.length / 2, s.width / 2) + Vec2(cos(Double($0) * .pi / 12) * r * 1.6, sin(Double($0) * .pi / 12) * r) }
+                fill(poly(ring), c)
+            }
+            ctx.restoreGState()
+        }
         // Pockets: dark discs at the corners and the side midpoints, slightly outside the nose line.
         for p in s.pockets {
             let c = s.pocketCenter(p)
@@ -146,6 +169,9 @@ struct SyntheticTableScene: Sendable {
             } else {
                 ctx.setFillColor(color(b.color)); ctx.fill(disc)
             }
+            // Shading: the lower third falls into shadow.
+            ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.22))
+            ctx.fillEllipse(in: CGRect(x: c.x - r, y: c.y + r * 0.25, width: 2 * r, height: r * 1.1))
             // Specular highlight.
             ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.85))
             ctx.fillEllipse(in: CGRect(x: c.x - r * 0.45, y: c.y - r * 0.6, width: r * 0.3, height: r * 0.3))

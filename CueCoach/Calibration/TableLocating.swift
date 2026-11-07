@@ -26,6 +26,8 @@ struct TableEstimate: Sendable, Equatable {
     /// True once stable enough to lock without a tap.
     var locked: Bool
     var size: TableSize?
+    /// Why it hasn't locked (nil once locked or while converging normally).
+    var failure: LockFailure? = nil
 }
 
 /// Seam between the live screen and table finding. `AutoTableLocator` (Calibration/Auto, separate worker)
@@ -92,28 +94,40 @@ actor FeltQuadLocator: TableLocating {
         if let locked { return locked }
         guard f.timestamp - lastT >= minInterval else { return current() }
         lastT = f.timestamp
-        guard let quad = FeltQuadProposer.propose(f.image) else { return current() }
+        func failing(_ why: LockFailure) -> TableEstimate {
+            var e = current() ?? TableEstimate(corners: [], confidence: 0, locked: false, size: nil)
+            e.failure = why
+            return e
+        }
+        let analysis = FeltQuadProposer.analyze(f.image)
+        guard let quad = analysis.quad else { return failing(analysis.failure ?? .noFelt) }
         let centre = quad.reduce(Vec2.zero, +) / 4
-        guard let plane = LocatorMath.plane(for: centre, camera: f.camera, planes: f.planes) else { return current() }
+        guard !f.planes.isEmpty else { return failing(.noPlane) }
+        guard let plane = LocatorMath.plane(for: centre, camera: f.camera, planes: f.planes) else { return failing(.noPlane) }
         let outer = quad.compactMap { f.camera.intersect(pixel: $0, with: plane) }
-        guard outer.count == 4 else { return current() }
+        guard outer.count == 4 else { return failing(.badShape) }
         var inner = TableFitter.insetQuad(outer, by: SyntheticTableScene.cushionWidth)
         if let ref = history.last { inner = LocatorMath.align(inner, to: ref) }
         history.append(inner)
         if history.count > 12 { history.removeFirst() }
         guard var est = current() else { return nil }
-        if est.confidence >= 1, case .ok(let fit)? = CornerValidator.check(est.corners, viewer: f.camera.position),
-           fit.sizing.confident, fit.residual < 0.05 {
+        let check = CornerValidator.check(est.corners, viewer: f.camera.position)
+        if est.confidence >= 1, case .ok(let fit)? = check, fit.sizing.confident, fit.residual < 0.05 {
             est.locked = true
             est.size = fit.sizing.size
+            est.failure = nil
             locked = est
+        } else if case .outlier? = check {
+            est.failure = .badShape
+        } else if est.confidence < 0.5 && history.count >= 3 {
+            est.failure = .unstable
         }
         return est
     }
 
     /// Median corners of the recent agreeing run; confidence = agreeing run length / lockCount.
     private func current() -> TableEstimate? {
-        guard let last = history.last else { return nil }
+        guard let last = history.last, last.count == 4 else { return nil }
         var run = 0
         for h in history.reversed() {
             if zip(h, last).allSatisfy({ simd_distance($0, $1) < tolerance * 2 }) { run += 1 } else { break }

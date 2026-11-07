@@ -76,7 +76,13 @@ struct PhysicsPreviewTests {
         let p = PerceptionPipeline()
         await p.setTable(scene.frame)
         var last: PerceptionResult?
-        for i in 0..<30 { last = await p.process(PerceptionFrame(image: img, camera: scene.camera, timestamp: Double(i) / 30)) }
+        var i = 0
+        // The physics search runs off the perception actor; geometry shows until it lands.
+        while i < 300 && (last?.aim?.outcome == nil) {
+            last = await p.process(PerceptionFrame(image: img, camera: scene.camera, timestamp: Double(i) / 30))
+            i += 1
+            if i > 20 { try await Task.sleep(for: .milliseconds(20)) }
+        }
         let aim = try #require(last?.aim)
         #expect(aim.outcome != nil)
         #expect(aim.objectPath.count > 2)    // a sampled path, not the 2-point geometric segment
@@ -118,8 +124,8 @@ struct IdentityAndPathTests {
     @Test func cacheKeyIsStableUnderJitter() {
         let b: [BallID: Vec2] = [.cue: Vec2(0.5, 0.5), BallID(2)!: Vec2(1, 0.4)]
         let jit: [BallID: Vec2] = [.cue: Vec2(0.5011, 0.4992), BallID(2)!: Vec2(1.0009, 0.4004)]
-        let k1 = PreviewCache.key(cue: b[.cue]!, object: BallID(2)!, pocket: .footLeft, balls: b)
-        let k2 = PreviewCache.key(cue: jit[.cue]!, object: BallID(2)!, pocket: .footLeft, balls: jit)
+        let k1 = PreviewCache.key(cue: b[.cue]!, object: BallID(2)!, pocket: .footLeft, balls: b, spec: TableSpec(size: .sevenFoot))
+        let k2 = PreviewCache.key(cue: jit[.cue]!, object: BallID(2)!, pocket: .footLeft, balls: jit, spec: TableSpec(size: .sevenFoot))
         #expect(k1 == k2)
     }
 }
