@@ -10,7 +10,7 @@ struct SamplePlayerData: Sendable {
     static let newPlayer: SamplePlayerData = {
         let id = UUID()
         return .init(playerID: id,
-                     stats: .init(summary: .init(id: id, name: "Riley", avatarSymbol: "figure.pool.swim",
+                     stats: .init(summary: .init(id: id, name: "Riley", avatarSymbol: "person.fill",
                                                  avatarColor: "#A78BFA", games: 0, wins: 0, shots: 0, makes: 0)),
                      training: .init(drills: [], bias: nil))
     }()
@@ -31,7 +31,7 @@ struct SamplePlayerData: Sendable {
     static let veteran: SamplePlayerData = {
         let id = UUID()
         return .init(playerID: id,
-                     stats: .init(summary: .init(id: id, name: "Sam", avatarSymbol: "figure.pool.swim",
+                     stats: .init(summary: .init(id: id, name: "Sam", avatarSymbol: "person.fill",
                                                  avatarColor: "#60A5FA", isTeamA: true,
                                                  games: 42, wins: 25, shots: 812, makes: 503),
                                   archetype: .init(vector: ["cut": 0.86, "long": 0.55, "bank": 0.72, "side": 0.4,

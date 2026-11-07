@@ -5,6 +5,7 @@ import SwiftUI
 struct PlayerProfileView: View {
     @State private var model: PlayerProfileViewModel
     @State private var badge: EarnedBadge?
+    @State private var showingAllBadges = false
     @State private var showingPro = false
     @State private var editing = false
     @State private var showEvolution = false
@@ -52,6 +53,9 @@ struct PlayerProfileView: View {
         .preferredColorScheme(.dark)
         .task { if model.content == nil { await model.load() } }
         .sheet(item: $badge) { BadgeDetail(badge: $0).presentationDetents([.medium]) }
+        .sheet(isPresented: $showingAllBadges) {
+            if let c = model.content { AllBadges(badges: c.badges).presentationDetents([.large]) }
+        }
         .sheet(isPresented: $showingPro) {
             if let c = model.content, let pro = c.proComp {
                 ProCompDetail(pro: pro, axes: c.radar, accent: accent).presentationDetents([.large])
@@ -107,7 +111,6 @@ struct PlayerProfileView: View {
                     .accessibilityIdentifier("profile.retry")
             }
             .frame(maxWidth: .infinity, minHeight: 320)
-            .accessibilityIdentifier("profile.error")
         case .loading:
             statsTab(placeholderContent).redacted(reason: .placeholder).allowsHitTesting(false)
         case .loaded:
@@ -145,7 +148,6 @@ struct PlayerProfileView: View {
             if c.showsBadgeShelf { badgeShelf(c) }
             totals(c)
         }
-        .accessibilityIdentifier("profile.stats")
     }
 
     private func radarCard(_ c: ProfileContent) -> some View {
@@ -155,7 +157,7 @@ struct PlayerProfileView: View {
                     VStack(spacing: 16) {
                         ZStack {
                             ArchetypeRadar(axes: [], accent: accent, showsLabels: false)
-                            Image(systemName: "figure.pool.swim").font(.system(size: 44)).foregroundStyle(SA.inkMuted)
+                            Image(systemName: "8.circle").font(.system(size: 44)).foregroundStyle(SA.inkMuted)
                         }
                         .frame(height: 200)
                         Text("Play a game to start.").font(.body).foregroundStyle(SA.inkMuted)
@@ -240,7 +242,16 @@ struct PlayerProfileView: View {
 
     private func badgeShelf(_ c: ProfileContent) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            SA.sectionHeader("Badges")
+            HStack {
+                SA.sectionHeader("Badges")
+                if c.hasMoreBadges {
+                    Button("All") { showingAllBadges = true }
+                        .font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("All badges")
+                        .accessibilityIdentifier("profile.badges.all")
+                }
+            }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 56, maximum: 72), spacing: 12)], spacing: 12) {
                 ForEach(c.visibleBadges) { b in
                     Button { badge = b } label: {
@@ -256,7 +267,6 @@ struct PlayerProfileView: View {
                     .accessibilityLabel(PlayerProfileViewModel.badgeSpoken(b))
                 }
             }
-            .accessibilityIdentifier("profile.badges")
         }
     }
 
@@ -272,7 +282,6 @@ struct PlayerProfileView: View {
                 .accessibilityElement(children: .combine)
             }
         }
-        .accessibilityIdentifier("profile.totals")
     }
 }
 
@@ -309,7 +318,6 @@ private struct HistoryTab: View {
                     }
                 }
             }
-            .accessibilityIdentifier("profile.history")
         }
     }
 
@@ -333,6 +341,7 @@ private struct HistoryTab: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
+        .accessibilityRemoveTraits(.isSelected)
         .accessibilityHint(expanded.contains(s.id) ? "Hides games" : "Shows games")
     }
 
@@ -351,6 +360,7 @@ private struct HistoryTab: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
+        .accessibilityRemoveTraits(.isSelected)
     }
 }
 
@@ -390,6 +400,29 @@ private struct BadgeDetail: View {
     }
 }
 
+private struct AllBadges: View {
+    let badges: [EarnedBadge]
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 16)], spacing: 24) {
+                ForEach(badges) { b in
+                    VStack(spacing: 8) {
+                        Image(systemName: b.symbol).font(.system(size: 26, weight: .semibold)).foregroundStyle(SA.ink)
+                            .frame(width: 56, height: 56).background(Circle().fill(SA.surface))
+                        Text(b.name).font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                            .multilineTextAlignment(.center)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(PlayerProfileViewModel.badgeSpoken(b))
+                }
+            }
+            .padding(SA.gutter).padding(.top, 16)
+        }
+        .background(SA.bg)
+        .accessibilityIdentifier("profile.badges.sheet")
+    }
+}
+
 private struct ProCompDetail: View {
     let pro: ProCompView
     let axes: [RadarAxis]
@@ -415,7 +448,7 @@ private struct EditProfileSheet: View {
     @State var symbol: String
     let save: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
-    private let symbols = ["figure.pool.swim", "star.fill", "flame.fill", "bolt.fill", "moon.fill", "leaf.fill"]
+    private let symbols = ["person.fill", "star.fill", "flame.fill", "bolt.fill", "moon.fill", "leaf.fill"]
 
     var body: some View {
         NavigationStack {

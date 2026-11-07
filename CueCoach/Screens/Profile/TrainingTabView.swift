@@ -43,7 +43,6 @@ struct TrainingTabView: View {
                     .accessibilityIdentifier("profile.training.empty")
             }
         }
-        .accessibilityIdentifier("profile.training")
     }
 }
 
