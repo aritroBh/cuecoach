@@ -19,14 +19,14 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 - [x] User approves schema, interfaces, bar conventions (D11–D14)
 
 ## Phase 1 — Core (branch phase/1-core; worktrees .worktrees/{rules,physics,persistence})
-Merged: Persistence. In review: Rules (Codex re-review), Physics (Claude). Building: Virtual table (Claude).
+Parallel now: Physics fix (Codex) · Rules re-review (Codex) · Virtual table build (Claude) · Phase 2+ research workflow (4 tracks: ratings, engine, perception, mesh+identity). Merged: Persistence.
 - [x] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
 - [x] Rules: bar 8-ball tests + impl
 - [x] Rules: WPA 8-ball tests + impl
 - [x] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
-- [~] Rules: Codex supervisor review (182 tests green, 4 commits on wt/rules); interpretations approved (D15)
-- [~] Physics: pooltool fixture generator (500 shots)
-- [ ] Physics: phenomenon unit tests + impl
+- [~] Rules: Codex REJECTED round 1 (3 MAJOR) → fixed (207 tests) → Codex re-review running
+- [x] Physics: pooltool fixture generator (500 shots) — Codex
+- [~] Physics: supervisor (Claude) REJECTED a9fc236 — jaw cushions one-sided, weak fixtures, 16-ball break 13 ms; Codex fixing
 - [ ] Physics: fixture suite within tolerance
 - [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
 - [x] Persistence: training/competitive isolation test
@@ -35,3 +35,9 @@ Merged: Persistence. In review: Rules (Codex re-review), Physics (Claude). Build
 - [ ] Cross-vendor review of every module, findings fixed
 - [ ] Device run on iPhone 15 Pro Max, design review
 - [ ] Merge, delete branches/worktrees, clean status
+
+## Ahead-of-phase research (workflow wf_b972a7fb, running in parallel)
+- [~] docs/RATINGS.md — brilliant-shot catalogue + rating algorithm (D2) → user review
+- [~] docs/research/engine.md — candidates, win probability, perf budget
+- [~] docs/research/perception.md — calibration (D12), ball detection, dataset licenses
+- [~] docs/research/mesh-identity.md — MPC protocol, clock sync, clips (D3), recognition privacy
