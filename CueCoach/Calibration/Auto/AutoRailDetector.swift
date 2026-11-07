@@ -77,11 +77,7 @@ enum AutoRailDetector {
                        rng: inout AutoRandom) -> [AutoRailEdge]? {
         guard q.count == 4 else { return nil }
         let centroid = (q[0] + q[1] + q[2] + q[3]) / 4
-        let w = img.width, h = img.height
-        let ds = 0.5
-        let nS = Int((2 * radius / ds).rounded()) + 1
         var edges: [AutoRailEdge] = []
-        var prof = [Float](repeating: 0, count: nS * 3)
         for i in 0..<4 {
             let a = q[i], b = q[(i + 1) % 4]
             let d = b - a, len = simd_length(d)
@@ -89,6 +85,23 @@ enum AutoRailDetector {
             let u = d / len
             var nrm = AutoP2(-u.y, u.x)
             if simd_dot(nrm, (a + b) / 2 - centroid) < 0 { nrm = -nrm }  // outward
+            guard let e = refineSegment(img, model: model, from: a, to: b, outward: nrm, radius: radius, rng: &rng) else { return nil }
+            edges.append(e)
+        }
+        return edges
+    }
+
+    /// Sub-pixel felt → wood edge along one rail segment `a`→`b`; `outward` points from the cloth to the wood.
+    static func refineSegment(_ img: AutoRGBImage, model: AutoClothModel, from a: AutoP2, to b: AutoP2, outward nrm: AutoP2,
+                              radius: Double, rng: inout AutoRandom) -> AutoRailEdge? {
+        let w = img.width, h = img.height
+        let ds = 0.5
+        let nS = Int((2 * radius / ds).rounded()) + 1
+        var prof = [Float](repeating: 0, count: nS * 3)
+        let d = b - a, len = simd_length(d)
+        guard len > 20 else { return nil }
+        let u = d / len
+        do {
             let step = max(2.0, len / 160)
             var samples: [AutoP2] = []
             var attempted = 0
@@ -128,7 +141,10 @@ enum AutoRailDetector {
                     guard model.isCloth(A.x, A.y, A.z), !model.isCloth(B.x, B.y, B.z) else { continue }
                     let ab = A - B
                     let ab2 = simd_dot(ab, ab)
-                    guard ab2 > 25 * 25 else { continue }
+                    // Contrast relative to the cloth's brightness: 25 levels in a lit room, less in a dim one.
+                    let lum = (A.x + A.y + A.z) / 3
+                    let minContrast = max(8, min(25, 0.35 * lum))
+                    guard ab2 > minContrast * minContrast else { continue }
                     // Last sample (scanning outward) still on the cloth side.
                     var last = -1
                     var prev: Float = 1
@@ -151,8 +167,7 @@ enum AutoRailDetector {
             }
             guard let r = AutoRansac.line(samples, tolerance: 1.2, rng: &rng),
                   r.inliers.count >= 12, Double(r.inliers.count) >= 0.25 * Double(attempted) else { return nil }
-            edges.append(AutoRailEdge(line: r.line, points: r.inliers.map { samples[$0] }, attempted: attempted, rms: r.rms))
+            return AutoRailEdge(line: r.line, points: r.inliers.map { samples[$0] }, attempted: attempted, rms: r.rms)
         }
-        return edges
     }
 }

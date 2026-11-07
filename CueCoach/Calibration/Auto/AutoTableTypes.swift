@@ -177,6 +177,8 @@ struct AutoFrameDiagnostics: Sendable {
     var lidarClothHeight: Double?
     /// Rail-cap height above the cloth used for this frame (profile default or the LiDAR median).
     var railTopHeight: Double?
+    /// Partial-view fit: fraction of the playing length seen (nil = whole table in view).
+    var visibleLengthFraction: Double?
     var processingSeconds: Double = 0
     var rejection: String?
 }

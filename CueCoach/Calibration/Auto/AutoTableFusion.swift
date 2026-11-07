@@ -14,6 +14,8 @@ struct AutoTableMeasurement: Sendable {
     var measuredWidth: Double
     var snapped: TableSize?
     var cameraPosition: SIMD3<Double>
+    /// Fraction of the playing length actually seen (1 = whole table; < 1 = partial fit completed by 2:1 + preset).
+    var visibleLengthFraction: Double = 1
 }
 
 struct AutoFusionConfig: Sendable {
@@ -41,6 +43,10 @@ struct AutoFusionConfig: Sendable {
     var snapVoteBand = 0.15
     /// While locked, a different size must be the candidate this many consecutive frames before adoption.
     var sizeAdoptFrames = 10
+    /// A partial-view window locks only if some frame saw this much of the length…
+    var partialLockVisibleFraction = 0.6
+    /// …or its view directions (camera around the table centre) span at least this angle (rad).
+    var partialLockViewSpread = 15 * Double.pi / 180
 }
 
 /// Multi-frame fusion in world coordinates: robust (median → Huber) pose over a sliding window,
@@ -198,6 +204,7 @@ struct AutoTableFusion: Sendable {
             guard window.count >= frames else { return false }
             let d = window.suffix(frames).map { Self.deviation($0, from: pose) }
             return autoMedian(d) <= limit && Double(d.filter { $0 < 1.5 * limit }.count) >= 0.8 * Double(d.count)
+                && Self.partialViewsAgree(Array(window.suffix(frames)), center: center, up: up, config: config)
         }
         if !locked, agrees(frames: config.fastLockFrames, spread: config.lockCornerSpread)
             || agrees(frames: config.lockFrames, spread: config.slowLockCornerSpread) {
@@ -210,6 +217,22 @@ struct AutoTableFusion: Sendable {
             // Re-locked onto a table turned by ~90°: re-derive head from the camera.
             headToFoot = simd_dot(camera - center, axis) > 0 ? -axis : axis
         }
+    }
+
+    /// A partial-view lock needs ≥ 60 % of the length seen in some frame, or ≥ 2 distinct view angles.
+    static func partialViewsAgree(_ ms: [AutoTableMeasurement], center: SIMD3<Double>, up: SIMD3<Double>,
+                                  config: AutoFusionConfig) -> Bool {
+        guard ms.contains(where: { $0.visibleLengthFraction < 1 }) else { return true }
+        if ms.contains(where: { $0.visibleLengthFraction >= config.partialLockVisibleFraction }) { return true }
+        let dirs: [SIMD3<Double>] = ms.compactMap { m in
+            var d = m.cameraPosition - center
+            d -= up * simd_dot(d, up)
+            return simd_length(d) > 0.1 ? simd_normalize(d) : nil
+        }
+        for i in dirs.indices { for j in dirs.indices where j > i {
+            if acos(max(-1, min(1, simd_dot(dirs[i], dirs[j])))) >= config.partialLockViewSpread { return true }
+        } }
+        return false
     }
 
     static func pose(center: SIMD3<Double>, axis: SIMD3<Double>, up: SIMD3<Double>, spec: TableSpec,

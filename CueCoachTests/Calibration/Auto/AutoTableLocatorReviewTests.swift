@@ -174,7 +174,9 @@ struct AutoTableLocatorReviewTests {
         let cam = scene.camera(elevationDeg: 50, margin: -400)
         let e = ClassicalAutoTableLocator().process(scene.frame(cameraToWorld: cam, seed: 3))
         print("[autocal] table off frame: rejection \(e.frame.rejection ?? "none")")
-        #expect(e.frame.rejection == "cloth touches frame")
+        // The partial fitter tries the visible rails; with < 2 of them the frame stays rejected.
+        #expect(e.frame.rejection?.hasPrefix("cloth touches frame") == true)
+        #expect(e.pose == nil)
     }
 
     // MARK: 6. LiDAR cloth level must be plausible and well covered

@@ -24,6 +24,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         /// A LiDAR rail-cap height is believed only within this distance of the profile default (m).
         /// Kept tight until device evidence exists: smoothed real depth biases the band toward the cloth.
         var maxRailHeightDeviation = 0.008
+        /// Views flatter than this (camera elevation over the table centre) are not measured: lifted rails
+        /// slide along grazing rays, so plane/rail-height errors become large size errors.
+        var minViewElevation = 12 * Double.pi / 180
     }
 
     /// Per-frame detector state. Owned by the `processing` lock, which serialises `process()` calls, so
@@ -199,11 +202,25 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                 if edges != nil { diag.path = .tracked }
             }
         }
+        var seed: PartialSeed?
         if edges == nil {
-            edges = fullSearch(f, camera: camera, plane: plane, profile: prof, state: &s, diag: &diag)
+            edges = fullSearch(f, camera: camera, plane: plane, profile: prof, state: &s, diag: &diag, partial: &seed)
             if edges != nil { diag.path = .full }
         }
         let keypoints = keypointProvider?.keypoints(in: img, intrinsics: f.intrinsics) ?? []
+
+        if edges == nil, let seed {
+            // Part of the table is out of view (or its outline is broken): fit the visible rails.
+            var pd = diag
+            pd.rejection = nil
+            if let det = partialDetect(f, seed: seed, camera: camera, plane: plane, hintLevel: hintLevel, profile: prof,
+                                       state: &s, diag: &pd) {
+                pd.path = .full
+                diag = pd
+                return det
+            }
+            if let r = pd.rejection { diag.rejection = "\(diag.rejection ?? "partial") (\(r))" }
+        }
 
         if edges == nil {
             // Keypoint-only fallback (LiDAR level from the keypoint quad).
@@ -251,6 +268,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                                          measured: (fit.measuredL, fit.measuredW), headToFoot: plane.e1 * fit.rect.u.x + plane.e2 * fit.rect.u.y)!
         diag.reprojectionRMS = Self.reprojectionRMS(allPts, pose: pose0, plane: plane, camera: camera, profile: prof)
         guard diag.reprojectionRMS < config.maxFrameRMS else { diag.rejection = "reprojection"; return nil }
+        guard viewElevation(camera, center: pose0.center, up: plane.normal) >= config.minViewElevation else {
+            diag.rejection = "view too shallow"; return nil
+        }
         let m = AutoTableMeasurement(center: pose0.center, axis: pose0.xAxis, up: plane.normal,
                                      measuredLength: fit.measuredL, measuredWidth: fit.measuredW, snapped: fit.snapped,
                                      cameraPosition: camera.position)
@@ -293,8 +313,28 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         return AutoTablePlane(origin: SIMD3(p.x, autoMedian(ys), p.z), normal: SIMD3(0, 1, 0))
     }
 
+    /// What a failed full search hands the partial fitter.
+    private struct PartialSeed {
+        var mask: AutoMask
+        var model: AutoClothModel
+        var boundary: [AutoP2]
+        var stride: Int
+    }
+
+    /// Expected on-screen area (working px²) of the smallest preset's outer felt at the plane distance,
+    /// so the size gates follow the view distance (2–3 m views are small but valid).
+    private func expectedTableArea(_ f: AutoTableFrame, camera: AutoCamera, plane: AutoTablePlane) -> Double? {
+        let c = AutoP2(f.intrinsics.cx, f.intrinsics.cy)
+        guard let hit = camera.lift(c, point: plane.origin, normal: plane.normal) else { return nil }
+        let d = simd_distance(hit, camera.position)
+        let cosv = abs(simd_dot(simd_normalize(camera.position - hit), plane.normal))
+        let spec = TableSpec(size: .sevenFoot), cw = config.profile.cushionWidth
+        let area = (spec.length + 2 * cw) * (spec.width + 2 * cw)
+        return area * f.intrinsics.fx * f.intrinsics.fy * max(cosv, 0.2) / (d * d)
+    }
+
     private func fullSearch(_ f: AutoTableFrame, camera: AutoCamera, plane: AutoTablePlane, profile: AutoTableProfile,
-                            state s: inout Work, diag: inout AutoFrameDiagnostics) -> [AutoRailEdge]? {
+                            state s: inout Work, diag: inout AutoFrameDiagnostics, partial: inout PartialSeed?) -> [AutoRailEdge]? {
         let img = f.image
         let stride = max(2, img.width / config.coarseWidth)
         var gate: [UInt8]?
@@ -303,22 +343,31 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             gate = AutoPlaneRefiner.gate(depth: d, camera: camera, imageWidth: img.width, imageHeight: img.height,
                                          plane: plane, tolerance: 0.12, grow: 3)
             learnGate = AutoPlaneRefiner.gate(depth: d, camera: camera, imageWidth: img.width, imageHeight: img.height,
-                                              plane: plane, tolerance: 0.04)
+                                              plane: plane, tolerance: 0.025, trustUnknown: false)
         }
         let dw = f.depth?.width ?? 0, dh = f.depth?.height ?? 0
+        // Learn where LiDAR says "cloth height" anywhere in the frame; it must be a real bed-sized area
+        // (an arm over the bed leaves only cushion strips), else fall back to the image centre.
         let accept: ((Int, Int) -> Bool)? = learnGate.map { g in
             { x, y in g[(y * dh / img.height) * dw + x * dw / img.width] != 0 }
         }
-        guard let model = AutoClothModel.learn(img, stride: stride, accept: accept)
+        guard let model = AutoClothModel.learn(img, stride: stride, accept: accept, allowNeutral: true, minSamples: 300)
                 ?? AutoClothModel.learn(img, stride: stride) ?? s.model else {
             diag.rejection = "no cloth colour"; return nil
         }
         let raw = AutoClothSegmenter.mask(img, model: model, stride: stride, gate: gate, gateWidth: dw, gateHeight: dh)
         let (comp, size) = AutoClothSegmenter.largestComponent(AutoClothSegmenter.open(raw))
-        guard size > comp.width * comp.height / 30 else { diag.rejection = "cloth too small"; return nil }
+        let expected = expectedTableArea(f, camera: camera, plane: plane)
+        let minArea = min(Double(img.width * img.height) / 40, 0.3 * (expected ?? .infinity))
+        let gridCell = Double(stride * stride)
+        guard Double(size) * gridCell > max(minArea, 400 * gridCell) else { diag.rejection = "cloth too small"; return nil }
         let (pts, border) = AutoClothSegmenter.boundary(comp)
-        // The whole table must be in view; a component hugging the frame is not a table (or is cut off).
-        guard border < (comp.width + comp.height) / 6 else { diag.rejection = "cloth touches frame"; return nil }
+        // A component hugging the frame is cut off: the partial fitter takes over.
+        guard border < (comp.width + comp.height) / 6 else {
+            diag.rejection = "cloth touches frame"
+            partial = PartialSeed(mask: comp, model: model, boundary: pts, stride: stride)
+            return nil
+        }
         let hr = profile.railTopHeight
         let isTableQuad: ([AutoP2]) -> Bool = { q in
             let Q = q.compactMap { plane.lift($0, camera: camera, height: hr) }
@@ -329,14 +378,23 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             for i in 0..<4 where abs(simd_dot(sides[i], sides[(i + 1) % 4])) / (len[i] * len[(i + 1) % 4]) > 0.12 { return false }
             let a = (len[0] + len[2]) / 2, b = (len[1] + len[3]) / 2
             let ratio = max(a, b) / min(a, b)
-            return ratio > 1.5 && ratio < 2.5 && abs(len[0] - len[2]) / a < 0.15 && abs(len[1] - len[3]) / b < 0.15
+            return Self.plausibleAspect(ratio) && abs(len[0] - len[2]) / a < 0.15 && abs(len[1] - len[3]) / b < 0.15
         }
         guard let coarse = AutoRailDetector.coarseLines(boundary: pts, stride: stride, rng: &s.rng, accept: isTableQuad),
-              let q = AutoRailDetector.corners(coarse), AutoPolygon.area(q) > Double(img.width * img.height) / 40,
+              let q = AutoRailDetector.corners(coarse), AutoPolygon.area(q) > minArea,
               q.allSatisfy({ abs($0.x - Double(img.width) / 2) < Double(img.width) && abs($0.y - Double(img.height) / 2) < Double(img.height) })
-        else { diag.rejection = "no quad"; return nil }
+        else {
+            diag.rejection = "no quad"
+            partial = PartialSeed(mask: comp, model: model, boundary: pts, stride: stride)
+            return nil
+        }
         guard let edges = AutoRailDetector.refine(img, model: model, corners: q, radius: max(6, 2.5 * Double(stride)),
-                                                  rng: &s.rng) else { diag.rejection = "edge refine"; return nil }
+                                                  rng: &s.rng) else {
+            // Typically one "rail" of the quad is the frame cut: try the visible rails alone.
+            diag.rejection = "edge refine"
+            partial = PartialSeed(mask: comp, model: model, boundary: pts, stride: stride)
+            return nil
+        }
         s.model = model
         return edges
     }
@@ -480,6 +538,184 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         }
         return n > 0 ? (s / Double(n)).squareRoot() : .infinity
     }
+
+    // MARK: - Partial view (lock-plan step 4)
+
+    /// Fits a table seen only in part: ≥ 2 perpendicular visible rails (felt/wood edges), completed with
+    /// the 2:1 shape and a preset. Each long/short × preset hypothesis is scored by how well its projected
+    /// outer felt matches the cloth mask; an ambiguous best (another hypothesis nearly as good, e.g. every
+    /// far rail out of frame) is rejected. Fusion then locks a partial fit only with ≥ 60 % of the length
+    /// seen or ≥ 2 view angles (`AutoTableFusion.partialViewsAgree`).
+    private func partialDetect(_ f: AutoTableFrame, seed: PartialSeed, camera: AutoCamera, plane planeIn: AutoTablePlane,
+                               hintLevel: Double, profile prof: AutoTableProfile, state s: inout Work,
+                               diag: inout AutoFrameDiagnostics) -> Detection? {
+        // A neutral (grey/tan) cloth mask is too soft at its edges to choose a size from mask overlap.
+        guard !seed.model.neutral else { diag.rejection = "partial: neutral cloth"; return nil }
+        var plane = planeIn
+        let img = f.image, st = Double(seed.stride)
+        let W = Double(img.width), H = Double(img.height)
+        let margin = 2.5 * st
+        var pts = seed.boundary.filter { $0.x > margin && $0.y > margin && $0.x < W - 1 - margin && $0.y < H - 1 - margin }
+        if pts.count > 1200 { let k = pts.count / 1200 + 1; pts = pts.indices.filter { $0 % k == 0 }.map { pts[$0] } }
+        // 1. Straight runs of the mask outline (sequential RANSAC); occluders and the frame cut are short or curved.
+        struct Run { var a: AutoP2; var b: AutoP2; var outward: AutoP2 }
+        var runs: [Run] = []
+        let minLen = 0.1 * (W * W + H * H).squareRoot()
+        // A short rail may hold only ~5 % of the outline points: enough RANSAC draws to find it.
+        for _ in 0..<6 {
+            guard pts.count >= 30, let r = AutoRansac.line(pts, tolerance: 1.2 * st, iterations: 400, rng: &s.rng) else { break }
+            let inl = r.inliers.map { pts[$0] }
+            let dir = r.line.direction
+            let ts = inl.map { simd_dot($0, dir) }
+            let t0 = ts.min() ?? 0, t1 = ts.max() ?? 0
+            let keep = Set(r.inliers)
+            pts = pts.indices.filter { !keep.contains($0) }.map { pts[$0] }
+            guard inl.count >= 25, t1 - t0 > minLen, Double(inl.count) * st > 0.5 * (t1 - t0) else { continue }
+            let foot = r.line.n * -r.line.c
+            let a = foot + dir * t0, b = foot + dir * t1
+            // Outward = away from the cloth: probe the mask on both sides of the run's middle.
+            let mid = (a + b) / 2
+            func onMask(_ p: AutoP2) -> Bool {
+                let x = Int((p.x / st).rounded()), y = Int((p.y / st).rounded())
+                guard x >= 0, y >= 0, x < seed.mask.width, y < seed.mask.height else { return false }
+                return seed.mask.bits[y * seed.mask.width + x] != 0
+            }
+            let n = r.line.n
+            let plus = onMask(mid + n * 3 * st), minus = onMask(mid - n * 3 * st)
+            guard plus != minus else { continue }
+            runs.append(Run(a: a, b: b, outward: plus ? -n : n))
+        }
+        guard runs.count >= 2 else { diag.rejection = "partial: < 2 rails"; return nil }
+        // 2. Sub-pixel edges on each visible rail, lifted to the felt boundary height.
+        var rails: [(edge: AutoRailEdge, lifted: [AutoP2], outward: AutoP2, dir: AutoP2)] = []
+        for r in runs {
+            guard let e = AutoRailDetector.refineSegment(img, model: seed.model, from: r.a, to: r.b, outward: r.outward,
+                                                         radius: max(6, 2.5 * st), rng: &s.rng) else { continue }
+            let lifted = e.points.compactMap { plane.lift($0, camera: camera, height: prof.railTopHeight) }
+            guard lifted.count >= 12, let l3 = AutoLine.fit(lifted) else { continue }
+            // Outward in the plane: the lifted image-outward probe.
+            let m = e.points[e.points.count / 2]
+            guard let p0 = plane.lift(m, camera: camera, height: prof.railTopHeight),
+                  let p1 = plane.lift(m + r.outward * 4, camera: camera, height: prof.railTopHeight) else { continue }
+            var nrm = l3.n
+            if simd_dot(nrm, p1 - p0) < 0 { nrm = -nrm }
+            rails.append((e, lifted, nrm, l3.direction))
+        }
+        // 3. A perpendicular pair gives a felt corner.
+        var pair: (Int, Int)?
+        for i in rails.indices { for j in rails.indices where j > i {
+            if abs(simd_dot(rails[i].dir, rails[j].dir)) < sin(8 * .pi / 180) { pair = pair ?? (i, j) }
+        } }
+        guard let (i, j) = pair else { diag.rejection = "partial: no rail corner (\(runs.count) runs, \(rails.count) rails)"; return nil }
+        let li = AutoLine.fit(rails[i].lifted)!, lj = AutoLine.fit(rails[j].lifted)!
+        guard let C = li.intersect(lj) else { diag.rejection = "partial: parallel"; return nil }
+        let di = -rails[i].outward, dj = -rails[j].outward  // inward normals (bed side)
+        let c = prof.cushionWidth
+        let nose = C + (di + dj) * c
+        // A visible opposite rail measures the nose extent across the pair directly (e.g. both long rails).
+        func spacing(parallelTo r: Int) -> Double? {
+            let lr = r == i ? li : lj
+            for k in rails.indices where k != i && k != j && abs(simd_dot(rails[k].dir, rails[r].dir)) > cos(8 * .pi / 180) {
+                let pk = rails[k].lifted
+                let d = abs(pk.map { lr.distance($0) }.reduce(0, +) / Double(pk.count))
+                if d > 0.5 { return d - 2 * c }
+            }
+            return nil
+        }
+        let extentAlongDi = spacing(parallelTo: i), extentAlongDj = spacing(parallelTo: j)
+        // 4. Hypotheses: which visible rail is long, and the preset.
+        struct Hyp { var rect: AutoRect; var size: TableSize; var iou: Double; var iLong: Bool }
+        var hyps: [Hyp] = []
+        for size in TableSize.allCases {
+            let spec = TableSpec(size: size)
+            for iLong in [true, false] {
+                // Rail i runs along dj from the corner; rail j along di.
+                let li = iLong ? spec.length : spec.width, lj = iLong ? spec.width : spec.length
+                if let e = extentAlongDi, abs(e - lj) / lj > 0.06 { continue }
+                if let e = extentAlongDj, abs(e - li) / li > 0.06 { continue }
+                let center = nose + dj * (li / 2) + di * (lj / 2)
+                let u = iLong ? dj : di
+                let rect = AutoRect(center: center, theta: atan2(u.y, u.x), a: spec.length / 2, b: spec.width / 2)
+                hyps.append(Hyp(rect: rect, size: size, iou: maskIoU(rect, seed: seed, camera: camera, plane: plane, profile: prof),
+                                iLong: iLong))
+            }
+        }
+        hyps.sort { $0.iou > $1.iou }
+        guard let best = hyps.first, best.iou >= 0.75 else { diag.rejection = "partial: mask disagrees"; return nil }
+        if hyps.count > 1, hyps[1].iou > best.iou - 0.05 { diag.rejection = "partial: ambiguous size"; return nil }
+        // 5. Refine centre + heading at the fixed preset size from every visible rail's edge samples.
+        var rect = best.rect
+        var samples: [AutoRectFitter.EdgeSample] = []
+        for r in rails {
+            let ang = autoWrapPi(atan2(r.outward.y, r.outward.x) - rect.theta)
+            let side = ((Int((ang / (.pi / 2)).rounded()) % 4) + 4) % 4
+            for p in r.lifted { samples.append(.init(p: p, side: side, offset: c)) }
+        }
+        guard let fit = AutoRectFitter.fit(rect, edges: samples, mode: .fixed(a: rect.a, b: rect.b)) else {
+            diag.rejection = "partial: fit"; return nil
+        }
+        rect = fit.rect
+        // LiDAR cloth level from the visible part of the bed.
+        let bedQuad = [rect.point(1, 1), rect.point(-1, 1), rect.point(-1, -1), rect.point(1, -1)]
+            .compactMap { camera.project(plane.to3D($0)) }
+        if bedQuad.count == 4 {
+            refineLevel(f, camera: camera, quad: bedQuad, plane: &plane, hintLevel: hintLevel, state: &s, diag: &diag)
+        }
+        let spec = TableSpec(size: best.size)
+        let axis = plane.e1 * rect.u.x + plane.e2 * rect.u.y
+        guard let pose = AutoTableFusion.pose(center: plane.to3D(rect.center), axis: axis, up: plane.normal, spec: spec,
+                                              snapped: best.size, measured: (spec.length, spec.width), headToFoot: axis) else { return nil }
+        let allPts = rails.flatMap(\.edge.points)
+        diag.railLines = rails.map(\.edge.line.abc)
+        diag.reprojectionRMS = Self.reprojectionRMS(allPts, pose: pose, plane: plane, camera: camera, profile: prof)
+        guard diag.reprojectionRMS < config.maxFrameRMS else { diag.rejection = "partial: reprojection"; return nil }
+        guard viewElevation(camera, center: pose.center, up: plane.normal) >= config.minViewElevation else {
+            diag.rejection = "view too shallow"; return nil
+        }
+        // Visible fraction of the length: the long rails' lifted extent along the axis.
+        var visible = 0.0
+        for r in rails where abs(simd_dot(r.dir, rect.u)) > 0.9 {
+            let t = r.lifted.map { simd_dot($0 - rect.center, rect.u) }
+            visible = max(visible, ((t.max() ?? 0) - (t.min() ?? 0)) / spec.length)
+        }
+        diag.visibleLengthFraction = min(1, visible)
+        diag.railTopHeight = prof.railTopHeight
+        var m = AutoTableMeasurement(center: pose.center, axis: pose.xAxis, up: plane.normal,
+                                     measuredLength: spec.length, measuredWidth: spec.width, snapped: best.size,
+                                     cameraPosition: camera.position)
+        m.visibleLengthFraction = min(0.99, visible)
+        return Detection(measurement: m, edgePoints: allPts, plane: plane, profile: prof)
+    }
+
+    /// IoU (on the mask grid, inside the image) of a hypothesised outer felt rectangle and the cloth mask.
+    private func maskIoU(_ rect: AutoRect, seed: PartialSeed, camera: AutoCamera, plane: AutoTablePlane,
+                         profile prof: AutoTableProfile) -> Double {
+        let c = prof.cushionWidth
+        var r = rect; r.a += c; r.b += c
+        let poly = [r.point(1, 1), r.point(-1, 1), r.point(-1, -1), r.point(1, -1)]
+            .compactMap { camera.project(plane.to3D($0, height: prof.railTopHeight)) }
+        guard poly.count == 4 else { return 0 }
+        let st = Double(seed.stride), w = seed.mask.width, h = seed.mask.height
+        var both = 0, either = 0
+        for y in Swift.stride(from: 0, to: h, by: 2) {
+            for x in Swift.stride(from: 0, to: w, by: 2) {
+                let inMask = seed.mask.bits[y * w + x] != 0
+                let inPoly = AutoPolygon.contains(poly, AutoP2(Double(x) * st, Double(y) * st))
+                if inMask && inPoly { both += 1 }
+                if inMask || inPoly { either += 1 }
+            }
+        }
+        return either > 0 ? Double(both) / Double(either) : 0
+    }
+
+    private func viewElevation(_ camera: AutoCamera, center: SIMD3<Double>, up: SIMD3<Double>) -> Double {
+        let d = camera.position - center
+        let l = simd_length(d)
+        return l > 1e-6 ? asin(min(1, abs(simd_dot(d, up)) / l)) : .pi / 2
+    }
+
+    /// Table-shaped: outer felt aspect 1.6–2.5 (any size; the preset only snaps within 6 %).
+    static func plausibleAspect(_ ratio: Double) -> Bool { ratio >= 1.6 && ratio <= 2.5 }
 
     // MARK: - Validation, pockets, confidence
 
