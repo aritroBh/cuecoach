@@ -157,6 +157,12 @@ import Rules
         #expect(m.seats[0][0]?.isGuest == false)
     }
 
+    @Test func newPlayerNamesAreCapped() throws {
+        let (m, store) = make(roster: [])
+        try m.registerNew(name: String(repeating: "k", count: 120), to: SeatRef(team: 0, slot: 0))
+        #expect(store.players.first?.name.count == 64)
+    }
+
     @Test func blankNewPlayerNameIsRejected() {
         let (m, store) = make(roster: [])
         #expect(throws: SetupError.blankName) { try m.registerNew(name: "  ", to: SeatRef(team: 0, slot: 0)) }
@@ -227,6 +233,17 @@ import Rules
         #expect(m.start() == nil)
         #expect(starts == 1)
         #expect(mesh.announced == first)
+    }
+
+    @Test func hostSeesWhenLocalNetworkIsUnavailable() {
+        let mesh = FakeGameLobbyMesh()
+        let (m, _) = make(mesh: mesh)
+        m.beginHosting()
+        #expect(!m.meshUnavailable)
+        mesh.emit(.unavailable)
+        #expect(m.meshUnavailable)
+        m.endHosting()
+        #expect(!m.meshUnavailable)
     }
 
     @Test func endHostingStopsAdvertising() {

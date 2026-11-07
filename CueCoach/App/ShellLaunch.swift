@@ -144,12 +144,17 @@ enum ShellAutopilot {
     }
 
     @MainActor static func reportMesh(router: AppRouter, log: (String) -> Void) async {
-        for i in 0..<30 {
+        guard case .live(let s)? = router.stage, let link = s.game?.mesh else { log("FAIL no game mesh"); return }
+        var peers = 1
+        for _ in 0..<30 where peers < 2 {
             try? await Task.sleep(for: .seconds(1))
-            if case .live(let s)? = router.stage, let link = s.game?.mesh {
-                if link.peerCount > 1 || i == 29 { log("mesh peers \(link.peerCount)"); if link.peerCount > 1 { break } }
-            }
+            peers = link.peerCount
         }
+        guard peers >= 2 else { log("FAIL mesh peers \(peers)"); return }
+        log("mesh peers \(peers)")
+        try? await Task.sleep(for: .seconds(5))
+        router.endGame()   // teardown: the router stops the link
+        log(s.game?.mesh == nil ? "mesh stopped" : "FAIL mesh still attached")
         log("done")
     }
 }

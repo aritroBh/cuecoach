@@ -31,7 +31,7 @@ final class TwoPhoneUITests: XCTestCase {
 
     @MainActor func testTwoPhones() throws {
         let role = ProcessInfo.processInfo.environment["APPSHELL_ROLE"]
-        guard role == "host" || role == "join" else { throw XCTSkip("set TEST_RUNNER_APPSHELL_ROLE") }
+        guard role == "host" || role == "join" else { throw XCTSkip("run xcodebuild with TEST_RUNNER_APPSHELL_ROLE=host or join (arrives in the runner as APPSHELL_ROLE)") }
         let app = XCUIApplication()
         app.launchArguments = ["-appshell.uitest", "-appshell.realMesh", "-appshell.name=\(role == "host" ? "Host" : "Joiner")"]
         app.launch()

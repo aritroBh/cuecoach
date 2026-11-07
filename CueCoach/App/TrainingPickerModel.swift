@@ -24,7 +24,13 @@ final class TrainingPickerModel {
     var previewElements: Set<OverlayElement> { sketch(for: level) }
 
     /// What `level` draws while aiming in the selected drill (each level disc's sketch).
-    func sketch(for level: AssistLevel) -> Set<OverlayElement> { level.visibleWhileAiming(in: drill) }
+    /// D24: Line 3 (cue-ball path) only in position play; the Training module's AssistLevel policy still
+    /// includes it at level 1 for every drill (reported to its owner), so the preview applies D24 here.
+    func sketch(for level: AssistLevel) -> Set<OverlayElement> {
+        var e = level.visibleWhileAiming(in: drill)
+        if !drill.hasPositionZone { e.remove(.cueAfterContactLine) }
+        return e
+    }
 
     func start() { onStart?(drill, level) }
 

@@ -9,6 +9,7 @@ struct JoinNearbyView: View {
     @Environment(\.shellNoLoops) private var noLoops
     private var reduceMotion: Bool { reduce || forced }
     private var loops: Bool { !reduceMotion && !noLoops }
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         ZStack {
@@ -61,8 +62,14 @@ struct JoinNearbyView: View {
         case .joined(let g):
             GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(SBColor.legal))) {}
                 .disabled(true)
-            if let l = model.lineup { LineupStrip(lineup: l) }
-            StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+            // AX sizes: the next step (waiting) comes before the lineup so it's in the first viewport.
+            if typeSize.isAccessibilitySize {
+                StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+                if let l = model.lineup { LineupStrip(lineup: l) }
+            } else {
+                if let l = model.lineup { LineupStrip(lineup: l) }
+                StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+            }
             cancelButton
         case .full:
             StatusGlyph(symbol: "lock.fill", tint: SBColor.caution, title: "Game full", animate: false, id: "join.full")

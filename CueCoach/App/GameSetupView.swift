@@ -160,6 +160,19 @@ struct GameSetupView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("setup.phones")
             .accessibilityValue("\(model.joinedPhones.count + 1)")
+            if model.meshUnavailable {
+                // Other phones can't see this game; it still plays on this phone.
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                } label: {
+                    Label("No access", systemImage: "lock.shield")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(SBColor.caution)
+                        .frame(minHeight: 44)
+                }
+                .accessibilityLabel("Nearby phones blocked. Open Settings")
+                .accessibilityIdentifier("setup.meshUnavailable")
+            }
         }
     }
 }

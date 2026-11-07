@@ -63,6 +63,8 @@ final class GameSetupModel {
     private(set) var joinedPhones: [NearbyPhone] = []
     private(set) var blockedStartCount = 0
     private(set) var isHosting = false
+    /// Local network permission denied / MPC failed: the host can still play on this phone alone.
+    private(set) var meshUnavailable = false
     /// Start is one-shot: a second tap can't mint another session tag or a second Live.
     private(set) var hasStarted = false
 
@@ -150,7 +152,7 @@ final class GameSetupModel {
 
     /// New roster player (persisted), seated immediately.
     func registerNew(name: String, to seat: SeatRef) throws {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(LobbyWire.maxNameLength))
         guard !trimmed.isEmpty else { throw SetupError.blankName }
         let symbol = ShellPalette.symbols[rosterPlayers.count % ShellPalette.symbols.count]
         let p = try roster.register(name: trimmed, symbol: symbol, colorName: nextColor)
@@ -178,7 +180,11 @@ final class GameSetupModel {
         guard let mesh, !isHosting else { return }
         isHosting = true
         mesh.onEvent = { [weak self] e in
-            if case .phonesChanged(let phones) = e { self?.joinedPhones = phones }
+            switch e {
+            case .phonesChanged(let phones): self?.joinedPhones = phones
+            case .unavailable: self?.meshUnavailable = true
+            default: break
+            }
         }
         readvertise()
     }
@@ -189,6 +195,7 @@ final class GameSetupModel {
         mesh?.stopHosting()
         mesh?.onEvent = nil
         joinedPhones = []
+        meshUnavailable = false
     }
 
     var advert: NearbyGame {

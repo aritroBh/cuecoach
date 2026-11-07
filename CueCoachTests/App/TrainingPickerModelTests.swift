@@ -48,6 +48,15 @@ import Training
         #expect(!m.sketch(for: .ghostOnly).contains(.positionZone))
     }
 
+    @Test func lineThreeOnlyPreviewsInPositionPlay() {
+        // D24: Training shows Lines 1 and 2; Line 3 (cue-ball path) only for position play.
+        let m = TrainingPickerModel(defaults: defaults())
+        m.drill = .long
+        #expect(!m.sketch(for: .full).contains(.cueAfterContactLine))
+        m.drill = .positionPlay
+        #expect(m.sketch(for: .full).contains(.cueAfterContactLine))
+    }
+
     @Test func everyDrillHasAShortNameAndSymbol() {
         for d in DrillID.allCases {
             let n = TrainingPickerModel.name(d)

@@ -31,6 +31,24 @@ enum LobbyWire {
         return try JSONDecoder().decode(Message.self, from: d)
     }
 
+    /// Host-side: trim our own data to the receivers' limits so a long roster name can't strand a joiner.
+    static func sanitized(_ m: Message) -> Message {
+        func cut(_ p: ShellPlayer) -> ShellPlayer {
+            var q = p
+            q.name = String(p.name.prefix(maxNameLength))
+            q.symbol = String(p.symbol.prefix(64))
+            q.colorName = String(p.colorName.prefix(32))
+            return q
+        }
+        switch m {
+        case .hello(let n): return .hello(name: String(n.prefix(maxNameLength)))
+        case .lineup(var l): l.seats = l.seats.map { $0.map { $0.map(cut) } }; return .lineup(l)
+        case .start(var c, let tag): c.teams = c.teams.map { $0.map(cut) }; return .start(c, sessionTag: tag)
+        case .phones(let p): return .phones(Array(p.prefix(maxJoiners)))
+        case .welcome, .full: return m
+        }
+    }
+
     /// Peer-supplied content stays inside the app's limits: two teams, 1–4 players each, short names (SPEC §4).
     static func isAcceptable(_ m: Message) -> Bool {
         func ok(_ p: ShellPlayer?) -> Bool { p.map { $0.name.count <= maxNameLength && $0.symbol.count <= 64 && $0.colorName.count <= 32 } ?? true }
@@ -203,7 +221,9 @@ enum LobbyWire {
     }
 
     private func send(_ m: LobbyWire.Message, to keys: [String]) {
-        guard let session, let data = try? LobbyWire.encode(m) else { return }
+        let m = LobbyWire.sanitized(m)
+        guard LobbyWire.isAcceptable(m), let session, let data = try? LobbyWire.encode(m),
+              data.count <= LobbyWire.maxMessageBytes else { return }
         let targets = session.connectedPeers.filter { keys.contains($0.displayName) }
         guard !targets.isEmpty else { return }
         try? session.send(data, toPeers: targets, with: .reliable)

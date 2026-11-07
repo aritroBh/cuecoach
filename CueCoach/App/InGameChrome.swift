@@ -168,7 +168,7 @@ struct OrderEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(0..<game.teams.count, id: \.self) { t in
-                HStack(spacing: 12) {
+                HStack(spacing: 20) {
                     TeamRing(team: t, size: 16)
                     ForEach(Array(game.teams[t].enumerated()), id: \.element.id) { i, p in
                         let isPicked = picked.map { $0.team == t && $0.slot == i } ?? false
@@ -181,7 +181,7 @@ struct OrderEditor: View {
                             }
                         } label: {
                             SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 44, team: t)
-                                .overlay(Circle().stroke(SBColor.ink, lineWidth: isPicked ? 3 : 0).padding(-8))
+                                .overlay(Circle().stroke(SBColor.ink, lineWidth: isPicked ? 3 : 0).padding(-6))
                                 .frame(width: 56, height: 56)
                                 .contentShape(Circle())
                         }

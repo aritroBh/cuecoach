@@ -34,21 +34,20 @@ public struct LobbyView: View {
                 }
                 .padding(.horizontal, 24)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 32) {
-                        header; peersRow; teamsBlock; rulesBlock; tableBlock
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
-                }
-                // ui-QA-5: content scrolls under the bar and fades instead of being sliced.
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    startBar.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 8)
-                        .background(alignment: .top) {
-                            LinearGradient(colors: [SBColor.bg.opacity(0), SBColor.bg], startPoint: .top, endPoint: .bottom)
-                                .frame(height: 32).offset(y: -32).allowsHitTesting(false)
+                VStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 32) {
+                            header; peersRow; teamsBlock; rulesBlock; tableBlock
                         }
-                        .background(SBColor.bg)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 40)
+                    }
+                    // ui-QA-5: content fades into the bar instead of being sliced at its edge.
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(colors: [SBColor.bg.opacity(0), SBColor.bg], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 32).allowsHitTesting(false)
+                    }
+                    startBar.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 8)
                 }
             }
         }

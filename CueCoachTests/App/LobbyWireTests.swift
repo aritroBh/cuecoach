@@ -57,6 +57,16 @@ import Rules
         #expect(LobbyWire.isAcceptable(.lineup(LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[sam, nil], [nil, kim]]))))
     }
 
+    @Test func outboundMessagesAreSanitizedToTheReceiversLimits() {
+        let long = ShellPlayer(id: UUID(), name: String(repeating: "x", count: 200), symbol: "s", colorName: "c")
+        let start = LobbyWire.Message.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[long], [sam]]), sessionTag: 3)
+        #expect(!LobbyWire.isAcceptable(start))
+        #expect(LobbyWire.isAcceptable(LobbyWire.sanitized(start)))
+        let lineup = LobbyWire.Message.lineup(LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[long], [nil]]))
+        #expect(LobbyWire.isAcceptable(LobbyWire.sanitized(lineup)))
+        #expect(LobbyWire.sanitized(.hello(name: String(repeating: "y", count: 99))) == .hello(name: String(repeating: "y", count: 64)))
+    }
+
     @Test func bigPayloadsAreDroppedBeforeDecoding() {
         #expect((try? LobbyWire.decode(Data(repeating: 0x20, count: LobbyWire.maxMessageBytes + 1))) == nil)
     }
