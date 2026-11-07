@@ -29,6 +29,8 @@ public enum Foul: Hashable, Codable, Sendable {
     case objectBallOffTable(BallID)
     case illegalBreak
     case badCueBallPlacement
+    /// WPA 3.11: cue ball in hand above the head string, first contact also above it without crossing first.
+    case badPlayFromAboveHeadString
 }
 
 public enum BallInHand: String, Codable, Sendable {
