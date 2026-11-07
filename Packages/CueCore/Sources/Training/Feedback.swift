@@ -82,7 +82,13 @@ public struct FeedbackCoach: Sendable {
     public private(set) var detector: BiasDetector
     public private(set) var current: Feedback?
 
-    public init(drill: DrillID, config: BiasDetector.Config = .standard) {
+    /// Errors in each axis' real unit (`BiasAxis`); dead zones per axis.
+    public init(drill: DrillID, configs: [BiasAxis: BiasDetector.Config] = BiasDetector.Config.calibrated) {
+        self.drill = drill
+        self.detector = BiasDetector(configs: configs)
+    }
+    /// Errors already normalised to one common unit for every axis.
+    public init(drill: DrillID, config: BiasDetector.Config) {
         self.drill = drill
         self.detector = BiasDetector(config: config)
     }
@@ -108,6 +114,6 @@ public struct FeedbackCoach: Sendable {
 
     private func feedback(_ b: DetectedBias) -> Feedback {
         Feedback(bias: b.key, correction: Correction(for: b.key),
-                 strength: BiasStrength(meanError: b.meanError, deadZone: detector.config.deadZone))
+                 strength: BiasStrength(meanError: b.meanError, deadZone: detector.config(for: b.key.axis).deadZone))
     }
 }

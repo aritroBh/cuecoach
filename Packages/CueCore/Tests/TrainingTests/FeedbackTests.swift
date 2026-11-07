@@ -121,7 +121,7 @@ struct FeedbackCoachTests {
         for drill in DrillID.allCases {
             for s in 0..<300 {
                 var rng = SplitMix64(seed: UInt64(s) &+ 77_000)
-                var c = FeedbackCoach(drill: drill); sessions += 1
+                var c = FeedbackCoach(drill: drill, config: .standard); sessions += 1   // σ-unit noise
                 var any = false
                 for _ in 0..<50 {
                     var obs: [BiasAxis: Double] = [:]

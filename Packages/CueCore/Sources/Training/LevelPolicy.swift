@@ -44,6 +44,20 @@ public struct LevelPolicy: Equatable, Sendable, Codable {
         self.window = window; self.promoteAt = promoteAt; self.demoteAt = demoteAt
     }
 
+    private enum CodingKeys: String, CodingKey { case window, promoteAt, demoteAt }
+
+    /// Decoding validates like `init` (stored data can't remove the hysteresis).
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            try self.init(window: c.decode(Int.self, forKey: .window),
+                          promoteAt: c.decode(Double.self, forKey: .promoteAt),
+                          demoteAt: c.decode(Double.self, forKey: .demoteAt))
+        } catch let e as LevelPolicyError {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "\(e)"))
+        }
+    }
+
     /// Records one attempt; returns the level change it caused, if any.
     public func record(success: Bool, into p: inout LevelProgress) -> LevelChange? {
         p.append(success, window: window)
