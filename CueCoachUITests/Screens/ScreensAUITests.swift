@@ -196,6 +196,31 @@ final class ScreensAUITests: XCTestCase {
         shot(app, "profile-error-training")
     }
 
+    /// C10: Retry must actually reload once the store recovers.
+    @MainActor func testRetryLoadsProfileOnceStoreRecovers() {
+        let app = launch("profile", fixture: "errorOnce")
+        XCTAssertTrue(app.staticTexts["Couldn't load stats."].waitForExistence(timeout: 5))
+        app.buttons["profile.retry"].tap()
+        XCTAssertTrue(app.staticTexts["Sam"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Couldn't load stats."].exists)
+        XCTAssertFalse(app.buttons["profile.retry"].exists)
+    }
+
+    /// C8: the comparison sheet draws the player over the pro and gives VoiceOver both shapes.
+    @MainActor func testProComparisonShowsBothShapes() {
+        let app = launch("profile", fixture: "veteran")
+        let card = app.descendants(matching: .any)["profile.procomp"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.tap()
+        let radar = app.descendants(matching: .any)["profile.procomp.radar"]
+        XCTAssertTrue(radar.waitForExistence(timeout: 5))
+        XCTAssertEqual(radar.label, "Archetype shape compared with Efren Reyes")
+        let value = radar.value as? String ?? ""
+        XCTAssertTrue(value.hasPrefix("Sam: "), value)
+        XCTAssertTrue(value.contains("Efren Reyes: "), value)
+        shot(app, "profile-procomp-detail")
+    }
+
     @MainActor func testBadgeSheet() {
         let app = launch("profile", fixture: "veteran")
         app.swipeUp()
@@ -232,6 +257,7 @@ final class ScreensAUITests: XCTestCase {
             ("profile", "newPlayer", "history", "profile-history-empty"),
             ("profile", "newPlayer", "training", "profile-training-empty"),
             ("profile", "error", nil, "profile-error"),
+            ("profile", "errorOnce", nil, "profile-error-once"),
             ("profile", "guest", "stats", "profile-guest"),
         ]
         for mode in Mode.allCases {

@@ -48,10 +48,14 @@ struct Boom: Error {}
         return d
     }
 
+    func freshExportDir() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "cc-tests-export-\(UUID().uuidString)")
+    }
+
     func model(store: FakeSettingsStore = .init(), measured: TableSize? = nil,
-               defaults: UserDefaults? = nil) -> SettingsViewModel {
+               defaults: UserDefaults? = nil, exportDirectory: URL? = nil) -> SettingsViewModel {
         SettingsViewModel(store: store, measurement: FixedMeasurement(measured: measured),
-                          defaults: defaults ?? freshDefaults())
+                          defaults: defaults ?? freshDefaults(), exportDirectory: exportDirectory ?? freshExportDir())
     }
 
     // MARK: defaults
@@ -228,6 +232,55 @@ struct Boom: Error {}
         #expect(m.exportState == .idle)
     }
 
+    // MARK: export copies (C4)
+
+    @Test func exportsLiveInTheOneExportDirectory() async throws {
+        let dir = freshExportDir()
+        let m = model(exportDirectory: dir)
+        let url = try #require(await m.export(now: .now))
+        #expect(url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL)
+    }
+
+    @Test func deletingRecognitionRemovesExportedCopies() async throws {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let dir = freshExportDir()
+        let m = model(store: store, exportDirectory: dir)
+        m.includeFaceInExport = true
+        let url = try #require(await m.export(now: .now))
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        await m.confirmDelete()
+        #expect(m.deleteState == .deleted)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    @Test func finishingShareRemovesExport() async throws {
+        let dir = freshExportDir()
+        let m = model(exportDirectory: dir)
+        let url = try #require(await m.export(now: .now))
+        m.shareFinished()
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func newExportReplacesTheOldCopy() async throws {
+        let dir = freshExportDir()
+        let m = model(exportDirectory: dir)
+        let fmt = ISO8601DateFormatter()
+        let first = try #require(await m.export(now: fmt.date(from: "2026-11-05T12:00:00Z")!))
+        let second = try #require(await m.export(now: fmt.date(from: "2026-11-06T12:00:00Z")!))
+        #expect(!FileManager.default.fileExists(atPath: first.path))
+        #expect(FileManager.default.fileExists(atPath: second.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["CueCoach-2026-11-06.json"])
+    }
+
+    @Test func staleExportsAreSweptOnLaunch() throws {
+        let dir = freshExportDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: dir.appending(path: "CueCoach-2026-01-01.json"))
+        _ = model(exportDirectory: dir)
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+
     @Test func faceToggleIgnoredWhenNoRecognitionData() async {
         let store = FakeSettingsStore(hasRecognitionData: false)
         let m = model(store: store)
@@ -340,6 +393,14 @@ struct Boom: Error {}
         #expect(store.hasRecognitionData)
         try store.deleteMyRecognitionData()
         #expect(!store.hasRecognitionData)
+    }
+
+    /// C3: a failed fetch must not claim "Nothing stored" and lock the delete button.
+    @Test func recognitionProbeFailsSafeWhenFetchThrows() {
+        #expect(PersistenceSettingsStore.recognitionPresent { throw Boom() } == true)
+        #expect(PersistenceSettingsStore.recognitionPresent { [false, true] } == true)
+        #expect(PersistenceSettingsStore.recognitionPresent { [false] } == false)
+        #expect(PersistenceSettingsStore.recognitionPresent { [] } == false)
     }
 
     @Test func exportImportRoundTrip() throws {

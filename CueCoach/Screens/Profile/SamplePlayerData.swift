@@ -1,21 +1,24 @@
 import Foundation
 import Rules
+import Synchronization
 
-/// In-memory fixtures for previews, tests and the debug router: `.newPlayer`, `.preUnlock`, `.veteran`, `.error`.
+/// In-memory fixtures for previews, tests and the debug router: `.newPlayer`, `.preUnlock`, `.veteran`, `.error`,
+/// `.errorOnce` (fails the first load, then recovers). Each access builds a fresh fixture, so edits made through
+/// one (rename) never leak into another.
 struct SamplePlayerData: Sendable {
     let playerID: UUID
     let stats: SampleStatsSource
     let training: SampleTrainingSource
 
-    static let newPlayer: SamplePlayerData = {
+    static var newPlayer: SamplePlayerData {
         let id = UUID()
         return .init(playerID: id,
                      stats: .init(summary: .init(id: id, name: "Riley", avatarSymbol: "person.fill",
                                                  avatarColor: "#A78BFA", games: 0, wins: 0, shots: 0, makes: 0)),
                      training: .init(drills: [], bias: nil))
-    }()
+    }
 
-    static let preUnlock: SamplePlayerData = {
+    static var preUnlock: SamplePlayerData {
         let id = UUID()
         return .init(playerID: id,
                      stats: .init(summary: .init(id: id, name: "Jo", avatarSymbol: "star.fill",
@@ -26,9 +29,9 @@ struct SamplePlayerData: Sendable {
                                   pro: .init(proName: "Earl Strickland", similarity: 0.6, sharedTraits: ["break"]),
                                   history: Array(sessions.prefix(1))),
                      training: .init(drills: [.init(drill: "straightIn", name: "Straight-ins", level: 2)], bias: nil))
-    }()
+    }
 
-    static let veteran: SamplePlayerData = {
+    static var veteran: SamplePlayerData {
         let id = UUID()
         return .init(playerID: id,
                      stats: .init(summary: .init(id: id, name: "Sam", avatarSymbol: "person.fill",
@@ -43,22 +46,31 @@ struct SamplePlayerData: Sendable {
                                                               "runout": 0.4]),
                                   grid: grid(scale: 1, attempts: 40),
                                   badges: badges,
-                                  pro: .init(proName: "Efren Reyes", similarity: 0.78, sharedTraits: ["cut", "bank"]),
+                                  pro: .init(proName: "Efren Reyes", similarity: 0.78, sharedTraits: ["cut", "bank"],
+                                             proVector: ["cut": 0.95, "long": 0.6, "bank": 0.97, "side": 0.7,
+                                                         "clutch": 0.9, "safety": 0.85, "break": 0.55,
+                                                         "runout": 0.8]),
                                   history: sessions),
                      training: .init(drills: [.init(drill: "straightIn", name: "Straight-ins", level: 3),
                                               .init(drill: "cuts", name: "Cuts", level: 2),
                                               .init(drill: "banks", name: "Banks", level: 1)],
                                      bias: .init(axis: .cut, sign: 1)))
-    }()
+    }
 
-    static let error: SamplePlayerData = {
+    static var error: SamplePlayerData {
         let id = UUID()
         return .init(playerID: id,
                      stats: .init(summary: .init(id: id, name: "?", avatarSymbol: "person", avatarColor: "#888888",
-                                                 games: 0, wins: 0, shots: 0, makes: 0), fails: true),
+                                                 games: 0, wins: 0, shots: 0, makes: 0), failures: .max),
                      // Training is a separate store: it still loads when competitive stats fail.
                      training: .init(drills: [.init(drill: "straightIn", name: "Straight-ins", level: 2)], bias: nil))
-    }()
+    }
+
+    /// The veteran, behind a store that is unreadable for the first load only (exercises Retry).
+    static var errorOnce: SamplePlayerData {
+        let v = veteran
+        return .init(playerID: v.playerID, stats: v.stats.failing(firstLoads: 1), training: v.training)
+    }
 
     static func named(_ name: String) -> SamplePlayerData? {
         switch name {
@@ -66,6 +78,7 @@ struct SamplePlayerData: Sendable {
         case "preUnlock": .preUnlock
         case "veteran": .veteran
         case "error": .error
+        case "errorOnce": .errorOnce
         default: nil
         }
     }
@@ -120,23 +133,72 @@ struct SamplePlayerData: Sendable {
     ]
 }
 
+/// In-memory stats source. The summary lives in a shared box so `updateProfile` is visible to later loads,
+/// like the real `PlayerProfile` row.
 struct SampleStatsSource: ProfileStatsSource {
     struct Unreadable: Error {}
-    var summary: ProfileSummary
+    final class State: Sendable {
+        let summary: Mutex<ProfileSummary>
+        /// Loads still to fail. Only `profile(_:)` consumes it: one throw fails the whole load.
+        let failuresLeft: Mutex<Int>
+        init(_ summary: ProfileSummary, failures: Int) {
+            self.summary = Mutex(summary)
+            failuresLeft = Mutex(failures)
+        }
+    }
+
+    let state: State
     var archetype: ArchetypeView?
     var grid: [HeatCell] = []
     var badges: [EarnedBadge] = []
     var pro: ProCompView?
     var history: [SessionSummary] = []
-    var fails = false
+    var failsWrites = false
 
-    private func check() throws { if fails { throw Unreadable() } }
-    func profile(_ id: UUID) async throws -> ProfileSummary { try check(); return summary }
-    func archetype(_ id: UUID) async throws -> ArchetypeView? { try check(); return archetype }
-    func makeGrid(_ id: UUID) async throws -> [HeatCell] { try check(); return grid }
-    func badges(_ id: UUID) async throws -> [EarnedBadge] { try check(); return badges }
-    func proComp(_ id: UUID) async throws -> ProCompView? { try check(); return pro }
-    func history(_ id: UUID) async throws -> [SessionSummary] { try check(); return history }
+    init(summary: ProfileSummary, archetype: ArchetypeView? = nil, grid: [HeatCell] = [], badges: [EarnedBadge] = [],
+         pro: ProCompView? = nil, history: [SessionSummary] = [], failures: Int = 0) {
+        state = State(summary, failures: failures)
+        self.archetype = archetype
+        self.grid = grid
+        self.badges = badges
+        self.pro = pro
+        self.history = history
+    }
+
+    /// Same data in its own store, unreadable for the first `firstLoads` loads.
+    func failing(firstLoads: Int) -> SampleStatsSource {
+        SampleStatsSource(summary: state.summary.withLock { $0 }, archetype: archetype, grid: grid, badges: badges,
+                          pro: pro, history: history, failures: firstLoads)
+    }
+
+    /// Same data, but every profile write throws.
+    func failingWrites() -> SampleStatsSource {
+        var copy = self
+        copy.failsWrites = true
+        return copy
+    }
+
+    func profile(_ id: UUID) async throws -> ProfileSummary {
+        let fail = state.failuresLeft.withLock { n in
+            guard n > 0 else { return false }
+            if n != .max { n -= 1 }
+            return true
+        }
+        if fail { throw Unreadable() }
+        return state.summary.withLock { $0 }
+    }
+    func archetype(_ id: UUID) async throws -> ArchetypeView? { archetype }
+    func makeGrid(_ id: UUID) async throws -> [HeatCell] { grid }
+    func badges(_ id: UUID) async throws -> [EarnedBadge] { badges }
+    func proComp(_ id: UUID) async throws -> ProCompView? { pro }
+    func history(_ id: UUID) async throws -> [SessionSummary] { history }
+    func updateProfile(_ id: UUID, name: String, avatarSymbol: String) async throws {
+        if failsWrites { throw Unreadable() }
+        state.summary.withLock { s in
+            s.name = name
+            s.avatarSymbol = avatarSymbol
+        }
+    }
 }
 
 struct SampleTrainingSource: TrainingProfileSource {

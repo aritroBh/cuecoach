@@ -54,7 +54,7 @@ public struct SettingsView: View {
         } message: {
             Text(model.importAlert?.message ?? "")
         }
-        .sheet(item: $shareURL) { item in
+        .sheet(item: $shareURL, onDismiss: { model.shareFinished() }) { item in
             SAShareSheet(url: item.url).presentationDetents([.medium, .large])
         }
         .animation(motion.snappy, value: model.showsThreeBallToggle)

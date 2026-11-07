@@ -52,6 +52,9 @@ public final class SettingsViewModel {
     @ObservationIgnored private let store: SettingsStore
     @ObservationIgnored private let measurement: TableMeasurementSource
     @ObservationIgnored private let defaults: UserDefaults
+    /// The one place export copies live. Emptied after sharing, before the next export, on launch, and when
+    /// recognition data is deleted, so no stray copy of face data outlives "Delete" (SPEC §2).
+    @ObservationIgnored private let exportDirectory: URL
     /// Identity owns the opt-in flow; Settings only reports that the user turned it on.
     @ObservationIgnored var onOptIn: (() -> Void)?
 
@@ -75,11 +78,15 @@ public final class SettingsViewModel {
         didSet { defaults.set(manualTable?.rawValue, forKey: SettingsKeys.tableSize) }
     }
 
+    public nonisolated static let defaultExportDirectory = FileManager.default.temporaryDirectory.appending(path: "cc-export")
+
     public init(store: SettingsStore, measurement: TableMeasurementSource = NoTableMeasurement(),
-                defaults: UserDefaults = .standard) {
+                defaults: UserDefaults = .standard, exportDirectory: URL = SettingsViewModel.defaultExportDirectory) {
         self.store = store
         self.measurement = measurement
         self.defaults = defaults
+        self.exportDirectory = exportDirectory
+        Self.removeExports(at: exportDirectory)   // a copy left by a share that never finished
         hasRecognitionData = store.hasRecognitionData
         recognitionOptIn = defaults.bool(forKey: SettingsKeys.recognitionOptIn)
         ruleSet = defaults.string(forKey: SettingsKeys.ruleSet).flatMap(RuleSetID.init(rawValue:)) ?? .default
@@ -148,6 +155,7 @@ public final class SettingsViewModel {
         await Task.yield()
         do {
             try store.deleteMyRecognitionData()
+            Self.removeExports(at: exportDirectory)
             hasRecognitionData = store.hasRecognitionData
             recognitionOptIn = false
             includeFaceInExport = false
@@ -179,8 +187,9 @@ public final class SettingsViewModel {
         do {
             let data = try store.exportBackup(includeRecognition: includeFaceInExport && hasRecognitionData)
             let name = Self.backupFilename(now)
+            let dir = exportDirectory
             let url = try await Task.detached(priority: .userInitiated) {
-                let dir = FileManager.default.temporaryDirectory.appending(path: "cc-export-\(UUID().uuidString)")
+                Self.removeExports(at: dir)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 let url = dir.appending(path: name)
                 try data.write(to: url, options: .atomic)
@@ -192,6 +201,13 @@ public final class SettingsViewModel {
             exportState = .failed
             return nil
         }
+    }
+
+    /// The share sheet closed (shared or cancelled): the temp copy is no longer needed.
+    func shareFinished() { Self.removeExports(at: exportDirectory) }
+
+    nonisolated static func removeExports(at dir: URL) {
+        try? FileManager.default.removeItem(at: dir)
     }
 
     /// Called only once the picker returns a URL. Opening the picker never changes state, because a
@@ -234,9 +250,13 @@ final class PersistenceSettingsStore: SettingsStore {
     init(stack: PersistenceStack) { self.stack = stack }
 
     var hasRecognitionData: Bool {
-        let owners = (try? stack.competitiveContext.fetch(
-            SAFetch.localOwners())) ?? []
-        return owners.contains { $0.recognition != nil }
+        Self.recognitionPresent { try stack.competitiveContext.fetch(SAFetch.localOwners()).map { $0.recognition != nil } }
+    }
+
+    /// Fails safe: if the store can't be read, assume data may exist so Delete stays available.
+    nonisolated static func recognitionPresent(_ ownersHaveRecognition: () throws -> [Bool]) -> Bool {
+        guard let flags = try? ownersHaveRecognition() else { return true }
+        return flags.contains(true)
     }
     func deleteMyRecognitionData() throws { try stack.deleteMyRecognitionData() }
     func exportBackup(includeRecognition: Bool) throws -> Data {

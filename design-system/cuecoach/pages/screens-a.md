@@ -280,15 +280,21 @@ protocol ProfileStatsSource {               // Stats agent implements later; com
     func archetype(_ id: UUID) async throws -> ArchetypeView?        // vector, tags, snapshots, unlocked flag
     func makeGrid(_ id: UUID) async throws -> [HeatCell]             // cut × distance, attempts, makes
     func badges(_ id: UUID) async throws -> [EarnedBadge]            // earned only
-    func proComp(_ id: UUID) async throws -> ProCompView?            // nil until unlock
+    func proComp(_ id: UUID) async throws -> ProCompView?            // nil until unlock; carries the pro's
+                                                                     // `proVector` (same axes, unsourced keys absent)
     func history(_ id: UUID) async throws -> [SessionSummary]
+    func updateProfile(_ id: UUID, name: String, avatarSymbol: String) async throws  // owner edit (⋯ menu)
 }
 protocol TrainingProfileSource {            // Training store only, never joined with the above
     func drills(_ playerID: UUID) async throws -> [DrillLevel]
     func activeBias(_ playerID: UUID) async throws -> BiasHint?
 }
 ```
-`SamplePlayerData` provides 4 fixtures for previews and tests: `.newPlayer`, `.preUnlock`, `.veteran`, and `.error`.
+`SamplePlayerData` provides 5 fixtures for previews and tests: `.newPlayer`, `.preUnlock`, `.veteran`, `.error`, and
+`.errorOnce` (fails the first load, then recovers, for Retry).
+
+A session's result is won / lost / **tied** (equal games won and lost; shown as `equal.circle` in `inkMuted`).
+A Training store read failure shows "Couldn't load drills." + Retry, never the "No drills yet" empty state.
 
 ---
 
