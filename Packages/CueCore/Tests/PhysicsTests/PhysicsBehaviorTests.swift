@@ -285,3 +285,31 @@ private func rackBreakState() -> TableState {
     #expect(truncated)
     #expect(trace.final.balls[.cue]!.velocity.length > 0)
 }
+
+// Pocket labels must agree with Geometry.TableSpec.pocketCenter (head end at x = 0).
+@Test(arguments: Pocket.allCases)
+func pocketEventLabelMatchesGeometry(pocket: Pocket) {
+    let spec = TableSpec(size: .sevenFoot)
+    let target = spec.pocketCenter(pocket)
+    let center = Vec2(spec.length / 2, spec.width / 2)
+    let direction = (target - center).normalized
+    let start = target - direction * 0.25
+    let initial = TableState(spec: spec, balls: [.cue: BallState(position: start)])
+    let trace = Simulator().simulate(initial, stroke: Stroke(direction: direction, speed: 1.5))
+    let pocketed = trace.events.compactMap { e -> Pocket? in
+        if case let .pocket(_, p) = e.event { return p } else { return nil }
+    }
+    #expect(pocketed == [pocket])
+}
+
+@Test func railLabelsMatchGeometryEnds() {
+    let spec = TableSpec(size: .sevenFoot)
+    func firstRail(_ dir: Vec2) -> Rail? {
+        let s = TableState(spec: spec, balls: [.cue: BallState(position: Vec2(spec.length / 2 + 0.2, spec.width / 2))])
+        return Simulator().simulate(s, stroke: Stroke(direction: dir, speed: 1)).events.compactMap { e -> Rail? in
+            if case let .cushion(_, r) = e.event { return r } else { return nil }
+        }.first
+    }
+    #expect(firstRail(Vec2(-1, 0)) == .head)
+    #expect(firstRail(Vec2(1, 0)) == .foot)
+}
