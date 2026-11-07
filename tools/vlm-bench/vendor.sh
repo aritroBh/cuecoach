@@ -93,3 +93,4 @@ let package = Package(
 SWIFT
 echo "vendored into $V"
 python3 "$here/vendor-patches/patch_mlx.py" "$V/mlx-swift"
+python3 "$here/vendor-patches/patch_mlx_lm.py" "$V/mlx-swift-lm"
