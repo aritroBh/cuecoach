@@ -30,10 +30,13 @@ public struct CompetitiveShot: Hashable, Codable, Sendable, Identifiable {
     public var wpaDelta: Double
     public var isClutch: Bool
     public var timeOnShot: Double
+    /// Engine `DecisionRating.rawValue` (e.g. "brilliant", "blunder") from the app's stored `Shot` row.
+    /// Stats does not depend on Engine, so the app passes the raw value; `nil` = not rated.
+    public var decisionRating: String?
 
     public init(id: UUID = UUID(), shooterID: UUID, team: Int, isBreak: Bool, features: ShotFeatures,
                 made: Bool, onTarget: Bool, cueResult: CueResult, fouls: [Foul], objectBallsPocketed: Int,
-                wpaDelta: Double, isClutch: Bool, timeOnShot: Double) {
+                wpaDelta: Double, isClutch: Bool, timeOnShot: Double, decisionRating: String? = nil) {
         self.id = id
         self.shooterID = shooterID
         self.team = team
@@ -47,6 +50,7 @@ public struct CompetitiveShot: Hashable, Codable, Sendable, Identifiable {
         self.wpaDelta = wpaDelta
         self.isClutch = isClutch
         self.timeOnShot = timeOnShot
+        self.decisionRating = decisionRating
     }
 
     public var isSafety: Bool { features.kind == .safety }

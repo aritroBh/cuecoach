@@ -279,3 +279,28 @@ struct CareerTests {
         #expect(CueResult.allCases.map(\.rawValue) == ["inZone", "outOfZone", "notApplicable"])
     }
 }
+
+@Suite("Aggregates — decision ratings (SPEC §6 per-shot ratings, supplied by the app from Engine)")
+struct DecisionRatingAggregateTests {
+    private func rated(_ who: UUID, team: Int, _ r: String?) -> CompetitiveShot {
+        var s = cshot(who, team: team, made: true); s.decisionRating = r; return s
+    }
+
+    @Test func countsRatingsPerPlayerAndCareer() {
+        let g1 = cgame([rated(alice, team: 0, "blunder"), rated(bob, team: 1, "great"),
+                        rated(alice, team: 0, "great"), rated(alice, team: 0, nil)])
+        let g2 = cgame([rated(alice, team: 0, "blunder")])
+        #expect(Aggregates.game(g1, player: alice).decisionRatings == ["blunder": 1, "great": 1])
+        #expect(Aggregates.game(g1, player: bob).decisionRatings == ["great": 1])
+        #expect(Aggregates.career([g1, g2], player: alice).decisionRatings == ["blunder": 2, "great": 1])
+    }
+
+    @Test func ratingDefaultsToNilAndDecodesOldRows() throws {
+        let s = cshot(alice, team: 0)
+        #expect(s.decisionRating == nil)
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(s)) as! [String: Any]
+        json.removeValue(forKey: "decisionRating")
+        let back = try JSONDecoder().decode(CompetitiveShot.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(back == s)
+    }
+}

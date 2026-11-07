@@ -78,6 +78,8 @@ public struct Aggregates: Hashable, Codable, Sendable {
     public var clutch = Rate()
     public var totalTimeOnShot = 0.0
     public var timedShots = 0
+    /// Count of each Engine decision rating (raw value) on this player's shots (e.g. Brilliant / Blunder count).
+    public var decisionRatings: [String: Int] = [:]
 
     public init() {}
 
@@ -96,6 +98,7 @@ public struct Aggregates: Hashable, Codable, Sendable {
         for (i, s) in g.shots.enumerated() where s.shooterID == player {
             a.shots += 1
             a.totalWPA += s.wpaDelta
+            if let r = s.decisionRating { a.decisionRatings[r, default: 0] += 1 }
             if s.timeOnShot.isFinite, s.timeOnShot >= 0 { a.totalTimeOnShot += s.timeOnShot; a.timedShots += 1 }
             if s.fouled { a.fouls += 1 }
             switch s.cueResult {
@@ -185,6 +188,7 @@ public struct Aggregates: Hashable, Codable, Sendable {
         r.clutch = a.clutch + b.clutch
         r.totalTimeOnShot = a.totalTimeOnShot + b.totalTimeOnShot
         r.timedShots = a.timedShots + b.timedShots
+        r.decisionRatings = a.decisionRatings.merging(b.decisionRatings, uniquingKeysWith: +)
         return r
     }
 }
