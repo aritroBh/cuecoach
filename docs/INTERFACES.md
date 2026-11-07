@@ -44,14 +44,39 @@ public struct RulesEngine { init(ruleSet: RuleSetID, teams: Int)
 public enum Vote { static func winner(_ ballots: [RuleSetID]) -> RuleSetID }        // tie/no vote → .barEight
 ```
 
-## Engine (Phase 2 — stub only now)
+## Engine (Phase 2)
 ```swift
-public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [Candidate]
-                          func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel) async -> Evaluation
-                          func winProbability(_ s: TableState, _ g: GameState) -> Double
-                          func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation) -> (DecisionRating, ExecutionRating) }
+public actor ShotEngine { init(seed: UInt64 = 0, simulator: Simulator = Simulator(), budget: EngineBudget = .standard,
+                               defaultSkill: SkillModel = .reference, threeBallRule: Bool = true)
+    nonisolated func candidates(_ s: TableState, _ g: GameState) -> [Candidate]                       // defaultSkill
+    nonisolated func candidates(_ s: TableState, _ g: GameState, skill: SkillModel) -> [Candidate]    // same ids as evaluate(skill:)
+    func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel) async -> Evaluation             // opponent = defaultSkill
+    func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel, opponentSkill: SkillModel,
+                  budget: EngineBudget? = nil) async -> Evaluation
+    nonisolated func winProbability(_ s: TableState, _ g: GameState) -> Double
+    nonisolated func winProbability(_ s: TableState, _ g: GameState, skill: SkillModel, opponentSkill: SkillModel) -> Double
+    func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation,
+              offTable: Set<BallID> = []) -> (DecisionRating, ExecutionRating)
+    func record(chosen: Candidate, outcome: ShotTrace, eval: Evaluation, intentConfidence: Double = 1,
+                offTable: Set<BallID> = [], thresholds: RatingThresholds = .default) -> ShotRatingRecord
+    func ratingInput(chosen: Candidate, outcome: ShotTrace, eval: Evaluation, intentConfidence: Double = 1,
+                     offTable: Set<BallID> = []) -> RatingInput }
+// offTable: balls tracking saw leave the table (the simulator never does); they make the shot a foul.
+// Cancelling the evaluate() task stops the search; the result then has tier == .quick (Quick ranking or empty).
+// A chosen candidate is matched to the evaluation by intent (kind, target, ball, pocket, meter step, tip, placement),
+// not by id, so a candidate from any candidates() list can be rated.
+public struct EngineBudget { topK, safeties, pushOuts, initialSamples (even), rounds, chunk, maxParallel, ratingSamples;
+                             static let standard; var normalized: EngineBudget }   // the engine always uses .normalized
+public struct Candidate { id: UInt32, kind: ShotKind, target: BallID?, objectBall: BallID?, pocket: Pocket?, stroke: Stroke,
+                          meterStep: Int, cuePlacement: Vec2?, ghost: Vec2?; var intendsPot: Bool }
+public enum ShotKind { direct, bank(Rail), kick(Rail), combo(via: BallID), safety, pushOut, breakShot }
+public struct Evaluation { tier (.quick/.full), stateHash, state, game, shooter, skill, opponentSkill, winProbability,
+                           ranked: [CandidateScore], secondBestGap, shooterBestPot, naivePick, paired, stats; best }
+public struct RatingInput / RatingThresholds / ShotRating / ShotRatingRecord
+public enum Ratings { static func rate(_:_:) -> ShotRating; sotgScore; brilliantEligible; selectBrilliant; finalize }
 // DecisionRating (D18): brilliant, great, best, good, okay, book, inaccuracy, miss, mistake, blunder — rules in docs/RATING_CLASSES.md.
 // Brilliant is assigned post-game (max 1/game, must be Shot of the Game); live it shows as Great.
+// SotG baseline P: pots use the reference-skill analytic P(make); defensive shots use the player's own D (RATINGS §10).
 ```
 
 ## Stats (Phase 6 — stubs only now)
