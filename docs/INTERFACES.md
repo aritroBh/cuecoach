@@ -54,8 +54,40 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
 // Brilliant is assigned post-game (max 1/game, must be Shot of the Game); live it shows as Great.
 ```
 
-## Stats / Training (Phase 6 / 8 — stubs only now)
-`ShotFeatures.extract(pre:post:trace:) -> ShotFeatures`, `Aggregates`, `Archetypes`, `ProComp`;
+## Stats (Phase 6 — implemented; depends on Geometry + Rules only)
+```swift
+// Per shot. Stats never imports Physics/Engine: the caller maps Physics `ShotTrace.events` (or tracker output)
+// into TraceEvent — ball–ball contact → .ballBall, ball–cushion → .cushion, drop → .pocket(ball, pocket),
+// cue ball leaves the cloth before first contact → .airborne(.cue).
+enum TraceEvent { case ballBall(BallID, BallID), cushion(BallID), pocket(BallID, Pocket), airborne(BallID) }
+struct ShotTraceSummary { var events: [TraceEvent] }                      // time order
+struct ShotIntent { target: BallID?, pocket: Pocket?, isSafety: Bool, isBank: Bool }   // called / engine-chosen
+static func ShotFeatures.extract(pre: TableState, post: TableState, trace: ShotTraceSummary,
+                                 intent: ShotIntent = .unknown, thresholds: FeatureThresholds = .standard) -> ShotFeatures
+// ShotFeatures { cutBucket, distanceBucket, pocketType, kind }; bank/combo follow the attempt, not the outcome.
+// Pass intent whenever known (engine's chosen candidate in 9-ball): without it a missed bank/combo that also
+// had a direct pot is classified as the direct attempt.
+
+// Competitive inputs (projection of the app's Shot/Game rows; training data has no path in).
+struct CompetitiveShot { shooterID, team, isBreak, features, made, onTarget, cueResult, fouls,
+                         objectBallsPocketed, wpaDelta, isClutch, timeOnShot,
+                         decisionRating: String? }   // Engine DecisionRating.rawValue, supplied by the app
+struct CompetitiveGame { ruleSet, startedAt, teamOf: [UUID: Int], winnerTeam: Int?, shots }
+
+static func Aggregates.game(_:player:policy:) / career(_:player:policy:) / perPlayer(_:policy:) / series(...)
+enum Trend { init(series: [Double?], window:tolerance:) }
+static func Archetypes.isUnlocked(_:policy:) / tags(for:friends:policy:) / snapshot(player:games:friends:at:...)
+struct ArchetypeHistory   // append-only
+static func ProProfiles.decode(_ data: Data) throws -> [ProProfile];  ProProfiles.bundled()
+static func ProComp.similarity(_ v: ArchetypeVector, _ pro: ProProfile) -> Double?   // cosine (SPEC §8), ≥3 shared dims
+static func ProComp.nearest(to:among:) -> ProComp?
+```
+House thresholds **pending user approval** (not in DECISIONS.md yet): `FeatureThresholds` (mid ≥ 0.4 L,
+long ≥ 0.9 L, rail gap R/2), `AggregatePolicy.minRunOutShots = 3`, `ArchetypePolicy` baselines and z = 1.0.
+Open spec question: SPEC §8 "source URL + confidence per trait" vs Phase 6 "sourced or `estimated`" — the
+validator currently accepts estimated traits without a URL.
+
+## Training (Phase 8 — stubs only now)
 `DrillID`, `AssistLevel`, `LevelPolicy`, `BiasDetector`.
 
 ## App-side protocols (later phases; declared now so wiring compiles)
