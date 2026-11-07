@@ -5,6 +5,22 @@ import Testing
 
 @MainActor
 @Suite struct RecognitionPrivacyTests {
+    #if targetEnvironment(simulator)
+    nonisolated static let dataProtection = false     // the simulator has no Data Protection; the attribute never reads back
+    #else
+    nonisolated static let dataProtection = true
+    #endif
+
+    @Test(.enabled(if: RecognitionPrivacyTests.dataProtection, "Data Protection exists only on a real device"))
+    func storeDirectoryIsFileProtected() throws {
+        // CX-5: templates on disk are protected by Data Protection, not just sandboxed.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        _ = try PersistenceStack(directory: dir)
+        let attrs = try FileManager.default.attributesOfItem(atPath: dir.path)
+        #expect(attrs[.protectionKey] as? FileProtectionType == PersistenceStack.storeProtection)
+    }
+
     @Test func deleteMyRecognitionDataRemovesOnlyEmbeddings() throws {
         let stack = try PersistenceStack(inMemory: true)
         let ctx = stack.competitiveContext

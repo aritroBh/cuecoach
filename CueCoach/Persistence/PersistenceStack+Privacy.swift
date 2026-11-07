@@ -1,10 +1,18 @@
 import Foundation
 import SwiftData
 
+/// Bumped by every "delete my recognition data", so an in-flight registration can tell it was overtaken.
+@MainActor
+enum RecognitionDeletionLog {
+    private(set) static var generation = 0
+    static func recordDeletion() { generation &+= 1 }
+}
+
 extension PersistenceStack {
     /// Settings → "Delete my recognition data": removes the local owner's face/appearance embeddings
     /// in one call. The profile, games and stats are untouched.
     func deleteMyRecognitionData() throws {
+        RecognitionDeletionLog.recordDeletion()
         let ctx = competitiveContext
         let owners = try ctx.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
         for owner in owners {

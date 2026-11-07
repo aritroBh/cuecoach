@@ -6,12 +6,12 @@ import Rules
 extension PersistenceStack {
     // MARK: Export
 
-    /// Serialises both stores to `BackupV1` JSON. Recognition embeddings are left out unless
-    /// `includeRecognition` is set. Session guests are never exported. Rows are sorted by id.
-    func exportBackup(includeRecognition: Bool = false, exportedAt: Date = .now) throws -> Data {
-        try BackupV1(exportedAt: exportedAt, includesRecognition: includeRecognition,
-                     competitive: competitiveSection(includeRecognition: includeRecognition),
-                     training: trainingSection()).encoded()
+    /// Serialises both stores to `BackupV1` JSON. Recognition embeddings are never exported (research Q5 /
+    /// mesh-identity.md §10: face and clothing vectors never leave the device in a file). Session guests are never
+    /// exported. Rows are sorted by id.
+    func exportBackup(exportedAt: Date = .now) throws -> Data {
+        try BackupV1(exportedAt: exportedAt, includesRecognition: false,
+                     competitive: competitiveSection(), training: trainingSection()).encoded()
     }
 
     private func all<M: PersistentModel>(_: M.Type, _ ctx: ModelContext) throws -> [M] {
@@ -19,17 +19,13 @@ extension PersistenceStack {
     }
     private func sorted<D>(_ xs: [D], _ id: (D) -> UUID) -> [D] { xs.sorted { id($0).uuidString < id($1).uuidString } }
 
-    private func competitiveSection(includeRecognition: Bool) throws -> BackupV1.Competitive {
+    private func competitiveSection() throws -> BackupV1.Competitive {
         let c = competitiveContext
         var comp = BackupV1.Competitive()
         comp.profiles = sorted(try all(PlayerProfile.self, c).filter { !$0.isSessionGuest }.map {
             .init(id: $0.id, name: $0.name, avatarSymbol: $0.avatarSymbol, avatarColor: $0.avatarColor,
                   isLocalOwner: $0.isLocalOwner, createdAt: $0.createdAt, updatedAt: $0.updatedAt,
-                  skillModel: $0.skillModel,
-                  recognition: includeRecognition ? $0.recognition.map {
-                      .init(id: $0.id, faceEmbedding: $0.faceEmbedding, appearanceEmbedding: $0.appearanceEmbedding,
-                            optedInAt: $0.optedInAt, version: $0.version, updatedAt: $0.updatedAt)
-                  } : nil)
+                  skillModel: $0.skillModel, recognition: nil)
         }, \.id)
         comp.sessions = sorted(try all(Session.self, c).map {
             .init(id: $0.id, startedAt: $0.startedAt, endedAt: $0.endedAt, ruleSet: $0.ruleSet, format: $0.format,
@@ -100,14 +96,15 @@ extension PersistenceStack {
     ///
     /// Device-local fields are never taken from a backup: `isLocalOwner` of existing profiles is kept;
     /// a new profile becomes the local owner only if this phone has none yet (fresh-phone restore).
-    /// Recognition rows are read only when the manifest's `includesRecognition` is true.
+    /// Recognition rows in a backup are ignored, even when a hand-edited file claims `includesRecognition`:
+    /// templates are only ever created by on-device registration with a fresh consent.
     func importBackup(_ data: Data) throws {
         let backup = try BackupV1.decode(data)
         try validateParents(backup)
         let c = competitiveContext, t = trainingContext
         let trainingSnapshot = try trainingSection()
         do {
-            try mergeCompetitive(backup.competitive, includeRecognition: backup.includesRecognition, into: c)
+            try mergeCompetitive(backup.competitive, into: c)
             try mergeTraining(backup.training, into: t)
             try beforeSave?(.training)
             try t.save()
@@ -174,8 +171,7 @@ extension PersistenceStack {
         }
     }
 
-    private func mergeCompetitive(_ b: BackupV1.Competitive, includeRecognition: Bool,
-                                  into ctx: ModelContext) throws {
+    private func mergeCompetitive(_ b: BackupV1.Competitive, into ctx: ModelContext) throws {
         var hasOwner = try ctx.fetchCount(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })) > 0
 
         let profiles = try upsert(b.profiles, ctx, id: \PlayerProfile.id, dtoID: \BackupV1.Profile.id,
@@ -192,25 +188,6 @@ extension PersistenceStack {
                 m.createdAt = d.createdAt; m.skillModel = d.skillModel
                 m.updatedAt = d.updatedAt
             })
-        for d in b.profiles where includeRecognition {
-            guard let r = d.recognition, let profile = profiles[d.id] else { continue }
-            let profileStamp = profile.updatedAt
-            defer { profile.updatedAt = profileStamp }   // linking embeddings isn't a profile edit
-            if let existing = profile.recognition {
-                guard isNewer(r.updatedAt, than: existing.updatedAt) else { continue }
-                if existing.id != r.id { profile.recognition = nil; ctx.delete(existing) }
-            }
-            let row = profile.recognition ?? {
-                let n = RecognitionData(id: r.id, faceEmbedding: nil, appearanceEmbedding: nil,
-                                        optedInAt: r.optedInAt, version: r.version)
-                ctx.insert(n)
-                profile.recognition = n
-                return n
-            }()
-            row.faceEmbedding = r.faceEmbedding; row.appearanceEmbedding = r.appearanceEmbedding
-            row.optedInAt = r.optedInAt; row.version = r.version; row.updatedAt = r.updatedAt
-        }
-
         let sessions = try upsert(b.sessions, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
             make: { Session(id: $0.id, startedAt: $0.startedAt, ruleSet: $0.ruleSet, format: $0.format,
                             tableSize: $0.tableSize) },

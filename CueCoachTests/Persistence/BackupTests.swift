@@ -18,11 +18,11 @@ import Testing
 
     @Test func exportWipeImportRoundTripsBothStores() throws {
         let original = try populated()
-        let backup = try original.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let backup = try original.exportBackup(exportedAt: Fixture.t0)
 
         let fresh = try PersistenceStack(inMemory: true)   // wiped device
         try fresh.importBackup(backup)
-        let again = try fresh.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let again = try fresh.exportBackup(exportedAt: Fixture.t0)
 
         let a = try decode(backup), b = try decode(again)
         #expect(a == b)
@@ -39,14 +39,14 @@ import Testing
     }
 
     @Test func importRestoresRelationships() throws {
-        let backup = try populated().exportBackup(includeRecognition: true)
+        let backup = try populated().exportBackup()
         let fresh = try PersistenceStack(inMemory: true)
         try fresh.importBackup(backup)
         let session = try #require(fresh.competitiveContext.fetch(FetchDescriptor<Session>()).first)
         #expect(session.games.first?.shots.count == 2)
         #expect(session.games.first?.highlights.count == 1)
         let owner = try #require(fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first)
-        #expect(owner.recognition?.faceEmbedding == Data([1, 2, 3]))
+        #expect(owner.recognition == nil)          // recognition data never travels in a backup (CX-4)
         let progress = try #require(fresh.trainingContext.fetch(FetchDescriptor<DrillProgress>()).first)
         #expect(progress.attempts.count == 3)
     }
@@ -72,22 +72,32 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self).contains("\"exportedAt\":\"2023-11-14T22:13:20.123Z\""))
     }
 
-    @Test func recognitionExcludedUnlessRequested() throws {
+    @Test func recognitionIsNeverExported() throws {
+        // CX-4: face and clothing vectors never leave the device inside a backup file.
         let stack = try populated()
-        let without = try stack.exportBackup()
-        let b = try decode(without)
+        let data = try stack.exportBackup()
+        let b = try decode(data)
         #expect(b.includesRecognition == false)
         #expect(b.competitive.profiles.allSatisfy { $0.recognition == nil })
-        #expect(!String(decoding: without, as: UTF8.self).contains("faceEmbedding"))
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(!json.contains("faceEmbedding") && !json.contains("appearanceEmbedding"))
+    }
 
-        let with = try decode(stack.exportBackup(includeRecognition: true))
-        #expect(with.includesRecognition)
-        #expect(with.competitive.profiles.first?.recognition?.faceEmbedding == Data([1, 2, 3]))
+    @Test func handEditedBackupCannotRestoreRecognition() throws {
+        // CX-4: a file that claims to carry embeddings is still never written into the store.
+        var b = try decode(populated().exportBackup())
+        b.includesRecognition = true
+        b.competitive.profiles[0].recognition = .init(id: UUID(), faceEmbedding: Data([9]), appearanceEmbedding: Data([9]),
+                                                     optedInAt: Fixture.t0, version: 1, updatedAt: Fixture.t0)
+        let fresh = try PersistenceStack(inMemory: true)
+        try fresh.importBackup(b.encoded())
+        #expect(try Fixture.count(PlayerProfile.self, fresh.competitiveContext) == 1)
+        #expect(try Fixture.count(RecognitionData.self, fresh.competitiveContext) == 0)
     }
 
     @Test func importingBackupWithoutRecognitionKeepsLocalEmbeddings() throws {
         let stack = try populated()
-        try stack.importBackup(stack.exportBackup(includeRecognition: false))
+        try stack.importBackup(stack.exportBackup())
         #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 1)
     }
 
@@ -119,10 +129,10 @@ import Testing
 
     @Test func reImportIsIdempotent() throws {
         let stack = try populated()
-        let backup = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let backup = try stack.exportBackup(exportedAt: Fixture.t0)
         try stack.importBackup(backup)
         try stack.importBackup(backup)
-        let after = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let after = try stack.exportBackup(exportedAt: Fixture.t0)
         #expect(try decode(after) == decode(backup))
         #expect(try Fixture.count(Shot.self, stack.competitiveContext) == 2)
         #expect(try Fixture.count(TrainingAttempt.self, stack.trainingContext) == 3)
@@ -157,7 +167,7 @@ import Testing
                                                        avatarColor: "red", isSessionGuest: true))
         try source.competitiveContext.save()
         let fresh = try PersistenceStack(inMemory: true)
-        try fresh.importBackup(source.exportBackup(includeRecognition: true))
+        try fresh.importBackup(source.exportBackup())
         let all = try fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
         #expect(all.map(\.id) == [Fixture.ownerID])
         #expect(all.allSatisfy { !$0.isSessionGuest })

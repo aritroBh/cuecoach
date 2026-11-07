@@ -24,11 +24,22 @@ final class PersistenceStack {
     ///   - directory: where `Competitive.store` / `Training.store` live (default: Application Support).
     init(inMemory: Bool = false, directory: URL? = nil) throws {
         let dir = directory ?? URL.applicationSupportDirectory
-        if !inMemory { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+        if !inMemory {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Self.protect(dir)
+        }
         competitiveContainer = try Self.container(name: "Competitive", schema: CompetitiveSchemaV1.self,
                                                   plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: inMemory)
         trainingContainer = try Self.container(name: "Training", schema: TrainingSchemaV1.self,
                                                plan: TrainingMigrationPlan.self, dir: dir, inMemory: inMemory)
+    }
+
+    /// Recognition templates live in `Competitive.store` (and its external-storage blobs): new files in the store
+    /// directory are encrypted while the phone is locked, except a store SQLite already holds open (CX-5).
+    static let storeProtection = FileProtectionType.completeUnlessOpen
+
+    static func protect(_ dir: URL) throws {
+        try FileManager.default.setAttributes([.protectionKey: storeProtection], ofItemAtPath: dir.path)
     }
 
     private static func container(name: String, schema versioned: any VersionedSchema.Type,

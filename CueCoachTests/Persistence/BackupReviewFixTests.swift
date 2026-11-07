@@ -19,7 +19,7 @@ import Testing
 
     /// Backup that changes both stores: newer owner name + one extra attempt.
     private func changingBackup(from stack: PersistenceStack) throws -> Data {
-        var b = try BackupV1.decode(stack.exportBackup(includeRecognition: true))
+        var b = try BackupV1.decode(stack.exportBackup())
         b.competitive.profiles[0].name = "Changed"
         b.competitive.profiles[0].updatedAt = .now.addingTimeInterval(60)
         var extra = b.training.attempts[0]
@@ -32,12 +32,12 @@ import Testing
     @Test(arguments: [PersistenceStack.StoreKind.competitive, .training])
     func failedSaveLeavesBothStoresUnchanged(failing: PersistenceStack.StoreKind) throws {
         let stack = try populated()
-        let before = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let before = try stack.exportBackup(exportedAt: Fixture.t0)
         let backup = try changingBackup(from: stack)
         stack.beforeSave = { if $0 == failing { throw Injected() } }
         #expect(throws: Injected.self) { try stack.importBackup(backup) }
         stack.beforeSave = nil
-        let after = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let after = try stack.exportBackup(exportedAt: Fixture.t0)
         #expect(try BackupV1.decode(after) == BackupV1.decode(before))
         #expect(try Fixture.count(TrainingAttempt.self, stack.trainingContext) == 3)
         let reopened = try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
@@ -71,7 +71,7 @@ import Testing
 
     @Test func localEditsAfterExportSurviveImportOfOlderBackup() throws {
         let stack = try populated()
-        let backup = try stack.exportBackup(includeRecognition: true)
+        let backup = try stack.exportBackup()
         let c = stack.competitiveContext, t = stack.trainingContext
         try #require(c.fetch(FetchDescriptor<Highlight>()).first).label = "Clutch"
         try #require(c.fetch(FetchDescriptor<ArchetypeSnapshot>()).first).tags = ["longGun"]
@@ -143,7 +143,7 @@ import Testing
 
     @Test func freshPhoneRestoreKeepsOwner() throws {
         let fresh = try PersistenceStack(inMemory: true)
-        try fresh.importBackup(populated().exportBackup(includeRecognition: true))
+        try fresh.importBackup(populated().exportBackup())
         let owners = try fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
         #expect(owners.map(\.id) == [Fixture.ownerID])
         try fresh.deleteMyRecognitionData()
@@ -152,7 +152,7 @@ import Testing
 
     // 5. manifest governs recognition
     @Test func recognitionIgnoredWhenManifestSaysExcluded() throws {
-        var b = try BackupV1.decode(populated().exportBackup(includeRecognition: true))
+        var b = try BackupV1.decode(populated().exportBackup())
         b.includesRecognition = false
         let fresh = try PersistenceStack(inMemory: true)
         try fresh.importBackup(b.encoded())

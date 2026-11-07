@@ -125,10 +125,10 @@ import Testing
 
     @Test func importDoesNotRestampProfileWhenLinkingRecognition() throws {
         let original = try populated()
-        let data = try original.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let data = try original.exportBackup(exportedAt: Fixture.t0)
         let fresh = try PersistenceStack(inMemory: true)
         try fresh.importBackup(data)
-        #expect(try BackupV1.decode(fresh.exportBackup(includeRecognition: true, exportedAt: Fixture.t0))
+        #expect(try BackupV1.decode(fresh.exportBackup(exportedAt: Fixture.t0))
                 == BackupV1.decode(data))
     }
 

@@ -45,6 +45,8 @@ enum RegistrationError: Error, Equatable {
     case consentRequired
     case notLocalOwner
     case notEnoughSamples
+    /// "Delete my recognition data" ran while embeddings were being computed: nothing is written.
+    case deletedDuringRegistration
 }
 
 @MainActor
@@ -66,6 +68,8 @@ struct RecognitionRegistrar {
         if c.face, capture.faceImages.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
         if c.clothes, capture.bodyImages.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
 
+        // A delete that lands during the awaits below must win: never write templates back after it.
+        let deletions = RecognitionDeletionLog.generation
         let faces = c.face ? try await embed(capture.faceImages, with: face) : nil
         let bodies = c.clothes ? try await embed(capture.bodyImages, with: body) : nil
         if let faces, faces.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
@@ -74,6 +78,8 @@ struct RecognitionRegistrar {
         // Encode before touching the store, so a codec error leaves nothing dirty.
         let faceData = try faces.map(EmbeddingCodec.encode)
         let bodyData = try bodies.map(EmbeddingCodec.encode)
+        guard deletions == RecognitionDeletionLog.generation else { throw RegistrationError.deletedDuringRegistration }
+        guard owner.isLocalOwner, owner.modelContext != nil else { throw RegistrationError.notLocalOwner }
         let ctx = stack.competitiveContext
         if let old = owner.recognition { owner.recognition = nil; ctx.delete(old) }
         let row = RecognitionData(faceEmbedding: faceData, appearanceEmbedding: bodyData,
@@ -110,9 +116,10 @@ struct IdentityTemplates: Sendable {
 @MainActor
 enum IdentityPrivacy {
     /// Settings → "Delete my recognition data": wipes the stored template, clears this session's RAM copies,
-    /// and calls `onRevoke` per owner so Mesh can send `IdentityRevoke` to peers.
+    /// and calls `onRevoke` per owner so Mesh can send `IdentityRevoke` to peers. `onRevoke` is required: a caller
+    /// with no mesh passes an explicit no-op, so peers holding templates in RAM can't be forgotten by omission.
     static func deleteMyRecognitionData(stack: PersistenceStack, session: IdentitySession?,
-                                        onRevoke: (UUID) -> Void = { _ in }) throws {
+                                        onRevoke: (UUID) -> Void) throws {
         let owners = try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
         let ids = owners.map(\.id)
         try stack.deleteMyRecognitionData()
