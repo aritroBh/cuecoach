@@ -38,6 +38,10 @@ final class SimNetwork {
     private var rng: SeededRNG
     private var lastDelivery: [String: Double] = [:]
     private var cut: Set<String> = []
+    private var extraDelay: [String: Double] = [:]
+
+    /// Make one direction of one link slower (e.g. a host → successor link through a wall).
+    func slowLink(from a: PeerID, to b: PeerID, extra: Double) { extraDelay[key(a, b)] = extra }
     private var nextTick = 0.0
     /// Every delivered message, for property checks: (time, from, to, message, receiver's phase then).
     private(set) var delivered: [(t: Double, from: PeerID, to: PeerID, message: MeshMessage)] = []
@@ -146,7 +150,8 @@ final class SimNetwork {
                     order += 1
                     queue.append(Pending(at: now + d, order: order, from: p, to: to, kind: .data(data)))
                 } else {
-                    schedule(from: p, to: to, kind: .data(data), delay: latency + Double.random(in: 0...jitter, using: &rng))
+                    schedule(from: p, to: to, kind: .data(data),
+                             delay: latency + (extraDelay[key(p, to)] ?? 0) + Double.random(in: 0...jitter, using: &rng))
                 }
             }
         }

@@ -149,6 +149,30 @@ import Rules
         for p in net.aliveIDs { #expect(!net.node(p).roster.contains(old)) }
     }
 
+    /// The successor missed an entry that the other client acked (so it was committed). The new host must
+    /// recover it from the survivors' tails before resuming, not overwrite it.
+    @Test func newHostRecoversCommittedEntryItNeverReceived() {
+        let (net, ids) = Self.mesh(3)
+        let old = net.hosts.first!
+        let statuses = Dictionary(uniqueKeysWithValues: ids.map { ($0, net.node($0).status) })
+        let succ = HostElection.succession(statuses, order: .deviceFirst)[1]
+        net.slowLink(from: old, to: succ, extra: 0.5)
+        net.act(old) { m, t in m.append(Self.shot(1), now: t) }
+        net.run(for: 0.1)
+        #expect(net.node(old).commitSeq == 1)       // host + the fast client
+        #expect(net.node(succ).log.isEmpty)         // still in flight on the slow link
+        net.kill(old)
+        // A new event proposed the moment the new host takes over must not take seq 1.
+        net.run(for: 1.6)
+        if net.hosts == [succ] { net.act(succ) { m, t in m.append(Self.shot(2), now: t) } }
+        net.run(for: 1.5)
+        Self.expectConverged(net)
+        #expect(net.hosts == [succ])
+        #expect(net.node(succ).log.first?.event == net.node(ids.first { $0 != old && $0 != succ }!).log.first?.event)
+        #expect(net.node(succ).log.count == 2)
+        #expect(net.node(succ).log.first?.term == 1)
+    }
+
     @Test func disconnectCallbackFailsOverFasterThanTimeout() {
         let (net, _) = Self.mesh(3)
         net.disconnectNoticeDelay = 0.2
