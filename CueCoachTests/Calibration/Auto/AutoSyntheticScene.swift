@@ -407,7 +407,9 @@ struct AutoSyntheticScene {
         let dw = 256, dh = 192
         let eye = SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
         var rng = AutoTestRNG(seed: seed)
-        if let r = realisticDepth { return realistic(r, m, eye: eye, rng: &rng, sigma: sigma, occludersInDepth: occludersInDepth) }
+        if let r = realisticDepth {
+            return realistic(r, m, eye: eye, rng: &rng, sigma: sigma, occludersInDepth: occludersInDepth, seed: seed)
+        }
         var out = [Float](repeating: 0, count: dw * dh)
         for v in 0..<dh {
             for u in 0..<dw {
@@ -422,8 +424,14 @@ struct AutoSyntheticScene {
         return AutoDepthMap(width: dw, height: dh, depth: out, confidence: [UInt8](repeating: 2, count: dw * dh))
     }
 
+    /// Deterministic 0…1 value per (patch x, patch y, seed).
+    static func patchNoise(_ x: Int, _ y: Int, seed: UInt64) -> Double {
+        var g = AutoTestRNG(seed: seed &* 31 &+ UInt64(x &* 73856093 ^ y &* 19349663))
+        return g.uniform()
+    }
+
     private func realistic(_ r: RealisticDepth, _ m: simd_double4x4, eye: SIMD3<Double>, rng: inout AutoTestRNG,
-                           sigma: Double, occludersInDepth: Bool) -> AutoDepthMap {
+                           sigma: Double, occludersInDepth: Bool, seed: UInt64) -> AutoDepthMap {
         let dw = 256, dh = 192, nw = r.nativeWidth, nh = r.nativeHeight
         let fxImg = intrinsics.fx
         // 1. Native grid: each sample averages a 3×3 ray bundle spread over the footprint at its depth.
@@ -470,8 +478,9 @@ struct AutoSyntheticScene {
                 var c: UInt8 = g > 0.06 ? 0 : g > 0.025 ? 1 : 2
                 let iu = (Double(u) + 0.5) * Double(width) / Double(dw) - 0.5
                 let iv = (Double(v) + 0.5) * Double(height) / Double(dh) - 0.5
+                // Holes come in patches (4×4 depth px), not salt-and-pepper.
                 if castDepthRay(eye: eye, dir: ray(m, imageX: iu, imageY: iv), occludersInDepth: occludersInDepth).surface == .rail,
-                   rng.uniform() < r.railHoleFraction { c = 0 }
+                   Self.patchNoise(u / 4, v / 4, seed: seed) < r.railHoleFraction { c = 0 }
                 if c == 2, rng.uniform() < r.mediumFraction { c = 1 }
                 conf[i] = c
             }

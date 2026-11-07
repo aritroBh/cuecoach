@@ -204,7 +204,7 @@ struct AutoTableFusion: Sendable {
             guard window.count >= frames else { return false }
             let d = window.suffix(frames).map { Self.deviation($0, from: pose) }
             return autoMedian(d) <= limit && Double(d.filter { $0 < 1.5 * limit }.count) >= 0.8 * Double(d.count)
-                && Self.partialViewsAgree(Array(window.suffix(frames)), center: center, up: up, config: config)
+                && Self.partialViewsAgree(window, center: center, up: up, config: config)
         }
         if !locked, agrees(frames: config.fastLockFrames, spread: config.lockCornerSpread)
             || agrees(frames: config.lockFrames, spread: config.slowLockCornerSpread) {

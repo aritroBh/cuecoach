@@ -27,6 +27,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         /// Views flatter than this (camera elevation over the table centre) are not measured: lifted rails
         /// slide along grazing rays, so plane/rail-height errors become large size errors.
         var minViewElevation = 12 * Double.pi / 180
+        /// Keypoint-only frames whose own fit explains the keypoints worse than this are dropped (px; model
+        /// keypoints are noisier than sub-pixel rail edges).
+        var maxKeypointFrameRMS = 10.0
     }
 
     /// Per-frame detector state. Owned by the `processing` lock, which serialises `process()` calls, so
@@ -233,6 +236,11 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             guard let det = keypointOnly(keypoints, camera: camera, plane: plane, profile: prof, diag: &diag) else {
                 if diag.rejection == nil { diag.rejection = "no rails" }
                 return nil
+            }
+            // Same safety gates as the rail paths: plausible fit, not a grazing view.
+            guard diag.reprojectionRMS < config.maxKeypointFrameRMS else { diag.rejection = "keypoint reprojection"; return nil }
+            guard viewElevation(camera, center: det.measurement.center, up: plane.normal) >= config.minViewElevation else {
+                diag.rejection = "view too shallow"; return nil
             }
             diag.path = .keypointsOnly
             return det
@@ -500,6 +508,8 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         rect.a = corners.map { abs(simd_dot($0 - c, rect.u)) }.reduce(0, +) / 4
         rect.b = corners.map { abs(simd_dot($0 - c, rect.v)) }.reduce(0, +) / 4
         guard rect.a > 0.4, rect.b > 0.2 else { return nil }
+        // Nose-corner quad must be table-shaped (nose aspect ≈ 2; the outer-felt gate's 1.6–2.5 band).
+        guard Self.plausibleAspect(rect.a / rect.b) else { diag.rejection = "keypoint aspect"; return nil }
         let kp = keypointSamples(kps, rect: rect, camera: camera, plane: plane, profile: prof)
         guard kp.count >= 4, let free = AutoRectFitter.fit(rect, edges: [], points: kp, mode: .free) else { return nil }
         diag.keypointsUsed = kp.count
@@ -676,7 +686,8 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var visible = 0.0
         for r in rails where abs(simd_dot(r.dir, rect.u)) > 0.9 {
             let t = r.lifted.map { simd_dot($0 - rect.center, rect.u) }
-            visible = max(visible, ((t.max() ?? 0) - (t.min() ?? 0)) / spec.length)
+            // Samples lie on the outer felt edge (−c…L+c): count only what can be playing length.
+            visible = max(visible, ((t.max() ?? 0) - (t.min() ?? 0) - 2 * c) / spec.length)
         }
         diag.visibleLengthFraction = min(1, visible)
         diag.railTopHeight = prof.railTopHeight

@@ -74,13 +74,21 @@ struct AutoTableCoverageTests {
         #expect(vis < 0.6, "visible \(vis)")
         let one = Self.runFixed(scene, cameras: [a], frames: 16)
         #expect(one.estimate.state != .locked)
-        // Walk around the corner: a second azimuth 30° away.
-        let b = Self.shiftedCamera(scene, shift: shift, closer: 0.9, azimuth: 60)
-        let two = Self.runFixed(scene, cameras: [a, b], frames: 20)
-        if two.estimate.state == .locked {
-            let err = AutoTestMetrics.maxCornerError(try #require(two.estimate.pose).corners, scene.trueCorners)
-            #expect(err < 0.03)
+        // Walk around the corner: a second view ≥ 18° away (seen from the table centre) that still sees
+        // < 60 % of the length, so only the two-view rule can allow the lock.
+        let ctr = scene.world(scene.spec.length / 2, scene.spec.width / 2, 0)
+        func dir(_ m: simd_double4x4) -> SIMD3<Double> {
+            simd_normalize(SIMD3(m.columns.3.x - ctr.x, 0, m.columns.3.z - ctr.z))
         }
+        let b = try #require(Array(stride(from: 115.0, through: 175, by: 5)).map {
+            Self.shiftedCamera(scene, shift: shift, closer: 0.9, azimuth: $0)
+        }.first { Self.visibleFraction(scene, $0) < 0.58 && acos(simd_dot(dir(a), dir($0))) * 180 / .pi >= 18 })
+        print("[autocal] second view: separation \(acos(simd_dot(dir(a), dir(b))) * 180 / .pi)°, vis \(Self.visibleFraction(scene, b))")
+        let two = Self.runFixed(scene, cameras: [a, b], frames: 24)
+        print("[autocal] two views: \(two.estimate.state), rejections \(two.perFrame.map { $0.frame.rejection ?? "ok" })")
+        #expect(two.estimate.state == .locked)
+        let err = AutoTestMetrics.maxCornerError(try #require(two.estimate.pose).corners, scene.trueCorners)
+        #expect(err < 0.03)
     }
 
     @Test func farViewAtThreeMetresLocks() throws {

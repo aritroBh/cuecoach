@@ -118,7 +118,10 @@ struct AutoTableLocatorRound2Tests {
         // Real table = the profile default. Measured LiDAR rail height must not make things worse than
         // simply trusting the default.
         let scene = Self.realistic(AutoSyntheticScene())
-        let measured = autoRun(scene, elevation: 40, frames: 24)
+        let measuring = ClassicalAutoTableLocator()
+        let measured = autoRun(scene, elevation: 40, frames: 24, locator: measuring)
+        // The LiDAR path must actually accept measurements on device-like depth, not silently fall back.
+        #expect(measuring.debugWorkCounts.railHeights > 0)
         var cfg = ClassicalAutoTableLocator.Config()
         cfg.measureRailTopHeight = false
         let plain = autoRun(scene, elevation: 40, frames: 24, locator: ClassicalAutoTableLocator(config: cfg))
@@ -146,7 +149,9 @@ struct AutoTableLocatorRound2Tests {
     @Test func realisticDepthWithAProfileMismatchIsNoWorseThanTheDefault() throws {
         var scene = Self.realistic(AutoSyntheticScene())
         scene.profile.railTopHeight = 0.052
-        let measured = autoRun(scene, elevation: 40, frames: 24)
+        let measuring = ClassicalAutoTableLocator()
+        let measured = autoRun(scene, elevation: 40, frames: 24, locator: measuring)
+        #expect(measuring.debugWorkCounts.railHeights > 0)
         var cfg = ClassicalAutoTableLocator.Config()
         cfg.measureRailTopHeight = false
         let plain = autoRun(scene, elevation: 40, frames: 24, locator: ClassicalAutoTableLocator(config: cfg))
@@ -184,6 +189,9 @@ struct AutoTableLocatorRound2Tests {
     }
 
     /// The model's ten outputs for a scene, in model-input pixels (what Core ML returns), from ground truth.
+    /// tablekp labels a flat table texture whose rectangle is the nose lines and warps it with one homography,
+    /// so every label lies in a single plane; here that plane is the real nose plane (cloth + noseHeight),
+    /// which is exactly the plane the locator lifts all three kinds onto.
     static func modelRows(_ scene: AutoSyntheticScene, camera: simd_double4x4, lb: AutoTableKeypointModel.Letterbox,
                           conf: Double = 0.9) -> [SIMD3<Double>] {
         let L = scene.spec.length, W = scene.spec.width, m = AutoTableProfile().cornerMouthInset
@@ -228,6 +236,35 @@ struct AutoTableLocatorRound2Tests {
         let rms = ClassicalAutoTableLocator.keypointRMS(kps, pose: pose, camera: AutoCamera(intrinsics: scene.intrinsics, cameraToWorld: cam),
                                                         profile: AutoTableProfile())
         #expect(rms < 1.0, "keypoint rms \(rms) px")
+    }
+
+    struct ScaledKeypoints: TableKeypointProvider {
+        var inner: ModelKeypoints
+        var spread: Double
+        func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+            let k = inner.keypoints(in: image, intrinsics: intrinsics)
+            let c = k.map(\.pixel).reduce(.zero, +) / Double(max(1, k.count))
+            return k.map { var q = $0; q.pixel = c + (q.pixel - c) * SIMD2(spread, 1); return q }
+        }
+    }
+
+    @Test func keypointOnlyFramesPassTheSameSafetyGates() {
+        let scene = AutoTableLocatorReviewTests.greyScene()
+        let lb = AutoTableKeypointModel.Letterbox(imageWidth: Double(scene.width), imageHeight: Double(scene.height))
+        // Grazing view: exact keypoints, but 9° over the table.
+        let flat = scene.camera(elevationDeg: 9)
+        let grazing = ClassicalAutoTableLocator(keypoints: ModelKeypoints(rows: Self.modelRows(scene, camera: flat, lb: lb), letterbox: lb))
+        var last: AutoTableEstimate?
+        for i in 0..<12 { last = grazing.process(scene.frame(cameraToWorld: flat, seed: UInt64(i), withDepth: false, planeBias: 0)) }
+        #expect(last?.state != .locked)
+        #expect(last?.frame.rejection == "view too shallow")
+        // Keypoints stretched sideways: no longer a 2:1 table and/or not explained by any fit.
+        let cam = scene.camera(elevationDeg: 45)
+        let bad = ScaledKeypoints(inner: ModelKeypoints(rows: Self.modelRows(scene, camera: cam, lb: lb), letterbox: lb), spread: 1.6)
+        let locator = ClassicalAutoTableLocator(keypoints: bad)
+        for i in 0..<12 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i), withDepth: false, planeBias: 0)) }
+        #expect(last?.state != .locked)
+        #expect(last?.pose == nil)
     }
 
     @Test func cornerMouthKeypointsRefineAnEdgeFit() throws {
