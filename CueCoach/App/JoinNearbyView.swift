@@ -60,14 +60,16 @@ struct JoinNearbyView: View {
                 .disabled(true)
             cancelButton
         case .joined(let g):
-            GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(SBColor.legal))) {}
-                .disabled(true)
-            // AX sizes: the next step (waiting) comes before the lineup so it's in the first viewport.
+            // AX sizes: compact "Waiting" + Leave first so both sit in the first viewport; the lineup (which
+            // carries the host's rules and table) follows. The big game row is skipped there.
             if typeSize.isAccessibilitySize {
-                StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+                StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting",
+                            compact: true)
                 cancelButton
                 if let l = model.lineup { LineupStrip(lineup: l) }
             } else {
+                GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(SBColor.legal))) {}
+                    .disabled(true)
                 if let l = model.lineup { LineupStrip(lineup: l) }
                 StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
                 cancelButton
@@ -109,18 +111,20 @@ private struct StatusGlyph: View {
     let title: String
     let animate: Bool
     let id: String
+    var compact = false
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: compact ? 8 : 16) {
             Image(systemName: symbol)
-                .font(.system(size: 56, weight: .semibold))
+                .font(.system(size: compact ? 32 : 56, weight: .semibold))
                 .foregroundStyle(tint)
                 .symbolEffect(.variableColor.iterative, isActive: animate)
-                .frame(width: 120, height: 120)
+                .frame(width: compact ? 72 : 120, height: compact ? 72 : 120)
                 .background(Circle().fill(SBColor.surface))
             Text(title).font(.title2.weight(.semibold)).foregroundStyle(SBColor.ink)
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 32)
+        .padding(.vertical, compact ? 8 : 32)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(id)
     }

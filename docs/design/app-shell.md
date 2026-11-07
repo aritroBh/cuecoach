@@ -123,3 +123,12 @@ Training: no team discs; menu only (Resume / Stop).
 ## Accessibility & motion
 Every control ≥44 pt, labelled for VoiceOver. AX5: tiles grow, rows wrap to columns. Reduce Motion: no pulses
 or sweeps, crossfades only. Color always paired with a shape (rings, glyphs).
+
+## Implementation notes (2026-11-07)
+- Join nearby is a real MultipeerConnectivity lobby (`MPCGameLobby`, service `cuecoach-lb`): host adverts carry
+  host avatar, rules, seats; joiners mirror the host's lineup live; Start sends the config + a mesh session tag and
+  every phone opens `MultipeerMeshSession` for the game. One phone works with no lobby at all.
+- Live's own ✕ (LiveScreen calls `dismiss()`) is mapped by the cover's `onDismiss`: Game → Review, Training → picker.
+- The in-game menu (only place with words) is hidden from aim start until the balls settle (`LiveSession`).
+- Mid-game order edit lives in the menu: tap two players of a team to swap; the current shooter keeps the turn.
+- Blocked Start: lock glyph at full contrast; the missing seat breathes and is scrolled into view.

@@ -254,6 +254,9 @@ final class AppShellUITests: XCTestCase {
         shot(app, "09-join-list", v)
         element(app, "join.game.g1").tap()
         wait(app, "join.lineup.Ari", 6)
+        // The next step and the way out are in the first viewport at every size.
+        XCTAssertTrue(element(app, "join.waiting").isHittable)
+        XCTAssertTrue(element(app, "join.leave").isHittable)
         shot(app, "10-join-waiting", v)
         app.terminate()
 
