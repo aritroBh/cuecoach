@@ -36,6 +36,9 @@ struct ReviewShot: Identifiable, Hashable, Sendable {
     var paths: [BallID: [Vec2]]
     var alternative: EngineAlternative?
     var wpaDelta: Double
+    /// True when `paths` came from a physics trace. False = inferred straight before→after segments, which can
+    /// cut through balls and rails (banks, kicks), so the diagram draws only faint displacement arrows.
+    var pathsAreTraced = false
 }
 
 struct ReviewHighlight: Hashable, Sendable {
@@ -115,12 +118,13 @@ extension GameReviewData {
             let pre = s.preState, post = s.postState
             let decodable = !pre.balls.isEmpty
             let pocketed = s.pocketed
-            let paths = analysis?.actualPaths(shotID: s.id)
-                ?? (decodable ? ReviewPaths.straight(pre: pre, post: post, pocketed: pocketed) : [:])
+            let traced = analysis?.actualPaths(shotID: s.id)
+            let paths = traced ?? (decodable ? ReviewPaths.straight(pre: pre, post: post, pocketed: pocketed) : [:])
             return ReviewShot(id: s.id, index: s.index, shooter: player(s.shooterID), team: team(of: s.shooterID),
                               rating: s.decisionRating, pre: decodable ? pre : nil, post: decodable ? post : nil,
                               pocketed: pocketed, fouls: s.fouls, paths: paths,
-                              alternative: analysis?.alternative(shotID: s.id), wpaDelta: s.wpaDelta)
+                              alternative: analysis?.alternative(shotID: s.id), wpaDelta: s.wpaDelta,
+                              pathsAreTraced: traced != nil)
         }
 
         var score = [0, 0]

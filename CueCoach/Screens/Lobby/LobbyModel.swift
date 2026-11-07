@@ -20,6 +20,8 @@ public final class LobbyModel {
     private(set) var teams: [[LobbyPlayer?]] = [[nil], [nil]]
     /// Players pushed out by a smaller format. Never deleted.
     private(set) var bench: [LobbyPlayer] = []
+    /// Peers mirror the host's lineup; until the first one arrives every seat is shown empty.
+    private(set) var hasHostLineup: Bool
 
     private(set) var ballots: [String: RuleSetID] = [:]
     private(set) var tableSize: TableSize
@@ -33,6 +35,9 @@ public final class LobbyModel {
     @ObservationIgnored private let profiles: any LobbyProfileStore
     @ObservationIgnored private let mesh: any LobbyMeshLink
     @ObservationIgnored var onStart: ((LobbyStartConfig) -> Void)?
+    /// Session guests live in memory until Start, so rebuilding the model or abandoning the lobby writes nothing.
+    @ObservationIgnored private var unsavedGuestIDs: Set<UUID> = []
+    @ObservationIgnored private var guestCount = 0
 
     init(localPeerID: String, localPlayer: LobbyPlayer, isHost: Bool, profiles: any LobbyProfileStore,
          mesh: any LobbyMeshLink, peers: [LobbyPeer], measuredTableSize: TableSize? = nil) {
@@ -46,9 +51,11 @@ public final class LobbyModel {
             : peers
         self.measuredTableSize = measuredTableSize
         self.tableSize = measuredTableSize ?? .sevenFoot
+        self.hasHostLineup = isHost
+        guard isHost else { return }   // peers wait for `applyLineup`
         teams[0][0] = localPlayer
         if isSolo {
-            teams[1][0] = try? profiles.makeGuest(colorName: nextFreeColorName)
+            teams[1][0] = makeLocalGuest()
         } else {
             let others = self.peers.filter { !$0.isLocal }.compactMap(\.player)
             for (seat, p) in zip(seatOrder.dropFirst(), others) { teams[seat.team][seat.slot] = p }
@@ -118,15 +125,41 @@ public final class LobbyModel {
         broadcastLineup()
     }
 
-    // MARK: Lineup editing (host only)
+    // MARK: Seat permissions
+
+    /// Host: any seat. Peer: their own seat, or any empty seat while they are unseated.
+    func canOpenIdentity(_ seat: SeatRef) -> Bool {
+        guard isValid(seat) else { return false }
+        if canEditLineup { return true }
+        if self[seat]?.id == localPlayer.id { return true }
+        return self[seat] == nil && location(of: localPlayer) == nil
+    }
+
+    /// Only the host registers players or adds guests (peers have no write path to the host's roster).
+    var canCreatePlayers: Bool { canEditLineup }
+
+    /// Who the identity sheet offers for a seat.
+    func identityChoices(for seat: SeatRef) -> [LobbyPlayer] {
+        guard canOpenIdentity(seat) else { return [] }
+        return canEditLineup ? pickableProfiles : [localPlayer]
+    }
+
+    // MARK: Lineup editing (host; peers may only seat themselves)
 
     /// Assign a player to a seat. Moves them if already seated (swapping with the occupant); pulls them off the bench.
-    func assign(_ player: LobbyPlayer, to seat: SeatRef) {
-        guard self[seat] != nil || isValid(seat) else { return }
-        // Peers may edit only their own seat.
-        if !canEditLineup && player.id != localPlayer.id { return }
+    /// Returns false (and changes nothing) when this phone may not make that change.
+    @discardableResult
+    func assign(_ player: LobbyPlayer, to seat: SeatRef) -> Bool {
+        guard isValid(seat) else { return false }
+        if !canEditLineup {
+            guard player.id == localPlayer.id, canOpenIdentity(seat) else { return false }
+            if self[seat]?.id == player.id { return true }
+            teams[seat.team][seat.slot] = player   // optimistic; the host's next lineup is authoritative
+            mesh.send(seatRequest: seat)
+            return true
+        }
         if let from = location(of: player) {
-            if from == seat { return }
+            if from == seat { return true }
             teams[from.team][from.slot] = self[seat]
         } else if let occupant = self[seat] {
             bench.append(occupant)
@@ -134,6 +167,7 @@ public final class LobbyModel {
         bench.removeAll { $0.id == player.id }
         teams[seat.team][seat.slot] = player
         broadcastLineup()
+        return true
     }
 
     /// Drag-drop. Within a team: reorder; across teams: swap. Returns whether anything changed.
@@ -174,15 +208,55 @@ public final class LobbyModel {
     var pickableProfiles: [LobbyPlayer] { profiles.localProfiles() }
 
     func registerAndAssign(name: String, symbol: String, colorName: String, to seat: SeatRef) throws {
+        guard canCreatePlayers, canOpenIdentity(seat) else { throw LobbyError.notAllowed }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw LobbyError.blankName }
         let p = try profiles.register(name: trimmed, symbol: symbol, colorName: colorName)
         assign(p, to: seat)
     }
 
+    /// Seats a session guest. Kept in memory; persisted as `isSessionGuest` only on Start.
     func assignGuest(to seat: SeatRef) throws {
-        let p = try profiles.makeGuest(colorName: nextFreeColorName)
-        assign(p, to: seat)
+        guard canCreatePlayers, canOpenIdentity(seat) else { throw LobbyError.notAllowed }
+        assign(makeLocalGuest(), to: seat)
+    }
+
+    private func makeLocalGuest() -> LobbyPlayer {
+        guestCount += 1
+        let g = LobbyPlayer(id: UUID(), name: guestCount == 1 ? "Guest" : "Guest \(guestCount)", symbol: "person.fill",
+                            colorName: nextFreeColorName, isGuest: true)
+        unsavedGuestIDs.insert(g.id)
+        return g
+    }
+
+    // MARK: Inbound lineup
+
+    /// Peer side of `LobbyMeshLink.send(lineup:roster:format:tableSize:)`: mirror the host exactly.
+    func applyLineup(_ ids: [[UUID?]], roster: [LobbyPlayer], format f: GameFormat, tableSize t: TableSize) {
+        guard !isHost else { return }
+        var known: [UUID: LobbyPlayer] = [:]
+        for p in seatedPlayers + bench + peers.compactMap(\.player) + roster + [localPlayer] { known[p.id] = p }
+        func player(_ id: UUID) -> LobbyPlayer {
+            known[id] ?? LobbyPlayer(id: id, name: "Player", symbol: "person.fill", colorName: "")
+        }
+        let n = f.playersPerTeam
+        teams = (0..<2).map { t in
+            let row = ids.indices.contains(t) ? ids[t] : []
+            return (0..<n).map { s in row.indices.contains(s) ? row[s].map(player) : nil }
+        }
+        let seated = Set(seatedPlayers.map(\.id))
+        bench = roster.filter { !seated.contains($0.id) }
+        format = f
+        tableSize = t
+        hasHostLineup = true
+    }
+
+    /// Host side of `LobbyMeshLink.send(seatRequest:)`: seat that peer's player if the seat is empty.
+    @discardableResult
+    func receiveSeatRequest(peerID: String, seat: SeatRef) -> Bool {
+        guard isHost, isValid(seat), self[seat] == nil,
+              let p = peers.first(where: { $0.id == peerID })?.player else { return false }
+        return assign(p, to: seat)
     }
 
     // MARK: Votes
@@ -213,6 +287,10 @@ public final class LobbyModel {
     // MARK: Mesh
 
     func host() { mesh.startHosting() }
+    func browse() {
+        mesh.startBrowsing()
+        if meshAvailability != .unavailable { meshAvailability = .discovering }
+    }
     func join(_ hostID: String) { mesh.join(hostID: hostID) }
     func setMeshAvailability(_ a: MeshAvailability) { meshAvailability = a }
     func setNearbyHosts(_ h: [NearbyHost]) { nearbyHosts = h }
@@ -228,6 +306,7 @@ public final class LobbyModel {
     @discardableResult
     func start() -> LobbyStartConfig? {
         guard canStart else { blockedStartCount += 1; return nil }
+        guard persistGuests() else { blockedStartCount += 1; return nil }
         let stored = teams.map { t -> StoredTeam in
             let ids = t.compactMap { $0?.id }
             return StoredTeam(memberIDs: ids, shootingOrder: ids)
@@ -240,6 +319,19 @@ public final class LobbyModel {
 
     // MARK: Private
 
+    /// Writes seated in-memory guests through the profile store and swaps in the stored identities.
+    private func persistGuests() -> Bool {
+        for t in 0..<2 {
+            for s in teams[t].indices {
+                guard let g = teams[t][s], unsavedGuestIDs.contains(g.id) else { continue }
+                guard let stored = try? profiles.makeGuest(colorName: g.colorName) else { return false }
+                unsavedGuestIDs.remove(g.id)
+                teams[t][s] = stored
+            }
+        }
+        return true
+    }
+
     private func isValid(_ s: SeatRef) -> Bool {
         teams.indices.contains(s.team) && teams[s.team].indices.contains(s.slot)
     }
@@ -251,6 +343,6 @@ public final class LobbyModel {
 
     private func broadcastLineup() {
         guard isHost else { return }
-        mesh.send(lineup: teams.map { $0.map { $0?.id } }, format: format, tableSize: tableSize)
+        mesh.send(lineup: teams.map { $0.map { $0?.id } }, roster: seatedPlayers + bench, format: format, tableSize: tableSize)
     }
 }

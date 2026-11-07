@@ -1,7 +1,7 @@
 import XCTest
 
 /// Opens Screens B through the debug router (`-screen=<name>`) and captures every screen/state in three runs:
-/// base, Dynamic Type Accessibility XXL, Reduce Motion.
+/// base, largest Dynamic Type (AX5, files suffixed `-xxl`), Reduce Motion.
 final class ScreensBUITests: XCTestCase {
     static let shotsDir: URL = {
         let env = ProcessInfo.processInfo.environment["SCREENSB_SHOTS_DIR"]
@@ -148,5 +148,23 @@ final class ScreensBUITests: XCTestCase {
         shot.tap()
         XCTAssertTrue(shot.isSelected)
         XCTAssertTrue(el(app, "review.replay").label.contains("Engine preferred"))
+        XCTAssertTrue(el(app, "review.sotg.play").exists)
+        XCTAssertTrue(el(app, "review.sotg.play").elementType == .button)
+    }
+
+    @MainActor func testPeerSeesHostLineupAndReadOnlySeats() {
+        let app = launch("lobby-peer")
+        XCTAssertTrue(el(app, "lobby.start").waitForExistence(timeout: 5))
+        XCTAssertEqual(el(app, "lobby.order").label, "Shooting order: Ari, Sam, Ana, empty")
+        XCTAssertEqual(el(app, "lobby.start").label, "Waiting for host")
+        // Someone else's seat is not a button; tapping it opens nothing.
+        el(app, "lobby.seat.0.0").tap()
+        XCTAssertFalse(el(app, "lobby.sheet.identity").waitForExistence(timeout: 1))
+    }
+
+    @MainActor func testReviewLoadingShowsHeaderSkeleton() {
+        let app = launch("review-loading")
+        XCTAssertTrue(el(app, "review.loading").waitForExistence(timeout: 5))
+        XCTAssertTrue(el(app, "review.header.skeleton").exists)
     }
 }

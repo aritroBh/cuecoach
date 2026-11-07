@@ -129,6 +129,7 @@ import Rules
 
     @Test func nonHostCannotEditLineup() {
         let (m, _, _) = makeModel(isHost: false)
+        m.applyLineup([[me.id], [sam.id]], roster: [], format: .oneVsOne, tableSize: .sevenFoot)
         m.setFormat(.twoVsTwo)
         #expect(!m.canEditLineup)
         #expect(m.format == .oneVsOne)
@@ -255,5 +256,99 @@ import Rules
         #expect(!k.isGuest)
         // guests are not listed as pickable local profiles
         #expect(store.localProfiles().map(\.name).sorted() == ["Ari", "Kim"])
+    }
+
+    // MARK: Inbound lineup (peer phones mirror the host)
+
+    func peerModel(local: LobbyPlayer, localPeer: String, players: [LobbyPlayer]) -> (LobbyModel, InMemoryLobbyProfiles, RecordingLobbyMesh) {
+        let store = InMemoryLobbyProfiles(profiles: [local])
+        let mesh = RecordingLobbyMesh()
+        let ps = players.enumerated().map { i, p in
+            LobbyPeer(id: "p\(i)", deviceName: "Phone \(i)", player: p, isHost: i == 0, isLocal: "p\(i)" == localPeer,
+                      status: .connected)
+        }
+        return (LobbyModel(localPeerID: localPeer, localPlayer: local, isHost: false, profiles: store, mesh: mesh, peers: ps),
+                store, mesh)
+    }
+
+    @Test func peerStartsEmptyUntilHostLineupArrives() {
+        let (p, _, _) = peerModel(local: sam, localPeer: "p1", players: [me, sam])
+        #expect(!p.hasHostLineup)
+        #expect(p.seatedPlayers.isEmpty)
+        #expect(!p.canStart)
+    }
+
+    @Test func peerAppliesHostLineupAndMatchesHostOrder() throws {
+        let (host, _, hostMesh) = makeModel()
+        host.setFormat(.twoVsTwo)
+        host.assign(ana, to: SeatRef(team: 0, slot: 1))
+        host.assign(bo, to: SeatRef(team: 1, slot: 1))
+        try host.assignGuest(to: SeatRef(team: 1, slot: 1))   // a host-side guest the peer has never seen
+        host.selectTable(.nineFoot)
+        let sent = try #require(hostMesh.lastLineup)
+
+        let (peer, _, _) = peerModel(local: sam, localPeer: "p1", players: [me, sam, ana, bo])
+        peer.applyLineup(sent.ids, roster: sent.roster, format: sent.format, tableSize: sent.tableSize)
+        #expect(peer.hasHostLineup)
+        #expect(peer.format == .twoVsTwo)
+        #expect(peer.tableSize == .nineFoot)
+        #expect(peer.shootingOrder.map { $0?.id } == host.shootingOrder.map { $0?.id })
+        #expect(peer.shootingOrder.map { $0?.name } == host.shootingOrder.map { $0?.name })
+        #expect(peer.teams[0][0]?.id == me.id)   // host's A1, not the local player
+    }
+
+    @Test func applyLineupIgnoredOnHost() {
+        let (host, _, _) = makeModel()
+        host.applyLineup([[sam.id], [me.id]], roster: [], format: .oneVsOne, tableSize: .nineFoot)
+        #expect(host.teams[0][0]?.id == me.id)
+    }
+
+    // MARK: Seat permissions
+
+    @Test func peerCanOnlySeatThemselvesInAnEmptySeat() {
+        let (p, store, mesh) = peerModel(local: sam, localPeer: "p1", players: [me, sam])
+        p.applyLineup([[me.id, nil], [nil, nil]], roster: [], format: .twoVsTwo, tableSize: .sevenFoot)
+        let empty = SeatRef(team: 1, slot: 0)
+        #expect(p.canOpenIdentity(empty))
+        #expect(!p.canCreatePlayers)
+        #expect(p.identityChoices(for: empty).map(\.id) == [sam.id])
+        #expect(!p.assign(ana, to: empty))
+        #expect(p.assign(sam, to: empty))
+        #expect(mesh.seatRequests.last?.seat == empty)
+        #expect(!p.canOpenIdentity(SeatRef(team: 1, slot: 1)))   // now seated: other empty seats are read-only
+        #expect(!p.canOpenIdentity(SeatRef(team: 0, slot: 0)))   // someone else's seat
+        #expect(p.canOpenIdentity(empty))                        // own seat
+        #expect(throws: LobbyError.self) { try p.assignGuest(to: SeatRef(team: 1, slot: 1)) }
+        #expect(store.profiles.count == 1)                       // no orphan guest row
+    }
+
+    @Test func hostSeatsAPeerOnRequestOnlyIntoAnEmptySeat() {
+        let (m, _, _) = makeModel()
+        m.setFormat(.twoVsTwo)
+        m.removeToBench(SeatRef(team: 1, slot: 0))   // sam off
+        #expect(m.receiveSeatRequest(peerID: "p1", seat: SeatRef(team: 1, slot: 1)))
+        #expect(m.teams[1][1]?.id == sam.id)
+        #expect(!m.receiveSeatRequest(peerID: "p1", seat: SeatRef(team: 0, slot: 0)))   // occupied
+        #expect(m.teams[0][0]?.id == me.id)
+    }
+
+    // MARK: Guests are persisted only on Start
+
+    @Test func soloGuestIsNotPersistedUntilStart() throws {
+        let (m, store, _) = makeModel(peers: 1)
+        #expect(store.profiles.filter(\.isGuest).isEmpty)
+        let cfg = try #require(m.start())
+        let guests = store.profiles.filter(\.isGuest)
+        #expect(guests.count == 1)
+        #expect(cfg.teams[1].memberIDs == [guests[0].id])
+    }
+
+    @Test func assignedGuestIsPersistedOnStartNotOnTap() throws {
+        let (m, store, _) = makeModel(peers: 2)
+        try m.assignGuest(to: SeatRef(team: 1, slot: 0))
+        #expect(store.profiles.filter(\.isGuest).isEmpty)
+        let cfg = try #require(m.start())
+        #expect(store.profiles.filter(\.isGuest).count == 1)
+        #expect(cfg.teams[1].memberIDs == store.profiles.filter(\.isGuest).map(\.id))
     }
 }

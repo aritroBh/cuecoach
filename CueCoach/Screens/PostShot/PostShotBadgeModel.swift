@@ -51,6 +51,8 @@ public final class PostShotBadgeModel {
     private(set) var badgesLocked: Bool
     /// Bumps every time a new badge appears so a stale hold timer can't dismiss a newer badge.
     private(set) var generation = 0
+    /// Bumps on every aim start: the view cuts off any VoiceOver announcement still being spoken.
+    private(set) var speechInterrupts = 0
 
     @ObservationIgnored private var silenced: Set<UUID> = []
     @ObservationIgnored private let source: (any PostShotSignalSource)?
@@ -79,6 +81,7 @@ public final class PostShotBadgeModel {
             generation += 1
         case .aimStarted:
             isAiming = true
+            speechInterrupts += 1
             if let c = current { silenced.insert(c.shotID) }
             hide()
         case .aimEnded:
