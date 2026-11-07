@@ -1,13 +1,16 @@
 /// Table size presets. Playing surface (cushion nose to cushion nose), 2:1 ratio.
-/// Sources: WPA Equipment Specifications (9 ft = 100" x 50"); common 8 ft = 88" x 44", 7 ft bar box = 78" x 39".
+/// Sources: WPA Recommended Equipment Specifications §5 (9 ft = 100" x 50", 8 ft = 92" x 46"),
+/// https://wpapool.com/wp-content/uploads/2024/01/RECOMMENDED-EQUIPMENT-SPECIFICATIONS.pdf
+/// 7 ft is not WPA-defined; Diamond Billiards 7 ft = 80" x 40" (https://diamondbilliards.com/pages/smart).
+/// Coin-op "7 ft" bar boxes vary — LiDAR measurement (Calibration) can override the preset.
 public enum TableSize: String, CaseIterable, Codable, Sendable {
     case sevenFoot, eightFoot, nineFoot
 
     /// Playing-surface length in metres.
     public var playingLength: Double {
         switch self {
-        case .sevenFoot: 78 * 0.0254
-        case .eightFoot: 88 * 0.0254
+        case .sevenFoot: 80 * 0.0254
+        case .eightFoot: 92 * 0.0254
         case .nineFoot: 100 * 0.0254
         }
     }

@@ -1,0 +1,12 @@
+[project]
+name = "physics-fixtures"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = ["pooltool-billiards"]
+
+[tool.uv]
+prerelease = "allow"
+
+[[tool.uv.index]]
+name = "panda3d"
+url = "https://archive.panda3d.org/simple/"

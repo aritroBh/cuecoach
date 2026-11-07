@@ -25,10 +25,10 @@ struct Vec2Tests {
 
 @Suite("TableSpec")
 struct TableSpecTests {
-    // WPA equipment spec: playing surface is twice as long as wide; 9 ft = 100" x 50".
+    // WPA Recommended Equipment Specs §5: 9 ft = 100" x 50", 8 ft = 92" x 46". 7 ft (not WPA): Diamond 80" x 40".
     @Test(arguments: [
-        (TableSize.sevenFoot, 1.981, 0.991),
-        (TableSize.eightFoot, 2.235, 1.118),
+        (TableSize.sevenFoot, 2.032, 1.016),
+        (TableSize.eightFoot, 2.337, 1.168),
         (TableSize.nineFoot, 2.540, 1.270),
     ])
     func playingSurface(size: TableSize, length: Double, width: Double) {
