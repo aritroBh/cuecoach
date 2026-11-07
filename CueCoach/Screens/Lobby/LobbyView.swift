@@ -62,7 +62,6 @@ public struct LobbyView: View {
         }
         .sensoryFeedback(.error, trigger: model.blockedStartCount)
         .sensoryFeedback(.success, trigger: model.startCount)
-        .accessibilityIdentifier("screen.lobby")
     }
 
     // MARK: Header

@@ -32,7 +32,6 @@ public struct GameReviewView: View {
         .preferredColorScheme(.dark)
         .task { await model.load() }
         .sensoryFeedback(.selection, trigger: model.selectedShotID)
-        .accessibilityIdentifier("screen.review")
     }
 
     private var wide: Bool { (vSize == .compact || hSize == .regular) && !typeSize.isAccessibilitySize }

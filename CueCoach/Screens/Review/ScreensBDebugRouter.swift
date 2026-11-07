@@ -111,10 +111,10 @@ private struct BadgeStage: View {
             PostShotBadgeView(model: model)
         }
         .preferredColorScheme(.dark)
-        .accessibilityIdentifier("screen.badge")
         .onAppear {
+            guard pinned else { return }   // live mode waits for the Rate button
             fire()
-            if pinned { model.tap() }
+            model.tap()
         }
     }
 

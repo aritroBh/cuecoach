@@ -37,7 +37,6 @@ struct JoinHostSheet: View {
         }
         .padding(.top, 40)
         .padding(.horizontal, 16)
-        .accessibilityIdentifier("lobby.sheet.join")
     }
 
     private func bigButton(_ symbol: String, _ word: String, id: String, action: @escaping () -> Void) -> some View {
@@ -183,11 +182,11 @@ struct MeshDeniedSheet: View {
                     .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.ink))
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("lobby.meshDenied.settings")
             Spacer()
         }
         .padding(.top, 40)
         .padding(.horizontal, 16)
-        .accessibilityIdentifier("lobby.sheet.meshDenied")
     }
 }
 
