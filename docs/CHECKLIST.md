@@ -41,3 +41,11 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] docs/research/engine.md — candidates, win probability, perf budget
 - [~] docs/research/perception.md — calibration (D12), ball detection, dataset licenses
 - [~] docs/research/mesh-identity.md — MPC protocol, clock sync, clips (D3), recognition privacy
+
+## Camera track — pulled forward from Phase 3 (user, 2026-11-06), running in parallel
+- [~] Capture: camera + LiDAR frame source, replay source (worktree .worktrees/capture, Claude)
+- [~] Calibration: tap-4-corners + auto cloth detection, homography + ball-plane offset, LiDAR table size (D12)
+- [~] Ball detection v0 (classical, real-time) + tracker v0; Core ML YOLO detector next (docs/research/perception.md)
+- [~] Live screen: camera + table outline + ball rings + aim line, no text while aiming
+- [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
+- [ ] On-device VLM (Apple Foundation Models, image input) for post-shot keyframe analysis — non-real-time only (SPEC §6)
