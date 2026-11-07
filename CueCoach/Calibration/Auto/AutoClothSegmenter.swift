@@ -97,26 +97,34 @@ enum AutoClothSegmenter {
     }
 
     /// 3×3 cross opening (erode, then dilate): removes speckle and thin bridges (cue sticks).
+    /// Neighbours outside the image are ignored, so cloth reaching the frame edge stays on the edge
+    /// (the "cloth touches frame" check in `boundary` depends on it).
     static func open(_ m: AutoMask) -> AutoMask {
         let w = m.width, h = m.height
         var er = [UInt8](repeating: 0, count: w * h)
         var out = [UInt8](repeating: 0, count: w * h)
         m.bits.withUnsafeBufferPointer { b in
             er.withUnsafeMutableBufferPointer { e in
-                for y in 1..<(h - 1) {
-                    for x in 1..<(w - 1) {
+                for y in 0..<h {
+                    for x in 0..<w {
                         let i = y * w + x
-                        if b[i] != 0 && b[i - 1] != 0 && b[i + 1] != 0 && b[i - w] != 0 && b[i + w] != 0 { e[i] = 1 }
+                        guard b[i] != 0 else { continue }
+                        if x > 0 && b[i - 1] == 0 { continue }
+                        if x < w - 1 && b[i + 1] == 0 { continue }
+                        if y > 0 && b[i - w] == 0 { continue }
+                        if y < h - 1 && b[i + w] == 0 { continue }
+                        e[i] = 1
                     }
                 }
             }
         }
         er.withUnsafeBufferPointer { e in
             out.withUnsafeMutableBufferPointer { o in
-                for y in 1..<(h - 1) {
-                    for x in 1..<(w - 1) {
+                for y in 0..<h {
+                    for x in 0..<w {
                         let i = y * w + x
-                        if e[i] != 0 || e[i - 1] != 0 || e[i + 1] != 0 || e[i - w] != 0 || e[i + w] != 0 { o[i] = 1 }
+                        if e[i] != 0 || (x > 0 && e[i - 1] != 0) || (x < w - 1 && e[i + 1] != 0)
+                            || (y > 0 && e[i - w] != 0) || (y < h - 1 && e[i + w] != 0) { o[i] = 1 }
                     }
                 }
             }

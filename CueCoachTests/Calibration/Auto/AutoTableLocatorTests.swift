@@ -14,7 +14,8 @@ struct AutoRun {
 func autoRun(_ scene: AutoSyntheticScene, elevation: Double, azimuth: Double = 90, frames: Int = 24,
              handheldDeg: Double = 0.4, handheldMetres: Double = 0.02,
              trackingDeg: Double = 0.03, trackingMetres: Double = 0.002,
-             withDepth: Bool = true, planeBias: Double = 0.012, seed: UInt64 = 11,
+             withDepth: Bool = true, withPlane: Bool = true, planeBias: Double = 0.012, seed: UInt64 = 11,
+             driftMetresPerFrame: SIMD3<Double> = .zero,
              locator: ClassicalAutoTableLocator = ClassicalAutoTableLocator()) -> AutoRun {
     var rng = AutoTestRNG(seed: seed)
     let base = scene.camera(elevationDeg: elevation, azimuthDeg: azimuth)
@@ -23,9 +24,11 @@ func autoRun(_ scene: AutoSyntheticScene, elevation: Double, azimuth: Double = 9
     var all: [AutoTableEstimate] = []
     for i in 0..<frames {
         let actual = AutoSyntheticScene.perturb(base, rng: &rng, rotDeg: handheldDeg, trans: handheldMetres)
-        let reported = AutoSyntheticScene.perturb(actual, rng: &rng, rotDeg: trackingDeg, trans: trackingMetres)
+        var reported = AutoSyntheticScene.perturb(actual, rng: &rng, rotDeg: trackingDeg, trans: trackingMetres)
+        // Correlated ARKit drift: the reported camera walks steadily away from the true one.
+        reported.columns.3 += SIMD4(driftMetresPerFrame * Double(i), 0)
         let f = scene.frame(cameraToWorld: actual, reported: reported, seed: seed &+ UInt64(i), withDepth: withDepth,
-                            planeBias: planeBias, timestamp: Double(i) / 30)
+                            withPlane: withPlane, planeBias: planeBias, timestamp: Double(seed &+ UInt64(i)) / 30)
         let e = locator.process(f)
         all.append(e)
         if lockedAt == nil, e.state == .locked { lockedAt = i }

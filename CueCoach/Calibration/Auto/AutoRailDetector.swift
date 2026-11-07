@@ -34,7 +34,9 @@ enum AutoRailDetector {
                 let score = g.reduce(0.0) { $0 + simd_length($1.1 - $1.0) }
                 if score > (best?.score ?? 0), accept(q) { best = (score, g) }
             } } } }
-            if let b = best { sides = b.sides }
+            // No physically plausible quad among the hull runs (e.g. an occluder's outline): reject the frame.
+            guard let b = best else { return nil }
+            sides = b.sides
         } else if let accept {
             let ls = sides.compactMap { AutoLine(through: $0.0, $0.1) }
             guard ls.count == 4, let q = corners(ls), accept(q) else { return nil }

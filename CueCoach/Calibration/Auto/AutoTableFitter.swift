@@ -133,8 +133,10 @@ enum AutoRectFitter {
 
 /// LiDAR refinement of the cloth height: median height of depth samples that land inside the bed.
 enum AutoPlaneRefiner {
+    /// Returns nil unless ≥ `minCoverage` of the trusted bed samples agree (within ±3 cm) on one level,
+    /// so a body or arm over much of the bed cannot set the cloth height.
     static func clothOffset(depth: AutoDepthMap, camera: AutoCamera, imageWidth: Int, imageHeight: Int,
-                            bed: [AutoP2], plane: AutoTablePlane) -> (offset: Double, samples: Int)? {
+                            bed: [AutoP2], plane: AutoTablePlane, minCoverage: Double = 0.6) -> (offset: Double, samples: Int)? {
         guard bed.count >= 3 else { return nil }
         let sx = Double(imageWidth) / Double(depth.width), sy = Double(imageHeight) / Double(depth.height)
         var minX = Double.infinity, maxX = -Double.infinity, minY = Double.infinity, maxY = -Double.infinity
@@ -161,7 +163,46 @@ enum AutoPlaneRefiner {
         guard hs.count >= 30 else { return nil }
         let m0 = autoMedian(hs)
         let near = hs.filter { abs($0 - m0) < 0.03 }
-        guard near.count >= 20 else { return nil }
+        guard near.count >= 20, Double(near.count) >= minCoverage * Double(hs.count) else { return nil }
+        return (autoMedian(near), near.count)
+    }
+
+    /// LiDAR height of the rail caps above the cloth plane: depth samples in a band 2.5–9 cm outside the
+    /// outer felt boundary (`feltCorners`, plane 2D, consecutive), away from the pockets. Real tables differ
+    /// from the default profile by 5–10 mm here, and that error shifts every lifted rail edge along the
+    /// view rays; LiDAR's cloth level cannot correct it, this can. nil when the band is not clearly seen.
+    static func railTopHeight(depth: AutoDepthMap, camera: AutoCamera, imageWidth: Int, imageHeight: Int,
+                              plane: AutoTablePlane, feltCorners q: [AutoP2]) -> (height: Double, samples: Int)? {
+        guard q.count == 4 else { return nil }
+        let c = (q[0] + q[1] + q[2] + q[3]) / 4
+        let d = (q[1] - q[0]) + (q[2] - q[3])
+        guard simd_length(d) > 1e-6 else { return nil }
+        let u = simd_normalize(d), v = AutoP2(-u.y, u.x)
+        let a = q.map { abs(simd_dot($0 - c, u)) }.reduce(0, +) / 4
+        let b = q.map { abs(simd_dot($0 - c, v)) }.reduce(0, +) / 4
+        let sx = Double(imageWidth) / Double(depth.width), sy = Double(imageHeight) / Double(depth.height)
+        var hs: [Double] = []
+        hs.reserveCapacity(1024)
+        for vv in Swift.stride(from: 0, to: depth.height, by: 2) {
+            for uu in Swift.stride(from: 0, to: depth.width, by: 2) {
+                let i = vv * depth.width + uu
+                if let cf = depth.confidence, cf[i] < 2 { continue }
+                let z = Double(depth.depth[i])
+                guard z > 0.1, z < 8 else { continue }
+                let w = camera.unproject(AutoP2((Double(uu) + 0.5) * sx - 0.5, (Double(vv) + 0.5) * sy - 0.5), depth: z)
+                let h = simd_dot(w - plane.origin, plane.normal)
+                guard h > 0.01, h < 0.12 else { continue }
+                let p = plane.to2D(w) - c
+                let du = abs(simd_dot(p, u)) - a, dv = abs(simd_dot(p, v)) - b
+                let onLong = dv > 0.025 && dv < 0.09 && du < -0.12
+                let onShort = du > 0.025 && du < 0.09 && dv < -0.12
+                if onLong || onShort { hs.append(h) }
+            }
+        }
+        guard hs.count >= 40 else { return nil }
+        let m0 = autoMedian(hs)
+        let near = hs.filter { abs($0 - m0) < 0.01 }
+        guard Double(near.count) >= 0.6 * Double(hs.count) else { return nil }
         return (autoMedian(near), near.count)
     }
 

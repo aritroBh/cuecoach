@@ -26,6 +26,13 @@ struct AutoTestRNG {
 /// A perspective-rendered pool table with rails, cushions, pockets, diamonds, balls, glare, occluders and
 /// noise, plus synthetic LiDAR depth, with exact ground truth. Rendered with CoreGraphics by projecting
 /// 3D polygons (straight edges stay straight under a pinhole camera).
+///
+/// Honesty note: these scenes are simulation regression targets, not evidence of field accuracy. The camera
+/// is an ideal pinhole (no distortion, blur, rolling shutter or ISP), depth is pixel-aligned at full
+/// confidence, and tracking noise is mostly independent per frame. Tests that break the detector's own
+/// assumptions on purpose: `railProfileMismatchStaysWithinOneCentimetre` (rail profile ≠ `AutoTableProfile`),
+/// `depthOnlyPlaneWithoutARKitHint` (no plane hint) and `correlatedTrackingDriftIsFollowed` (correlated drift).
+/// Field accuracy must be measured on device against a tape-measured table.
 struct AutoSyntheticScene {
     // Table placement (world, ARKit y-up).
     var size: TableSize = .nineFoot
@@ -46,6 +53,8 @@ struct AutoSyntheticScene {
     var glare: [(center: Vec2, radius: Double, alpha: Double)] = [(Vec2(1.4, 0.5), 0.25, 0.75)]
     /// Occluder boxes in table coords: (x0, x1, y0, y1, z0, z1).
     var occluders: [(Double, Double, Double, Double, Double, Double)] = []
+    /// Boxes seen only by LiDAR (table coords, top face only): an arm/body over the bed the colour pass ignores.
+    var depthOccluders: [(Double, Double, Double, Double, Double, Double)] = []
     var balls: [Vec2] = [Vec2(0.6, 0.6), Vec2(1.9, 0.3), Vec2(1.95, 0.35), Vec2(2.0, 0.6), Vec2(1.2, 1.0)]
     var feltColor: (Double, Double, Double) = (28, 112, 64)
     var floorColor: (Double, Double, Double) = (96, 84, 72)
@@ -355,7 +364,7 @@ struct AutoSyntheticScene {
                     }
                 }
                 if occludersInDepth {
-                    for b in occluders {
+                    for b in occluders + depthOccluders {
                         // Coarse: hit the box's top face only.
                         let pw = world(0, 0, b.5)
                         let t = (pw.y - eye.y) / dir.y
@@ -376,14 +385,16 @@ struct AutoSyntheticScene {
         return AutoDepthMap(width: dw, height: dh, depth: out, confidence: [UInt8](repeating: 2, count: dw * dh))
     }
 
+    /// `timestamp` defaults to seed / 30 s so loops over seeds give distinct frames.
     func frame(cameraToWorld m: simd_double4x4, reported: simd_double4x4? = nil, seed: UInt64 = 1,
-               withDepth: Bool = true, planeBias: Double = 0.012, timestamp: Double = 0) -> AutoTableFrame {
+               withDepth: Bool = true, withPlane: Bool = true, planeBias: Double = 0.012, timestamp: Double? = nil,
+               tracking: AutoTrackingState = .normal) -> AutoTableFrame {
         let c = world(spec.length / 2, spec.width / 2, 0)
         return AutoTableFrame(image: render(cameraToWorld: m, seed: seed), intrinsics: intrinsics,
                               cameraToWorld: reported ?? m,
                               depth: withDepth ? depth(cameraToWorld: m, seed: seed &+ 99) : nil,
-                              plane: AutoPlaneHint(point: c + SIMD3(0.3, planeBias, -0.2)),
-                              timestamp: timestamp)
+                              plane: withPlane ? AutoPlaneHint(point: c + SIMD3(0.3, planeBias, -0.2)) : nil,
+                              timestamp: timestamp ?? Double(seed) / 30, tracking: tracking)
     }
 }
 

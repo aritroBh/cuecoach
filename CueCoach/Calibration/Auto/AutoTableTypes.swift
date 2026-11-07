@@ -28,9 +28,11 @@ struct AutoIntrinsics: Hashable, Sendable {
     var width: Double, height: Double
 
     /// Same camera at another resolution (e.g. ARKit 1920×1440 intrinsics → a 960×720 working image).
+    /// Pixel centres sit at integers, so a coordinate maps as (x + 0.5)·s − 0.5.
     func scaled(toWidth w: Double, height h: Double) -> AutoIntrinsics {
         let sx = w / width, sy = h / height
-        return AutoIntrinsics(fx: fx * sx, fy: fy * sy, cx: cx * sx, cy: cy * sy, width: w, height: h)
+        return AutoIntrinsics(fx: fx * sx, fy: fy * sy, cx: (cx + 0.5) * sx - 0.5, cy: (cy + 0.5) * sy - 0.5,
+                              width: w, height: h)
     }
 }
 
@@ -50,6 +52,11 @@ struct AutoPlaneHint: Sendable {
     var normal: SIMD3<Double> = SIMD3(0, 1, 0)
 }
 
+/// ARKit `camera.trackingState`, flattened. Only `.normal` frames are used.
+enum AutoTrackingState: Sendable, Equatable {
+    case normal, limited, notAvailable
+}
+
 /// One AR frame handed to the locator.
 struct AutoTableFrame: Sendable {
     var image: AutoRGBImage
@@ -59,7 +66,9 @@ struct AutoTableFrame: Sendable {
     var cameraToWorld: simd_double4x4
     var depth: AutoDepthMap?
     var plane: AutoPlaneHint?
+    /// ARKit frame timestamp (s). A frame with the same timestamp as the previous one is a duplicate.
     var timestamp: Double
+    var tracking: AutoTrackingState = .normal
 }
 
 /// Physical cushion/rail model. Defaults are typical commercial tables (est.); the nose-to-nose
@@ -175,7 +184,8 @@ struct AutoTableEstimate: Sendable {
     /// This frame's edges against the FUSED pose, RMS pixels (validation while running).
     var fusedReprojectionRMS: Double?
     /// Increments every time a new lock is made (first lock = 1). A re-lock after the table or
-    /// tracking changed bumps it; integrators rebuild their overlay when it changes.
+    /// tracking changed bumps it, and so does a size change > `sizeChangeTolerance` while locked (the size
+    /// is otherwise held); integrators rebuild their overlay when it changes.
     var generation: Int
     var frame: AutoFrameDiagnostics
 }

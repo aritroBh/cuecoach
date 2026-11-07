@@ -25,7 +25,11 @@ struct AutoFusionConfig: Sendable {
     /// A frame whose corners are this far from the fused ones disagrees (m).
     var disagreeDistance = 0.04
     /// This many consecutive disagreeing frames = the table (or tracking) changed → re-lock.
+    /// They must also agree with each other (spread < `disagreeDistance`), else the oldest is dropped.
     var relockFrames = 10
+    /// While locked the table size is held; only a size change larger than this is adopted, and it
+    /// bumps `generation` (m, playing length).
+    var sizeChangeTolerance = 0.015
 }
 
 /// Multi-frame fusion in world coordinates: robust (median → Huber) pose over a sliding window,
@@ -42,6 +46,8 @@ struct AutoTableFusion: Sendable {
     private(set) var fused: AutoTablePose?
     private(set) var spread: Double = .infinity
     private var deviations: [Double] = []
+    /// Size held since lock (spec, snapped preset).
+    private var heldSize: (spec: TableSpec, snapped: TableSize?)?
 
     mutating func reset() { self = AutoTableFusion(config: config) }
 
@@ -63,12 +69,18 @@ struct AutoTableFusion: Sendable {
             if dev > config.disagreeDistance {
                 disagreeing.append(m)
                 if disagreeing.count >= config.relockFrames {
-                    // Consistent new evidence: start over from it (keep the head choice by direction).
-                    window = disagreeing
-                    disagreeing = []
-                    locked = false
-                    deviations = []
-                    recompute(camera: m.cameraPosition)
+                    if Self.selfConsistent(disagreeing, spec: f.spec, tolerance: config.disagreeDistance) {
+                        // Consistent new evidence: start over from it (keep the head choice by direction).
+                        window = disagreeing
+                        disagreeing = []
+                        locked = false
+                        deviations = []
+                        heldSize = nil
+                        recompute(camera: m.cameraPosition)
+                    } else {
+                        // Scattered glitches, not a moved table: keep the lock, age out the oldest.
+                        disagreeing.removeFirst()
+                    }
                 }
                 return false
             }
@@ -127,6 +139,15 @@ struct AutoTableFusion: Sendable {
             let len = (mL + 2 * mW) / 2
             spec.length = len; spec.width = len / 2
         }
+        // Locked: hold the size so corners never move without a new generation.
+        if locked, let held = heldSize {
+            if abs(spec.length - held.spec.length) > config.sizeChangeTolerance {
+                heldSize = (spec, snapped)
+                generation += 1
+            } else {
+                spec = held.spec; snapped = held.snapped
+            }
+        }
         var axis = SIMD3(cos(th), 0, sin(th))
         axis -= up * simd_dot(axis, up)
         axis = simd_normalize(axis)
@@ -145,6 +166,7 @@ struct AutoTableFusion: Sendable {
            Double(devs.filter { $0 < 1.5 * config.lockCornerSpread }.count) >= 0.8 * Double(devs.count) {
             locked = true
             generation += 1
+            heldSize = (spec, snapped)
             if headToFoot == nil { headToFoot = h2f; flipPending = false }
         }
         if let h = headToFoot, abs(simd_dot(h, pose.xAxis)) < 0.7 {
@@ -164,6 +186,17 @@ struct AutoTableFusion: Sendable {
         let m = simd_double4x4(columns: (SIMD4(x, 0), SIMD4(y, 0), SIMD4(up, 0), SIMD4(o, 1)))
         return AutoTablePose(tableToWorld: m, spec: spec, snappedSize: snapped,
                              measuredLength: measured.0, measuredWidth: measured.1)
+    }
+
+    /// Do the measurements agree with each other: ≥ 80 % within `tolerance` of their own median pose?
+    static func selfConsistent(_ ms: [AutoTableMeasurement], spec: TableSpec, tolerance: Double) -> Bool {
+        guard let first = ms.first else { return false }
+        let c = SIMD3(autoMedian(ms.map(\.center.x)), autoMedian(ms.map(\.center.y)), autoMedian(ms.map(\.center.z)))
+        let ref = ms.min { simd_distance($0.center, c) < simd_distance($1.center, c) } ?? first
+        guard let p = pose(center: c, axis: ref.axis, up: ref.up, spec: spec, snapped: nil,
+                           measured: (ref.measuredLength, ref.measuredWidth), headToFoot: ref.axis) else { return false }
+        let ok = ms.filter { deviation($0, from: p) < tolerance }.count
+        return Double(ok) >= 0.8 * Double(ms.count)
     }
 
     /// Max corner distance between a measurement (at the fused size) and the fused pose, mod 180°.
