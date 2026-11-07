@@ -612,6 +612,7 @@ final class TableOverlay {
     private let objectLine: ModelEntity
     private let ghost: ModelEntity
     private var dashes: [ModelEntity] = []
+    private var objectSegs: [ModelEntity] = []
     private let liveLine: ModelEntity
     private let liveObject: ModelEntity
     private let liveGhost: ModelEntity
@@ -652,6 +653,11 @@ final class TableOverlay {
         liveObject = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.7))
         liveGhost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.88, outer: R), materials: [OverlayMesh.material(.white, 1)])
         for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false; anchor.addChild(e) }
+        for _ in 0..<16 {
+            let e = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
+            e.isEnabled = false
+            anchor.addChild(e); objectSegs.append(e)
+        }
         for _ in 0..<14 {
             let d = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.45))
             d.isEnabled = false
@@ -662,7 +668,7 @@ final class TableOverlay {
     func setDimmed(_ d: Bool) {
         dimmed = d
         for e in outline { e.model?.materials = [OverlayMesh.material(.white, d ? 0.2 : 0.6)] }
-        if d { for e in ballRings + dashes + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost] { e.isEnabled = false } }
+        if d { for e in ballRings + dashes + objectSegs + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost] { e.isEnabled = false } }
     }
 
     func update(_ r: PerceptionResult?) {
@@ -703,7 +709,7 @@ final class TableOverlay {
             for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false }
         }
         guard let aim = r?.aim else {
-            for e in dashes + [cueLine, objectLine, ghost] { e.isEnabled = false }
+            for e in dashes + objectSegs + [cueLine, objectLine, ghost] { e.isEnabled = false }
             return
         }
         // With a live cue the suggestion becomes a faint guide.
@@ -712,24 +718,22 @@ final class TableOverlay {
         OverlayMesh.place(cueLine, from: aim.cue.f, to: aim.ghost.f, z: R)                 // Line 1
         cueLine.model?.materials = [OverlayMesh.material(.white, 0.9 * guide)]
         ghost.model?.materials = [OverlayMesh.material(.white, 0.9 * guide)]
-        OverlayMesh.place(objectLine, from: aim.object.f, to: aim.pocketPoint.f, z: R)     // Line 2 (throw-compensated)
-        objectLine.model?.materials = [OverlayMesh.material(color, 0.85 * guide)]
-        ghost.position = [Float(aim.ghost.x), Float(aim.ghost.y), R]
-        for e in [cueLine, objectLine, ghost] { e.isEnabled = true }
-        // Line 3: dashed cue path after contact.
-        var segs: [(SIMD2<Float>, SIMD2<Float>)] = []
-        if aim.cuePath.count >= 2 {
-            let a = aim.cuePath[0].f, b = aim.cuePath[aim.cuePath.count - 1].f
-            let len = simd_length(b - a), dash: Float = 0.04, gap: Float = 0.03
-            if len > 0.01 {
-                let u = (b - a) / len
-                var s = Float(TableSpec.ballRadius)
-                while s < len && segs.count < dashes.count {
-                    segs.append((a + u * s, a + u * min(len, s + dash)))
-                    s += dash + gap
-                }
-            }
+        // Line 2: object-ball path (simulated with throw when Physics previewed it).
+        objectLine.isEnabled = false
+        let line2 = OverlayPath.segments(aim.objectPath.count >= 2 ? aim.objectPath : [aim.object, aim.pocketPoint],
+                                         max: objectSegs.count)
+        for (i, e) in objectSegs.enumerated() {
+            if i < line2.count {
+                OverlayMesh.place(e, from: line2[i].0.f, to: line2[i].1.f, z: R)
+                e.model?.materials = [OverlayMesh.material(color, 0.85 * guide)]
+                e.isEnabled = true
+            } else { e.isEnabled = false }
         }
+        ghost.position = [Float(aim.ghost.x), Float(aim.ghost.y), R]
+        for e in [cueLine, ghost] { e.isEnabled = true }
+        // Line 3: dashed cue path after contact (follows cushions when simulated).
+        let segs = OverlayPath.dashes(aim.cuePath, dash: 0.04, gap: 0.03, skip: TableSpec.ballRadius, max: dashes.count)
+            .map { ($0.0.f, $0.1.f) }
         for (i, d) in dashes.enumerated() {
             if i < segs.count { OverlayMesh.place(d, from: segs[i].0, to: segs[i].1, z: R); d.isEnabled = true }
             else { d.isEnabled = false }

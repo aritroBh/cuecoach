@@ -80,3 +80,54 @@ struct FrameOrdering: Sendable {
         return true
     }
 }
+
+/// Turns sampled paths into drawable segments (bounded counts for entity pools).
+enum OverlayPath {
+    /// Simplify `pts` into at most `max` straight segments (keeps corners such as cushion bounces).
+    static func segments(_ pts: [Vec2], max: Int, tolerance: Double = 0.004) -> [(Vec2, Vec2)] {
+        guard pts.count >= 2 else { return [] }
+        var keep = douglasPeucker(pts, tolerance)
+        var tol = tolerance
+        while keep.count - 1 > max && tol < 0.2 { tol *= 2; keep = douglasPeucker(pts, tol) }
+        return zip(keep, keep.dropFirst()).map { ($0, $1) }
+    }
+
+    /// Dash pattern walked along the polyline, starting `skip` metres in.
+    static func dashes(_ pts: [Vec2], dash: Double, gap: Double, skip: Double, max: Int) -> [(Vec2, Vec2)] {
+        guard pts.count >= 2 else { return [] }
+        var out: [(Vec2, Vec2)] = []
+        var along = 0.0, next = skip
+        var drawing = false
+        var start = pts[0]
+        for (a, b) in zip(pts, pts.dropFirst()) {
+            let len = a.distance(to: b)
+            guard len > 1e-9 else { continue }
+            let u = (b - a) / len
+            var t = 0.0
+            while along + (len - t) >= next {
+                let step = next - along
+                t += step; along = next
+                let p = a + u * t
+                if drawing { out.append((start, p)); if out.count >= max { return out }; next += gap }
+                else { start = p; next += dash }
+                drawing.toggle()
+            }
+            along += len - t
+        }
+        if drawing, let last = pts.last, start.distance(to: last) > 0.005, out.count < max { out.append((start, last)) }
+        return out
+    }
+
+    static func douglasPeucker(_ p: [Vec2], _ eps: Double) -> [Vec2] {
+        guard p.count > 2 else { return p }
+        let a = p[0], b = p[p.count - 1], ab = b - a, l = ab.length
+        var idx = 0, dmax = 0.0
+        for i in 1..<(p.count - 1) {
+            let d = l > 1e-12 ? abs(ab.cross(p[i] - a)) / l : p[i].distance(to: a)
+            if d > dmax { dmax = d; idx = i }
+        }
+        guard dmax > eps else { return [a, b] }
+        let left = douglasPeucker(Array(p[0...idx]), eps), right = douglasPeucker(Array(p[idx...]), eps)
+        return left.dropLast() + right
+    }
+}

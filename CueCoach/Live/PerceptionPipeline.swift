@@ -48,9 +48,12 @@ actor PerceptionPipeline {
     private var cueTracker = CueAimTracker()
     private let cueDetector = CueLineDetector()
     private let depthFinder = DepthBallFinder()
+    private let previewer: any ShotPreviewing
+    private var previewCache = PreviewCache()
 
-    init(detector: any BallDetector = ClassicalBallDetector()) {
+    init(detector: any BallDetector = ClassicalBallDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
         self.detector = detector
+        self.previewer = previewer
         let (engine, game) = TargetLegality.defaultGame()
         legal = engine.legalTargets(game)
     }
@@ -88,8 +91,9 @@ actor PerceptionPipeline {
             let legalBalls = others.filter { marks[$0.id] == .legal }
             let targets = legalBalls.isEmpty ? others.filter { marks[$0.id] == .unknown } : legalBalls
             let blockers = others.filter { t in !targets.contains { $0.id == t.id } }.map(\.position)
-            aim = AimPlanner.suggest(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
-                                     spec: table.spec)
+            let cands = AimPlanner.candidates(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
+                                              spec: table.spec, limit: 3)
+            aim = refineWithPhysics(cands, cue: cue, tracks: confirmed, spec: table.spec) ?? cands.first
         }
         // Live aim from the cue stick (only while the balls are still: that's when the player aims).
         var live: LiveAimTrace?
@@ -114,6 +118,62 @@ actor PerceptionPipeline {
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence,
                                 depthBalls: depthBalls.count, totalMs: Date().timeIntervalSince(t0) * 1000)
+    }
+}
+
+extension PerceptionPipeline {
+    /// Simulate the top candidates (cached by layout) and keep the first clean make; Lines 2/3 then come
+    /// from CueCore Physics instead of geometry.
+    func refineWithPhysics(_ cands: [AimSuggestion], cue: TrackedBall, tracks: [TrackedBall], spec: TableSpec) -> AimSuggestion? {
+        let ids = BallIdentity.assign(tracks, cueID: cue.id)
+        let balls = Dictionary(uniqueKeysWithValues: tracks.compactMap { t in ids[t.id].map { ($0, t.position) } })
+        var firstPreviewed: AimSuggestion?
+        var budget = 1   // at most one fresh simulation search per frame; the rest fill in on later frames
+        for c in cands {
+            guard let track = tracks.min(by: { $0.position.distance(to: c.object) < $1.position.distance(to: c.object) }),
+                  let objectID = ids[track.id] else { continue }
+            let key = PreviewCache.key(cue: cue.position, object: objectID, pocket: c.pocket, balls: balls)
+            let preview: ShotPreview?
+            if let hit = previewCache.get(key) { preview = hit } else {
+                guard budget > 0 else { continue }
+                budget -= 1
+                preview = previewer.preview(cue: cue.position, object: objectID, pocket: c.pocket, balls: balls, spec: spec)
+                previewCache.put(key, preview)
+            }
+            guard let p = preview else { continue }
+            var a = c
+            a.ghost = p.contact ?? c.ghost
+            a.cuePath = p.cuePath
+            a.objectPath = p.objectPath
+            a.spin = p.spin
+            a.power = p.power
+            a.outcome = p.outcome
+            a.ease = switch p.outcome { case .make: c.ease; case .miss: min(c.ease, 0.2); case .scratch: 0 }
+            if p.outcome == .make { return a }
+            if firstPreviewed == nil { firstPreviewed = a }
+        }
+        return firstPreviewed
+    }
+}
+
+/// Maps tracks to rule-level ball ids: cue = 0; tentative numbers when unambiguous; the rest get unused numbers.
+enum BallIdentity {
+    static func assign(_ tracks: [TrackedBall], cueID: Int?) -> [Int: BallID] {
+        var out: [Int: BallID] = [:]
+        var used: Set<Int> = []
+        if let c = cueID { out[c] = .cue; used.insert(0) }
+        let counts = Dictionary(grouping: tracks.compactMap(\.tentativeNumber), by: { $0 }).mapValues(\.count)
+        for t in tracks where out[t.id] == nil {
+            if let n = t.tentativeNumber, n > 0, counts[n] == 1, !used.contains(n), let id = BallID(n) {
+                out[t.id] = id; used.insert(n)
+            }
+        }
+        var free = (1...15).filter { !used.contains($0) }
+        for t in tracks.sorted(by: { $0.id < $1.id }) where out[t.id] == nil {
+            guard !free.isEmpty, let id = BallID(free.removeFirst()) else { break }
+            out[t.id] = id
+        }
+        return out
     }
 }
 

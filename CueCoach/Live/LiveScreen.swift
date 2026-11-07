@@ -418,10 +418,11 @@ struct ReplayLiveView: View {
             ctx.stroke(l1, with: .color(.white.opacity(0.9)), lineWidth: 2)
             ctx.stroke(circle(aim.ghost, TableSpec.ballRadius, geo.ball, map), with: .color(.white.opacity(0.9)), lineWidth: 2)
             var l2 = Path(); l2.move(to: o); l2.addLine(to: pk)
+            if aim.objectPath.count >= 2 { l2 = Path(); l2.addLines(aim.objectPath.compactMap { v($0, ball: true) }) }
             let c: Color = aim.ease > 0.35 ? green : aim.ease > 0.15 ? Color(red: 0.98, green: 0.8, blue: 0.08) : red
             ctx.stroke(l2, with: .color(c.opacity(0.85)), lineWidth: 2)
-            if aim.cuePath.count >= 2, let s = v(aim.cuePath[0], ball: true), let e = v(aim.cuePath[aim.cuePath.count - 1], ball: true) {
-                var l3 = Path(); l3.move(to: s); l3.addLine(to: e)
+            if aim.cuePath.count >= 2 {
+                var l3 = Path(); l3.addLines(aim.cuePath.compactMap { v($0, ball: true) })
                 ctx.stroke(l3, with: .color(.white.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
             }
         }

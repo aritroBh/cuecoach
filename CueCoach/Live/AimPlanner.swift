@@ -28,6 +28,10 @@ struct AimSuggestion: Sendable, Equatable {
     var spin: SpinSuggestion
     /// Suggested power, 1…5 (a 5-step meter).
     var power: Int
+    /// Line 2 polyline (object ball → pocket). Geometric: a straight segment; physics: the simulated path.
+    var objectPath: [Vec2] = []
+    /// Simulated outcome when previewed with physics (nil = geometric only).
+    var outcome: ShotPreview.Outcome? = nil
 }
 
 /// Swappable shot model: SPEC §5.4 Physics plugs in here later.
@@ -66,8 +70,14 @@ enum AimPlanner {
     ///   a shot whose cue path or object path is obstructed by any ball is never suggested.
     static func suggest(cue: Vec2, objects: [Vec2], blockers: [Vec2] = [], spec: TableSpec,
                         predictor: any ShotPredictor = GeometricShotPredictor()) -> AimSuggestion? {
+        candidates(cue: cue, objects: objects, blockers: blockers, spec: spec, predictor: predictor, limit: 1).first
+    }
+
+    /// Every makeable (object, pocket) pair, easiest first.
+    static func candidates(cue: Vec2, objects: [Vec2], blockers: [Vec2] = [], spec: TableSpec,
+                           predictor: any ShotPredictor = GeometricShotPredictor(), limit: Int = 5) -> [AimSuggestion] {
         let R = TableSpec.ballRadius
-        var best: AimSuggestion?
+        var all: [AimSuggestion] = []
         for (oi, obj) in objects.enumerated() {
             for pocket in spec.pockets {
                 let pp = aimPoint(pocket, spec: spec)
@@ -97,16 +107,15 @@ enum AimPlanner {
                       clear(from: obj, to: pp, of: others + [cue], radius: 2 * R) else { continue }
                 let distance = shot.length + want.length
                 let ease = max(0, cos(cut)) * exp(-distance / 2.5)
-                if best == nil || ease > best!.ease {
-                    let (spin, path) = chooseSpin(cueDir: shot.normalized, contact: contact, cut: cut, ghost: ghost,
-                                                  spec: spec, predictor: predictor)
-                    best = AimSuggestion(cue: cue, object: obj, ghost: ghost, pocket: pocket, pocketPoint: pp, cut: cut,
+                let (spin, path) = chooseSpin(cueDir: shot.normalized, contact: contact, cut: cut, ghost: ghost,
+                                              spec: spec, predictor: predictor)
+                all.append(AimSuggestion(cue: cue, object: obj, ghost: ghost, pocket: pocket, pocketPoint: pp, cut: cut,
                                          throwAngle: th, ease: ease, cuePath: path, spin: spin,
-                                         power: power(distance: distance, cut: cut, spin: spin))
-                }
+                                         power: power(distance: distance, cut: cut, spin: spin),
+                                         objectPath: [obj, pp]))
             }
         }
-        return best
+        return Array(all.sorted { $0.ease > $1.ease }.prefix(limit))
     }
 
     /// Prefer stun, then follow, then draw: the first whose cue path avoids every pocket (no scratch).
