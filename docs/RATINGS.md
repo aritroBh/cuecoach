@@ -1,341 +1,511 @@
-# Shot ratings and "Brilliant" (D2) — proposal for review
+# Shot ratings and "Brilliant": research, numbers, compute and timing (rev 2)
 
-Status: **draft, awaiting user review.** Every product choice is tagged **NEEDS USER DECISION** (written as `[UD-n]`).
-The full list is in §8. Thresholds are starting ranges to tune on the Phase 2 gate set (20 hand-built positions)
-plus the real-case recreations in §4. They are not final numbers.
+Status: **draft, awaiting user review.** Product choices are tagged `[UD-n]`; the full list is in §12.
 
----
+**How this relates to `docs/RATING_CLASSES.md` (D18).** D18 is the authority on the **10 classes, their order and
+their rules**. This doc does not change them. It supplies what D18 leaves open: exact signal definitions, the
+statistics that make a 2-point Loss band measurable, intent inference, the brilliant-shot catalogue, the compute
+budget, when the badge appears, calibration, and the interface and schema deltas. Where I think a D18 rule should
+change, it is raised as a `[UD]`, not applied.
 
-## 1. What chess.com does, and what we borrow
-
-### 1.1 Chess.com's model (sourced)
-
-Chess.com rates a move by **expected points lost**. Expected points are the mover's winning chances, computed
-from the engine eval *and the player's rating*. 1.00 is a certain win, 0.00 is a certain loss.[^cc]
-
-| Class | Expected points lost | How it is decided |
-|---|---|---|
-| **Brilliant !!** | ≈ 0 | Best or nearly best move **plus a good piece sacrifice**. The move must not leave you in a bad position, and it does not count if you were already completely winning. Judged more generously for new players.[^cc] |
-| **Great !** | ≈ 0 | "Critical to the outcome": turns losing into equal, or equal into winning, or is **the only good move**.[^cc] |
-| Best | 0.00 | Engine top move |
-| Excellent | 0.00–0.02 | |
-| Good | 0.02–0.05 | |
-| Inaccuracy ?! | 0.05–0.10 | |
-| Mistake ? | 0.10–0.20 | |
-| Blunder ?? | 0.20–1.00 | |
-| Miss | — | Failed to punish the opponent's error[^cc] |
-
-Lichess uses the same idea on a winning-chances scale: drops of 0.1 / 0.2 / 0.3 are Inaccuracy / Mistake / Blunder.[^li]
-Lichess derives winning chances from an empirical regression on real games.[^liacc]
-
-### 1.2 Mapping to pool
-
-| Chess idea | Pool equivalent in CueCoach |
-|---|---|
-| Expected points (rating-aware) | **Rack win probability** `W` from `ShotEngine.winProbability`, using the shooter's **skill model** (spec §5.5.2) |
-| Expected points lost | **Decision loss** `L = EV(best) − EV(chosen)`, *ex-ante*: averaged over Monte Carlo outcomes, before we know what happened |
-| Piece sacrifice | **Giving something up on purpose**: the turn (safety, deliberate miss), ball in hand (intentional foul), a ball (dumping or tying up your own), or a sure pot traded for a harder but better shot |
-| "Not already winning" | `W_before ≤ W_max` (the shot had to matter) |
-| "Only good move" | Gap from the best to the second-best candidate is large |
-| Rating-generosity | Thresholds scale with the skill model (§6.3) |
-
-**Key principle:** the Decision rating judges the *choice* from EV, never the luck of the result. The Execution
-rating judges *what happened*. Brilliant and Great are the only Decision classes that also need the result
-(D2: "executed successfully = the intended outcome happened").
+Rev 2 fixes the 17 reviewer issues. §13 lists what changed and the two points I only partly accepted.
 
 ---
 
-## 2. What the engine produces per shot (inputs to rating)
+## 1. What chess.com and Lichess do
 
-| Symbol | Meaning | Source |
-|---|---|---|
-| `W₀` | Shooter's rack win probability before the shot | `winProbability(pre)` |
-| `W₁` | Shooter's rack win probability after the shot settles (actual result; turn passing handled) | `winProbability(post)` |
-| `ΔW = W₁ − W₀` | Realized **WPA** of the shot | — |
-| `EV(c)` | Expected `W` after candidate `c`, from Monte Carlo with the shooter's noise | `evaluate` |
-| `c*`, `c₂` | Best and second-best candidates by EV | `evaluate` |
-| `ĉ` | **Chosen candidate** (inferred intent, §2.1) | intent matcher |
-| `L = EV(c*) − EV(ĉ)` | Decision loss | — |
-| `G = EV(c*) − EV(c₂)` | "Only move" gap | — |
-| `Pb(ĉ)` | **Baseline P(intended outcome)** for a *reference* player (pot made, or safety reached its target leave) | MC with reference skill |
-| `Ps(ĉ)` | Same, for this shooter's skill | MC with shooter skill |
-| `Rₒ` | Opponent's best reply P(make or legal hit and keep control) after the actual result | `evaluate(post)` for the opponent |
-| `class(ĉ)` | direct / bank / combo / kick / carom / safety / intentional foul / push-out / break | candidate generator |
-| `obvious(ĉ)` | Is this what a naive policy picks? (§3.2) | heuristic |
-| `foul`, `intended` | Did a foul occur, and was it the plan (`ĉ.class == intentionalFoul`)? | `RulesEngine.apply` |
+| System | Scale | Inaccuracy / Mistake / Blunder | Brilliant / Great |
+|---|---|---|---|
+| **Chess.com**[^cc] | Expected points, 0–1, rating-aware | Loss 0.05–0.10 / 0.10–0.20 / > 0.20 (Best 0, Excellent ≤ 0.02, Good ≤ 0.05) | Brilliant: best or nearly best **plus a good sacrifice**, not already winning, judged more generously for new players. Great: "critical", or the only good move |
+| **Lichess**[^li][^liacc] | `winningChances` on **−1..1** (`2/(1+e^(−0.00368·cp)) − 1`; Win% = 50 + 50·that) | Δ ≥ 0.1 / 0.2 / 0.3 on −1..1, which is **0.05 / 0.10 / 0.15 on a 0–1 scale** | None |
 
-### 2.1 Inferring intent (the hardest part)
+So on our 0–1 scale, Lichess is *stricter* than chess.com at the Blunder end (0.15 vs 0.20). D18 uses 0–100 pts:
+Best ≤ 2, Good 2–5, Okay 5–8, Inaccuracy 8–15, Mistake 15–30, Blunder at a Swing of ≤ −30. That sits between the two
+and is wider at the top. That is right for pool: one missed pot often hands over a run-out, which one chess move
+rarely does.
 
-Ratings mean nothing if we guess the wrong intent. Proposal:
-
-1. **Stroke likelihood.** For each candidate, compute the likelihood of the observed stroke (cue direction, speed
-   bucket, tip offset) under the shooter's noise model. Pick the most likely candidate.
-2. **Called pocket** (WPA modes) overrides the pocket of a pot candidate (spec §3).
-3. **Safety vs. missed pot.** If no pot candidate explains the stroke better than a safety candidate does, the intent
-   is safety. Otherwise it is a missed pot.
-4. **Low confidence → no Brilliant / Great.** If the top intent's posterior is below `κ`, the shot can still get a
-   loss-based rating (computed against the expected intent), but it is never promoted. `κ ∈ [0.6, 0.8]`.
-5. **One-tap correction** in the post-game review ("I meant safe"). `[UD-1]`
-
-Fluke rule: if the actual result matches a *different* candidate than `ĉ` (slop, accidental pot), the
-execution is a **Miss** (or "Lucky", see `[UD-9]`) and the shot is never Brilliant.
+**What we borrow.** Rate the *choice* by ex-ante loss of win probability, and the *result* by realized swing.
+"Sacrifice" maps to giving something up on purpose: the turn (safety or deliberate miss), ball in hand
+(intentional foul), or a sure pot traded for a better plan.
 
 ---
 
-## 3. Brilliant-shot catalogue
+## 2. Signals (definitions, perspective, cost)
 
-Every class below comes from real pro play or from a cited instructor. "Signals" are what our engine can check.
-"v1" says whether the 2D engine (spec §5.4: no ball elevation) can **generate** the candidate. Shots it can't
-generate it can still **observe** through the tracker, but it can't score them against alternatives.
+**Perspective rule:** every W is the **rated shooter's team's** rack win probability (D17 team play), before and
+after the turn passes. "Opponent" means the **next opposing shooter in the rotation**, with that player's own
+`SkillModel` (engine.md §5.4 `SkillContext`).
 
-### 3.1 Catalogue
+**Units:** EV is in W units. The engine's value function (engine.md §6.1) computes the expectation of W over noisy
+samples. That generalises spec §5.5.3 (P(make)·value(position) + (1−P)·value(left to opponent)) and is equal to it
+when every outcome is "made, turn continues" or "missed, turn passes". It is **a spec amendment** `[UD-19]`, already
+flagged by the engine track.
 
-| # | Class | Definition | Real cases | Detectable signals | v1 |
-|---|---|---|---|---|---|
-| **B1** | **Lockdown safety** | Safety that leaves the opponent no makeable shot and no good return safety: CB hidden or frozen, object ball far away near a rail | Josh Filler lock-up vs Shane Van Boening (Mosconi Cup); Han Yu lock-up vs Van Boening (World Pool Masters)[^ddshots] | `class=safety`; `Rₒ ≤ 0.10`; opponent's best reply EV leaves us `W ≥ 0.65`; `ΔW ≥ +0.15`; `Pb ≤ 0.5` (hard to execute at that quality) | Yes |
-| **B2** | **Escape kick that pots** | Shooter is snookered (no direct path to a legal ball), kicks off one or more rails, pockets the ball, keeps position | **Efren Reyes "Z-shot"**, Sands Regency XXI final, hill-hill vs Earl Strickland, 11 Jun 1995: two-rail kick on the 5 into the corner with shape on the 6. A miss would probably have lost the match.[^bd30][^pd] Earl Strickland kicking the 8 in to win; Albin Ouschan long kick (Mosconi Cup)[^ddshots] | `W₀ ≤ 0.35` and no direct pot candidate; `class=kick`; made; `ΔW ≥ +0.30`; `Pb ≤ 0.25` | Yes (kick) |
-| **B3** | **Escape kick that plays safe** | Snookered shooter kicks, makes a legal hit, and leaves the opponent hooked or far | Efren Reyes kick-bank safety escape vs Steve Davis; Alain Martel kick-rail-jump safety escape[^ddshots] | `W₀ ≤ 0.35`; `class=kick` + safety intent; legal hit; `Rₒ ≤ 0.20`; `ΔW ≥ +0.20` | Kick yes; jump **no** |
-| **B4** | **Two-way shot** | A pot attempt whose miss branch also leaves the opponent in trouble. Chosen over a "safer pot" with higher P(make) but a disastrous miss branch | Shane Van Boening 2-9 two-way combo to win a match (Mosconi Cup)[^ddshots]; Dr. Dave: on a difficult shot (e.g. a bank) "use two-way shots where possible"; three-rail two-way end-game shot[^ddsafe][^ddend] | `EV(make-branch)` high **and** `EV(miss-branch) ≥ 0.45`; `ĉ ≠ argmax P(make)`; `L ≤ ε`; made, **or** missed with `Rₒ ≤ 0.20` | Yes |
-| **B5** | **Deliberate miss / "leave nothing"** (the user's example) | Shooter has a pot available but deliberately doesn't pot, playing so the opponent can't make the next shot. This is the pool "sacrifice" of the turn | Dr. Dave: "If you're less than about 70% sure of a shot, look for a safety that is significantly better"; in 9-ball, "bury the next ball and/or the cue ball"[^dd8][^dd9] | A pot candidate existed with `Ps ≥ 0.4`, but `ĉ=safety` and `EV(safety) − EV(best pot) ≥ +0.05`; result `Rₒ ≤ 0.15`; `ΔW ≥ +0.10` | Yes |
-| **B6** | **Tactical intentional foul** | Fouling on purpose (gives ball in hand) to tie up the opponent's balls, block a pocket, dump their hanger, or dump their break-out ball. The pool equivalent of a piece sacrifice | Dr. Dave, *Intentional Fouls* (BD Mar 2026): tie up the 2 with the 5; send the 8 between the 1 and 11 to block a pocket; dump an opponent hanger via the 3-11 combo; dump the opponent's break-out ball; end-game 8-ball tie-up when snookered on the 8[^ddfoul] | `class=intentionalFoul`, `intended=true`; `W₁ ≥ W₀ − 0.02` despite ball in hand; opponent's P(run-out with BIH) ≤ 0.35; `L ≤ ε` | Yes (needs foul-intent candidates) |
-| **B7** | **Cluster breakout with insurance** | Pot a ball and in the same stroke break a cluster with the cue ball, keeping an insurance ball for position | Dr. Dave 8-ball principles: break out clusters "when an insurance ball is available, using as little speed as necessary"[^dd8] | made; count of "runnable" balls for the shooter rises by ≥ 2; P(run-out) after rises by ≥ 0.20; `Pb ≤ 0.5` | Yes |
-| **B8** | **Game-winning combo / carom** | Win the rack with a combo or carom on the money ball (9-ball D13: combos and caroms on the 9 win) instead of running out | Shane Van Boening kick-jump-carom for the win; Corey Deuel rail-first carom for the win[^ddshots] | `class ∈ {combo, carom}`; game ends with a win; `W₀ ≤ 0.70`; `Pb ≤ 0.35`; `L ≤ ε` (it really was better than playing on or safe) | Yes (combo/carom); jump **no** |
-| **B9** | **Clutch money-ball bank / kick** | A low-percentage bank or kick on the money ball to win, when it beat the safe option on EV | David Alcaide 9-ball bank to win the World Pool Masters; Chris Melling's 8-ball run-out ending in a four-rail bank; Jayson Shaw two-rail massé kick on the 8 to win[^ddshots][^az25] | Money ball made, win; `class ∈ {bank, kick}`; `Pb ≤ 0.30`; `ΔW ≥ +0.40`; `L ≤ ε` | Bank/kick yes; massé **no** |
-| **B10** | **Push-out trap** (9-ball) | A push-out that leaves a shot the shooter can make but the opponent can't. Either the opponent passes and the shooter converts, or the opponent tries and fails | Forum consensus: "leave something you can do, but your opponent can't"; against pros a push to a jump or a kick-safe[^push1][^push2] | `class=pushOut`; `min(EV_opp_shoots, EV_opp_passes)` for the shooter `≥ 0.55`; realized `ΔW ≥ +0.15` after the opponent's choice resolves | Yes |
-| **B11** | **Swing safety (safety-battle winner)** | A safety from a losing position that hands the opponent a likely loss, so the rack flips | Dr. Dave: safeties that "force difficult kicks", maximize distance, keep the OB off rails and pockets[^ddsafe] | `W₀ ≤ 0.40`, `W₁ ≥ 0.60`; `class=safety`; `Rₒ ≤ 0.15` | Yes |
+| Symbol | Definition | Computed by | Cost |
+|---|---|---|---|
+| `W₀` | `winProbability(pre)`, shooter to play | WP model (engine.md §6.4) | cheap (~5 µs) |
+| `W₁` | `winProbability(post)` after `RulesEngine.apply`, including turn pass, BIH and the foul count | WP model | cheap |
+| **Swing** `ΔW` | `W₁ − W₀` | — | cheap |
+| `EV(c)` | Mean W over N noisy samples of candidate c (shooter σ, CRN seeds, §2.2) | Full pass + rating top-up | **expensive** |
+| `c*`, `c₂` | Best and second-best generated candidate by EV | Full pass (Sequential Halving) | (already paid) |
+| `ĉ` | Chosen candidate, from intent inference (§2.1). If no candidate fits (> 3σ), the **observed-stroke candidate** from `score(stroke:)` | intent matcher | cheap |
+| **Loss** `L` | `EV(c*) − EV(ĉ)` on paired CRN samples. Set to 0 if `L < z·SE_L` (§2.2) | rating top-up | **expensive** |
+| `SE_L` | Standard error of the **paired difference** `W_i(c*) − W_i(ĉ)` across samples i | rating top-up | free with it |
+| `G` | Only-move gap `EV(c*) − EV(c₂)` | top-up at 256 samples | medium |
+| **Difficulty** `D` | This player's P(intended outcome) for ĉ: analytic P(make) (engine.md §4.3) for pots; for safeties, the share of ĉ's samples that hit legally and leave `Rₒ ≤ 0.20` | analytic / samples | cheap |
+| `Rₒ` | **Opponent's best make chance** after the actual result: max analytic P(make) over the opponent's legal pot candidates (kicks included) under the opponent's σ. One quantity, as D18's Brilliant rule needs | Quick pass on the post state (≤ 150 ms) | cheap |
+| `Pbest_pot,pre` | Shooter's best pot P(make) before the shot (D18 Brilliant safety rule) | Quick pass, pre | cheap |
+| `EV_miss(c)` | Mean W over ĉ's *missed* samples (two-way test) | same samples, partitioned | free |
+| `naiveRank` | Rank of ĉ under "pot the highest-P(make) legal ball" | analytic | cheap |
+| `R_run` | Shooter's run-out probability (engine.md §6.4) | WP model | cheap |
+| `runnable` | Shooter's legal targets with a clear direct capsule and P(make) ≥ 0.5 under the shooter's σ | Quick pass | cheap |
+| `trackerOK` | Every ball's position SD ≤ 1.5 cm and ID confidence ≥ the tracker's threshold, for the pre and post states | Tracking | cheap |
 
-Classes the 2D engine can't generate (**jump**, **massé**, scoop-free jump escapes) can be *observed* through the
-tracker: the cue ball passes over a blocker's footprint, or its curve departs from the predicted path. Without
-alternatives to compare against, they can't be scored. `[UD-2]`: show them as "Great" (impact only), or wait until
-the engine models elevation.
+The expensive signals are only `EV`, `L`, `SE_L` and `G`. Everything else comes from the analytic WP model or a
+Quick pass. That is what makes the budget in §8 work.
 
-### 3.2 "Non-obvious" (the creativity gate)
+### 2.1 Intent inference
 
-Brilliant needs a shot an average player would not pick. The test: `obvious(ĉ) = false` if **any** of these hold:
+Every Great or Brilliant rests on this, so it is specified fully.
 
-| Test | Rule |
-|---|---|
-| Naive-policy rank | `ĉ` is **not** the top choice of a naive policy ("pot the highest-P(make) legal ball, ignore position and leave"), *and* the naive pick's EV is ≥ 0.05 below `EV(c*)` |
-| Creative class | `class(ĉ) ∈ {kick, bank, combo, carom, safety, intentionalFoul, pushOut}` |
-| Sacrifice | `ĉ` gives up the turn, ball in hand, or a ball, while a pot with `Ps ≥ 0.4` was on |
+**Observable features only.** From the tracker: cue-ball **launch direction** and **launch speed** (first ~5
+frames), **first contact**, **object-ball departure direction**, and the called pocket (WPA modes, spec §3). Tip
+offset is **not** observable from a tripod camera, so it is not a feature. The spin implied by the CB's post-contact
+curve is too confounded with speed and throw to use for intent (it is used only for the skill model's weak speed
+residual, engine.md §5.2).
 
-`[UD-3]`: should a plain cut pot ever qualify as Brilliant (e.g. B7 cluster breakout with a straight-in pot)? This
-proposal says yes, but only through the naive-policy test.
+**Likelihood.** `ℓ(c) = N(launchDir; φ_c, σ_φ) · N(log launchSpeed; log V_c, σ_V) · 1[firstContact consistent with c]`.
+It uses the shooter's σ, and a Student-t (ν = 4) instead of the Gaussian for robustness, matching engine.md §5.3.
+The "consistent" factor is soft (0.05, not 0) because a thin miss can change the first contact.
 
-### 3.3 What is *not* Brilliant (anti-cases)
+**Prior: uniform over plans, not over variants, and with no EV term.** A plan is (target, pocket, kind), or
+"safety" as one plan. Each plan gets equal mass, split evenly over its deduplicated stroke variants.
+- *Why not EV-weighted:* it would pull intent toward `c*` and bias L down, which is the very thing we are measuring.
+- *Why plans, not variants:* the safety grid produces up to 432 variants, and a uniform-over-variants prior would
+  make "safety" win every ambiguous stroke.
+- A per-player frequency prior (how often this player plays safe) is a v2 option once there is data.
 
-| Case | Why | Proposed rating |
-|---|---|---|
-| Fluke / slop pot | Outcome ≠ intent | Decision by `L`; Execution = Miss (or "Lucky" `[UD-9]`) |
-| Hard bank made when an easy safety was much better | High risk, `L` large | **Mistake / Blunder + Made**. "Right result, wrong choice" |
-| Easy pot while `W₀ ≥ 0.90` | Already winning (chess.com rule) | Best |
-| Great lockdown that the opponent escapes anyway | Execution fine; impact comes later | Brilliant still allowed: rate on `Rₒ` at settle, not on the opponent's luck. `[UD-4]` |
-| Intentional foul that leaves the opponent an easy run-out | `W₁ ≪ W₀` | Mistake / Blunder by `L` |
+**Posterior** `π(c) ∝ prior(c)·ℓ(c)`. `intentConfidence = π(ĉ)`. **κ = 0.7** (range 0.6–0.8).
 
----
+**Safety needs a margin.** ĉ is a safety only if `ℓ(best safety) / ℓ(best pot) ≥ λ`, with **λ = 4** (range 3–10).
+Otherwise ĉ is the best-matching pot, i.e. a *missed pot*. A missed pot is **never** promoted, however good the
+leave. This stops "badly missed pot that happened to hook the opponent" from becoming a B5/B11 Brilliant.
 
-## 4. Proposed rating algorithm
+**Called pocket** overrides the pocket of a pot plan (WPA modes). In bar 8-ball only the 8 is called (RULES B1).
 
-### 4.1 Decision rating, in priority order
+**Fluke rule** (blocks Great and Brilliant). The result is a fluke if (a) a pot plan's ball went in a different
+pocket, or a different ball went in, (b) a safety plan potted a ball (bar slop keeps the turn, RULES B18/B22), or
+(c) the realized outcome is more likely under another plan than under ĉ (posterior over plans given the outcome).
+A fluke is still rated by Loss. Its Execution is "Miss", with the "Lucky" icon `[UD-9]`.
 
-```
-input: L, G, W₀, W₁, ΔW, Pb, Rₒ, class(ĉ), obvious(ĉ), intentConfidence, intendedOutcomeHappened, foul, intended
+**Bar slop and safety intent.** If a safety plan slop-pots a group ball, the turn continues (bar rules). The
+intended outcome (opponent to shoot, hooked) did **not** happen, so the shot is a fluke. Loss is unaffected
+because the samples already include slop outcomes.
 
-1. if intentConfidence ≥ κ and intendedOutcomeHappened and L ≤ ε_B and not obvious(ĉ)
-      and W₀ ≤ W_max and W₁ ≥ W_floor and ΔW ≥ Δ_B
-      and (Pb ≤ P_B or class(ĉ) ∈ creative) and matches some B1–B11 signal set
-      → BRILLIANT !!
-2. if intendedOutcomeHappened and L ≤ ε_G and W₀ ≤ W_max
-      and (G ≥ G_only                      // only good move
-           or (W₀ < 0.40 and W₁ ≥ 0.50)    // losing → equal
-           or (W₀ < 0.60 and W₁ ≥ 0.70))   // equal → winning
-      → GREAT !
-3. L ≤ ε_best            → BEST
-4. L ≤ t_good            → GOOD
-5. L ≤ t_inacc           → INACCURACY ?!
-6. L ≤ t_mistake         → MISTAKE ?
-7. otherwise             → BLUNDER ??
-Override: unintended foul with ΔW ≤ −t_foul → at least MISTAKE; ≤ −t_blunder → BLUNDER.
-```
+**Corrections `[UD-1]`.** A one-tap "I meant safe / I meant this pocket" in the game review re-runs `rate` with
+the corrected ĉ. Proposal: a correction **can change Loss-based classes but can never promote to Great or
+Brilliant**, and it is logged as `attributionSource = tap`. So it can't be used to farm Brilliants, Safety Chess
+archetype points or WPA.
 
-### 4.2 Thresholds (ranges to calibrate)
+**Adversarial fixtures** (must hold):
+1. Missed thin cut whose miss leaves the opponent hooked, and a safety stroke is 2× less likely than the pot:
+   intent = pot, class by Loss, no promotion.
+2. Same, but the stroke is soft and 6× more likely as a safety: intent = safety, may be Great.
+3. Safety stroke that slop-pots a ball in bar 8-ball: fluke, no promotion.
+4. Two pocket plans equally likely (π 0.45 / 0.45): confidence < κ, no promotion, Loss uses the π-weighted EV.
+5. Correction from pot to safety on a shot that would then qualify as Great: stays at the Loss-based class.
 
-Win probability is in points of `W` (0–1).
+### 2.2 Making a 2-point band measurable
 
-| Parameter | Meaning | Chess.com analogue | Proposed start | Calibrate within |
+**The old rule was wrong** (reviewer issue 1). Overlapping CIs aren't a test of the difference. The SE of a
+difference of independent means is √2× bigger, and at N = 1000 the rule erased everything below ~0.06.
+
+**New rule.**
+1. **Common random numbers.** Sample i of every candidate uses the same noise vector (engine.md §6.3:
+   counter-based seeds, antithetic pairs). The same seed also draws the **ball-position perturbation** (§2.3), so
+   both candidates see the same perceived table.
+2. Compute `d_i = W_i(c*) − W_i(ĉ)`, `L = mean(d)`, `SE_L = sd(d)/√N`.
+3. If `L < z·SE_L` with **z = 1.645** (one-sided 95%), set `L := 0` (Best). Otherwise use L as measured.
+4. Pick N so that `z·SE_L ≤ 0.02` (the Best band).
+
+**Arithmetic.** Per-sample SD of W, `s ≈ 0.30`. That is conservative: a 50% pot with W 0.8 made / 0.3 missed has
+SD 0.25. CRN correlation ρ between the two candidates varies: about 0.9 for two variants of the same pot, about 0
+for pot vs safety. `SE_L = s·√(2(1−ρ)/N)`, so the N needed for `z·SE_L ≤ 0.02` is `2(1−ρ)(z·s/0.02)²`:
+
+| ρ | 0 (pot vs safety) | 0.5 | 0.7 | 0.9 (same pot, other spin) |
 |---|---|---|---|---|
-| `ε_best` | Max loss for "Best" | Best + Excellent (0–0.02) | 0.03 | 0.02–0.05 |
-| `t_good` | Good upper bound | 0.05 | 0.07 | 0.05–0.10 |
-| `t_inacc` | Inaccuracy upper bound | 0.10 | 0.13 | 0.10–0.18 |
-| `t_mistake` | Mistake upper bound (above = Blunder) | 0.20 | 0.25 | 0.20–0.35 |
-| `ε_B`, `ε_G` | Max loss to stay eligible for Brilliant / Great | "best or nearly best" | 0.03 | 0.02–0.05 |
-| `Δ_B` | Min realized WPA for Brilliant | — | +0.15 | +0.10 – +0.25 |
-| `P_B` | Max baseline P(intended) for "hard" | — | 0.35 | 0.25–0.50 |
-| `W_max` | "Already winning" cutoff | "not already completely winning" | 0.90 | 0.85–0.95 |
-| `W_floor` | Brilliant must not leave you worse than this | "must not leave you in a bad position" | 0.50 | 0.40–0.55 |
-| `G_only` | "Only move" gap to second best | "only good move" | 0.12 | 0.08–0.20 |
-| `κ` | Min intent confidence to promote | — | 0.7 | 0.6–0.8 |
-| `t_foul`, `t_blunder` | Foul override bounds | — | 0.10 / 0.25 | 0.08–0.30 |
+| N needed | 1218 | 609 | 365 | 122 |
 
-**Why wider than chess.** One pool shot moves rack win probability far more than one chess move moves expected
-points: a miss in 9-ball often hands over a run-out. Chess bands applied as-is would turn ordinary misses into
-Blunders. The ranges start wider. Tune them so the class frequencies in §4.4 hold.
+**Chosen:** `N_rate = 1024` paired samples for ĉ and c\*, and 256 for c₂ (G only has to clear 10 pts). This is
+the probability that a shot whose true Loss sits at a band's midpoint gets that band (normal approximation,
+computed in the scratchpad):
 
-**Monte Carlo noise floor.** At N simulations, the standard error of an EV is about `√(p(1−p)/N)`, roughly 0.016 at
-N = 1000 and p = 0.5. Any band narrower than about 2 SE is noise. Rule: if the confidence intervals of `EV(ĉ)` and
-`EV(c*)` overlap, `L := 0` (Best). This keeps `ε_best ≥ 0.02` and ties the minimum N to the on-device eval budget
-(< 3 s, Phase 2 gate).
+| True Loss (band midpoint) | ρ = 0, N = 1024 | ρ = 0.7, N = 1024 | ρ = 0, N = 512 (thermal `.serious`) |
+|---|---|---|---|
+| 0.035 (Good) | 71% | 96% | 38% |
+| 0.065 (Okay) | 74% | 96% | 58% |
+| 0.115 (Inaccuracy) | 99% | 100% | 94% |
 
-### 4.3 Worked examples (to become unit fixtures)
+Pot vs safety at ρ ≈ 0 is the hard case. Good and Okay are reachable but noisy there. Under thermal throttling the
+rule degrades gracefully: more Goods become Best, never harsher.
+- `[UD-14]`: if the Phase 2 benchmark shows typical ρ < 0.3, accept the noisy Good/Okay bands, or let the rating
+  pass run longer (the budget allows ~2×).
+- **Unit fixture (band reachability).** A synthetic two-arm bandit with true gaps 0.01 / 0.035 / 0.065 / 0.115 /
+  0.20 at ρ ∈ {0, 0.7}, N = 1024, 200 seeds. Assert hit rates ≥ the table above minus 5 points, and that true
+  Loss 0.01 is Best in ≥ 95%.
 
-| Situation | `W₀` | `ĉ` | `L` | `Pb` | Result | `W₁` | Rating |
+### 2.3 Tracking error
+
+Ball positions from the homography carry ~0.5–1 cm error (engine.md R2), and thin cuts and banks are very
+sensitive to it.
+- **Propagate it.** Each MC sample also draws a position offset for every ball from the tracker covariance
+  (default isotropic 6 mm until Phase 3 measures it). The draw is shared across candidates (CRN), so it widens EV
+  but barely widens L.
+- **Sensitivity fixture.** For each B-class fixture and each §5 row: perturb all positions 20× by the Phase 3 error
+  budget (1 cm SD). The class must be unchanged in ≥ 90% of runs, and otherwise move at most one adjacent band.
+- **Low confidence.** If `trackerOK` is false, no promotion (no Great or Brilliant), and the shot is rated by Loss
+  only. `[UD-21]`
+
+---
+
+## 3. Brilliant-shot catalogue (B1–B12)
+
+The catalogue **does not gate** Brilliant. D18's five criteria do. A B-tag explains *why* a shot was special. It
+is stored per shot and drives the review caption and archetype features (e.g. B1/B11 → Safety Chess).
+`[UD-3]` covers whether to add the spec's "non-obvious" test as an extra gate.
+
+**v1 column:** **Gen** means the engine generates the shot and its alternatives, so Loss is meaningful. **Obs**
+means it is not generated, but the observed stroke is simulated by `score(stroke:)` with the same seeds, so its EV
+is compared against the generated set. **Book** is D18 class 1, never rated. **No** means the 2D physics can't
+simulate it (jump, massé).
+
+| # | Class | Definition | Real cases (sourced) | Signals | v1 |
+|---|---|---|---|---|---|
+| **B1** | Lockdown safety | Leaves no makeable shot and no good return safety | Josh Filler "lock-up safety against Shane VanBoening in Mosconi Cup"; "Han Yu lock-up safety against Shane Van Boening in World Pool Masters"[^ddshots] | safety (by λ margin); `Rₒ ≤ 0.10`; Swing ≥ +15 | Gen |
+| **B2** | Escape kick that pots | Snookered, kicks, pockets, keeps shape | **Efren Reyes Z-shot**, Sands Regency XXI, hill-hill vs Earl Strickland, 11 Jun 1995[^bd30][^pd]; Earl Strickland "kicking the 8 in for the win"[^ddshots] | no clear direct pot; kick; made; Swing ≥ +30 | Gen |
+| **B3** | Escape kick that plays safe | Snookered, kicks, legal hit, opponent hooked | Efren Reyes "kick bank safety escape against Steve Davis"[^ddshots] | kick + safety intent; legal; `Rₒ ≤ 0.20` | Gen (Martel's "kick-rail-jump" escape: **No**) |
+| **B4** | Two-way shot | Pot attempt whose miss branch also leaves the opponent bad | SVB "two-way shot 2-9 combo to win a Mosconi Cup Match"; Earl Strickland "kick-bank 2-way shot"[^ddshots] | `EV_miss(ĉ) ≥ 0.45`; ĉ ≠ naive pick; made, or missed with `Rₒ ≤ 0.20` | Gen (miss branch = same samples, free) |
+| **B5** | Deliberate miss / leave nothing (D2) | Pot available, plays safe instead, opponent has nothing | AZB contributor 8onthebreak (quoted on Dr. Dave's page): "If you are less than 70% sure you'll make the shot…start looking for a safety."[^dd8] KellyStick: "you really need to bury the next numbered ball and/or CB in a defense"[^dd9] | safety by margin; `Pbest_pot,pre ≥ 0.4`; `EV(ĉ) − EV(best pot) ≥ +0.05`; `Rₒ ≤ 0.15` | Gen |
+| **B6** | Tactical intentional foul | Foul on purpose to tie up, block, or dump a ball | Dr. Dave, *Intentional Fouls* (BD Mar 2026): tie up a ball, block a pocket with the 8, dump a hanger, dump the break-out ball[^ddfoul] | foul; `W₁ ≥ W₀ − 0.02`; `L ≤ 0.02` vs generated options | **Obs**. Under D18 every BIH foul is Mistake, so B6 can't be Great/Brilliant unless `[UD-5]` changes it |
+| **B7** | Cluster break-out with insurance | Pot and break a cluster, insurance ball kept | Dr. Dave's 8-ball summary: "Break out clusters when there is an insurance ball available, and use as little speed as necessary"; Robert Byrne (rule 7, quoted on the same page)[^dd8] | made; `runnable` count +2 or more; `R_run` +0.20 or more | Gen |
+| **B8** | Money-ball combo / carom (9-ball, D13) | Wins with a combo or carom instead of running out | Earl Strickland "two-rail kick combo for the win"; Efren Reyes "kick carom for the win"; Jayson Shaw "two-way bank carom for the win"[^ddshots] | combo/carom; win; `W₀ ≤ 0.70`; `L ≤ 0.02` | combo **Gen**; carom **Obs** (carom candidates are v2, engine.md §4.1) |
+| **B9** | Clutch money-ball bank / kick | Low-percentage bank or kick on the money ball that beat safe play on EV | David Alcaide "9-ball bank to win the World Pool Masters"; Chris Melling 8-ball sequence ending in a four-rail bank[^ddshots] | money ball made; win; bank/kick; `D ≤ 0.30`; `L ≤ 0.02` | Gen (Shaw's massé kick: **No**) |
+| **B10** | Push-out trap (9-ball) | Leaves a shot the shooter can make and the opponent can't | AZB forum: "leave something you can do, but your opponent can't"[^push1][^push2] | — | **Book** (D18). Review-only caption once the opponent's choice resolves `[UD-20]` |
+| **B11** | Swing safety | Safety from a losing position that flips the rack | Dr. Dave: safeties that force difficult kicks and maximise distance[^ddsafe] | `W₀ ≤ 0.40`, `W₁ ≥ 0.60`; safety by margin; `Rₒ ≤ 0.15` | Gen |
+| **B12** | Three-foul trap (WPA 9-ball) | Safety that hooks an opponent already on two fouls (Reg 8: a third foul loses) | Dr. Dave's video index lists three-foul examples, e.g. "Efren Reyes vs. Jose Parica"[^ddshots] | opponent `consecutiveFouls == 2`; safety by margin; `Rₒ ≤ 0.20`; Swing ≥ +25 (the WP model prices the foul count, engine.md §6.4) | Gen |
+
+Shots the engine can't simulate (jump, massé) can only be *seen* by the tracker. `[UD-2]` proposes Execution only,
+with Decision shown as "Okay" and no Great/Brilliant, until the physics models elevation.
+
+**Kick and bank confidence.** Cushion restitution is constant in v1 (D16), so Difficulty and EV for B2, B3 and B9
+are **low-confidence** until e(v) is calibrated on a real table. They still rate, but the review marks them with a
+small "estimate" icon, and calibration (§9) re-checks them first.
+
+### 3.1 Not Brilliant (anti-cases → fixtures)
+
+| Case | Why | D18 outcome |
+|---|---|---|
+| Fluke / slop pot | Outcome ≠ intent | By Loss; Execution Miss + Lucky icon |
+| Hard bank made when an easy safety was much better | Loss large | Mistake (Loss 15–30) or Inaccuracy; Execution Made |
+| Easy 9 at W₀ 0.95 | Swing < 25, D > 30% | Best |
+| Lockdown the opponent escapes with a miracle | Judged at settle | Still eligible `[UD-4]` |
+| Intentional foul leaving an easy run-out | `W₁ ≪ W₀` | Mistake (D18 row 3) or Blunder (Swing ≤ −30) |
+| Missed pot that happens to hook the opponent | λ margin fails, so it's a missed pot | By Loss, never promoted |
+
+---
+
+## 4. Applying D18 (numbers, gates, special cases)
+
+D18's table is evaluated top-down as written. This section adds only what D18 leaves open.
+
+**Thresholds (D18 numbers in W units, with the calibration range RATINGS may tune):**
+
+| D18 term | Value | Tune within | Note |
+|---|---|---|---|
+| Best Loss | ≤ 0.02 | 0.02–0.03 | Measured with the §2.2 rule (`L := 0` when `L < 1.645·SE_L`) |
+| Good / Okay / Inaccuracy | 0.02–0.05 / 0.05–0.08 / 0.08–0.15 | ±0.01 per edge | |
+| Mistake (Loss/Swing) | 0.15–0.30 | 0.12–0.35 | |
+| Blunder Swing | ≤ −0.30 | −0.25 to −0.40 | |
+| Miss: Best's Difficulty / gap | ≥ 0.70 / ≥ 0.10 | 0.6–0.8 / 0.08–0.15 | |
+| Great: Loss / D / G / Swing | ≤ 0.03 / ≤ 0.50 / ≥ 0.10 / ≥ +0.15 | | |
+| Brilliant: Loss / pot D / safety `Rₒ` & `Pbest_pot,pre` / Swing | ≤ 0.02 / ≤ 0.30 / ≤ 0.20 & ≤ 0.40 / ≥ +0.25 | | Plus "decides the rack from W₀ ≤ 0.50" |
+| κ / λ | 0.7 / 4 | 0.6–0.8 / 3–10 | §2.1 |
+
+**What "successfully executed" requires** (D18: "the intended outcome happened"), for both Great and Brilliant:
+`intentConfidence ≥ κ`, **and** not a fluke, **and** `trackerOK`, **and** the intended outcome happened. For a pot
+that means ĉ's ball in ĉ's pocket. For a safety it means a legal hit and `Rₒ ≤ 0.20`. These are interpretations of
+D18's wording, not new rules. They are listed in `[UD-21]` so you can see them.
+
+**Special cases D18 doesn't spell out:**
+
+| Case | Rule | Fixture |
+|---|---|---|
+| Illegal shot with no matching candidate (9-ball non-lowest first; the 8 hit early in bar rules) | ĉ = observed-stroke candidate via `score(stroke:)`. L = EV(c*) − EV(observed). D18 negative rows apply first: game loss → Blunder, BIH foul → Mistake | 9-ball, shooter pots the 7 off a wrong-ball-first hit → Mistake, L recorded |
+| 3-foul rule (WPA 9-ball) | The foul count is part of `GameState`, so W prices it (engine.md §6.4). A third foul loses the rack → Blunder (D18). A second foul is Mistake, and its lower W is visible in Swing | Shooter on 1 foul fouls again → Mistake. Opponent on 2 hooked → B12 |
+| Team play (D17) | W = team rack win probability. `Rₒ` and opponent plies use the **next opposing shooter's** σ. WPA is credited to the shooter | 2v2 with a strong next opponent: lower W₁ than vs a weak one |
+| Break, re-break, push-out | **Book** (D18 row 1). Execution still recorded (break: legal / ball down / scratch) | |
+| Player options (accept/pass after a push, accept table / re-break) | **Not rated.** The game review shows the engine's preferred option as a ghost | |
+| Bar slop on a safety | Fluke (§2.1) | Fixture 3 in §2.1 |
+
+**Brilliant is post-game (D18).** `Ratings.selectBrilliant(game:)` runs once when the game ends, over the stored
+per-shot records. Among shots meeting criteria 2–5 it picks the one with the highest SotG score. Live, those shots
+show as Great.
+
+---
+
+## 5. Worked examples (unit fixtures, D18 classes)
+
+| Situation | W₀ | ĉ | L | D | Result | W₁ | Class (Execution) |
 |---|---|---|---|---|---|---|---|
-| Efren Z-shot analogue: snookered, two-rail kick pots and leaves shape | 0.25 | kick | 0.00 | 0.12 | made | 0.85 | **Brilliant !! / Made** (B2) |
-| Pot available (`Ps` 0.45), player buries the CB instead; opponent has nothing | 0.50 | safety | 0.00 | 0.40 | `Rₒ` 0.05 | 0.78 | **Brilliant !! / Made** (B5) |
-| 8-ball: tie up the opponent's ball on purpose, BIH given (Dr. Dave Image 1) | 0.30 | int. foul | 0.01 | 0.60 | intended | 0.50 | **Brilliant !! / Made** (B6; creative class, `ΔW` +0.20) |
-| Same tie-up, but the opponent keeps a decent break-out | 0.30 | int. foul | 0.02 | 0.60 | intended | 0.40 | **Best / Made** (`ΔW` +0.10 < `Δ_B`; `W₁` < 0.50 so not Great) |
-| Only one shot doesn't lose: thin cut, others lose 0.2+ | 0.55 | direct | 0.00 | 0.55 | made | 0.80 | **Great !** (`G` 0.2) |
-| Easy stop-shot on the 9 for the win | 0.95 | direct | 0.00 | 0.97 | made | 1.00 | **Best / Made** |
-| Slight wrong side on position | 0.70 | direct | 0.05 | 0.80 | made | 0.62 | **Good / Made** (position: OK) |
-| Long bank made when an easy safety was much better | 0.50 | bank | 0.22 | 0.20 | made | 0.85 | **Mistake ? / Made** |
-| Scratches on an easy 8 | 0.92 | direct | 0.00 | 0.90 | foul, loss | 0.00 | **Blunder ?? / Miss** via the spec's foul override, though the decision was fine `[UD-5]` |
-| Shoots the 8 early on an open table in bar rules | 0.50 | — | 0.50 | — | foul loss | 0.00 | **Blunder ??** |
+| Efren Z-shot analogue: snookered, two-rail kick pots with shape | 0.25 | kick | 0.00 | 0.12 | made | 0.85 | Great live → **Brilliant** post-game if SotG (B2) |
+| Pot on (P 0.45); buries the CB instead; `Rₒ` 0.05 | 0.50 | safety (LR 8) | 0.00 | 0.70 | hooked | 0.78 | Great live (Swing +0.28) → Brilliant if SotG (B5) |
+| Same stroke, but LR(safety/pot) = 2 | 0.50 | pot (missed) | 0.06 | 0.45 | hooked | 0.78 | **Okay** (never promoted) |
+| Only one shot doesn't lose; thin cut; others ≥ 0.20 worse | 0.55 | direct | 0.00 | 0.55 | made | 0.80 | **Great** (G 0.20) |
+| Same, but `intentConfidence` 0.55 | 0.55 | direct | 0.00 | 0.55 | made | 0.80 | **Best** (no promotion) |
+| Easy 9 for the win | 0.95 | direct | 0.00 | 0.97 | made | 1.00 | **Best** (Made) |
+| Slightly wrong side on position | 0.70 | direct | 0.04 | 0.80 | made | 0.62 | **Good** (Made, position OK) |
+| Long bank made when an easy safety was much better | 0.50 | bank | 0.22 | 0.20 | made | 0.85 | **Mistake** (Made) |
+| Easy pot on, went for a harder ball (−0.12) and made it | 0.60 | direct | 0.12 | 0.40 | made | 0.62 | **Miss** ("Missed chance") |
+| Scratch on an easy 8 (correct choice) | 0.92 | direct | 0.00 | 0.90 | loss | 0.00 | **Blunder** (D18 row 2; see `[UD-5]`) |
+| Scratch off an object ball mid-rack (correct choice) | 0.60 | direct | 0.01 | 0.75 | BIH | 0.30 | **Mistake** (D18 row 3; see `[UD-5]`) |
+| 8 early on an open table, bar rules | 0.50 | observed | 0.50 | — | loss | 0.00 | **Blunder** |
+| Intentional tie-up foul, W barely drops | 0.30 | observed foul | 0.01 | — | BIH | 0.29 | **Mistake** under D18; **Best** under `[UD-5]` option c |
+| Beginner σ, 20 reference positions | — | — | — | — | — | — | Spread floor: ≥ 30% of rated shots are not Best (§10) |
 
-### 4.4 Target class frequencies (calibration targets)
-
-| Class | Target share of competitive shots | Rationale |
-|---|---|---|
-| Brilliant !! | ≤ 1–2% (about 1 per 2–3 racks of amateur play) | Must feel rare, like chess.com's |
-| Great ! | 3–6% | |
-| Best | 35–50% | |
-| Good | 15–25% | |
-| Inaccuracy ?! | 10–15% | |
-| Mistake ? | 5–10% | |
-| Blunder ?? | 2–6% | |
-
-`[UD-6]`: confirm these targets, especially how rare Brilliant should be.
+Every B-class also gets one positive fixture and one near-miss fixture just outside a threshold.
 
 ---
 
-## 5. Execution rating
+## 6. Execution rating
 
-Execution answers "did the intended thing happen?" It is independent of the Decision rating.
+Independent of the class. It follows engine.md §7 so that there is one definition.
 
-| Intent | **Made** | **Near miss** | **Miss** |
+| Intent | Made | Near miss | Miss |
 |---|---|---|---|
-| Pot (direct, bank, combo, kick-pot, carom) | Intended ball in the intended (called) pocket, no foul | Object ball reached the jaws, or its path came within 1 ball width of the pocket mouth | Otherwise |
-| Safety / deliberate miss | Legal hit **and** `Rₒ ≤` target (proposed 0.25) | Legal hit, `Rₒ` 0.25–0.45 | Foul, or `Rₒ > 0.45` |
-| Intentional foul | Tie-up / block / dump achieved (the target ball's state matches the candidate) | Partial | Not achieved |
-| Push-out | Opponent's best `EV ≤ 0.45` for them | 0.45–0.55 | > 0.55 |
-| Break | Legal, ≥ 1 ball down, CB not scratched | Legal, nothing down | Foul / scratch |
+| Pot | ĉ's ball in ĉ's (called) pocket, no foul | OB departure within 1.5× the window half-width outside the window, or a jaw rattle | Otherwise |
+| Safety | Legal hit and `Rₒ ≤ 0.20` | Legal hit, `Rₒ` 0.20–0.40 | Foul, or `Rₒ > 0.40` |
+| Intentional foul (Obs) | W₁ ≥ W₀ − 0.02 | W₁ within 0.05 | Otherwise |
+| Break | Legal, ≥ 1 ball down, no scratch | Legal, nothing down | Foul |
 
-**Position-play sub-result** (pots only, and only when the turn continues):
-`r = next-shot value achieved / next-shot value planned by ĉ`.
+These numbers are new product choices: `[UD-16]`.
 
-| Position | Rule | Visual (no text while aiming; this is post-shot) |
-|---|---|---|
-| **Perfect** | `r ≥ 0.9` | Green ring at the CB rest spot |
-| **OK** | 0.6 ≤ `r` < 0.9 | Yellow ring |
-| **Out of line** | `r` < 0.6 | Red ring + ghost of the planned spot |
+**Position** (pots, turn continues). Uses engine.md's **position zone**: the CB rest cells whose leaf value is
+≥ 0.8× the best sampled leaf value for ĉ.
+- Let `v` = the achieved leaf value and `v̂` = the best sampled leaf value.
+- If `v̂ < 0.20` (no good shape existed), the result is "n/a". This avoids dividing by ~0.
+- Otherwise `r = clamp(v / v̂, 0, 1)`: **Perfect** if in the zone (r ≥ 0.8), **OK** if 0.5 ≤ r < 0.8, **Out of
+  line** if r < 0.5.
 
-Post-shot badge (spec §2: icon + color + ≤ 2 words): **one** word for the decision class, plus an execution icon.
-Possible layout: `!! Brilliant` with a check, a dashed check, or a cross for Made / Near miss / Miss. `[UD-7]`
-decides which of the two appears as the word.
+Visual, post-shot only: green, yellow or red ring at the CB rest spot. The red ring adds a faint ghost circle at the
+best zone cell. That is a new post-shot UI element: `[UD-17]`.
 
 ---
 
-## 6. Open design calls inside the algorithm
+## 7. Timing contract (when the badge appears and disappears)
 
-### 6.1 Reference skill for `EV` and `Pb`
+```
+t0          stroke detected (CB velocity threshold, spec §5.3)
+t0+0.2 s    ĉ inferred from launch direction + speed → rating top-up starts (c*, ĉ to 1024; c₂ to 256)
+            runs while the balls are still rolling; ~0.9 s wall (§8)
+ts          all balls at rest (typically t0 + 2–4 s)
+ts+≤0.2 s   post state → W₁ (5 µs), Quick pass for Rₒ (≤150 ms), rules, fluke check → rate() → badge
+ts+3 s      badge auto-dismisses
+any time    the badge HIDES at once when any meshed phone sees a shooting stance (pose) near the CB or CB motion
+```
 
-| Option | `EV` / `L` computed with | `Pb` computed with | Effect |
-|---|---|---|---|
-| **A (proposed)** | The shooter's own skill model | A fixed "club player" reference | Fair "best for *you*" choices; "hard" means hard for a typical player |
-| B | Fixed reference for both | Reference | Comparable across players; harsh on beginners |
-| C | Shooter skill for both | Shooter | Brilliant becomes "hard for you". A beginner's routine cut could be Brilliant |
-
-`[UD-8]`
-
-### 6.2 Rack vs match context
-
-The engine's `W` is rack-level. Efren's Z-shot came at hill-hill, where the rack *was* the match. Proposal: rating
-uses rack `W` only. A separate **clutch flag** (spec §6) marks shots where the match is on the hill, and Shot of
-the Game gets the match bonus. `[UD-10]`: should match state also lower `Δ_B` or `P_B` for Brilliant?
-
-### 6.3 Skill generosity (chess.com judges new players more generously)
-
-Proposal: with option A, generosity comes for free, since `L` uses the player's own noise. Optionally, scale
-`ε_B` and `P_B` up by up to 1.5× for players with fewer than 50 competitive shots. `[UD-11]`
-
-### 6.4 Bar 8-ball etiquette
-
-In bar culture, safeties and intentional fouls can be seen as "dirty pool". Dr. Dave notes that bar rules often
-expect every safety to come from an honest attempt to pot a ball.[^ddbar] Our bar rules allow safeties (rules-notes
-B22). `[UD-12]`: should B5 / B6 be eligible for Brilliant in bar 8-ball? Proposal: yes, because D2 explicitly names
-deliberate misses.
-
-### 6.5 "Miss" (chess.com's failed-to-punish class)
-
-Our 7 classes have no "Miss". Proposal: fold it into the loss ladder. Failing to exploit a big opponent error
-already shows up as a large `L`. `[UD-13]`: add an 8th class instead?
+- If the top-up hasn't finished at `ts` (thermal), wait up to 0.5 s, then rate with the samples available. The
+  `SE_L` rule makes that generous, never harsh. **The class never changes after display** (engine.md R5). The
+  review shows the same class.
+- **Badge content:** icon + color + ≤ 2 words (D18 labels). Live it is never Brilliant (D18). Push-out and
+  player-option outcomes appear only in the game review.
+- `[UD-7]`: when someone starts aiming, hide the badge entirely (proposed), or shrink it to icon + color only. The
+  spec says no text while aiming, so it must at least lose its words.
+- Mesh: only the host runs the engine. The badge is broadcast after settle, in the spirit of D3.
 
 ---
 
-## 7. Implementation notes (for the Phase 2 worker)
+## 8. Compute budget (iPhone 15 Pro Max, A17 Pro)
 
-- `rate(chosen:outcome:eval:)` must be a **pure function** of `Evaluation` + `ShotTrace` + thresholds. Keep the
-  thresholds in a `RatingThresholds` struct so tests and calibration can sweep them.
-- Add fields to `Evaluation`: `bestEV`, `secondEV`, `ev(of:)`, the EV confidence interval, `baselinePMake(of:)`,
-  `opponentBestReply(post:)`, `naivePick`, and the miss-branch EV per candidate (needed for B4).
-- New `Candidate.class` cases are needed for `intentionalFoul` (target: tie-up / block / dump) and `pushOut`.
-  Jump and massé stay out until the physics models elevation.
-- Store `L`, `ΔW`, `Pb`, the matched B-class, and the intent confidence per shot in competitive stats (spec §6), so
-  calibration can replay real sessions.
-- TDD fixtures: every row of §4.3, plus one fixture per B-class (§3.1), built as hand-made `TableState`s.
+Uses engine.md's measured assumptions: 0.35 ms per sparse sim, about 2.5 effective P-cores with the camera live,
+2-ply leaf ≈ 3 nominal sims at a 50% cache-hit rate, so **≈ 0.93 ms CPU per candidate-sample**. The reviewer's
+estimate of 10⁸ sims assumed full MC on every candidate. The engine instead uses an analytic Quick pass,
+Sequential Halving on 16 arms[^sh], and a top-up only on the 2–3 arms the rating needs.
+
+| Stage | When | Candidates × samples | CPU | Wall | Tag |
+|---|---|---|---|---|---|
+| Quick pass (analytic P, nominal sims) | while aiming | ~140 variants, 0 MC | ~70–120 ms | ≤ 50 ms | engine.md §9.1 |
+| Full pass (Seq. Halving, CRN) | while aiming | 16 arms, 768 total | ~1.1 s | ~0.45 s | engine.md §9.2 |
+| **Rating top-up** | stroke → settle | ĉ + c* to 1024, c₂ to 256 (reuses Full-pass samples) | ≈ (2×1024 + 256) × 0.93 ms ≈ **2.1 s** | **≈ 0.86 s** | new, expensive |
+| Observed-stroke candidate (if no match) | same | +1024 samples | +0.95 s | +0.38 s | conditional |
+| Post state: W₁, `R_run` | settle | analytic | < 1 ms | < 1 ms | cheap |
+| Post state: Quick pass for `Rₒ`, `runnable` | settle | analytic | ≤ 120 ms | ≤ 50 ms | cheap |
+| Intent posterior, naive rank, D, EV_miss | stroke | analytic + existing samples | < 1 ms | < 1 ms | cheap |
+| Opponent BIH value (B6/W₁) | settle | WP model BIH term (engine.md §6.4); **no** placement search | µs | µs | cheap |
+| `selectBrilliant` | game end | stored records | µs | µs | cheap |
+
+**Worst case** (no matching candidate): ~1.25 s wall from stroke, which fits inside the 2–4 s settle. At thermal
+`.serious` (engine.md §8 halves budgets), N_rate = 512 and §2.2's generous degradation applies. At `.critical`,
+classes come from the Full pass alone (≤ 180 samples). Most Good/Okay become Best. Negative rows (fouls, Swing)
+are unaffected because they are cheap.
+
+**Benchmark first** (Phase 2, before thresholds are frozen): measure sims/s on the 15 Pro Max with the camera
+live, the per-sample leaf cost, and the CRN correlation ρ for pot-vs-pot and pot-vs-safety pairs over the 20
+positions. Feed ρ and s back into §2.2. If the rating top-up exceeds 1.5 s wall at p95, reduce c₂ to 128 samples
+first, then N_rate.
 
 ---
 
-## 8. Decisions needed from the user
+## 9. Calibration plan
+
+The 20 positions can't estimate frequencies (reviewer issue 8). They are now an **ordering and sanity check** that
+you review (spec Phase 2 gate).
+
+1. **Synthetic self-play (Phase 2, `tools/` on macOS).** Bots at beginner, amateur and strong σ (engine.md §5.1)
+   play each other on the virtual table. Each bot picks by softmax over candidate EVs with a per-tier temperature
+   (so they make realistic choice errors), plus a 5% "deliberate safety" rate. Run ≥ 2,000 racks per tier pair ×
+   rule set. That is about 25 shots × 1.1 s CPU per rack: ~1.5 h per cell on a 10-core Mac.
+2. **Tune thresholds within the §4 ranges** so the class frequencies below hold for the amateur tier, and check the
+   other tiers stay plausible. Brilliant is checked as **the share of games with a Brilliant**.
+3. **Recalibrate on real data** after ≥ 500 tracked competitive shots exist (Phase 3+ replay mode). Store
+   `thresholdsVersion` per shot so old shots can be re-rated in review (never live).
+4. **Kick/bank first.** Until e(v) is measured on a real table (D16), B2/B3/B9 are flagged low-confidence (§3).
+
+**Target frequencies** (rated shots, excluding Book) `[UD-6]`:
+
+| Class | Target | | Class | Target |
+|---|---|---|---|---|
+| Brilliant | 0–1 per game (D18); **15–35% of games** have one | | Okay | 10–15% |
+| Great | 5–10% | | Inaccuracy | 5–10% |
+| Best | 30–45% | | Miss | 2–5% |
+| Good | 15–20% | | Mistake | 5–12% (amateur fouls are common) |
+| | | | Blunder | 1–4% |
+
+---
+
+## 10. Skill reference and beginners
+
+D18 fixes Best and Difficulty to **this player's** skill, so Loss uses the shooter's own σ. Reviewer issue 17 is
+real: with a very noisy σ, all candidate EVs squash together, L shrinks, and almost everything is Best.
+- **Fixture (spread floor).** On the 20 positions and in beginner self-play, at least 30% of rated beginner shots
+  must be non-Best, and the Loss quantiles must not collapse (p90 Loss ≥ 0.08).
+- **If it fails** `[UD-8]`: below 30 observed shots, compute Loss at the "amateur" default σ instead of the
+  learned beginner σ (the "learning" icon is already shown then).
+- **Dropped:** the rev-1 idea of 1.5× extra generosity for new players. It would make the collapse worse.
+- **No feedback loop:** the skill model learns from raw tracked residuals and made/miss only (engine.md §5.2),
+  never from ratings.
+- **SotG "baseline P(make)"** (spec §9): proposed as this player's D, for consistency with D18 `[UD-8]`.
+
+---
+
+## 11. Contract deltas (contracts first; for the head orchestrator to apply)
+
+**INTERFACES.md → Engine.** Builds on engine.md §12, replacing `rate(chosen:outcome:eval:)`:
+
+```swift
+public struct IntentPosterior: Sendable, Codable { var chosen: Candidate; var confidence: Double
+                                                   var safetyLR: Double; var isFluke: Bool }
+public struct RatingInput: Sendable, Codable {
+    var ruleSet: RuleSetID; var isBook: Bool
+    var wpBefore: Double, wpAfter: Double                 // shooter's team perspective
+    var best: CandidateScore, chosen: CandidateScore, second: CandidateScore?
+    var loss: Double, lossSE: Double                      // paired CRN difference (§2.2)
+    var intent: IntentPosterior
+    var difficulty: Double, opponentBestMake: Double, shooterBestPotBefore: Double
+    var missBranchEV: Double?, naiveRank: Int, runnableDelta: Int, runOutDelta: Double
+    var opponentFoulsBefore: Int
+    var rules: RuleResult, outcome: ShotOutcome           // tracker-built ShotOutcome, not a ShotTrace
+    var execution: ExecutionObservation                   // OB window miss, jaw event, CB rest leaf value v, v̂
+    var trackerOK: Bool
+}
+public struct RatingThresholds: Sendable, Codable { /* every §4 number + κ, λ, z; version */ }
+public enum Ratings {                                     // pure, synchronous
+    static func rate(_ i: RatingInput, _ t: RatingThresholds) -> ShotRating   // class, execution, tag B1–B12?
+    static func selectBrilliant(_ game: [ShotRatingRecord], _ t: RatingThresholds) -> Int?   // post-game
+}
+// ShotEngine (actor) gains: func ratingTopUp(before: Evaluation, chosen: Candidate,
+//                                             budget: EngineBudget) async -> (best, chosen, second, loss, lossSE)
+```
+
+All async work (top-up, post Quick pass) happens **before** `rate`. `rate` stays pure and needs no simulator.
+`ShotKind` replaces rev 1's `Candidate.class`, which is a Swift keyword.
+
+**SCHEMA.md → `Shot`** `[UD-18]`. Add `loss`, `lossSE`, `difficulty`, `opponentBestMake`, `intentConfidence`,
+`catalogueTag: String?` (B1–B12), `sotgScore`, `flags` (fluke, trackerLow, coarse, lowConfidencePhysics),
+`engineVersion` and `thresholdsVersion`. `wpaDelta` already exists (= Swing). All stay in the competitive store.
+
+**Spec amendment** `[UD-19]`: EV in W units (§2).
+
+---
+
+## 12. Decisions needed from the user
 
 | # | Question | Proposal |
 |---|---|---|
-| UD-1 | Allow a one-tap "I meant safe / I meant this pocket" correction in game review, changing the rating? | Yes, review screen only |
-| UD-2 | Jump and massé shots (engine can't simulate them in v1): rate them Great on impact alone, or don't rate them? | Great on impact, never Brilliant until simulated |
-| UD-3 | Can a plain direct pot be Brilliant (via the naive-policy test)? | Yes |
-| UD-4 | Judge a lockdown at settle (`Rₒ`) even if the opponent escapes with a miracle? | Yes, judge at settle |
-| UD-5 | Spec §5.5 says a foul that swings `W` hard is a Blunder. Apply that to pure execution fouls (e.g. scratch on a correct, easy 8), or only to fouls caused by the choice? | Keep spec (Blunder) for v1; revisit after calibration |
-| UD-6 | Target class frequencies (§4.4), especially Brilliant ≤ 1–2% | As listed |
-| UD-7 | Which word shows on the post-shot badge: the decision class, or the execution result? | Decision word + execution icon |
-| UD-8 | Skill reference for `EV` / `Pb` (§6.1) | Option A |
-| UD-9 | Show a "Lucky" execution tag for flukes? | Yes, icon only |
-| UD-10 | Should match context (hill-hill) affect Brilliant thresholds? | No; clutch flag + SotG bonus only |
-| UD-11 | Extra generosity for new players (< 50 shots)? | Yes, up to 1.5× on `ε_B`, `P_B` |
-| UD-12 | Safeties and intentional fouls eligible for Brilliant in bar 8-ball? | Yes (per D2) |
-| UD-13 | Add a chess.com-style "Miss" class? | No; keep the 7 classes |
-| UD-14 | Starting thresholds in §4.2 | As listed; tune on the 20-position gate set |
-| UD-15 | Catalogue B1–B11: anything to add or drop? | As listed |
+| UD-1 | Review-screen "I meant…" correction: may it promote to Great/Brilliant? Does the opponent have to confirm? | Corrections re-rate by Loss only, never promote. No confirmation needed |
+| UD-2 | Jump/massé (not simulatable in v1) | Execution only; class "Okay"; never Great/Brilliant until elevation is modelled |
+| UD-3 | Add the spec's "non-obvious" test (naive-policy rank) as an extra Brilliant gate on top of D18? | No. D18's "really hard" covers it. Show naive rank in review only |
+| UD-4 | Judge a lockdown at settle even if the opponent escapes with a miracle | Yes |
+| UD-5 | D18 makes every BIH foul a Mistake (and a game-losing foul a Blunder), even on a correct choice, and makes B6 intentional fouls never eligible. Options: (a) keep D18; (b) execution fouls → Execution "Miss" + foul icon, class from Loss; (c) keep D18 but exempt **intentional** fouls with Loss ≤ 2 | (c). Fixtures exist for (a), (b) and (c) |
+| UD-6 | Target frequencies (§9), incl. "15–35% of games have a Brilliant" | As listed |
+| UD-7 | When anyone starts aiming: hide the badge, or shrink it to icon + color? | Hide entirely |
+| UD-8 | Beginner fallback (Loss at the amateur σ below 30 shots, if the spread fixture fails); SotG uses the player's own D | Yes to both |
+| UD-9 | "Lucky" icon on flukes | Yes, icon only |
+| UD-10 | Should match state (hill-hill) lower Brilliant thresholds? | No; clutch flag + SotG bonus only |
+| UD-11 | Rev-1 extra generosity for new players | **Drop** (§10) |
+| UD-12 | Bar 8-ball etiquette. Dr. Dave's "Bar Rules and Dirty Pool"[^ddbar] lists as dirty pool: "Purposely miss an easy shot to get a break-out and leave your opponent bad" (B5) and "Scratch on purpose to achieve some desirable outcome" (B6), and says defensive safeties "should not be played unless they are the result of an honest effort to pocket a ball". It also lists typical bar rules where a scratch gives BIH "in the kitchen" and no-rail is not a foul. **Our RULES.md differs** (B7/B8: BIH anywhere; no-rail is a foul), and B6 is valued under RULES.md. Allow B5/B6 to be Great/Brilliant in bar 8-ball? | Yes for B5 (D2 names deliberate misses). B6 follows UD-5 |
+| UD-14 | Thresholds (§4), the SE rule (z = 1.645), N_rate = 1024; if the benchmark shows ρ < 0.3, accept noisy Good/Okay or spend ~2× compute | As listed; decide after the benchmark |
+| UD-15 | Catalogue: B12 added; B6 and carom Obs-only; B10 review-only | As listed |
+| UD-16 | Execution thresholds (§6: 1.5× window near miss, safety `Rₒ` 0.20/0.40, foul ±0.02/0.05) | As listed |
+| UD-17 | Red position ring adds a ghost of the best spot (new post-shot UI) | Yes, faint ghost circle only |
+| UD-18 | New per-shot stored fields (§11) | Yes |
+| UD-19 | Spec amendment: EV/Value in rack-win-probability units | Yes (shared with engine.md) |
+| UD-20 | Push-outs are Book (D18); show a "trap" caption in review once resolved? | Yes, review only |
+| UD-21 | "Executed successfully" also needs intent confidence ≥ κ, no fluke, and good tracker confidence | Yes |
+
+(Rev 1's UD-13, a "Miss" class, is closed by D18.)
+
+---
+
+## 13. Reviewer notes
+
+| Issue | Outcome |
+|---|---|
+| 1 MC noise floor | **Fixed**: CRN paired SE, one-sided test, N arithmetic, reachability table and fixture (§2.2) |
+| 2 Compute budget | **Fixed** (§8). engine.md now exists with a budget and Sequential Halving. Only 2–3 arms get the top-up; the BIH search is replaced by the WP-model term; Pb/D is analytic; signals are tagged cheap/expensive. The benchmark is a Phase 2 prerequisite |
+| 3 Timing | **Fixed** (§7). D18 already makes Brilliant post-game and push-outs Book, which removes the late-badge cases |
+| 4 Intent | **Fixed** (§2.1): observable features, plan-uniform prior, λ margin, adversarial fixtures, UD-1 |
+| 5 Contract | **Fixed** (§11): `RatingInput`, pure `rate`, SCHEMA delta, UD-19 |
+| 6 Scope | **Fixed**: B6/carom Obs, B10 Book, B4 free from samples (§3) |
+| 7 Missing cases | **Fixed** (§4 table, B12) |
+| 8 Calibration | **Fixed** (§9) |
+| 9 Tracking error | **Fixed** (§2.3) |
+| 10 Foul override | **Partly accepted.** The class order is now D18 (your rule), which puts fouls in Mistake/Blunder by design, so I can't move fouls to Execution on my own. Raised as UD-5 with three options and fixtures for each |
+| 11 Great conditions | **Fixed** (§4, "successfully executed") |
+| 12 Silent choices | **Fixed**: UD-16, 17, 18, 21, UD-3 for the catalogue gate (the catalogue no longer gates) |
+| 13 Citations | **Fixed**: the 70% quote is 8onthebreak and the "bury" quote is KellyStick, both verbatim; Deuel's one-pocket carom removed; Ouschan dropped from B2 |
+| 14 Lichess scale | **Fixed** (§1) |
+| 15 Bar etiquette | **Fixed** (UD-12, quoted) |
+| 16 Vague definitions | **Fixed**: `Rₒ`, position r, `runnable`, perspective rule, `ShotKind`. The rate arithmetic is moot under D18's 1-per-game cap; the target is now a share of games |
+| 17 Beginners | **Partly accepted.** The spread fixture, dropped generosity and no-feedback note are in. "Normalize L by EV spread" is rejected: it makes a 2-point Best mean different things per position. The UD-8 fallback is proposed instead |
 
 ---
 
 ## Sources
 
 [^cc]: Chess.com Help, "How are moves classified?": https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-and-etc
-[^li]: Lichess source, `Advice.scala` (winning-chance thresholds .1 / .2 / .3): https://github.com/lichess-org/lila/blob/master/modules/tree/src/main/Advice.scala
-[^liacc]: Lichess, "Accuracy" (win% from centipawns, empirical): https://lichess.org/page/accuracy
+[^li]: Lichess `Advice.scala` (winningChances thresholds .1/.2/.3): https://github.com/lichess-org/lila/blob/master/modules/tree/src/main/Advice.scala
+[^liacc]: Lichess "Accuracy" (Win% = 50 + 50·(2/(1+e^(−0.00368208·cp)) − 1)): https://lichess.org/page/accuracy ; winning chances on −1..1: https://rdrr.io/github/dryguy/rbitr/man/winning_chances.html
+[^sh]: Karnin, Koren, Somekh, "Almost Optimal Exploration in Multi-Armed Bandits" (Sequential Halving), ICML 2013: https://proceedings.mlr.press/v28/karnin13.html ; common random numbers: https://rossetti.github.io/KSLBook/ch9VRTs.html
 [^bd30]: Billiards Digest, "30 over 30" #18 (Reyes, Sands Regency XXI, 11 Jun 1995): https://www.billiardsdigest.com/new_30over30/18.php
-[^pd]: PoolDawg, "The Greatest Pool Shot Ever?" (Reyes vs Earl Strickland, hill-hill): https://www.pooldawg.com/article/the-greatest-pool-shot-ever/
-[^ddshots]: Dr. Dave Alciatore, "Great Pool Shots" video index (Filler, Han Yu, Van Boening, Alcaide, Ouschan, Thorpe, Shaw, Deuel, Martel, Reyes): https://drdavepoolinfo.com/videos/pool-shots/
-[^az25]: AZBilliards forum, "Top 25 Best Pool Shots of All Time" (Dr. Dave video; Melling four-rail bank, Reyes Z-kick): https://forums.azbilliards.com/threads/top-25-best-pool-shots-of-all-time.531212/
+[^pd]: PoolDawg, "The Greatest Pool Shot Ever?": https://www.pooldawg.com/article/the-greatest-pool-shot-ever/
+[^ddshots]: Dr. Dave Alciatore, "Great Pool Shots" video index (entries quoted verbatim): https://drdavepoolinfo.com/videos/pool-shots/
 [^ddsafe]: Dr. Dave, "Safety Strategy Advice": https://drdavepoolinfo.com/faq/safety/strategy/
-[^ddend]: Dr. Dave, "End-Game Situation Strategy" (three-rail two-way): https://drdavepoolinfo.com/faq/strategy/end-game/
-[^dd8]: Dr. Dave, "What are some examples of good 8-ball strategy?": https://drdavepoolinfo.com/?p=2528
-[^dd9]: Dr. Dave, "What are some examples of good 9-ball strategy?": https://drdavepoolinfo.com/?p=2530
-[^ddfoul]: Dr. Dave, "Intentional Fouls", Billiards Digest, March 2026 (NV L.108): https://drdavepoolinfo.com/bd_articles/2026/march26.pdf
+[^dd8]: Dr. Dave FAQ, 8-ball strategy (summary list; 8onthebreak AZB quote; Robert Byrne): https://drdavepoolinfo.com/?p=2528
+[^dd9]: Dr. Dave FAQ, 9-ball strategy (KellyStick quote): https://drdavepoolinfo.com/?p=2530
+[^ddfoul]: Dr. Dave, "Intentional Fouls", Billiards Digest, March 2026: https://drdavepoolinfo.com/bd_articles/2026/march26.pdf
 [^ddbar]: Dr. Dave, "Bar Rules and Dirty Pool", Billiards Digest, June 2025: https://drdavepoolinfo.com/bd_articles/2025/june25.pdf
 [^push1]: AZBilliards forum, "What is your goal when you push out?": https://forums.azbilliards.com/goto/post?id=5348076
 [^push2]: AZBilliards forum, "Push Out Strategies": https://forums.azbilliards.com/threads/push-out-strategies.13958
 
-Background, not cited above: Accu-Stats TPA = balls made ÷ (balls made + errors), with errors = missed shot,
-position, kick, break scratch, failed safety (https://drdavepoolinfo.com/?p=2392). This suggests an optional
-"accuracy %" per player. FargoRate's game-win odds = 2^(Δrating/100) (https://drdavepoolinfo.com/?p=2404) could
-seed default skill models.
+Engine numbers (sim cost, Sequential Halving, CRN seeds, WP model, position zone, `score(stroke:)`):
+`docs/research/engine.md` §§4–9, 12.

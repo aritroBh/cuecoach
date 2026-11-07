@@ -1,30 +1,34 @@
-# Engine research and design proposal
+# Engine research and design proposal (rev 2)
 
-Status: research proposal for Phase 2. It needs head-orchestrator and user review before the `INTERFACES.md` change.
+Status: research proposal for Phase 2, revised after a critical review (every item addressed; see the Reviewer notes
+at the end). It needs head-orchestrator and user review before the `INTERFACES.md` change.
 Scope: SPEC §5.5 (candidates, Monte Carlo, value, win probability, ratings hand-off), the INTERFACES Engine stub,
-the on-device perf budget, Swift concurrency, and the TDD plan. The brilliant/blunder catalogue is out of scope
-here; it lives in `docs/RATINGS.md` (D2). This doc covers only the numbers the Engine hands to that catalogue.
+the on-device perf budget, Swift concurrency, mesh hand-off, and the TDD plan. Class rules live in
+`docs/RATING_CLASSES.md` (D18, source of truth) and the brilliant catalogue in `docs/RATINGS.md` (D2). This doc
+covers only the numbers the Engine hands to them.
 
 ---
 
 ## 0. TL;DR
 
-- **Two-tier anytime engine.** A **Quick** pass (≤150 ms wall, p95) generates and ranks candidates with an analytic
-  P(make) and one noise-free simulation per variant. A **Full** pass (≤2.5 s wall, p95, inside ball-settling time)
-  runs Monte Carlo with execution noise on the top-K, does 2-ply position evaluation and a root-only safety search,
-  and produces win probability. Results stream as `Evaluation` snapshots, so the eval bar moves early and then sharpens.
-- **Value in win-probability units.** Each sampled outcome goes through `RulesEngine.apply`, which covers fouls,
-  scratches, ball-in-hand and turn passing, and is then scored with a win-probability model. Ratings then come from
-  expected-win-probability loss, the same way chess.com uses expected-points loss.
-- **Skill model.** Gaussian noise on the stroke parameters (aim φ, speed V, tip offset a/b), following the ICGA
-  computational-pool tournaments. Defaults ship per skill tier. Each player's σ_aim is learned from tracked
-  object-ball departure-angle residuals, which are much stronger evidence than made/missed alone. A Bayesian grid
-  posterior shrinks toward the population prior.
-- **Budget fits.** At 0.35 ms per sparse sim, the Quick pass needs about 70 ms of CPU and the Full pass about 1.5 s of
-  CPU. Spread across the A17 Pro's 2 P-cores and 4 E-cores (about 2.5 effective P-cores after thermal and overlay
-  headroom), that is about 30 ms and 0.6 s of wall time, which leaves 2-4x margin.
-- **Determinism.** Seeds are counter-based, per (state hash, candidate, sample index), and the same random numbers are
-  shared across candidates. This makes evaluations reproducible in tests and stops ratings flickering between runs.
+- **Two-tier anytime engine plus a rating pass.** **Quick** ranks candidates with an analytic P(make) and about
+  1.5 noise-free sims per variant, about 230-260 sims in all. **Full** runs Monte Carlo (MC) with execution noise on
+  the top 16 arms, with a 2-ply leaf. The **rating pass** starts at the stroke and spends paired samples on chosen vs best.
+  Results stream as `Evaluation` snapshots.
+- **Value is in win-probability (WP) units.** Every sampled outcome goes through `RulesEngine.apply`, which covers
+  fouls, ball in hand (BIH), option nodes (push-out, accept-or-pass) and turn passing. A WP model then scores it.
+- **Skill model.** Gaussian noise on (aim φ, relative speed V, tip offset a, b in ball radii). σ is learned from tracked
+  OB departures, with the tracker's own noise and the shooter's intent window in the likelihood.
+- **Perf is not measured yet.** No per-sim number exists for the fixed simulator (CHECKLIST: physics rejected and
+  being fixed). Every budget below is a **sim count**, and wall time = sims × t_sim / c. With c = 2 engine threads,
+  Quick ≤ 150 ms needs t_sim ≤ ~1.1 ms. Full ≤ 2.5 s needs t_sim ≤ ~1.3 ms in the worst case. **Step 0 of Phase 2 is a
+  device microbenchmark (§9.1).** Budgets get frozen only after it runs.
+- **Resolution limit (needs a user call).** Paired-difference SE at the affordable sample count is about 0.02 WP.
+  D18 bands 2 points wide (Best ≤ 2 vs Good 2-5) can't be resolved reliably when chosen and best are different shots.
+  The proposal: call "Best" unless the loss is confidently > 2 points (§7.2).
+- **Determinism.** The input state is quantised, seeds come from a proper hash mixer, leaves are cached by canonical
+  representative, and reductions run in sample-index order. The result is bit-identical on one platform and build,
+  whatever the scheduling.
 
 ---
 
@@ -32,13 +36,14 @@ here; it lives in `docs/RATINGS.md` (D2). This doc covers only the numbers the E
 
 | Constraint | Source | Consequence for the Engine |
 |---|---|---|
-| All AI on-device, zero network | CLAUDE.md, SPEC §2 | Pure Swift in `Packages/CueCore/Engine`. Precomputed tables ship in the bundle. No cloud self-play. |
-| iPhone 15 Pro Max is the perf gate (A17 Pro: 2P @3.78 GHz + 4E @2.11 GHz) | D6, [A17 Pro – Wikipedia](https://en.wikipedia.org/wiki/A17_Pro) | Budget for about 2.5 effective P-cores. The overlay and Vision pipeline need headroom. |
-| Physics ≈ 0.35 ms per sparse shot, ≈ 13 ms per 16-ball break (today) | task brief, CHECKLIST (physics fix in progress) | Sim count is the main cost driver. Breaks are budgeted separately. |
-| SPEC §5.5.7: background actor, finish within settle time (~2–4 s). Phase-2 gate: "Eval < 3 s on device" | SPEC §5.5, §9 | Full pass target is 2.5 s p95. The Quick pass target (150 ms) is this proposal's own target for live re-ranking (see §11, Q1). |
-| No text/audio while aiming. Feedback never numeric-precise | SPEC §2, §5.6 | The Engine outputs Doubles. The **UI must bucket them** (eval-bar fill, green/yellow/red, 5-step power). Exact numbers appear only in the dev HUD (D9). |
-| Training stats never touch competitive stats | CLAUDE.md | The skill model learns from competitive shots by default. Using training shots is an open question (§11, Q2). |
-| Host owns the engine (mesh) | SPEC §5.7 | `Evaluation` is `Codable` and compact, so the host can broadcast it to peers. |
+| All AI on-device, zero network | CLAUDE.md, SPEC §2 | Pure Swift in `Packages/CueCore/Engine`. Precomputed tables ship in the bundle. |
+| iPhone 15 Pro Max is the perf gate (A17 Pro: 2 P-cores @ 3.78 GHz + 4 E-cores @ 2.11 GHz) | D6, [A17 Pro – Wikipedia](https://en.wikipedia.org/wiki/A17_Pro) | Clock speeds only. **P/E throughput ratio and effective core count are unmeasured**, and §9.1 measures them. |
+| Physics cost per sim: **unknown**. The only number on record is "16-ball break 13 ms" in the supervisor's rejection note, with no hardware or build stated | CHECKLIST (physics row) | Budgets are sim counts plus a required t_sim (§9). |
+| SPEC §5.5.7: background actor, "finish within ball-settling time (~2–4 s)". Phase-2 gate: "Eval < 3 s on device" | SPEC §5.5, §13 | Full ≤ 2.5 s is the proposed target. Quick ≤ 150 ms is **this doc's proposal, not a spec gate** (§11 UD-E1). The settle-time meaning is §11 UD-E2. |
+| No text/audio while aiming; feedback never numeric-precise | SPEC §2, §5.6 | The Engine outputs Doubles and the UI buckets them. Exact numbers appear only in the dev HUD (D9). |
+| Training stats never touch competitive stats | CLAUDE.md | σ learns from competitive shots by default (§11 UD-E6). |
+| Host owns the engine; profiles live on each phone | SPEC §5.7, §2 | σ travels in the profile summary, and updates go back to the owning phone (§8.6). |
+| Class bands (D18): Best ≤ 2 pts, Good 2–5, Okay 5–8, Inaccuracy 8–15, Mistake 15–30 | RATING_CLASSES.md | These set the SE the rating pass must reach (§7.2). |
 
 ---
 
@@ -46,409 +51,491 @@ here; it lives in `docs/RATINGS.md` (D2). This doc covers only the numbers the E
 
 | System / source | Key idea | What we take |
 |---|---|---|
-| **PickPocket** (Smith, AAAI 2006; won the 10th and 11th Computer Olympiad 8-ball). [AAAI PDF](https://cdn.aaai.org/AAAI/2006/AAAI06-156.pdf), [mlanthology](https://mlanthology.org/aaai/2006/smith2006aaai-running) | Move generator by shot class in order of difficulty (straight-in → bank/kick/combo only if no straight-in). φ aims at the pocket centre. V comes from a min-speed table and rises in 1 m/s steps; a and b are varied for position. P(make) comes from a 30⁴ lookup over (cut α, OB-pocket d1, CB-OB d2, pocket angle β), filled with 200 samples per cell. Banks, kicks and combos map to an equivalent straight-in with a discount. Evaluation = Σ dᵢpᵢ over the best n distinct ball-pocket shots, with decreasing discounts. **MC search:** 15 samples, 2-ply, chosen to fit 60 s per shot. Safeties are root-only: tried when the best P < t0 = 65%, taken if the opponent's value < t1. MC beat probabilistic expectimax and greedy. | Class-ordered generator, speed/spin variant grid, discounted best-n evaluation, root-only safeties with thresholds, MC 1-ply plus a cheap 2nd ply. |
-| **CueCard** (Archibald, Altman, Greenspan, Shoham; won the 2008 ICGA tournament). [AI Magazine paper](https://yoavshoham.net/_files/ugd/a1a3b1_5964a39d807a4fce8768f64cb69d6b25.pdf) | Geometric "interesting directions" (straight-in, multi-collision, cluster-breaking). A noise-free sim filters them, then variants are made by discretising v and randomly varying a, b, θ. Each surviving variant is simulated n times with noise. State value = **1·p1 + 0.33·p2 + 0.15·p3**, with p from a straight-in lookup table. The top-k go to a second ply. A defensive "last resort" shot is used when the score is below a threshold. Ball in hand: candidate placements near object balls in straight-in position. The break is precomputed (92% pot with half the rack spread). 20 CPUs gave only a 55.4% win rate against 1 CPU. | The exact discount weights as the starting point. Noise-free filter before MC. Top-k refinement. BIH placement generator. A precomputed break. **Evidence that more compute has diminishing returns**, which justifies a phone budget. |
-| **ICGA noise model.** Same paper as above. Leckie & Greenspan event-based simulator, [Springer](https://www.springerprofessional.de/en/an-event-based-pool-physics-simulator/1276086) | Zero-mean Gaussian on (θ, φ, V, a, b) with σ = (0.1°, 0.125°, 0.075 m/s, 0.5 mm, 0.5 mm). PickPocket's "strong amateur" E_high = σ(φ, θ, V, a, b) = (0.185°, 0.03°, 0.085 m/s, 0.8 mm, 0.8 mm). | The noise-model shape and the order of magnitude of each σ. Human σ_aim is larger; we calibrate it (§5). |
-| **Noise vs strategy** (Archibald et al., same paper; [AAMAS 2010 "Success, strategy and skill"](https://ifaamas.csc.liv.ac.uk/Proceedings/aamas2010/pdf/01%20Full%20Papers/22_05_FP_0677.pdf)) | Extra thinking time helped most at about 1.4x tournament noise. At high noise, safeties matter more. | Safety search must be first-class for amateur noise levels, which is our typical user. |
-| **Execution-skill estimation** (Archibald & Nieves-Rivera, [AAAI 2019](https://ojs.aaai.org/index.php/AAAI/article/view/4556); [JAIR 2024](https://jair.org/index.php/jair/article/view/15326)) | Bayesian estimation of an agent's execution-noise parameters from observed actions, tested on computational billiards. Joint estimation with decision skill is more robust. | Grid-posterior σ estimation (§5.3). Infer the intended shot before attributing error to execution. |
-| **Dr. Dave TP 3.4 / TP A.13** ([TP 3.4](https://drdavepoolinfo.com/technical_proofs/TP_3-4.pdf), [margin-for-error FAQ](https://drdavepoolinfo.com/faq/cut/margin-for-error/), [TP A.13](https://billiards.colostate.edu/technical_proofs/new/TP_A-13.pdf)) | OB direction error from CB aim error Δφ at cut φ and distance d: Δθ = asin((d/2R)·sin Δφ + sin(φ−Δφ)) − φ + Δφ. Linearised, this gives **Δθ ≈ Δφ·(1 + d / (2R cos φ))**. The pocket angular window is 2·atan((p/2)/d_p) for effective target size p. Straight-shot difficulty ∝ d1·d2. | The analytic P(make) prior and test oracle (§4.2). Property tests (monotonic in d, φ). |
-| **pooltool** ([GitHub](https://github.com/ekiefl/pooltool), [JOSS 2024](https://theoj.org/joss-papers/joss.07301/10.21105.joss.07301.pdf)) | Reference event-based simulator. We already validate physics against it (D10). | Offline fixture generation for engine reference positions (P(make) ground truth by brute-force MC in Python). |
-| **chess.com classification** ([support article](https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-move)) | Expected-points-loss bands: Best 0, Excellent ≤0.02, Good ≤0.05, Inaccuracy ≤0.10, Mistake ≤0.20, Blunder >0.20. Brilliant and Great use extra rules (sacrifice; only-move or swing). | The Engine outputs ΔWP = WP(best) − WP(chosen) with a standard error. Thresholds are owned by RATINGS.md. |
-| **FargoRate** ([blog](https://fargorate.com/fargorateblog/archive/behindthecurtain/)) | Game-win odds ratio = 2^(Δrating/100). | Optional: convert per-rack WP into a race/match WP (negative binomial). Optional seed for the default skill tier. Not needed for v1. |
-| **Sequential Halving / best-arm identification** ([Karnin, Koren, Somekh, ICML 2013](https://proceedings.mlr.press/v28/karnin13.html)) | A fixed-budget best-arm algorithm that halves the arm set each round. | Allocating the MC budget across candidates (§6.2). |
-| **Common random numbers** ([Wikipedia: variance reduction](https://en.wikipedia.org/wiki/Variance_reduction), [KSL book §9.2](https://rossetti.github.io/KSLBook/ch9VRTs.html)) | When comparing alternatives, use synchronised random streams so differences reflect the designs, not the noise. | Per-sample-index seeds shared across candidates (§6.3). |
-| **Swift concurrency** ([Swift forums: CPU-bound tasks](https://forums.swift.org/t/concurrency-and-cpu-bound-tasks/49716), [WWDC21 notes, "Behind the scenes"](https://www.donnywals.com/wwdc-notes-swift-concurrency-behind-the-scenes/), [@concurrent thread](https://forums.swift.org/t/is-concurrent-now-the-standard-tool-for-shifting-expensive-synchronous-work-off-the-main-actor/82976)) | The cooperative pool is about core-count wide. Long synchronous work must not block forward progress, so chunk it and check cancellation or yield between chunks. Actor reentrancy is the main logic hazard. | §8 design. |
+| **PickPocket** (Smith, AAAI 2006, which reports winning the 10th Computer Olympiad 8-ball). [AAAI PDF](https://cdn.aaai.org/AAAI/2006/AAAI06-156.pdf). Journal version: [Artif. Intell. 171 (2007) 1069–1091, doi:10.1016/j.artint.2007.04.011](https://doi.org/10.1016/j.artint.2007.04.011) | Class-ordered move generator. V from a min-speed table, raised in steps; a, b varied for position. P(make) from a 30⁴ lookup. Evaluation Σ dᵢpᵢ over the best n shots. MC search with 15 samples, 2-ply, 60 s per shot. Root-only safeties when best P < t0 = 65%. | The speed/spin variant grid, discounted best-n evaluation, and MC 1-ply plus a cheap 2nd ply. **Not** its "banks only if no direct" gating (§4.1). t0 = 65% is tuned for a low-noise computer agent, so ours is a tunable default. |
+| **CueCard** (Archibald, Altman, Greenspan, Shoham; won the 2008 ICGA tournament). [AI Magazine paper](https://yoavshoham.net/_files/ugd/a1a3b1_5964a39d807a4fce8768f64cb69d6b25.pdf) | Noise-free filter, then noisy MC on variants. State value **1·p1 + 0.33·p2 + 0.15·p3**. Top-k second ply. BIH placements near OBs. A precomputed break (92% pot). 20 CPUs gave a 55.4% win rate against 1 CPU. | The weights, the noise-free filter, top-k refinement, BIH placements and the precomputed break. The 1-CPU agent still had about 10 min per game, so using it to justify a 2.5 s phone budget is **an extrapolation to test on the gate positions**, not evidence. |
+| **ICGA noise model** (same paper; Leckie & Greenspan simulator, [Springer](https://www.springerprofessional.de/en/an-event-based-pool-physics-simulator/1276086)) | Gaussian on (θ, φ, V, a, b), σ = (0.1°, 0.125°, 0.075 m/s, 0.5 mm, 0.5 mm). PickPocket "strong amateur" E_high = (0.185°, 0.03°, 0.085 m/s, 0.8 mm, 0.8 mm). | The shape of the noise model. Our σ_φ comes from tier targets (§5.1). |
+| **Noise vs strategy** ([AAMAS 2010](https://ifaamas.csc.liv.ac.uk/Proceedings/aamas2010/pdf/01%20Full%20Papers/22_05_FP_0677.pdf)) | Extra thinking time helped most at about 1.4× tournament noise. | **Hypothesis to test** on the gate positions: safety search matters more at amateur noise. That is why safeties are always generated (§4.4). |
+| **Execution-skill estimation** (Archibald & Nieves-Rivera, [AAAI 2019](https://ojs.aaai.org/index.php/AAAI/article/view/4556); [JAIR 2024](https://jair.org/index.php/jair/article/view/15326)) | Bayesian estimation of execution noise from observed actions. Decision and execution are confounded. | The grid posterior, with intent marginalised over the acceptance window (§5.3). |
+| **Dr. Dave TP 3.4** ([PDF](https://drdavepoolinfo.com/technical_proofs/TP_3-4.pdf)) | d = CB–OB distance (assumes d ≫ R), φ = cut angle, Δφ = CB direction error, Δθ = OB direction error. Exact: **Δθ = asin((d/2R)·sin Δφ + sin(φ − Δφ)) − φ + Δφ** (eq. 1). Differentiating at Δφ = 0 gives **Δθ ≈ Δφ · d / (2R cos φ)**. | The closed-form gain g(d, φ) = d/(2R cos φ) for Quick P(make), and a test oracle (§13.1). Check: at d = 1 m, φ = 30°, Δφ = 0.1° the exact value is 2.040° and the linear value 2.020° (1%). At φ = 60° they are 3.70° vs 3.50° (5%). |
+| **TP A.13 / pocket centre** ([TP A.13](https://billiards.colostate.edu/technical_proofs/new/TP_A-13.pdf), [pocket centre](https://drdavepoolinfo.com/pocket/size-and-center/), [margin FAQ](https://drdavepoolinfo.com/faq/cut/margin-for-error/)) | Pocket angular window 2·atan((p/2)/d_p). The effective centre shifts toward the far jaw. | The geometric window used in Quick (§4.3). |
+| **pooltool** ([GitHub](https://github.com/ekiefl/pooltool), [JOSS 2024](https://theoj.org/joss-papers/joss.07301/10.21105.joss.07301.pdf)) | Reference simulator (D10). | Offline P(make) ground truth for fixtures. |
+| **chess.com classification** ([support](https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-move)) | Expected-points-loss bands. | Background only. D18's bands govern (§1). |
+| **FargoRate** ([blog](https://fargorate.com/fargorateblog/archive/behindthecurtain/)) | Game odds 2^(Δ/100). | Optional race-level WP, v2. |
+| **Sequential Halving** ([Karnin et al., ICML 2013](https://proceedings.mlr.press/v28/karnin13.html)) | Fixed-budget best-arm identification. | Full-pass allocation (§6.2). |
+| **Common random numbers / control variates** ([Wikipedia](https://en.wikipedia.org/wiki/Variance_reduction), [KSL §9.2](https://rossetti.github.io/KSLBook/ch9VRTs.html)) | Synchronised streams for comparisons. A control variate needs a control whose mean is **known exactly**. | CRN plus antithetics, and a linearised control with an exact mean (§6.3). |
+| **Swift concurrency** ([SE-0461](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md), [SE-0417](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0417-task-executor-preference.md), [forums: CPU-bound tasks](https://forums.swift.org/t/concurrency-and-cpu-bound-tasks/49716)) | SE-0461: with `NonisolatedNonsendingByDefault` on, nonisolated async functions **run on the caller's actor**, and `@concurrent` switches off it. SE-0417: a `TaskExecutor` is a thread source. `withTaskExecutorPreference`, `Task(executorPreference:)` and group children inherit it. | A dedicated engine executor plus `@concurrent` entry points (§8). |
 
-Note that **no** prior system ran under a phone budget. PickPocket used 60 s per shot and CueCard used 20 CPUs. Our
-lever is the analytic P(make) plus noise-free filtering. This pushes the expensive MC onto very few candidates, which
-CueCard's 1-vs-20 CPU result says costs little strength.
+No prior system ran under a phone budget, and whether these levers are enough is something the gate positions test.
 
 ---
 
-## 3. Architecture
+## 3. Architecture and shot timeline
 
 ```
-            TableState + GameState + skills
+            TableState(quantised) + GameState + SkillContext
                          │
      ┌───────────────────▼────────────────────┐
-     │ CandidateGenerator  (pure, nonisolated)│  geometry + RulesEngine.legalTargets
+     │ CandidateGenerator  (pure, sync)       │  geometry + RulesEngine.legalTargets
      └───────────────────┬────────────────────┘
-                         ▼
- QUICK  ── nominal sim per variant ── analytic P(make) ── leaf eval V0 ──► Evaluation(.quick)  ≤150 ms
-                         │ top-K (K≈12) + best safeties
-                         ▼
- FULL   ── sequential-halving MC (noisy sims, CRN) ── RulesEngine.apply per sample
-        ── 2-ply leaf (next-shot gen, analytic P, nominal sim for top-3) ── WP model ──► Evaluation(.full) ≤2.5 s
+ QUICK  analytic CB-path dedup → ~1.5 nominal sims/variant → analytic P → analytic leaf ─► Evaluation(.quick)
+                         │ top-K (12) + 4 safeties (+ push-out/foul arms when applicable)
+ FULL   J + sampled window for top-K → Sequential-Halving MC (CRN) → RulesEngine.apply → 2-ply leaf ─► .partial … .full
+ RATING (from stroke)   chosen-shot inference → paired chosen-vs-best samples until the band is resolved ─► RatingInputs
 ```
 
-Three consumers:
-1. **Overlay** (60 fps). The overlay does **not** call MC. It uses `AimGeometry` plus one nominal `Simulator.simulate`
-   of the live stroke (~0.35 ms) and reads colour (green/yellow/red) from the Quick-pass P(make) of the matching
-   candidate. When the aim matches no candidate, it falls back to the analytic P(make) of the live line (3 sims).
-2. **Eval bar.** WP from the latest `Evaluation` (Quick and then Full).
-3. **Post-shot rating.** The Full evaluation of the *pre-shot* state, plus a re-evaluation of the *chosen* shot (§7).
+### 3.1 Timeline of one shot (host phone)
+
+| Phase | Time | Engine work | Live on screen |
+|---|---|---|---|
+| Balls settle, tracker stable (N frames) | t0 | **Post-shot Quick** on the new state → W₁, Rₒ, zone check. Then the **Full** pass on the same state, which is also the next shot's pre-shot eval | Rating badge at t0 + Quick (≤ ~150 ms, target) |
+| Aiming (typically several s, unmeasured) | t0 … ts | Full continues. The eval bar updates on each `.partial`. The overlay uses Quick P for colour | Lines, colour, eval bar |
+| Stroke detected, CB launch measured (~5 frames ≈ 170 ms) | ts | Pre-shot Full is **not** cancelled, because its input state is still the pre-shot state. The **rating pass** starts: intent inference, then paired samples | Lines fade (overlay rules) |
+| Balls rolling (seconds, unmeasured) | ts … t1 | The rating pass and any unfinished pre-shot Full work run | — |
+| Settle | t1 | Post-shot Quick → badge (loss L from the rating pass, swing from Quick W₁) → next Full | Badge |
+
+Consequences:
+- **Rating latency after settle ≈ settle detection + one Quick pass.** The expensive work (EV_best, EV_chosen, L)
+  runs before the balls stop. This proposal reads "within settle time" as "badge ready when balls stop".
+  That reading is §11 UD-E2.
+- **W₁ for the live badge comes from the Quick tier.** The post-settle Full refines W₁ later for game review and
+  Brilliant (decided post-game per D18). The live badge is never changed after display (R5). Only the post-game
+  Brilliant upgrade can change it, and D18 already allows that.
+- **Fast shooters.** If the stroke comes before the pre-shot Full finishes, the rating pass uses the latest
+  `.partial` and keeps going. When the arms are still unresolved at settle, the rating is marked low-confidence and
+  promotions are suppressed.
+- **Concurrent load.** While aiming, the Full pass shares the phone with YOLO (30 fps), pose, the tracker and the
+  60 fps overlay. That cost is measured, not assumed (§9.4).
+
+Consumers:
+1. **Overlay (60 fps).** No MC. One nominal sim of the live stroke when the stick moves enough to matter. Colour
+   comes from the matching candidate's Quick P, or else the analytic P of the live line (closed form, no sims).
+2. **Eval bar.** WP from the latest `Evaluation`.
+3. **Rating.** The `RatingInputs` (§7) for the pure `Ratings.rate`.
 
 ---
 
 ## 4. Candidate generation
 
-### 4.1 Shot classes and geometry
+### 4.1 Shot classes (all generated every time, capped)
 
-For each `target ∈ RulesEngine.legalTargets(g)` (this also drives the red ring) and each `pocket` (6):
+SPEC §5.5.1 asks for every legal target × pocket with direct, simple banks, simple combos and kicks. D2 and
+RATINGS.md make kicks and banks core Brilliant classes. So **banks, kicks and combos are always generated**, pruned
+by analytic P and hard caps. They are not gated on whether directs exist.
 
-| Class | Geometry | Feasibility filter (cheap, before any sim) | Typical count |
+| Class | Geometry | Cheap filter (before any sim) | Cap (Quick → Full) |
 |---|---|---|---|
-| **Direct** | Ghost ball G = O + 2R·û(O→aim point). The aim point is the pocket's *effective* centre, offset from the mouth centre toward the far jaw for angled approaches, per [Dr. Dave pocket centre](https://drdavepoolinfo.com/pocket/size-and-center/). | Cut α < 80°. Clear swept capsules C→G and O→pocket (width 2R, against all other balls; uses the jaw/point geometry from `TableSpec`). Side-pocket approach angle < ~55° (the side opening closes fast with angle). | 8-ball: ≤7×6 = 42 raw → ~8–20 after filtering. 9-ball: ≤6. |
-| **Bank** (1 rail) | Mirror the pocket across the rail line, offset by R (ball-centre rail), aim O at the mirror image. Then correct the bounce point by the sim (cushion restitution, D16). | Clear path segments. Rail is not the pocket's own rail. | 4 rails × targets × pockets → prune to ≤8. |
-| **Kick** (1 rail, cue first) | Mirror the ghost ball across the rail. | Required when the direct cue path to every legal target is blocked (a "snooker"), or as an option when combined with a safety. | ≤8 |
-| **Combo** (2-ball) | Chain ghost balls: the secondary S must go to the target's ghost G_T, and the cue goes to S's ghost. | Legal first contact (S must be a legal target, or the target itself in 9-ball when S is the lowest ball). Both cuts < 60°. Distances < 0.6 m. | ≤6 |
-| **Carom / kiss** | v2 (not in Phase 2). | | |
-| **Safety** | §4.4 | Root only. | 64–144 raw |
-| **Break** | Fixed menu: 3 cue placements × 2 speeds, precomputed offline per rule set | Only when `phase == .breakShot` | 6 |
-| **Ball in hand** | CueCard-style: for each easy direct shot, place the cue on the extension of O→G behind the ghost at 15/30/45 cm, then filter for legality (`.behindHeadString` restricts the region). | | ≤24 placements × best shot |
+| **Direct** | Ghost G = O + 2R·û(O→effective pocket centre) ([Dr. Dave](https://drdavepoolinfo.com/pocket/size-and-center/)) | Cut < 80°. Clear capsules C→G and O→pocket against all balls and jaws. Side-pocket approach < ~55° | ≤ 24 target-pockets (typical 8–20) |
+| **Bank** (1 rail) | Mirror the pocket across the rail (offset R), then correct with the sim | Clear segments. Not the pocket's own rail. Analytic P > 0.02 | 8 |
+| **Kick** (1 rail, cue first) | Mirror the ghost across the rail | Legal first contact reachable. Always included when snookered | 4 (8 when snookered) |
+| **Combo** (2-ball) | Chained ghosts | Legal first contact. Both cuts < 60°, distances < 0.6 m | 4 |
+| **Carom / kiss** | **Not generated in Phase 2** (observed only). RATINGS B8 wants it | — | §11 UD-E8 |
+| **Safety** | §4.4. Always a coarse set, plus the full grid when triggered | Legal first contact | 36 coarse / 432 full |
+| **Push-out** (WPA 9-ball, `phase == .pushOutAvailable`) | Direction grid 15° × 2 speeds, plus "roll behind a blocker" targets. Wrong-ball/no-rail fouls suspended (WPA 5.4) | Not a scratch or off-table (nominal) | 48 |
+| **Intentional foul** | Tie-up, pocket block, or dump an opponent hanger (RATINGS B6). CB to an illegal or opponent ball at 2 soft speeds, for balls within 40 cm of a pocket or cluster | The resulting state is scored with opponent BIH | 8, **if UD-E8 says Phase 2** |
+| **Break** | Fixed menu, 3 placements × 2 speeds, precomputed offline per rule set | `phase == .breakShot` | 6 |
+| **Ball in hand** | CueCard-style placements behind the ghost at 15/30/45 cm, filtered by `.behindHeadString` | | ≤ 24 placements, scored analytically first, best 6 simulated |
 
-**Order of generation** follows PickPocket. Banks, kicks and combos are generated only when fewer than `minDirect`
-(default 3) direct shots have P(make) ≥ 0.25, or when the rules force them (snookered). This keeps the 8-ball open
-table (15 balls) bounded.
+**Complexity.** Capsule tests are O(T·P·B), about 2.7k segment-vs-circle tests.
 
-**Complexity.** Generation is O(T·P·B) capsule tests (T targets, P = 6 pockets, B ≤ 15 balls). That is ≤ 15·6·15·2 ≈
-2.7k segment-vs-circle tests, about 30 µs.
+### 4.2 Stroke variants
 
-### 4.2 Stroke variants (speed × spin)
+- **Speeds snap to the 5-step power meter.** Each meter step k has a nominal CB speed v_k. These are tunable
+  defaults, {0.8, 1.3, 2.0, 3.0, 4.5} m/s, to calibrate with Training data. `V_min` comes from closed-form rolling
+  deceleration and cos²α energy transfer. Quick uses the lowest feasible step and the next two (3 speeds), and Full
+  may add the rest. Every suggestion is a meter step by construction.
+- **Spins (ball radii):** stun (0, 0), follow (0, +0.3), draw (0, −0.3) in Quick. Full adds left/right (±0.3, 0)
+  for the top-K target-pockets when |cut| < 45°.
+- **Analytic dedup before any sim.** The CB path after contact is predicted in closed form: tangent line for stun,
+  the 30° rule near half-ball, and the draw/follow curves (SPEC §5.4; the same helpers the overlay needs in
+  `AimGeometry`). The roll distance comes from speed loss. Two raw variants merge when their predicted CB rest
+  points are < 10 cm apart with the same predicted first rail. Budget: 9 raw → **5 distinct**.
+- **Throw-corrected aim, per variant.** Throw depends on speed and spin (SPEC §5.4), so the aim solve runs per
+  variant. The initial aim uses the analytic throw estimate. One sim verifies it. A second (Newton) sim runs only
+  when the OB departure error is > 0.25 × window half-width. Budget **1.5 sims per variant**.
 
-The spec asks for a "grid of speed × spin". Variants are built per (target, pocket, class):
+### 4.3 Analytic P(make)
 
-- **Speed.** `V_min` is the minimum CB speed that delivers the OB to the pocket with margin, computed in closed form
-  from rolling deceleration (μ_roll·g) and collision energy transfer (cos²α), then checked with one sim. The speed
-  set is {V_min·1.15, then the 5 power-meter steps above it}, clipped to [V_min, 6 m/s]. This matches the 5-step
-  power meter in the UI, so a suggestion can always be displayed.
-- **Spin (tip offset a, b in ball radii, |·| ≤ 0.5):** {centre/stun (0, 0), follow (0, +0.3), draw (0, −0.3),
-  left (−0.3, 0), right (+0.3, 0)}. Side spin is generated only when |α| < 45° (the throw and squirt risk is otherwise
-  dominated by aim error).
-- **Throw-corrected aim.** The nominal φ is solved with one Newton step on the sim: aim, measure the OB departure
-  angle, correct. This captures cut-induced and spin-induced throw from our physics (SPEC §5.4).
-- Variants count = 6 speeds × (3–5) spins, **deduplicated by end state**. Two variants whose noise-free CB rest
-  positions are within 5 cm and that pocket the same balls are merged. That typically leaves 6–12 per
-  target-pocket.
+For a direct variant with nominal stroke s (aim φ₀, throw-corrected):
 
-### 4.3 Analytic P(make) (the key perf lever)
+1. **Gain.** Quick uses the TP 3.4 closed form g = d/(2R cos φ). Full measures J = ∂θ_OB/∂φ per variant with two
+   sims at ±δφ (δφ = 0.05°). That captures throw changes, and it is never shared across variants.
+2. **Acceptance set.** Quick uses the geometric window [θ⁻, θ⁺] from the jaw geometry (TP A.13 seed, a single
+   interval). Full **samples** the acceptance set for the top-K: 16 OB-only sims on a grid spanning ±4σ_θ around θ₀,
+   cached per (quantised O, pocket, speed step). The result is a **union of intervals** {[θᵢ⁻, θᵢ⁺]}, which handles
+   jaw rattles and cushion-first entries. No bisection.
+3. **Execution noise only:** σ_θ² = (g·σ_φ)² + (∂θ/∂a·σ_a)² + (∂θ/∂b·σ_b)². Throw sensitivity to tip offset comes
+   from the same finite differences in Full and is 0 in Quick. All terms are angles.
+4. **P(make) = Σᵢ [Φ((θᵢ⁺ − θ₀)/σ_θ) − Φ((θᵢ⁻ − θ₀)/σ_θ)] × P(V ≥ V_min | σ_V) × 1[nominal not a scratch/foul].**
 
-For a direct candidate with nominal stroke s:
-1. Simulate s and s ± δφ (δφ = 0.1°). That is 3 sims, and the ± pair is shared by all variants with the same aim.
-   This gives the local Jacobian J = ∂θ_OB/∂φ (it includes throw, so it is better than the TP 3.4 closed form,
-   which we keep as the test oracle).
-2. The pocket acceptance window [θ⁻, θ⁺] for the OB departure angle is found by bisection on the OB-only sim (or
-   cached per (O, pocket) pair). Seed it with 2·atan((p_eff/2)/d1) (TP A.13).
-3. Departure-angle noise σ_θ = sqrt((J·σ_φ)² + (∂θ/∂a · σ_a)² + σ_pos²), where σ_pos covers perception error
-   in ball positions (default 6 mm, from the tracker covariance).
-4. **P(make) = Φ((θ⁺ − θ₀)/σ_θ) − Φ((θ⁻ − θ₀)/σ_θ).** Then multiply by a speed factor P(V ≥ V_min | σ_V) and a
-   scratch/foul factor taken from the noise-free trace (0 if the nominal shot scratches).
+**Perception error is kept out of both P models by default.** The player aims at the real balls. Tracker error
+changes *our* state estimate, not their execution. It is handled separately:
+- capsule tests use an R + 2σ_pos margin;
+- a **sensitivity flag**: P is recomputed with O and C shifted ±σ_pos perpendicular to the lines. In angle terms the
+  shift is δ/d_p for the OB-pocket line and g·δ/d for CB-OB, from the TP 3.4 gain. If P moves by more than 0.15,
+  the candidate is `perceptionSensitive`, which lowers rating confidence. If we ever want state uncertainty inside
+  P, it goes into **both** the analytic and MC models as sampled state perturbations (σ_pos converted to angle as
+  above), never into one only.
 
-Banks, kicks and combos chain the Jacobians: J_total is the product of the per-collision ∂out/∂in values, obtained from
-the same ±δφ sims. This replaces PickPocket's "map to straight-in plus discount" with a physically grounded number at
-the same cost.
+Banks, kicks and combos chain per-collision gains from the same ±δφ sims (Full), or from the mirrored-geometry
+closed form (Quick). Analytic P drives Quick ranking, overlay colour, the leaf, and the MC control (§6.3).
 
-The analytic P is used for (a) Quick-pass ranking, (b) the overlay colour, (c) the leaf evaluation, and (d) the
-**control variate** for MC in the Full pass (§6.3).
+### 4.4 Safeties
 
-### 4.4 Safeties (root only)
-
-Following PickPocket, safeties are generated only at the root, when `best offensive EV < τ_safety` (default: best
-P(make) < 0.65 **or** the best safety's Quick-pass value exceeds the best offensive EV).
-
-- **Sampled grid** (PickPocket/CueCard): φ over a 2.5° grid restricted to directions whose first contact is legal
-  (≤ 144 directions after the legality cone filter) × 3 speeds (soft/medium/firm), all centre ball. That is ≤ 432
-  nominal sims (~150 ms CPU, done in the **Full** pass only). The Quick pass uses a 10° grid × 2 speeds (≤ 72 sims).
-- **Targeted:** (1) "hide": choose CB rest points behind blockers relative to every opponent target (visibility
-  polygon from opponent targets). (2) "lag to rail": the legal-hit-plus-rail requirement for BCA/WPA from
-  `RuleResult` fouls.
-- **Score** = 1 − WP_opponent(state′) from the WP model. With the leaf evaluation, the opponent's options come from
-  the generator for the opponent's legal targets, including kicks when snookered. A foul gives the opponent ball in
-  hand, which is valued with the BIH generator. This is the spec's "Safety value = 1 − opponent's best P(make)",
-  generalised to WP.
+- **Always** (Quick and Full): a coarse set of 36 directions (10° grid, legal first contact) at the medium meter
+  step, so every evaluation has a safety alternative for RATING_CLASSES "Miss" and RATINGS B5.
+- **Full grid** when triggered: 2.5° grid (≤ 144 legal directions) × 3 speeds = ≤ 432 nominal sims, plus targeted
+  "hide" points (visibility polygon from the opponent's targets). Trigger: best offensive P < τ_s, **or** the best
+  coarse safety's value is within 0.05 of the best offence. τ_s = 0.65 is a **tunable default** (PickPocket's t0),
+  tuned on the gate positions.
+- **Score** = 1 − V_opp(state′), with the opponent's 2-ply reply including kicks when snookered (§6.1). The 4 best
+  enter Sequential Halving as ordinary arms. They are not run as a separate MC (fixes a double count).
 
 ---
 
 ## 5. Execution noise model (`SkillModel`)
 
-### 5.1 Parameterisation
+### 5.1 Parameterisation (one unit system: radians, fraction, ball radii)
 
-Our 2D physics has no elevation θ (no jump/massé in v1), so the model has four parameters:
-
-| Param | Meaning | ICGA 2008 | PickPocket E_high | Proposed default (league amateur) | Range |
+| Param | Meaning | ICGA 2008 | PickPocket E_high | Default (placeholder) | Range |
 |---|---|---|---|---|---|
-| σ_φ | aim direction (deg) | 0.125 | 0.185 | **0.45** | 0.1–1.5 |
-| σ_V | speed, *relative* (%) | 0.075 m/s abs | 0.085 m/s | **8%** | 3–20% |
-| σ_a, σ_b | tip offset (mm) | 0.5 | 0.8 | **2.5** | 0.5–6 |
+| σ_φ | CB direction | 0.125° | 0.185° | **derived from the tier target**, see below | 0.02°–1.5° |
+| σ_V | speed, relative | 0.075 m/s abs | 0.085 m/s | 8% | 3–20% |
+| σ_a, σ_b | tip offset, **ball radii** (R = 28.575 mm) | 0.0175 R (0.5 mm) | 0.028 R (0.8 mm) | 0.0875 R (2.5 mm) | 0.0175–0.21 R |
 
-Speed noise is relative because human speed error scales with intended speed. Defaults for "beginner / amateur /
-strong" tiers are set so that the analytic make rate on a canonical 1 m, 30° cut matches targets of about
-55% / 75% / 90%. They are calibrated offline in `tools/` by sweeping σ_φ. These defaults are placeholders until
-real-table data exists. **This is flagged as a calibration risk (§10).**
+**Tier targets drive σ_φ, and the targets are a user decision (§11 UD-E4).** Worked numbers with the corrected
+TP 3.4 gain: a 1 m CB–OB, 1 m OB–pocket, 30° cut gives g = 20.2. Assume a ±29 mm effective corner half-width at 1 m
+(about ±1.66°). Then:
 
-Sampling: φ, a, b and V are independent Gaussians, with the tip offset clipped to the miscue radius (|tip| ≤ 0.5R;
-beyond it, a miscue means CB speed × 0.3 and a random direction ±5°).
+| Make-rate target on that shot | Required σ_θ | Implied σ_φ |
+|---|---|---|
+| 55% | 2.2° | 0.11° |
+| 75% | 1.44° | 0.071° |
+| 90% | 1.0° | 0.05° |
 
-### 5.2 What we observe from tracking
+The earlier draft's σ_φ = 0.45° "amateur" default would give only about 15% on this shot, so it is withdrawn. The
+implied values sit at or below ICGA computer noise. That suggests either the targets are optimistic or the window
+assumption is too tight. **Both get calibrated on Phase-3 real shots.** Until then, σ is "sim-calibrated" (R1).
 
-For every competitive shot the tracker gives the CB launch direction and speed (from the first ~5 frames), the
-first contact, the OB departure direction, the pocketed balls and the rest state (SPEC §5.3).
-- **Aim residual (strong signal).** The intended pocket is inferred: the called pocket if it was called, else the
-  most likely candidate given the CB launch direction (argmax of the posterior over candidates). The residual is the
-  OB departure angle minus the required window centre, which maps back to Δφ via J⁻¹. Each shot gives one
-  continuous observation, where a made/missed bit carries about 1 bit.
-- **Speed residual (weak).** Only for shots where the candidate with matched spin is unambiguous: the CB travel
-  distance against the nominal for the matched variant.
-- **Made/missed (fallback).** The likelihood is the analytic P(make | σ), used when the OB direction is not tracked
-  (occlusion).
+Sampling: independent Gaussians. Tip offset is clipped to the miscue radius (|tip| ≤ 0.5 R). Beyond it, a miscue
+means CB speed × 0.3 and direction ± 5°.
+
+### 5.2 What we observe, and its noise
+
+Tracker position noise is ±0.5–1 cm (perception.md). Direction-fit noise from a line fit over n frames with baseline L
+is σ_dir ≈ σ_pos·√(12/n)/L. **Back-of-envelope estimates, to be validated on Phase-3 replays:**
+
+| Observation | Typical track | σ_dir (σ_pos = 7 mm) | Usable for |
+|---|---|---|---|
+| CB launch direction (first 5 frames at 2 m/s ≈ 33 cm) | short | ≈ 1.9° | Intent only (coarse) |
+| OB departure direction (≈ 20 frames, 1 m) | long | ≈ 0.3° | σ_φ via the gain (g ≈ 20 means OB error ≈ 20× CB error) |
+| CB spin from the post-contact path | — | not shown feasible at 30 fps | **Not used for σ in v1.** Spin is inferred only coarsely (follow / stun / draw) from the post-contact CB path vs the predicted variants |
 
 ### 5.3 Estimator
 
-- Use a **log-spaced grid posterior** over σ_φ (48 bins, 0.05°–3°), plus 24 bins for σ_V. The posterior is a
-  product of per-shot likelihoods. Residuals use a **Student-t (ν = 4)** to be robust to mis-inferred intent
-  (Archibald & Nieves-Rivera's point that decision and execution are confounded). The prior is the population
-  default tier (weight equivalent to about 20 shots).
-- **Cost:** O(bins) per shot update, so microseconds. Stored per player as the 48+24 log-weights (SwiftData,
-  competitive store).
-- **Point estimate** for simulation: the posterior mean. **Uncertainty:** the posterior SD. Below 30 observed shots,
-  the UI shows the skill as "learning" (an icon only).
-- **Bucketed context (v2):** separate σ_φ by cut bucket and distance bucket, matching SPEC §6 per-shot features.
-  Hierarchical shrinkage goes to the global σ.
+- **Likelihood with intent marginalised over the window.** The player may aim anywhere in the acceptance window
+  (cheating the pocket for position), modelled as uniform on [θ⁻, θ⁺]. Observation θ_obs = θ_t + g·e_φ + η, with
+  η ~ N(0, σ_obs²) from the tracker covariance. Then
+  `L(σ_φ) = [Φ((θ_obs − θ⁻)/s) − Φ((θ_obs − θ⁺)/s)] / (θ⁺ − θ⁻)`, with s² = (g σ_φ)² + σ_obs².
+  A Student-t (ν = 4) mixture covers mis-inferred intent.
+- **Grid posterior.** 48 log-spaced bins for σ_φ (0.02°–3°) and 24 for σ_V. Prior = the default tier with weight w₀.
+  Updates are O(bins) and order-independent.
+- **Thresholds are user decisions (§11 UD-E5):** w₀ (proposed 20 shots) and the "learning" icon threshold (proposed
+  30 shots).
+- **Bucketed context (v2):** σ_φ by cut and distance bucket, with hierarchical shrinkage.
 
-### 5.4 Who uses whose skill
+### 5.4 Whose skill
 
-- The shooter's σ is used for the root shot and for every "we continue" ply. The **opponent's** σ is used for every
-  ply where they shoot. For teams this is per team member in rotation, falling back to the team's mean σ. So
-  `evaluate` takes `skills: [PlayerID: SkillModel]` plus the rotation, not one `SkillModel`.
-- **Decision ratings** use the shooter's own σ. "Best" is judged relative to what *this* player can execute. A
-  pro-level σ is optional, as a second "engine-ideal" line in game review.
+The shooter's σ is used for their own plies and the opponent's σ for theirs, so `evaluate` takes a `SkillContext`.
+For teams it is per player in rotation (D17), falling back to the team mean. Decision ratings use the shooter's own
+σ (RATING_CLASSES "for this player's skill").
 
 ---
 
 ## 6. Search and value
 
-### 6.1 Value (SPEC §5.5.3, in WP units)
-
-For candidate c from state (s, g) with shooter A:
+### 6.1 Value (WP units) including option nodes
 
 ```
-EV(c) = E_noise[ W(s′, g′) ]      where (s′, g′) = (trace.final, RulesEngine.apply(outcome(trace), g).nextState)
-W(s′, g′) = 1                      if g′.phase == .over(A)
-          = 0                      if g′.phase == .over(B)
-          = V_A(s′, g′)            if !turnPasses                (A shoots again)
-          = 1 − V_B(s′, g′)        if turnPasses                 (incl. BIH options for B)
+EV(c) = E_noise[ W(s′, g′, r) ]   with r = RulesEngine.apply(outcome(trace), g), s′ = trace.final
+W = 1 / 0                                   if r.nextState.phase == .over(A / B)
+  = OPT(s′, r)                              if !r.options.isEmpty            (option node)
+  = V_A(s′, g′)                             if !r.turnPasses
+  = 1 − V_B(s′, g′)                         if r.turnPasses   (BIH: V_B uses the BIH leaf)
+OPT: the option holder H picks max over options o of W_H(choose(o)).   For A: W = 1 − max_o W_B(o) if H = B.
+Push-out by A: B chooses  W = min( V_A(s′) [B passes, A shoots],  1 − V_B(s′) [B shoots] ).
 ```
 
-This is the spec's P(make)·value(resulting) + (1−P)·value(left to opponent), written as an expectation over
-samples. It also handles scratches, fouls, the 8 early, the 9 on a combo, and similar outcomes correctly, because
-the RulesEngine decides each outcome. The spec's formula would otherwise need special cases.
+That covers push-out (WPA 5.4), illegal-break accept or hand back (WPA 4.3(d), 9-ball Reg 16), break fouls (4.3(g),
+(h)) and 8-on-break options (4.3(e), (f)), all through the existing `RuleResult.options` and `RulesEngine.choose`.
 
-`V_X(s, g)` (the leaf) = **win probability for X to shoot from (s, g)** (§6.4), estimated from a 2-ply look-ahead:
-- ply 2 (cheap): generate X's candidates (directs plus forced kicks). Score each with analytic P(make) and a
-  nominal sim for the top 3 by P, then apply the 1-ply leaf below to each nominal end state.
-- 1-ply leaf (no sims): the CueCard state score `q = 1·p1 + 0.33·p2 + 0.15·p3` over distinct legal ball-pocket
-  shots for X (p from the analytic formula, geometry only, no sim, reusing the TP 3.4 closed form). It is mapped to
-  WP via the WP model (§6.4).
-- The "position value = best next-shot value, 2-ply" of the spec is ply 2 above.
+**Leaf V_X(s, g)** = X's WP shooting from (s, g):
+- *2-ply (default):* generate X's directs plus forced kicks (analytic). Run nominal sims for the top 3 by analytic P,
+  then apply the 1-ply score to each end state.
+- *1-ply score (no sims):* CueCard q = p1 + 0.33·p2 + 0.15·p3, mapped to WP by §6.4.
+- *BIH leaf (no sims):* placements scored analytically (geometry only) for the best p's, then the WP model's BIH
+  term. This avoids 24 × sims per foul leaf.
+- *Safety arms:* the leaf is the opponent's 2-ply reply, including kicks when snookered, at the same 3-sim cost.
 
-### 6.2 Budget allocation (Full pass): Sequential Halving
+### 6.2 Budget allocation (Full): Sequential Halving
 
-Input: the K = 12 best Quick-pass candidates plus the 4 best safeties (16 arms). The total sample budget is
-B = 768 noisy root sims.
+Arms: K = 12 offensive plus 4 safeties (plus push-out or intentional-foul arms when applicable, within the 16 cap).
+B = 768 root samples, 4 rounds, n_r = 12, 24, 48, 96 per arm. The two finalists end with 180 samples each.
+Ties break by candidate index. Arms knocked out in round 0 have only 12 samples, which is why ratings use a
+separate pass (§7.2).
 
-```
-rounds = ceil(log2(16)) = 4
-for r in 0..<rounds:
-    n_r = floor(B / (|arms| * rounds))                  // 12, 24, 48, 96 samples per arm
-    run n_r more samples per arm (CRN seeds, see 6.3); update mean EV and SE
-    keep the better half of arms by EV
-```
+**Leaf cache keyed by canonical representative.** The key is the end state quantised (CB 2 cm, OBs 1 cm, ball set,
+GameState). The leaf is **evaluated at the bucket's canonical (quantised) state**, never at whichever sample
+arrived first. So the value depends only on the key, and fill order can't change results. The bias is bounded by the
+quantum. A property test checks that |V(canonical) − V(exact)| stays small on random states. The hit rate is
+unknown, and §9 budgets h = 0 (worst) and h = 0.5.
 
-Use Karnin et al.'s fixed-budget best-arm identification. It concentrates samples on the contenders, which matters
-for ratings because the best/second-best gap is what decides "Best" vs "Good". The leaf (2-ply) is evaluated
-per sample. Leaf results are **cached** by quantised end state (CB to a 2 cm grid, the set of balls on the table,
-and the object balls to a 1 cm grid). Clustered outcomes, such as all the "made, CB within the same patch" samples,
-then share one leaf evaluation. Expect a cache-hit rate of 40–70%.
+### 6.3 Variance reduction (unbiased) and determinism
 
-### 6.3 Variance reduction and determinism
+- **CRN.** The root noise for sample i is z_i = Normal4(counter = mix(engineSeed, stateHash, stream = 0, i)), shared
+  by every candidate **by design**. `mix` is a proper 64-bit mixer (SplitMix64 finaliser chained per field, or a
+  Philox4x32 counter RNG), not XOR. Other random streams (safety jitter, window grids) use stream = candidate id.
+- **Antithetics.** Sample 2k+1 uses −z₂ₖ.
+- **Linearised control variate (exact mean).** C_i = 1[θ₀ + g·σ_φ·z_φ,i + (∂θ/∂a)σ_a z_a,i + (∂θ/∂b)σ_b z_b,i ∈ window_lin],
+  computed from the **same unclipped z** and the same linear model. Since z is exactly Gaussian, E[C] =
+  Φ((θ⁺−θ₀)/s) − Φ((θ⁻−θ₀)/s) holds **exactly**, whatever the accuracy of the window or the linearisation. Then
+  EV_cv = mean(W) − β·(mean(C) − E[C]). β is fitted on a disjoint half of the samples (split-sample, so no O(1/n)
+  bias), then swapped. The analytic P with σ_pos is **never** used as a control. If the gate measurements show CV gains
+  < 10%, it is dropped and CRN plus antithetics remain.
+- **Stratification (to evaluate):** Latin-hypercube on z_φ, the dominant axis. It is kept only if it measurably
+  lowers SE on the gate positions.
+- **Determinism.**
+  1. The input `TableState` is **quantised to 0.5 mm before hashing**, and the engine runs on the quantised state.
+     Same quantised input gives the same output. Sub-mm tracker jitter that crosses a bucket can still change results,
+     and the eval-bar hysteresis (§6.4) absorbs it.
+  2. Chunks return (startIndex, [W, C, made, …]) into an index-addressed buffer. All means, SEs and β are reduced
+     **serially in sample-index order** after each round.
+  3. The leaf cache is canonical (§6.2).
+  4. The determinism test is scoped to **one platform and build** (macOS arm64 `swift test`, and separately the
+     device), across thread counts 1, 2 and 4.
 
-- **RNG:** counter-based. `seed = splitmix64(stateHash ^ engineSeed ^ sampleIndex)`, so sample i of *every*
-  candidate draws the same standard-normal vector (z_φ, z_V, z_a, z_b) and is scaled by that candidate's σ. This
-  gives common random numbers, and the result is independent of task scheduling order. The test harness can assert
-  bit-identical `Evaluation`s.
-- **Antithetic pairs:** sample i+1 uses −z. This is cheap and cuts the variance of P(make) estimates on symmetric
-  windows.
-- **Control variate:** EV_cv = mean(W) − β·(mean(1[made]) − P_analytic), with β fitted on the samples. When the
-  analytic model is good, the SE on P drops by roughly 2x.
-- **Reported SE:** each `CandidateScore` carries `evSE`. RATINGS uses it to avoid labelling within-noise gaps (for
-  example, "Best" if ΔWP < max(0.01, 2·SE)).
+### 6.4 Win-probability model
 
-### 6.4 Win-probability model (eval bar)
+**v1: analytic inning model.** Run-out probability R_X along a greedy plan, with position factor κ(tier). The
+opponent's generic run-out from a typical leave is r_X(n) = (p̄_X κ_X)^n ρ_X. Alternation:
+`W_A = R + (1−R)(1−r_B) W_A^gen`, with `W_A^gen = r_A / (1 − (1−r_A)(1−r_B))`. Terms are added for BIH, the WPA
+9-ball two-foul state, and 8-ball group progress. Cost about 5 µs.
 
-The goal is P(A wins this rack | s, g, skills), cheap enough to call for every leaf.
+**Bootstrap, sequenced explicitly (offline, `tools/`, virtual table):**
+1. Greedy policy (best analytic P, stun, medium speed) self-play per tier → fit κ, ρ (WP v1.0).
+2. Engine with v1.0 self-play → refit κ, ρ (v1.1). Repeat once more if Brier improves by > 2%.
+3. **Labelled "sim-calibrated"** until Phase-3 real data, because the sim-to-real gap (D16 constant e) is baked in.
 
-**v1: analytic inning model (ships in Phase 2).**
-- From any state, X's **run-out probability** R_X(s) = product over X's remaining balls of the per-ball continuation
-  probability, along a greedy plan. The greedy plan picks the next ball with the best q-contribution and takes the
-  position-degradation factor κ(skill) = P(good leave | make), with κ fitted offline in `tools/` by virtual-table
-  self-play per skill tier.
-- After a miss, the opponent gets a "typical" leave. Their run-out probability from a typical leave with n balls
-  left is r_X(n) = (p̄_X·κ_X)^n · ρ_X, from a per-tier table fitted by self-play.
-- Two-player alternation solves in closed form. With A at the table, run-out R, and generic per-inning run-out
-  probabilities r_A, r_B:
-  `W_A = R + (1−R)·(1−r_B)·W_A^gen`, where `W_A^gen = r_A / (1 − (1−r_A)(1−r_B))`.
-  Partial-progress inning variants (balls per side for 8-ball, lowest ball for 9-ball, BIH and the two-foul state
-  for WPA 9-ball) replace the r(n) terms.
-- Cost: O(balls), about 5 µs. It is monotone and bounded by construction (property-testable).
+**v2: learned logistic table**, accepted only if its Brier score ≤ v1's on held-out self-play.
 
-**v2: learned table (Phase 2 stretch / Phase 6).** Run engine-vs-engine self-play on the virtual table, offline on
-macOS in `tools/`. Fit a small logistic model WP = σ(wᵀf) on features such as (nA, nB, shooter, BIH, best p1 for the
-shooter, q-score, cluster count, skill-tier gap, rule set), and ship the weights in the bundle. Validate with
-**Brier score and a reliability diagram** against held-out self-play. Accept only if Brier ≤ the v1 model's Brier on
-the same data.
-
-**Eval bar.** WP is from the perspective of the team at the table, **or** of team 0 (open question §11, Q3). It is
-smoothed with hysteresis so that sample noise does not jiggle the bar (update only if |Δ| > 2·SE).
-
-**Match-level (optional).** Per-rack p plus race length gives P(win race) via the negative binomial, consistent with
-FargoRate's 2^(Δ/100) per-game odds.
+**Eval bar.** Perspective is §11 UD-E3. Hysteresis: the bar updates only if |Δ| > 2·SE.
 
 ---
 
 ## 7. Rating hand-off
 
-The Engine computes, per shot:
-- `WP_before` (Full eval of the pre-shot state, shooter to play) and `WP_after` (Quick + Full of the post-shot state).
-- `EV_best`, `EV_chosen`, `ΔWP_decision = EV_best − EV_chosen`, with SEs, under the shooter's σ.
-- `P_make_chosen` (baseline difficulty, for "low baseline P(make)" in Brilliant), the `ShotKind` of the chosen shot,
-  and `nonObviousness`. The latter is the rank of the chosen shot in a *greedy* ordering by P(make), compared with
-  its EV rank. A high-EV shot that a greedy player would not pick is "non-obvious".
-- **Chosen-shot inference.** The tracked CB launch (direction, speed, estimated spin from the CB curve) is matched to
-  the nearest candidate in stroke space (Mahalanobis distance under σ). If the nearest distance is above 3σ, a new
-  candidate is built from the observed stroke and evaluated with the same seeds.
-- **Execution:** `made / nearMiss / miss`. A near miss is when the OB departure angle is within 1.5·window
-  half-width outside the window, or the OB rattles the jaws (pocket-jaw event in the trace or tracker). `position`
-  is `inZone` if the actual CB rest position is in the **position zone**: the set of CB positions whose leaf value ≥
-  0.8·the best sampled leaf value for that candidate, rasterised on a 2 cm grid from the MC samples. The same zone
-  is reused for the Training "glowing zone" (SPEC §8).
-- **Swing:** `WP_after − WP_before` (WPA delta, SPEC §6) feeds Brilliant/Great/Blunder per D2.
+### 7.1 What the Engine produces (reconciled with RATINGS §2 and RATING_CLASSES)
 
-The thresholds, classes and the brilliant catalogue live in `docs/RATINGS.md`. **Proposal:** move `rate(...)` off the
-actor into a pure `Ratings` function. It is pure given these numbers, which makes it trivially testable.
+| Field | Meaning | Source |
+|---|---|---|
+| W₀, W₁, swing | WP before (pre Full, else latest partial) and after (post Quick), and W₁ − W₀ | §3.1 |
+| EV_best, EV_second, G | Best and second-best arm EVs, and the "only move" gap | Full |
+| EV_chosen, L, SE(L) | Chosen EV and paired loss | rating pass §7.2 |
+| evMake, evMiss | E[W \| intended outcome], E[W \| not] per candidate (RATINGS B4: miss-branch ≥ 0.45) | split of the MC samples by intended-outcome flag |
+| pIntended (Ps) | This player's P(intended outcome): pot made, or safety reached its target leave | MC |
+| pBaseline (Pb) | The same with the reference-skill σ (RATINGS UD-8), analytic only (no extra sims) | §4.3 |
+| Rₒ | Opponent's best reply after the actual result (max analytic P over their candidates, kicks included) | post Quick |
+| intent | Posterior over candidates (top 3 + probability) and confidence κ̂ | §7.3 |
+| naivePick | The rank-1 candidate of the naive policy "max P(make), ignore leave" (RATINGS §3.2) | Quick |
+| kind | Candidate class, including `pushOut`, `intentionalFoul`, `safety`, `breakShot` | generator |
+| execution | made / nearMiss / miss, and position zone | §7.4 |
+| flags | `perceptionSensitive`, `lowConfidence` (unresolved at settle) | §4.3, §3.1 |
+
+### 7.2 SE of the loss and what resolution is affordable
+
+With per-sample SD of W about 0.3 (a placeholder until measured on the gate positions), the paired difference
+D = W_best − W_chosen under CRN has SD = 0.3·√(2(1−ρ)):
+
+| CRN correlation ρ | When | SD(D) | SE at n = 12 / 96 / 180 / 512 | n for SE = 0.01 / 0.015 / 0.02 |
+|---|---|---|---|---|
+| 0 | different target or pocket | 0.42 | 0.12 / 0.043 / 0.032 / 0.019 | 1800 / 800 / 450 |
+| 0.5 | same target, other pocket | 0.30 | 0.087 / 0.031 / 0.022 / 0.013 | 900 / 400 / 225 |
+| 0.8 | same target-pocket, another speed/spin | 0.19 | 0.055 / 0.019 / 0.014 / 0.008 | 360 / 160 / 90 |
+| — | chosen == best | 0 | L = 0 exactly, zero cost | — |
+
+D18 bands are 2–3 points wide (§1). Placing L in a band at about 95% confidence needs 2·SE ≲ half a band, so SE ≈
+0.01. **That is not affordable for unrelated shots** (1800 pairs ≈ 7k+ sims). Design:
+- **Rating pass:** start at the stroke and extend both chosen and best (shared indices, so CRN carries over from SH)
+  until the 95% CI of L lies inside one D18 band, or n reaches n_max = 512 per arm.
+- **Unresolved at n_max:** round toward the better class (benefit of the doubt, consistent with RATINGS §4.2 "CIs
+  overlap → L := 0"). So Best vs Good is only split when the loss is confidently > 2 points. **This makes ratings
+  coarser than chess.com's at the top end.** §11 UD-E7 asks whether to accept that or merge Best and Good
+  visually.
+- **Gate measurement (Phase 2):** measure σ_W, ρ and the resolved-band rate on the 20 positions × the 3 tiers, and
+  report the share of shots that end "unresolved".
+
+### 7.3 Chosen-shot inference
+
+- Distance to each candidate in stroke space uses the **combined** covariance Σ = Σ_exec(σ) + Σ_obs (tracker: CB
+  launch σ_dir ≈ 2°, speed from the track). For pots, the OB departure (σ ≈ 0.3°) and the pocketed set are matched
+  against each candidate's predicted outcome, with intent marginalised over the acceptance window (§5.3).
+- Posterior ∝ prior (the engine's own preference, softened) × likelihood. If the best candidate is > 3σ in combined
+  Mahalanobis distance, a new candidate is built from the observed stroke and scored with the same seeds.
+- **Validation:** synthetic tracks with injected tracker noise (§13.1), not only clean residuals.
+
+### 7.4 Execution
+`made / nearMiss / miss` per RATINGS §5. Near miss = OB departure within 1.5× the window half-width outside the
+window, or a jaw event. **Position zone** = CB positions whose leaf ≥ 0.8 × the best sampled leaf, rasterised on 2 cm.
+It is computed **host-local, and only for the chosen and best candidates**, and never put in a broadcast
+`Evaluation`. The 1.5× and 0.8× factors are tunable defaults (gate set).
+
+`Ratings.rate(_ inputs: RatingInputs, thresholds:)` is a pure function, outside the actor.
 
 ---
 
 ## 8. Swift 6 concurrency design
 
-```swift
-public actor ShotEngine {
-    // isolated state: config, leaf cache (LRU, ~4k entries), current generation token
-    public func evaluations(_ s: TableState, _ g: GameState, skills: SkillContext,
-                            budget: EngineBudget = .standard) -> AsyncStream<Evaluation>
-}
-```
+### 8.1 Executor
+- **A dedicated `EngineExecutor: TaskExecutor` (SE-0417)** backed by a fixed pool of c worker threads (default c = 2,
+  tuned by §9.4). Each thread has `qualityOfService = .utility`, with Quick and the rating pass submitted to a
+  second, 1-thread `.userInitiated` executor. Engine work therefore **never occupies the global cooperative pool**,
+  which the tracker, mesh, SwiftData and UI tasks share.
+- iOS can't pin threads to P-cores, so placement is the scheduler's choice. The cost under real load is
+  **measured** (§9.4), not assumed.
 
-- **The actor holds state only, never runs the hot loop.** Hot code lives in `nonisolated` pure value types
-  (`CandidateGenerator`, `ShotSampler`, `LeafEvaluator`, `WinModel`), all `Sendable`. The actor's method creates the
-  stream. Inside it, `withTaskGroup` children run the pure functions on the global cooperative pool, so the actor
-  serial executor is never blocked.
-- **Chunking.** The unit of work is one *chunk* of ~16 sims (about 6 ms), never one sim per task (task overhead and
-  allocation). Children = min(chunks, 2 × activeProcessorCount). Each chunk checks `Task.isCancelled` before
-  starting. Chunks are short enough that no `Task.yield()` is needed inside them, which respects the forward-progress
-  contract on the cooperative pool.
-- **Cancellation and supersession.** A new table state (tracker says the balls moved or a new shot started) makes
-  the caller cancel the previous stream's task. The actor also bumps `generation`, and results tagged with a stale
-  generation are dropped. Target: cancellation is observed in < 10 ms.
-- **Anytime.** The stream yields `.quick` (≤150 ms), then a `.full` partial after each Sequential-Halving round, then
-  the final `.full`. The eval bar and overlay take the latest one.
-- **Priorities.** Quick runs at `.userInitiated` and Full at `.utility`. The live overlay and Vision run on the
-  main/GPU/ANE paths. Engine children must not starve the frame callback, so we reserve one P-core by capping
-  children at `activeProcessorCount − 1` while the camera is live.
-- **Thermal and battery.** Read `ProcessInfo.thermalState`. At `.serious`, halve B and K. At `.critical`, Quick only.
-  Also scale with Low Power Mode.
-- **Reentrancy.** No mutable actor state is read after an `await` without re-checking `generation`. The leaf cache is
-  merged after each round on the actor (children return local caches), not written concurrently.
-- **Memory.** `TableState` is a small struct (16 balls). Each sample keeps only (final state hash, W, made, CB rest);
-  there are no traces. Peak is well under 5 MB.
-- **Mesh.** Only the host runs the engine. `Evaluation` is `Codable` and compact (≤ 20 candidates, no traces, about
-  4 KB), broadcast after `.full`, never while aiming (in the spirit of D3 for bandwidth).
+### 8.2 Isolation
+- Entry points are `@concurrent nonisolated func` (SE-0461), so they never inherit the caller's actor under
+  `NonisolatedNonsendingByDefault` (approachable concurrency). They call
+  `withTaskExecutorPreference(engineExecutor) { withTaskGroup { … } }`, and group children inherit the preference.
+- **Hot loops are synchronous** (`Simulator.simulate`, sampling, leaf) inside the children. They contain no `await`.
+- The `ShotEngine` actor holds config, the generation token and the canonical leaf cache only.
+
+### 8.3 Chunking, cancellation, anytime
+- A chunk is ~16 samples (sized after §9.1). It checks `Task.isCancelled` before starting. There are ≤ 2c chunks in
+  flight.
+- A new quantised state for the live overlay cancels the stale **Quick**. The pre-shot Full and the rating pass are
+  **not** cancelled at the stroke (§3.1). The generation token drops stale yields. Cancellation target: < 1 chunk.
+- Stream order: `.quick` → `.partial` per SH round → `.full` → `RatingInputs` (from the rating pass).
+
+### 8.4 Thermal / power
+`ProcessInfo.thermalState`: at `.serious`, halve B, K and n_max. At `.critical`, Quick only. Low Power Mode halves B.
+
+### 8.5 Memory
+Per sample we keep (index, W, C, made, intended, CB rest, leaf key) and no traces. Peak < 5 MB plus zones for 2
+candidates.
+
+### 8.6 Mesh and skill models
+- **Profile summary (join time)** carries each player's σ posterior log-weights: (48 + 24) Float32 = 288 B per player.
+- **Who updates.** After each shot, the host builds a `SkillObservation` (θ_obs, window, g, σ_obs, intent posterior;
+  < 100 B) and sends it to the **owning phone**. The owner applies the pure update to its competitive SwiftData
+  store and rebroadcasts its summary. The host applies the same pure update to its session copy. The update is
+  deterministic, so the two agree. On **host migration**, the new host already holds every broadcast summary, plus
+  un-acked observations replayed by the owner.
+- Players without a phone in the session use session-only skill (default tier) (§11 UD-E10).
+- **Evaluation broadcast:** about 1–2 KB without zones, sent after `.full`. Live eval on peers while aiming is §11
+  UD-E9. Option (a) is a ≤ 64 B `EvalLite` (WP bucket, best candidate id, P bucket) at ≤ 2 Hz from the host. Option (b)
+  is a local Quick pass on each peer from the fused state. D3 covers clips, not eval, so it is not cited as a reason.
 
 ---
 
 ## 9. Performance budget (iPhone 15 Pro Max)
 
-Assumptions: 0.35 ms per sparse sim on a P-core. E-cores are about 3x slower, giving about 2.5 effective P-cores
-after reserving headroom. 8-ball mid-rack with 7 legal targets is the typical worst case. The open table after the
-break, with 15 targets, is the hard worst case, handled by the K caps.
+### 9.1 Step 0: microbenchmark (before any budget is frozen)
+- **Where:** an XCTest in the app test target that links CueCore, **Release** configuration (`-O`, WMO), on the
+  15 Pro Max. The same suite also runs on an M-series Mac with `swift test -c release` for the device/Mac ratio.
+- **Cases:** fixed simulator (after the physics fix lands), 200 seeded strokes each: **sparse** (3 balls), **mid-rack**
+  (9 balls), **open table** (16 balls spread), **break**, and **OB-only** (the window sims).
+- **Placement proxies:** the run at `.userInteractive` (likely P-cores) vs `.background` (likely E-cores), and
+  throughput with 1, 2, 4 and 6 threads → effective c.
+- **Output:** median and p95 t_sim per case, written into this doc. Every wall-time figure below is then recomputed.
 
-### 9.1 Quick pass (target ≤150 ms wall p95; also the "candidate eval" budget)
+### 9.2 Sim counts (formulas; wall = sims × t_sim / c)
 
-| Step | Work | CPU (ms) | Wall (ms) @2.5 cores |
+**Quick** (target ≤ 150 ms p95, proposed):
+
+| Stage | Count | Typical | Worst (open table) |
 |---|---|---|---|
-| Legal targets + geometry + capsule pruning | ~3k segment tests | 0.1 | 0.1 |
-| Aim solve (Newton) + Jacobian sims (±δφ), per target-pocket | 20 tp × 3 sims | 21 | 8 |
-| Nominal sims per variant (after dedup) | 20 tp × 6 = 120 sims | 42 | 17 |
-| Banks/kicks/combos (only if needed) | ≤ 22 × 3 sims | 23 | 9 |
-| Quick safety grid | 72 sims (only if triggered) | 25 | 10 |
-| Leaf eval V0 (no sims) per variant | 140 × ~40 analytic shots × 1 µs | 6 | 2.5 |
-| WP model | per leaf, ~5 µs | 1 | 0.4 |
-| **Total (typical / worst)** | | **~70 / ~120** | **~30 / ~50** |
+| Directs: TP × 5 distinct variants × 1.5 sims | 20 / 24 TP | 150 | 180 |
+| Banks/kicks/combos: 16 × 1 variant × 3 sims | | 48 | 48 |
+| Coarse safeties | 36 | 36 | 36 |
+| Push-out arms (only in `.pushOutAvailable`, replaces most directs) | ≤ 48 | — | — |
+| Leaf (analytic), WP | 0 sims | ~5 ms CPU | ~8 ms |
+| **Total** | | **~234 sims** | **~264 sims** |
 
-Single-threaded worst case on E-cores only (thermal-throttled) is about 360 ms. Mitigations: K caps and dropping the
-quick safety grid. This is a **perf-gate test** (§10.3).
+**Full** (target ≤ 2.5 s p95):
 
-### 9.2 Full pass (target ≤2.5 s wall p95; SPEC gate < 3 s)
-
-| Step | Work | CPU (ms) | Wall (ms) |
+| Stage | Count | h = 0.5 | h = 0 |
 |---|---|---|---|
-| Root MC, Sequential Halving | 768 noisy sims × 0.4 ms (post-shot clustering is denser) | 310 | 125 |
-| 2-ply leaf per sample, top-3 nominal sims | 768 × 3 × 0.35 ms × (1 − 0.5 cache hit) | 400 | 160 |
-| Ply-2 analytic generation | 768 × 0.5 × 60 µs | 25 | 10 |
-| Full safety grid + MC on 4 best safeties | 432 + 4 × 96 sims | 290 | 115 |
-| RulesEngine.apply per sample | ~2k × 5 µs | 10 | 4 |
-| Chosen-shot re-eval (post-shot) | 96 sims + leaf | 70 | 30 |
-| **Total** | | **~1.1 s** | **~0.45 s** |
+| J (2 sims) + sampled window (16 OB-only sims) for top-K | 12 × 18 | 216 | 216 |
+| Full safety grid (only when triggered) | 432 | 432 | 432 |
+| SH root samples | 768 | 768 | 768 |
+| 2-ply leaf: 3 sims per non-terminal, non-BIH sample, × (1 − h) | ≤ 768 × 3 | 1152 | 2304 |
+| BIH and option-node leaves | analytic | 0 | 0 |
+| **Total** | | **~2570** | **~3720** |
 
-That leaves headroom for 2x physics regressions, dense racks (sims near 1 ms), or doubling B for better rating
-stability. The **break** (13 ms per sim) is not searched live: break candidates and their post-break WP are
-precomputed offline. Rating a break uses 32 samples (≈420 ms CPU, background), only to decide whether the outcome
-was lucky or good.
+**Rating pass** (during the roll; worst case = unrelated shots, n_max reached):
+(n_chosen,new ≈ 500 + n_best,new ≈ 330) × (1 + 3(1 − h)) = **~2080 (h = 0.5) / ~3320 (h = 0)**. It costs 0 when
+chosen == best.
+
+**Required t_sim for each target** (c = 2, worst case):
+
+| Pass | Sims | t_sim = 0.35 ms | 1.0 ms | Max t_sim for target |
+|---|---|---|---|---|
+| Quick | 264 | 46 ms | 132 ms | **≈ 1.1 ms** for 150 ms |
+| Full | 3720 | 0.65 s | 1.86 s | **≈ 1.34 ms** for 2.5 s |
+| Rating | 3320 | 0.58 s | 1.66 s | must fit inside roll time (unmeasured) |
+
+If §9.1 comes in over budget, cut in this order: Quick variants 5 → 3. Full leaf top-3 → top-2. B 768 → 512.
+n_max 512 → 256, which coarsens ratings (§7.2).
+
+**Break.** Not searched live. The candidates and their post-break WP are precomputed offline, and breaks are "Book"
+(D18). Their rating needs no MC.
 
 ### 9.3 Instrumentation
-`EngineBudget` counts sims and wall time per stage and exposes them in the Debug HUD (D9) and `os_signpost`
-intervals for Instruments. The perf gate reads p50/p95 over the 20 reference positions × 20 runs.
+`EngineStats` counts sims and per-stage time. `os_signpost` intervals cover each stage. p50/p95 are **computed from
+custom `ContinuousClock` samples** (XCTest `measure` reports average and standard deviation, not p95).
+
+### 9.4 Device gates by phase
+| Phase | Gate | How |
+|---|---|---|
+| **2** | Engine-only p95 on the 15 Pro Max: Quick ≤ 150 ms (if UD-E1 says yes), Full ≤ 2.5 s, Eval < 3 s (spec) | 20 positions × 20 runs, with a **synthetic load generator** standing in for perception: a 30 Hz Core ML inference loop on a bundled dummy model (ANE/GPU) plus one CPU thread at 50% duty |
+| 3/4 | The same p95 **with the real camera pipeline** (live or replay `.mov`), and overlay frame-time p95 unchanged within 1 ms with the engine running vs not | Capture, detector and replay exist from Phase 3 |
+| 9 | **1-hour thermal soak** with the engine on every shot (scripted replay loop): fps never < 24 (spec), log thermalState, and engine p95 per 10-min window | Duty estimate: about 6–10k sims per shot, so a few seconds of CPU per shot. That is unmeasured and is the reason for the soak |
 
 ---
 
 ## 10. Risks
 
-| # | Risk | Impact | Mitigation |
-|---|---|---|---|
-| R1 | Sim-to-real gap: physics not yet calibrated to real cloth or cushions (D16 constant e) | P(make) and the position zone are biased, so recommendations are wrong in a consistent direction | The skill calibration absorbs the aim bias. Add a per-table "fudge" σ_pos. Real-table calibration is a Phase-3 item. Never display numeric precision. |
-| R2 | Perception noise (±0.5–1 cm ball positions, ID errors) | Blocked/clear and thin-cut decisions flip | σ_pos is part of the analytic P. Capsule tests use R + 3σ_pos margin. Recompute only when the tracker is stable for N frames. |
-| R3 | Default skill tiers are guesses | Early ratings are miscalibrated (calls a 55% shot "easy") | Ship conservative defaults. Show a "learning" icon for under 30 shots. The prior weighs about 20 shots. Ask the user to review the tier targets. |
-| R4 | Intent inference wrong (bar 8-ball has no called pocket) | Execution error is mis-attributed and ratings are unfair | Student-t residuals, posterior over intended candidates, and a low-confidence flag that suppresses Brilliant/Blunder when intent is ambiguous. |
-| R5 | MC noise makes ratings flicker between Best and Good | User distrust | CRN, deterministic seeds, SE-aware thresholds, and a fixed final rating (no re-rating after display). |
-| R6 | 2-ply horizon misses pattern-play and safety exchanges | "Best" disagrees with strong players | The WP model encodes rack-level run-out. Add the user's review of 20 positions to the gate. v2 can use a learned leaf from self-play. |
-| R7 | Thermal throttling during long sessions with the camera on | Full pass exceeds settle time | Anytime stream (a Quick result always exists), thermal-state scaling, and a core reserved for the camera. |
-| R8 | Combinatorial blow-up on the open 8-ball table (15 targets) | Quick pass over 150 ms | Class ordering, P-threshold pruning, and K caps. Worst-case positions are among the 20 reference positions. |
-| R9 | Rules and physics coupling: the RulesEngine depends on accurate `ShotOutcome` from the trace (first contact, rail after contact) | Mis-scored fouls in MC | Reuse the one `ShotOutcome.from(trace)` builder that the Rules tests already cover. Golden tests per foul type. |
-| R10 | Spec conflict between the 150 ms target and "Eval < 3 s" | Ambiguous gate | Both apply: 150 ms for Quick and 2.5 s/3 s for Full (§11, Q1). |
+| # | Risk | Mitigation |
+|---|---|---|
+| R1 | Sim-to-real gap (D16 constant e). The WP model and σ are sim-calibrated | Label them "sim-calibrated". Real-table recalibration in Phase 3. Never show numeric precision |
+| R2 | Perception noise flips blocked/clear and thin-cut decisions | Capsule margin, the `perceptionSensitive` flag, recompute only on a stable tracker |
+| R3 | Tier targets and thresholds are guesses | User decisions UD-E4 and UD-E5. Everything else is a tunable default tuned on the gate set |
+| R4 | Wrong intent (bar 8-ball has no call) | Combined-covariance likelihood, window-marginalised intent, low-confidence suppresses promotions |
+| R5 | MC noise moves ratings across bands | Paired rating pass, benefit-of-the-doubt rounding, no re-rating after display |
+| R6 | 2-ply horizon misses patterns and safety exchanges | WP model run-out terms. The user reviews the 20 positions |
+| R7 | Thermal throttling | thermalState scaling, a dedicated low-QoS executor, the Phase-9 soak |
+| R8 | t_sim above the §9.2 thresholds | The cut order in §9.2. Physics optimisation becomes a Phase-2 task |
+| R9 | Rules/physics coupling via `ShotOutcome` | A single `ShotOutcome.from(trace)` builder, golden tests per foul |
+| R10 | Unaffordable rating resolution at the top bands | §7.2 design plus UD-E7 |
 
 ---
 
-## 11. Open questions for the user (product ambiguity, so ask rather than guess)
+## 11. Decisions for the user
 
-1. **Gates.** Confirm two gates: Quick ≤150 ms p95 (live re-rank, overlay colour) and Full ≤2.5 s p95, inside the
-   spec's < 3 s.
-2. **Skill learning source.** Learn σ from competitive shots only (keeps stats separate), or also from Training shots
-   (more data, and only σ is shared, not stats)?
-3. **Eval-bar perspective.** Should the bar show the shooter's chances, or a fixed team's side (chess.com style:
-   white/black)?
-4. **Decision-rating baseline.** Judge against what *this player* can execute (proposed), or against a fixed strong
-   player?
-5. **Bar 8-ball calling.** When no pocket is called, may the engine infer intent, or should ratings skip shots with
-   ambiguous intent?
+| # | Question | Proposal |
+|---|---|---|
+| UD-E1 | Add a Quick-pass gate (≤ 150 ms p95) on top of the spec's "Eval < 3 s"? | Yes, for live overlay colour and re-ranking |
+| UD-E2 | Does "finish within ball-settling time" mean the badge is ready when the balls stop? | Yes: the heavy work runs during the roll, and the badge uses Quick W₁ |
+| UD-E3 | Eval-bar perspective: the shooter, or a fixed team side (chess.com white/black)? | Fixed team side |
+| UD-E4 | Skill-tier make-rate targets on a 1 m / 1 m / 30° corner cut (beginner / amateur / strong) | 55% / 75% / 90%, which implies σ_φ ≈ 0.11° / 0.07° / 0.05° (§5.1). Revisit with real data |
+| UD-E5 | Skill prior weight and "learning" icon threshold | Prior ≈ 20 shots. Learning icon below 30 shots |
+| UD-E6 | Learn σ from Training shots too (only σ shared, no stats)? | Competitive only for v1 |
+| UD-E7 | Accept coarser top-end ratings (Best unless the loss is confidently > 2 pts), or merge Best/Good visually? | Accept coarser; Best on ambiguity |
+| UD-E8 | Generate **carom** and **intentional-foul** candidates in Phase 2, or v2 (observe only)? | Intentional fouls (basic tie-up/block/dump set) in Phase 2. Caroms v2 |
+| UD-E9 | Must peer phones show live eval bar and overlay colour while someone aims? | Yes via `EvalLite` host broadcast at ≤ 2 Hz |
+| UD-E10 | Players with no phone in the session: session-only skill at the default tier? | Yes |
+| UD-E11 | Bar 8-ball with no call: may the engine infer intent, or skip ambiguous shots? | Infer; suppress promotions when low-confidence |
+| UD-E12 | Decision baseline: this player's skill (RATING_CLASSES says so), plus an optional "pro line" in game review? | Player's skill. Pro line optional in review |
 
 ---
 
@@ -456,157 +543,176 @@ intervals for Instruments. The perf gate reads p50/p95 over the 20 reference pos
 
 ```swift
 public enum ShotKind: Hashable, Codable, Sendable {
-    case direct, bank(Rail), kick(Rail), combo(via: BallID), safety, breakShot
+    case direct, bank(Rail), kick(Rail), combo(via: BallID), carom(off: BallID) /* generator v2, UD-E8 */
+    case safety, pushOut, intentionalFoul(IntentionalFoulGoal), breakShot
 }
+public enum IntentionalFoulGoal: String, Codable, Sendable { case tieUp, blockPocket, dumpBall }
 public struct Candidate: Hashable, Codable, Sendable {
+    public var id: UInt32                 // stable index; tie-breaks and RNG streams
     public var kind: ShotKind
-    public var target: BallID?          // nil for safety-without-target / break
-    public var pocket: Pocket?
-    public var stroke: Stroke
-    public var cuePlacement: Vec2?      // ball-in-hand placement
-    public var ghost: Vec2?             // overlay
+    public var target: BallID?, pocket: Pocket?
+    public var stroke: Stroke             // tipOffset in ball radii; speed = a power-meter step
+    public var meterStep: Int             // 1…5
+    public var cuePlacement: Vec2?, ghost: Vec2?
 }
 public struct SkillModel: Hashable, Codable, Sendable {
-    public var sigmaAim: Double          // rad
-    public var sigmaSpeedRel: Double     // fraction of intended speed
-    public var sigmaTip: Double          // ball radii
+    public var sigmaAim: Double           // rad (CB direction)
+    public var sigmaSpeedRel: Double      // fraction
+    public var sigmaTip: Double           // ball radii
+    public var logWeightsAim: [Float]     // 48 bins; travels in the mesh profile summary
+    public var logWeightsSpeed: [Float]   // 24 bins
     public var observations: Int
-    public static let beginner, amateur, strong: SkillModel
-    public func updated(with obs: SkillObservation) -> SkillModel   // grid-posterior update (pure)
+    public static let beginner, amateur, strong: SkillModel   // values pending UD-E4
+    public func updated(with obs: SkillObservation) -> SkillModel   // pure, order-independent
 }
-public struct SkillContext: Sendable { public var byTeam: [Int: [SkillModel]]; public var rotation: [Int: Int] }
+public struct SkillObservation: Hashable, Codable, Sendable { /* θ_obs, window, gain, σ_obs, intent p */ }
+public struct SkillContext: Sendable { public var byPlayer: [PlayerID: SkillModel]; public var rotation: [Int: [PlayerID]] }
 public struct CandidateScore: Hashable, Codable, Sendable {
     public var candidate: Candidate
-    public var pMake: Double, ev: Double, evSE: Double, samples: Int
-    public var positionZone: ZoneGrid?   // coarse raster, for execution rating + training
+    public var pMakeAnalytic: Double, pIntended: Double, pBaseline: Double
+    public var ev: Double, evSE: Double, evMake: Double?, evMiss: Double?, samples: Int
+    public var perceptionSensitive: Bool
 }
 public struct Evaluation: Hashable, Codable, Sendable {
     public enum Tier: String, Codable, Sendable { case quick, partial, full }
-    public var stateHash: UInt64, generation: UInt64, tier: Tier
-    public var shooter: Int
+    public var stateHash: UInt64, generation: UInt64, tier: Tier, shooter: Int
     public var winProbability: Double, winProbabilitySE: Double
-    public var ranked: [CandidateScore]  // best first, ≤ 20
-    public var stats: EngineStats        // sims, ms per stage (debug HUD only)
+    public var ranked: [CandidateScore]   // best first, ≤ 20; no zones (host-local)
+    public var secondBestGap: Double      // G
+    public var naivePick: UInt32?         // candidate id
+    public var opponentBestReply: Double  // Rₒ, for post-shot states
+    public var stats: EngineStats
 }
-public struct EngineBudget: Sendable { var maxTargetPockets = 24, topK = 12, safeties = 4, rootSamples = 768,
-                                       quickDeadline: Duration = .milliseconds(150), fullDeadline: Duration = .seconds(2.5) }
-public struct EngineRNG: Sendable { init(seed: UInt64); func normals(sample: Int) -> SIMD4<Double> }  // counter-based
+public struct RatingInputs: Hashable, Codable, Sendable {
+    public var w0: Double, w1: Double
+    public var chosen: CandidateScore, best: CandidateScore
+    public var loss: Double, lossSE: Double, resolvedBand: Bool
+    public var intent: [(UInt32, Double)] /* top 3 */, intentConfidence: Double
+    public var opponentReply: Double, execution: ExecutionRating, lowConfidence: Bool
+}
+public struct EngineBudget: Sendable { var maxTargetPockets = 24, quickVariants = 5, topK = 12, safeties = 4,
+    rootSamples = 768, ratingMaxPerArm = 512, threads = 2 }   // re-set after §9.1
+public struct EngineRNG: Sendable { init(seed: UInt64); func normals(state: UInt64, stream: UInt32, sample: Int) -> SIMD4<Double> }
 
 public actor ShotEngine {
-    public init(rules: RulesEngine, simulator: Simulator, seed: UInt64 = 0)
-    public nonisolated func candidates(_ s: TableState, _ g: GameState) -> [Candidate]          // pure, sync
-    public func evaluations(_ s: TableState, _ g: GameState, skills: SkillContext,
-                            budget: EngineBudget) -> AsyncStream<Evaluation>                      // anytime
-    public func evaluate(_ s: TableState, _ g: GameState, skills: SkillContext,
-                         budget: EngineBudget) async -> Evaluation                                // last of stream
-    public func score(stroke: Stroke, in s: TableState, _ g: GameState, skills: SkillContext,
-                      against e: Evaluation) async -> CandidateScore                              // chosen shot
+    public init(rules: RulesEngine, simulator: Simulator, seed: UInt64 = 0, executor: EngineExecutor)
+    public nonisolated func candidates(_ s: TableState, _ g: GameState) -> [Candidate]               // pure, sync
+    @concurrent public nonisolated func evaluations(_ s: TableState, _ g: GameState, skills: SkillContext,
+                                                    budget: EngineBudget) -> AsyncStream<Evaluation>
+    @concurrent public nonisolated func ratingInputs(pre: Evaluation, observed: ObservedShot, post: TableState,
+                                                     _ g: GameState, skills: SkillContext) async -> RatingInputs
     public nonisolated func winProbability(_ s: TableState, _ g: GameState, skills: SkillContext) -> Double
 }
-public enum Ratings {                                                                              // pure, per RATINGS.md
-    static func rate(chosen: CandidateScore, before: Evaluation, after: Evaluation,
-                     trace: ShotTrace, outcome: RuleResult) -> (DecisionRating, ExecutionRating)
-}
+public enum Ratings { static func rate(_ i: RatingInputs, thresholds: RatingThresholds) -> (DecisionRating, ExecutionRating) }
 ```
 
-Deltas from the stub: (1) `skill: SkillModel` becomes `SkillContext` (the opponent's noise is needed). (2) An anytime
-stream and a budget are added. (3) `candidates` and `winProbability` are `nonisolated` and pure. (4) `rate` moves to a
-pure `Ratings` namespace. (5) A deterministic `EngineRNG` is injected. (6) `score(stroke:)` handles shots that are not
-among the candidates.
-
-Dependencies needed from other modules: `ShotOutcome.from(trace:)` (Rules/Physics boundary), `TableSpec` pocket
-jaw geometry (Geometry), and a tracker covariance per ball (Tracking, later; default constant until then).
+Deltas from the stub: `SkillContext`, an anytime stream, pure `candidates` and `winProbability`, pure
+`Ratings.rate` over `RatingInputs`, an injected RNG and executor, new `ShotKind` cases (RATINGS §2/§7), branch EVs,
+Rₒ, intent posterior and naivePick. **Reconcile with RATINGS.md before editing INTERFACES.md.**
+Dependencies: `ShotOutcome.from(trace:)`, `TableSpec` jaw geometry, a tracker covariance per ball (constant until
+Phase 3), and `RulesEngine.choose` for option nodes.
 
 ---
 
-## 13. TDD test plan (`Packages/CueCore/Tests/EngineTests`, `swift test`)
-
-Red → green per row. Fast tests (< 1 s each) run in every `swift test`. Tests tagged `.slow` (MC agreement,
-self-play calibration) run in CI and on demand.
+## 13. TDD test plan (`Packages/CueCore/Tests/EngineTests`)
 
 ### 13.1 Unit / property tests
-
 | Area | Tests |
 |---|---|
-| Geometry helpers | Ghost ball at 2R along the pocket line. Mirror-bank point on each rail. Capsule obstruction: clear, grazing at R+ε, blocked. Pocket effective centre shifts toward the far jaw as the angle grows. |
-| Generator | Straight-in present when clear. Absent when blocked, or when the target is illegal (8-ball group, 9-ball non-lowest), matching `RulesEngine.legalTargets` exactly. Banks/kicks appear only when directs are scarce or snookered. Kick generated when snookered. Combos only with a legal first contact. BIH placements respect `.behindHeadString`. Variant dedup merges equivalent end states. Counts never exceed `EngineBudget`. |
-| Analytic P(make) | In [0,1]. σ→0 gives 0/1 (window test). Monotone decreasing in d1, d2 and cut angle (property test over random geometry). Symmetric for ± cut. Agrees with the TP 3.4 closed form within 10% for no-throw configurations. **Agrees with 2,000-sample MC within 3 SE on 50 seeded random shots (`.slow`).** Hanging-ball case > 0.95 even at a 60° cut. |
-| Noise model / RNG | Same seed gives identical normals. Antithetic pair sums to 0. 10k-sample mean and SD within 2% of the specification. Tip offset clipped to the miscue radius. |
-| Skill estimator | Synthetic shooters with known σ_φ ∈ {0.2°, 0.5°, 1.0°}: the posterior mean is within 15% after 200 residual observations and within 30% after 200 made/missed-only observations. 0 observations returns the prior. Outliers (5% mis-inferred intent) do not move the estimate by more than 10% (Student-t). Updates are order-independent. |
-| WP model | Bounded in [0,1]. W_A + W_B = 1 for the same state with the shooter swapped and generic re-entry. `.over` states give 0/1. Monotone: fewer own balls raises WP, BIH raises WP, opponent on two fouls (WPA 9-ball) raises WP. Equal skill on a symmetric state is within 0.5 ± 0.05. Self-play Brier ≤ the baseline (`.slow`). |
-| Value / search | EV of a guaranteed-scratch shot is ≤ WP with opponent BIH. Pocketing the 8 early in 8-ball gives EV ≈ 0. A 9 on a combo gives EV ≈ 1. Sequential Halving never drops the arm with the best true EV in a synthetic bandit with a gap of 0.1 (≥ 95% of 200 seeds). **Determinism:** the same inputs give bit-identical `Evaluation` regardless of core count. CRN: the variance of the EV difference is lower than with independent seeds. |
-| Concurrency | Cancelling during Full returns within 10 ms (measured with a clock). A stale generation is never yielded. The stream yields `.quick` before `.full`. No data races under TSan (`swift test --sanitize=thread`). |
-| Ratings boundary | `Ratings.rate` is pure. A ΔWP inside 2·SE is never below "Good". Ambiguous intent suppresses Brilliant/Blunder. These follow RATINGS.md thresholds once approved. |
+| TP 3.4 | The exact eq. 1 vs the linear d/(2R cos φ): the relative error is < 2% for φ ≤ 30°, Δφ ≤ 0.1°, d ∈ [0.2, 2] m (numeric sweep). Sign convention fixed in the test. Gain from ±δφ sims agrees with the closed form within 10% on no-throw shots |
+| Geometry | Ghost ball, mirror points, capsule obstruction (clear, grazing, blocked), shift of the pocket effective centre |
+| Generator | Legal targets match `RulesEngine.legalTargets`. Banks, kicks and combos are present **even when directs exist** (capped). Kicks when snookered. Push-out arms only in `.pushOutAvailable`. BIH respects `.behindHeadString`. Analytic dedup merges equivalent CB paths. Speeds ∈ meter steps. Caps respected |
+| Analytic P | In [0, 1]. σ → 0 gives 0/1. Monotone in d1, d2 and cut. Multi-interval window sums correctly (synthetic two-interval case). Agrees with 2,000-sample MC within 3 SE on 50 seeded shots (`.slow`) |
+| Control variate | **Unbiased:** across 200 seeds, mean(EV_cv) − EV(20k-sample plain MC) is within 3 SE. E[C] closed form vs 100k-sample empirical mean |
+| RNG | A proper mixer: no collisions over 10⁶ (hash, stream, index) tuples. Antithetic pairs. Moment checks |
+| Skill estimator | Synthetic shooters σ_φ ∈ {0.05°, 0.1°, 0.3°} with **injected tracker noise** (σ_pos 5–10 mm on simulated tracks at 30 fps) and intent drawn uniformly within the window. Posterior mean within 20% after 200 shots. Ignoring σ_obs is shown to inflate σ (regression guard). Outliers 5% move the estimate < 10%. Order-independent |
+| WP model | Bounded. **W_A(s, g) + W_B(s, g) = 1 for the same (s, g).** `.over` gives 0/1. Monotone in own balls, BIH and two-foul. Symmetric state with equal skill gives 0.5 ± 0.05. Brier vs baseline (`.slow`) |
+| Option nodes | Push-out: W equals the min over the opponent's {shoot, pass}. Accept-or-pass: the holder picks max own WP. Matches a hand-computed toy |
+| Value / search | Guaranteed scratch ≤ WP with opponent BIH. 8 early ≈ 0. 9 on a combo ≈ 1. SH keeps the best arm (≥ 95% of 200 seeds, gap 0.1). CRN lowers Var(difference) |
+| Determinism | Bit-identical `Evaluation` and `RatingInputs` for threads ∈ {1, 2, 4}, **same platform and build**. Canonical cache: shuffled fill order gives the same results. A 0.3 mm input jitter inside a quantum gives the same output |
+| Concurrency | Engine work runs on `EngineExecutor` threads (asserted via a thread-name probe), never the cooperative pool. Cancellation within one chunk. No stale generation yielded. TSan clean |
+| Ratings boundary | `Ratings.rate` is pure. An unresolved band rounds to the better class. Low intent confidence suppresses promotions |
 
-### 13.2 The 20 reference positions (SPEC Phase-2 gate)
-
-Stored as JSON fixtures in `Tests/EngineTests/Fixtures/positions/NN-name.json` (TableState + GameState + skills +
-expected assertions). Each position is rendered by the virtual table for the user review that the gate requires.
-Assertions are **qualitative and robust**: class, ordering, a P bucket and the WP direction. They are never exact
-numbers.
+### 13.2 Reference positions
+The 20 user-reviewed gate positions (unchanged list, except #6, #8 and #20 are tightened), plus 4 engine fixtures
+that are not part of the user review:
 
 | # | Position | Rules | Assertion |
 |---|---|---|---|
-| 1 | Short straight-in, CB 30 cm behind OB, corner | 9-ball | best = direct, P bucket high, WP > 0.5 |
-| 2 | 9-ball last ball, easy | 9-ball | best = direct on the 9, WP ≥ 0.85 |
-| 3 | 30° cut mid-table to corner | 8-ball | direct, P medium-high |
-| 4 | Long 60° thin cut vs a simple safety | 9-ball | amateur σ: safety EV > pot EV. Strong σ: pot EV > safety EV (skill-dependence test) |
-| 5 | Steep-angle side pocket vs corner option | 8-ball | the side candidate is rejected or low. Best = corner |
-| 6 | Direct blocked, clean one-rail bank | 9-ball | bank generated and best offensive |
-| 7 | OB frozen to the rail, along-the-rail shot | 8-ball | direct P medium. Throw-corrected aim differs from the geometric aim |
-| 8 | Snookered (every legal target hidden) | 9-ball | only kicks/safeties generated. Best = kick with a legal hit |
-| 9 | Dead 2→9 combo | 9-ball | combo generated. EV > direct on the 2 |
-| 10 | Easy pot with no shape vs harder pot with perfect shape (2 balls + 8 left) | 8-ball | 2-ply picks the shape shot (position-play test) |
-| 11 | Nothing makeable, good hide available | 8-ball | best = safety. Opponent best P low after the safety |
-| 12 | Ball in hand, 3 balls left | 9-ball | placement chosen. WP > 0.7 |
-| 13 | On the 8 with a scratch line on the natural angle | 8-ball | best variant avoids the scratch (spin/speed). Scratch EV ≈ 0 |
-| 14 | Open table after the break (D11), 15 balls | bar 8-ball | Quick pass ≤150 ms. Candidates for both groups |
-| 15 | Easy pot that can break a cluster vs a pot that leaves the cluster | 8-ball | the breakout variant ranks higher |
-| 16 | We have 7, opponent has 1 + 8 | 8-ball | WP low. Safety preferred over a low-P pot |
-| 17 | Ball hanging in the jaws at a 50° cut | 9-ball | P > 0.95 |
-| 18 | Two-way shot (pot or leave safe on a miss) | 9-ball | the two-way variant has a higher miss-branch value than the plain pot |
-| 19 | Opponent on two fouls (WPA 9-ball) | WPA 9-ball | safety value raised vs the same position without the two fouls |
-| 20 | Racked table, break | each rule set | only break candidates. WP from the precomputed break table. No live break MC |
-
-The gate also requires the user to review the ratings on these positions (SPEC §9), the Quick and Full p95 on the
-15 Pro Max (§9), and every rule-set path to be exercised.
+| 1 | Short straight-in | 9-ball | direct, P high, WP > 0.5 |
+| 2 | Easy last ball (9) | 9-ball | direct on the 9, WP ≥ 0.85 |
+| 3 | 30° cut mid-table | 8-ball | direct, P medium-high |
+| 4 | Long 60° thin cut vs safety | 9-ball | amateur: safety > pot. Strong: pot > safety |
+| 5 | Steep side pocket vs corner | 8-ball | best = corner |
+| 6 | Direct blocked, clean bank | 9-ball | bank generated and best offensive |
+| 7 | OB frozen to the rail | 8-ball | throw-corrected aim ≠ geometric aim |
+| 8 | Snookered | 9-ball | kicks and safeties only. Best = kick with a legal hit |
+| 9 | Dead 2→9 combo | 9-ball | combo EV > direct on the 2 |
+| 10 | Easy pot without shape vs harder pot with shape | 8-ball | 2-ply picks shape |
+| 11 | Nothing makeable, good hide | 8-ball | best = safety, Rₒ low |
+| 12 | BIH, 3 balls left | 9-ball | placement chosen, WP > 0.7 |
+| 13 | On the 8 with a scratch line | 8-ball | best variant avoids the scratch |
+| 14 | Open table after the break, 15 balls | bar 8-ball | Quick count ≤ budget. Both groups present |
+| 15 | Cluster breakout vs leave | 8-ball | breakout variant higher |
+| 16 | 7 vs 1+8 | 8-ball | WP low. Safety over a low-P pot |
+| 17 | Hanger at 50° | 9-ball | P > 0.95 |
+| 18 | Two-way shot | 9-ball | two-way evMiss > plain pot's evMiss |
+| 19 | Opponent on two fouls | WPA 9-ball | safety value raised |
+| 20 | Racked table | each rule set | break candidates only, precomputed WP, Book |
+| E1 | **Bank beats an available direct** (direct leaves a scratch or a sell-out, the bank is two-way) | 9-ball | bank ranked above the direct |
+| E2 | **Push-out** after the break, 1 visible at a hard cut | WPA 9-ball | push-out arms generated. W = min(shoot, pass). Push chosen over a low-P pot |
+| E3 | **Accept-or-hand-back** after an illegal break (Reg 16 / 4.3(d)) | WPA 9 / WPA 8 | option node valued as the holder's max |
+| E4 | **Intentional foul tie-up** (Dr. Dave BD Mar 2026 Image 1 analogue), if UD-E8 = Phase 2 | 8-ball | the foul arm's EV > the best legal safety |
 
 ### 13.3 Performance tests
-- **macOS (`swift test`, `.slow`):** sim-count assertions (budget respected) and a wall-time regression guard of 2x
-  the baseline, recorded per machine.
-- **Device (XCTest `measure` in the app test target, 15 Pro Max):** all 20 positions × 20 runs. Assert p95 Quick ≤
-  150 ms and p95 Full ≤ 2.5 s with the camera pipeline running (replay `.mov` source), plus the thermal-state log.
-  Repeat on the 17 Pro Max for information only.
+- macOS `.slow`: sim-count assertions per stage (§9.2 formulas), and a 2× wall regression guard per machine.
+- Device: the §9.1 microbenchmark first, then the Phase-2 gate (§9.4) with p95 from `ContinuousClock` samples.
+  Pipeline and soak gates are added in Phases 3/4 and 9.
 
-### 13.4 Build order (each step red → green)
-1. RNG + SkillModel sampling → 2. geometry helpers + obstruction → 3. direct generator + legality →
-4. aim solve + analytic P(make) → 5. leaf evaluation (CueCard q) → 6. WP v1 → 7. Quick pass + budget →
-8. MC + CRN + Sequential Halving → 9. 2-ply + cache → 10. safeties + BIH → 11. banks/kicks/combos →
-12. actor + stream + cancellation → 13. chosen-shot scoring + Ratings boundary → 14. the 20 positions → 15. device perf.
+### 13.4 Build order
+0. **Microbenchmark** (after the physics fix) → 1. RNG + SkillModel → 2. geometry + obstruction → 3. generator (all
+classes, caps) → 4. aim solve + analytic P + window → 5. leaf + WP v1 bootstrap step 1 → 6. Quick + budget →
+7. MC + CRN + CV + SH + canonical cache → 8. option nodes + push-out → 9. safeties + BIH → 10. executor + actor +
+stream → 11. rating pass + intent + `RatingInputs` → 12. skill estimator with noisy synthetic tracks →
+13. reference positions → 14. device gate.
+
+---
+
+## Reviewer notes (rev 2)
+
+All 20 review items were accepted and fixed. Two were partly rejected:
+- **Determinism, "hash (stateHash, candidate, index)".** The proper-mixer part is adopted. The *candidate* is
+  deliberately **not** in the root-noise seed, because common random numbers require that sample i draws the same z
+  for every candidate. Including it would remove the CRN variance reduction the rating pass relies on (§7.2).
+  Candidate ids are mixed into the non-root streams only.
+- **Perception error in P(make).** Of the two options offered, this doc takes "neither model includes it by
+  default", for the reason given in §4.3. The angle conversion is specified for when it gets added to both models.
+- **Not changed:** the D18 class bands. RATINGS.md and RATING_CLASSES.md own them, so the resolution problem is
+  raised as UD-E7 and the bands are left alone here.
 
 ---
 
 ## Sources
 
 - Smith, "Running the Table: An AI for Computer Billiards", AAAI 2006. https://cdn.aaai.org/AAAI/2006/AAAI06-156.pdf · https://mlanthology.org/aaai/2006/smith2006aaai-running
-- Smith, "PickPocket: A computer billiards shark", Artificial Intelligence 2007. https://datalearner.com:8443/academic/journal-papers/0004-3702/volumes-and-issues/321/paper-detail/68497
+- Smith, "PickPocket: A computer billiards shark", Artificial Intelligence 171 (2007) 1069–1091. https://doi.org/10.1016/j.artint.2007.04.011
 - Archibald, Altman, Greenspan, Shoham, "Computational Pool: A New Challenge for Game Theory Pragmatics", AI Magazine. https://yoavshoham.net/_files/ugd/a1a3b1_5964a39d807a4fce8768f64cb69d6b25.pdf
 - Archibald, Altman, Shoham, "Success, strategy and skill: an experimental study", AAMAS 2010. https://ifaamas.csc.liv.ac.uk/Proceedings/aamas2010/pdf/01%20Full%20Papers/22_05_FP_0677.pdf
 - Archibald et al., "Analysis of a Winning Computational Billiards Player", IJCAI 2009. https://mlanthology.org/ijcai/2009/archibald2009ijcai-analysis
-- Leckie & Greenspan, "An Event-Based Pool Physics Simulator", ACG 2005 / LNCS 4250. https://www.springerprofessional.de/en/an-event-based-pool-physics-simulator/1276086
+- Leckie & Greenspan, "An Event-Based Pool Physics Simulator". https://www.springerprofessional.de/en/an-event-based-pool-physics-simulator/1276086
 - Archibald & Nieves-Rivera, "Bayesian Execution Skill Estimation", AAAI 2019. https://ojs.aaai.org/index.php/AAAI/article/view/4556
 - "Estimating Agent Skill in Continuous Action Domains", JAIR 2024. https://jair.org/index.php/jair/article/view/15326
-- Alciatore, TP 3.4 "Margin of error based on distance and cut angle". https://drdavepoolinfo.com/technical_proofs/TP_3-4.pdf
+- Alciatore, TP 3.4 "Margin of error based on distance and cut angle" (eq. 1; d = CB–OB distance, d ≫ R). https://drdavepoolinfo.com/technical_proofs/TP_3-4.pdf
 - Alciatore, margin-for-error FAQ. https://drdavepoolinfo.com/faq/cut/margin-for-error/
-- Alciatore, TP A.13 (pocket tolerance). https://billiards.colostate.edu/technical_proofs/new/TP_A-13.pdf
+- Alciatore, TP A.13. https://billiards.colostate.edu/technical_proofs/new/TP_A-13.pdf
 - Alciatore, pocket size and centre. https://drdavepoolinfo.com/pocket/size-and-center/
-- Rauser, pool make-probability calculator. https://jrauser.github.io/pool/
-- Kiefl, pooltool (GitHub, JOSS 2024). https://github.com/ekiefl/pooltool · https://theoj.org/joss-papers/joss.07301/10.21105.joss.07301.pdf
+- Kiefl, pooltool. https://github.com/ekiefl/pooltool · https://theoj.org/joss-papers/joss.07301/10.21105.joss.07301.pdf
 - chess.com, "How are moves classified?". https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-move
 - FargoRate, "Behind the curtain". https://fargorate.com/fargorateblog/archive/behindthecurtain/
-- Karnin, Koren, Somekh, "Almost Optimal Exploration in Multi-Armed Bandits", ICML 2013. https://proceedings.mlr.press/v28/karnin13.html
-- Variance reduction / common random numbers. https://en.wikipedia.org/wiki/Variance_reduction · https://rossetti.github.io/KSLBook/ch9VRTs.html
+- Karnin, Koren, Somekh, ICML 2013. https://proceedings.mlr.press/v28/karnin13.html
+- Variance reduction / CRN / control variates. https://en.wikipedia.org/wiki/Variance_reduction · https://rossetti.github.io/KSLBook/ch9VRTs.html
+- SE-0461 "Run nonisolated async functions on the caller's actor by default" (`NonisolatedNonsendingByDefault`, `@concurrent`). https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md
+- SE-0417 "Task Executor Preference". https://github.com/swiftlang/swift-evolution/blob/main/proposals/0417-task-executor-preference.md
 - Swift forums, "Concurrency and CPU-bound tasks". https://forums.swift.org/t/concurrency-and-cpu-bound-tasks/49716
-- Swift forums, "@concurrent for expensive synchronous work". https://forums.swift.org/t/is-concurrent-now-the-standard-tool-for-shifting-expensive-synchronous-work-off-the-main-actor/82976
-- Donny Wals, WWDC21 notes "Swift concurrency: Behind the scenes". https://www.donnywals.com/wwdc-notes-swift-concurrency-behind-the-scenes/
 - Apple A17 Pro (core configuration). https://en.wikipedia.org/wiki/A17_Pro
+- Project docs: `docs/RATING_CLASSES.md` (D18 bands), `docs/RATINGS.md` (§2 inputs, B-classes), `docs/research/rules-notes.md` (WPA 4.3, 5.4, Reg 16), `docs/CHECKLIST.md` (physics status).
