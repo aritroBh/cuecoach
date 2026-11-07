@@ -17,7 +17,7 @@ struct JoinNearbyView: View {
             ScrollView {
                 VStack(spacing: 16) { content }
                     .padding(16)
-                    .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: model.state)
+                    // No crossfade between states: a terminal state (full, host left) replaces the old one outright.
                     .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: model.games)
             }
         }
@@ -65,12 +65,13 @@ struct JoinNearbyView: View {
             // AX sizes: the next step (waiting) comes before the lineup so it's in the first viewport.
             if typeSize.isAccessibilitySize {
                 StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+                cancelButton
                 if let l = model.lineup { LineupStrip(lineup: l) }
             } else {
                 if let l = model.lineup { LineupStrip(lineup: l) }
                 StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+                cancelButton
             }
-            cancelButton
         case .full:
             StatusGlyph(symbol: "lock.fill", tint: SBColor.caution, title: "Game full", animate: false, id: "join.full")
             backButton
@@ -148,7 +149,13 @@ private struct GameRow: View {
                     .accessibilityHidden(true)
                 }
                 Spacer(minLength: 0)
-                SARuleBall(number: SettingsViewModel.ruleBall(game.ruleSet), size: 36)
+                // Ball + short rule name: Bar 8 and WPA 8 must not look identical.
+                VStack(spacing: 4) {
+                    SARuleBall(number: SettingsViewModel.ruleBall(game.ruleSet), size: 36)
+                    Text(SettingsViewModel.ruleShortLabel(game.ruleSet))
+                        .font(.footnote.weight(.semibold)).foregroundStyle(SBColor.inkMuted)
+                        .lineLimit(1)
+                }
                 trailing.font(.title3.weight(.semibold))
             }
             .padding(16)
