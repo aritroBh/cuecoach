@@ -23,7 +23,7 @@ struct Evaluator: Sendable {
         self.simulator = simulator
         self.rules = rules
         self.rng = EngineRNG(seed: seed)
-        self.budget = budget
+        self.budget = budget.normalized
         self.skill = skill
         self.opponentSkill = opponentSkill
         self.state = Self.quantised(state)
@@ -194,18 +194,22 @@ struct Evaluator: Sendable {
 
     // MARK: Parallel map with deterministic order
 
-    func parallelMap<T: Sendable>(_ count: Int, _ body: @escaping @Sendable (Int) -> T) async -> [T] {
+    /// nil when the calling task is cancelled: no new work starts, in-flight items are cancelled and dropped.
+    func parallelMap<T: Sendable>(_ count: Int, _ body: @escaping @Sendable (Int) -> T) async -> [T]? {
         var out = [T?](repeating: nil, count: count)
-        await withTaskGroup(of: (Int, T).self) { group in
+        let finished = await withTaskGroup(of: (Int, T).self) { group -> Bool in
             var next = 0
-            while next < min(count, budget.maxParallel) {
+            while next < min(count, budget.maxParallel), !Task.isCancelled {
                 let i = next; group.addTask { (i, body(i)) }; next += 1
             }
             for await (i, v) in group {
+                if Task.isCancelled { group.cancelAll(); return false }
                 out[i] = v
                 if next < count { let j = next; group.addTask { (j, body(j)) }; next += 1 }
             }
+            return !Task.isCancelled && next == count
         }
+        guard finished else { return nil }
         return out.map { $0! }
     }
 
@@ -235,8 +239,15 @@ struct Evaluator: Sendable {
         }
         guard !candidates.isEmpty else { return evaluation([], tier: .full, paired: [:]) }
 
-        let quicks = await parallelMap(candidates.count) { self.quick(candidates[$0]) }
+        guard let quicks = await parallelMap(candidates.count, { self.quick(candidates[$0]) }) else {
+            return evaluation([], tier: .quick, paired: [:])          // cancelled before the Quick tier finished
+        }
         stats.sims += quicks.reduce(0) { $0 + $1.sims }
+        func quickOnly(_ q: Quick) -> CandidateScore {
+            CandidateScore(candidate: q.candidate, pMakeAnalytic: q.pAnalytic, pBaseline: q.pBaseline,
+                           pIntended: q.pAnalytic, ev: q.score, evSE: 0, evMake: nil, evMiss: nil,
+                           bestLeaf: nil, samples: 0, quickScore: q.score)
+        }
 
         // Arms: top offence, top defence, top push-outs (engine.md §6.2).
         func top(_ filter: (Candidate) -> Bool, _ n: Int) -> [Int] {
@@ -265,7 +276,17 @@ struct Evaluator: Sendable {
             let results = await parallelMap(items.count) { k -> [Sample] in
                 let (a, s, e) = items[k]
                 let c = quicks[a].candidate
-                return (s..<e).map { self.sample(c, start: starts[a]!, index: $0) }
+                var out: [Sample] = []
+                for i in s..<e {
+                    if Task.isCancelled { break }
+                    out.append(self.sample(c, start: starts[a]!, index: i))
+                }
+                return out
+            }
+            guard let results else {
+                // Cancelled mid-search: fall back to the Quick ranking (not deterministic; the caller dropped it).
+                let ranked = quicks.sorted { ($0.score, -Int($0.candidate.id)) > ($1.score, -Int($1.candidate.id)) }
+                return evaluation(ranked.map(quickOnly), tier: .quick, paired: [:])
             }
             for (k, (a, _, _)) in work.enumerated() { samples[a, default: []] += results[k] }
             stats.sims += work.reduce(0) { $0 + $1.2 - $1.1 }
@@ -284,9 +305,7 @@ struct Evaluator: Sendable {
                 scores.append((s, eliminatedAt[i] ?? budget.rounds))
                 paired[q.candidate.id] = ss.map(\.w)
             } else {
-                scores.append((CandidateScore(candidate: q.candidate, pMakeAnalytic: q.pAnalytic, pBaseline: q.pBaseline,
-                                              pIntended: q.pAnalytic, ev: q.score, evSE: 0, evMake: nil, evMiss: nil,
-                                              bestLeaf: nil, samples: 0, quickScore: q.score), -1))
+                scores.append((quickOnly(q), -1))
             }
         }
         scores.sort { a, b in

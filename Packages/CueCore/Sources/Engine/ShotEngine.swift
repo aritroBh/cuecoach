@@ -27,9 +27,14 @@ public actor ShotEngine {
                     threeBallRule: threeBallRule)
     }
 
-    /// Pure, synchronous candidate list (geometry only).
+    /// Pure, synchronous candidate list (geometry only), at the default skill.
     public nonisolated func candidates(_ s: TableState, _ g: GameState) -> [Candidate] {
-        CandidateGenerator(rules: rules(for: g), skill: defaultSkill).generate(Evaluator.quantised(s), g)
+        candidates(s, g, skill: defaultSkill)
+    }
+
+    /// The candidate list `evaluate(_:_:skill:)` searches for this skill (same ids, same order).
+    public nonisolated func candidates(_ s: TableState, _ g: GameState, skill: SkillModel) -> [Candidate] {
+        CandidateGenerator(rules: rules(for: g), skill: skill).generate(Evaluator.quantised(s), g)
     }
 
     public func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel) async -> Evaluation {

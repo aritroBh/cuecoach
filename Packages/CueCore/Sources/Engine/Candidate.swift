@@ -19,7 +19,7 @@ public enum ShotKind: Hashable, Codable, Sendable {
     /// Opening break (always Book, D18 row 1).
     case breakShot
 
-    /// Offensive = intends to pocket a ball.
+    /// Kind-level offence (direct, bank, combo). A `.kick` can still be a kick-pot: use `Candidate.intendsPot`.
     public var isOffensive: Bool {
         switch self {
         case .direct, .bank, .combo: true

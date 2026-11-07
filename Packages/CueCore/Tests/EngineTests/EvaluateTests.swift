@@ -80,7 +80,7 @@ private func eval(_ s: TableState, _ g: GameState, skill: SkillModel = .amateur,
     // Reference #11: the 1 is frozen on the foot rail far from any pocket line; the CB is at the other end.
     let s = Fx.table(cue: Vec2(0.25, 0.75), [1: Vec2(Fx.spec.length - Fx.R, 0.52), 2: Vec2(1.0, 0.2), 3: Vec2(0.9, 0.85)])
     let e = await eval(s, Fx.nineBall([1, 2, 3]))
-    #expect(!e.ranked[0].candidate.kind.isOffensive)
+    #expect(!e.ranked[0].candidate.intendsPot)
 }
 
 @Test func evaluate_pushOutArmsAreValuedThroughTheOption() async {

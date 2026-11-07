@@ -3,13 +3,14 @@ import Physics
 import Rules
 
 /// The single `ShotTrace` → `ShotOutcome` builder (engine.md R9). The simulator never drives a ball off the
-/// table, so `offTable` is always empty here.
+/// table, so `offTable` comes from the caller (tracking) and is empty for simulated samples.
 enum OutcomeBuilder {
     static func nearestPocket(to q: Vec2, spec: TableSpec) -> Pocket {
         Pocket.allCases.min { spec.pocketCenter($0).distance(to: q) < spec.pocketCenter($1).distance(to: q) }!
     }
 
-    static func outcome(from trace: ShotTrace, game g: GameState, candidate c: Candidate?) -> ShotOutcome {
+    static func outcome(from trace: ShotTrace, game g: GameState, candidate c: Candidate?,
+                        offTable: Set<BallID> = []) -> ShotOutcome {
         var firstContact: BallID?
         var firstContactTime = Double.infinity
         var pocketed: [BallID: Pocket] = [:]
@@ -40,6 +41,10 @@ enum OutcomeBuilder {
         var out = ShotOutcome(isBreak: isBreak, firstContact: firstContact, noContact: firstContact == nil,
                               pocketed: pocketed, pocketOrder: order,
                               anyRailAfterContact: firstContact == nil ? false : railAfter)
+        out.offTable = offTable
+        for id in offTable where out.pocketed[id] != nil {
+            out.pocketed[id] = nil; out.pocketOrder.removeAll { $0 == id }
+        }
         if isBreak {
             out.objectBallsToRailOnBreak = railedObjects.count
             let past = trace.final.balls.filter { id, b in

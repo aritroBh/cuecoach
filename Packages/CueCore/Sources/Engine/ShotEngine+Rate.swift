@@ -6,31 +6,44 @@ import Rules
 extension ShotEngine {
     /// D18 decision class + execution for the shot actually played. Brilliant candidates come back as
     /// `.great`; run `Ratings.finalize` on the game's records after the rack.
-    public func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation) -> (DecisionRating, ExecutionRating) {
-        let r = Ratings.rate(ratingInput(chosen: chosen, outcome: outcome, eval: eval))
+    public func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation,
+                     offTable: Set<BallID> = []) -> (DecisionRating, ExecutionRating) {
+        let r = Ratings.rate(ratingInput(chosen: chosen, outcome: outcome, eval: eval, offTable: offTable))
         return (r.decision, r.execution)
     }
 
     /// The stored per-shot record (input + live rating) for the post-game Brilliant pass.
     public func record(chosen: Candidate, outcome: ShotTrace, eval: Evaluation, intentConfidence: Double = 1,
-                       thresholds: RatingThresholds = .default) -> ShotRatingRecord {
-        let i = ratingInput(chosen: chosen, outcome: outcome, eval: eval, intentConfidence: intentConfidence)
+                       offTable: Set<BallID> = [], thresholds: RatingThresholds = .default) -> ShotRatingRecord {
+        let i = ratingInput(chosen: chosen, outcome: outcome, eval: eval, intentConfidence: intentConfidence,
+                            offTable: offTable)
         return ShotRatingRecord(input: i, rating: Ratings.rate(i, thresholds))
     }
 
+    /// Same shot intent, ignoring `id` and the throw-corrected direction (ids depend on the skill the list
+    /// was generated for).
     static func same(_ a: Candidate, _ b: Candidate) -> Bool {
-        a.id == b.id && a.kind == b.kind && a.target == b.target && a.pocket == b.pocket
-            && a.meterStep == b.meterStep && a.stroke.tipOffset == b.stroke.tipOffset
+        a.kind == b.kind && a.target == b.target && a.objectBall == b.objectBall && a.pocket == b.pocket
+            && a.meterStep == b.meterStep && a.stroke.tipOffset == b.stroke.tipOffset && a.cuePlacement == b.cuePlacement
+    }
+
+    /// The evaluation's entry for `c`: among same-intent entries, the one whose stroke direction is nearest
+    /// (an exact id match within the ±3° throw-correction window wins).
+    static func match(_ c: Candidate, in e: Evaluation) -> CandidateScore? {
+        let hits = e.ranked.filter { same(c, $0.candidate) }
+        func angle(_ s: CandidateScore) -> Double { abs(EngineGeometry.signedAngle(from: c.stroke.direction, to: s.candidate.stroke.direction)) }
+        if let exact = hits.first(where: { $0.candidate.id == c.id && angle($0) <= 3.5 * AnalyticP.degree }) { return exact }
+        return hits.min { (angle($0), $0.candidate.id) < (angle($1), $1.candidate.id) }
     }
 
     /// Builds every D18 signal for one shot (RATINGS §2). Synchronous: the chosen arm is topped up with paired
     /// CRN samples (same indices as the best arm) when the pre-shot search sampled it less.
     public func ratingInput(chosen c0: Candidate, outcome trace: ShotTrace, eval e: Evaluation,
-                            intentConfidence: Double = 1) -> RatingInput {
+                            intentConfidence: Double = 1, offTable: Set<BallID> = []) -> RatingInput {
         let ev = Evaluator(simulator: simulator, rules: rules(for: e.game), seed: seed, budget: budget,
                            skill: e.skill, opponentSkill: e.opponentSkill, state: e.state, game: e.game)
         let g = e.game, me = g.shooter
-        let out = OutcomeBuilder.outcome(from: trace, game: g, candidate: c0)
+        let out = OutcomeBuilder.outcome(from: trace, game: g, candidate: c0, offTable: offTable)
         let r = ev.rules.apply(out, to: g)
         let w1 = ev.win.value(after: r, state: trace.final, forTeam: me)
         let winner = r.winner ?? r.nextState.winner
@@ -42,7 +55,7 @@ extension ShotEngine {
         // Chosen vs best on paired samples.
         let best = e.ranked.first
         let bestW = best.flatMap { e.paired[$0.candidate.id] } ?? []
-        var chosen = e.ranked.first { Self.same(c0, $0.candidate) }
+        var chosen = Self.match(c0, in: e)
         let isBest = chosen != nil && chosen?.candidate.id == best?.candidate.id
         var chosenW = chosen.flatMap { e.paired[$0.candidate.id] } ?? []
         let target = max(chosenW.count, min(bestW.count, max(budget.ratingSamples, chosenW.count)))
@@ -106,15 +119,17 @@ extension ShotEngine {
         }
 
         let chosenScore = chosen
+        let difficulty = chosenScore.map { $0.samples > 0 ? $0.pIntended : $0.pMakeAnalytic } ?? ev.analyticP(c0, skill: e.skill)
+        // SotG weight (RATINGS §10, UD-8): a defensive shot has no P(make), so its baseline is the player's own D.
+        let baseline = isSafety ? difficulty : (chosenScore?.pBaseline ?? ev.analyticP(c0, skill: .reference))
         return RatingInput(isBook: isBook, wpBefore: e.winProbability, wpAfter: w1, loss: loss, lossSE: lossSE,
                            chosenIsBest: isBest, onlyMoveGap: isBest ? e.secondBestGap : 0,
-                           difficulty: chosenScore.map { $0.samples > 0 ? $0.pIntended : $0.pMakeAnalytic }
-                               ?? ev.analyticP(c0, skill: e.skill),
+                           difficulty: difficulty,
                            bestDifficulty: best?.pIntended ?? 0, isSafety: isSafety, opponentBestMake: opp,
                            shooterBestPotBefore: e.shooterBestPot, fouled: fouled, lostRack: lost, wonRack: won,
                            executed: executed, execution: ExecutionRating(result: result, position: position),
                            intentConfidence: intentConfidence,
-                           baselineP: chosenScore?.pBaseline ?? ev.analyticP(c0, skill: .reference))
+                           baselineP: baseline)
     }
 
     /// RATINGS §6 near miss: the object ball rattled a jaw or passed within ~1.5 window half-widths of the pocket.

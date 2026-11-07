@@ -35,6 +35,13 @@ public struct EngineBudget: Hashable, Codable, Sendable {
         self.ratingSamples = ratingSamples
     }
 
+    /// The same budget with the init clamps re-applied (public fields can be mutated past them).
+    public var normalized: EngineBudget {
+        EngineBudget(topK: max(0, topK), safeties: max(0, safeties), pushOuts: max(0, pushOuts),
+                     initialSamples: initialSamples, rounds: rounds, chunk: chunk, maxParallel: maxParallel,
+                     ratingSamples: max(0, ratingSamples))
+    }
+
     /// engine.md §6.2: 12 + 4 arms, 16 → 128 samples per surviving arm.
     public static let standard = EngineBudget()
 }
