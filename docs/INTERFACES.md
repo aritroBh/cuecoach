@@ -50,6 +50,8 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
                           func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel) async -> Evaluation
                           func winProbability(_ s: TableState, _ g: GameState) -> Double
                           func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation) -> (DecisionRating, ExecutionRating) }
+// DecisionRating (D18): brilliant, great, best, good, okay, book, inaccuracy, miss, mistake, blunder — rules in docs/RATING_CLASSES.md.
+// Brilliant is assigned post-game (max 1/game, must be Shot of the Game); live it shows as Great.
 ```
 
 ## Stats / Training (Phase 6 / 8 — stubs only now)
