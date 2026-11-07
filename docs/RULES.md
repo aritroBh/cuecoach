@@ -8,7 +8,7 @@ WPA text used: **Rules of Play effective 2026-10-21** (wpapool.com/rules-of-play
 |---|---|---|
 | B1 | Calling | Slop counts. Only the 8's pocket is called (auto-inferred, tap to override). |
 | B2 | Legal break | ≥4 balls to a rail or ≥1 ball pocketed. Otherwise re-rack, same breaker re-breaks. |
-| B3 | Groups from the break | **Table stays open after the break** ✱ |
+| B3 | Groups from the break | **Table is always open after the break**, whatever was made on it. The first ball legally pocketed on a later shot decides the group. (User, D11) |
 | B4 | 8 on the break, no foul | **Win.** |
 | B5 | 8 on the break + scratch | **Loss.** |
 | B6 | Scratch on the break | Opponent gets ball in hand behind the head string. Pocketed balls stay down. |
@@ -24,8 +24,6 @@ WPA text used: **Rules of Play effective 2026-10-21** (wpapool.com/rules-of-play
 | B20/B21 | "Two shots" / 3-foul rule | None. |
 | B25 | Who breaks next | Winner breaks. |
 
-✱ APA uses "take what you make" (one group made on the break = that group). I'd pick **open table**
-because bars often argue about this, but this is your call.
 
 ## WPA 8-ball — implemented as written
 - No call on the break. Call ball + pocket on every other shot (obvious shots are inferred).
