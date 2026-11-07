@@ -62,6 +62,13 @@ enum ShootingPose {
         return min(1, max(0, 0.5 * bend + 0.5 * hand))
     }
 
+    /// Nearest wrist to the cue ball, or the box centre when no wrist was found.
+    static func reachDistance(_ j: BodyJoints, box: CGRect, cueBall: CGPoint) -> Double {
+        let wrists = [j.points[.leftWrist], j.points[.rightWrist]].compactMap { $0 }
+        if let d = wrists.map({ distance($0, cueBall) }).min() { return d }
+        return distance(CGPoint(x: box.midX, y: box.midY), cueBall)
+    }
+
     static func distance(_ a: CGPoint, _ b: CGPoint) -> Double {
         let dx = Double(a.x - b.x), dy = Double(a.y - b.y)
         return (dx * dx + dy * dy).squareRoot()
@@ -150,6 +157,14 @@ struct AttributionContext: Sendable {
     var expectedShooter: UUID
     /// Members of the team in turn; nil = everyone (1v1 or unknown).
     var teamInTurn: Set<UUID>? = nil
+
+    /// Who could plausibly be shooting: the team in turn, or everyone. A team that does not contain the expected
+    /// shooter is stale game state (foul, re-rack, roster change), so it is ignored rather than trusted.
+    var plausibleShooters: Set<UUID> {
+        let all = Set(roster.ids)
+        guard let t = teamInTurn, t.contains(expectedShooter) else { return all }
+        return t.intersection(all)
+    }
 }
 
 struct Attribution: Hashable, Sendable {
@@ -157,15 +172,71 @@ struct Attribution: Hashable, Sendable {
     var source: AttributionSource
     var confidence: Double
     var shooterTrackID: Int?
+    /// Evidence says the turn-order pick is probably wrong but nobody could be named safely: the post-shot card
+    /// asks with one tap instead of guessing (never set on `.auto`).
+    var needsConfirmation = false
 }
 
-/// P(p shot) ∝ Prior(p) × Π_views Σ_tracks w(track)·LR_p(track)   (research §7.3)
-/// LR is the calibrated genuine/impostor likelihood ratio for consented players and exactly 1 (no evidence)
-/// for everyone else, so a non-consented player's appearance is never an input.
+/// "Somebody is actually shooting here": an absolute gate on top of the relative track weights.
+/// A track that fails it is never evidence and never yields a learning sample (a standing bystander is not the
+/// shooter just because the real shooter is occluded).
+struct ShooterGate: Hashable, Sendable {
+    var minPose = 0.5
+    /// Normalised image distance from the nearest wrist (or box centre) to the cue ball.
+    var maxDistance = 0.15
+    static let standard = ShooterGate()
+
+    func admits(pose: Double, distance: Double) -> Bool { pose >= minPose && distance <= maxDistance }
+    func admits(_ t: TrackEvidence) -> Bool { admits(pose: t.poseScore, distance: t.distanceToCueBall) }
+}
+
+/// One recognition cue (clothes or face) for one embedding model: how a cosine maps to a likelihood ratio,
+/// and how likely it is that some *unmodelled* person (no consent, guest, stranger) scores like a template.
+/// `lookalikeRate` = 1 means "anyone could look like this" (clothes: team shirts; a generic image embedding
+/// on faces); an identity-trained face model earns a small value from the consented benchmark only.
+struct CueModel: Hashable, Sendable {
+    var calibration: SimilarityCalibration
+    var lookalikeRate: Double
+    var lrRange: ClosedRange<Double>
+
+    func likelihoodRatio(_ cosine: Double) -> Double {
+        let q = min(1 - 1e-12, max(1e-12, calibration.probability(cosine)))
+        return min(lrRange.upperBound, max(lrRange.lowerBound, q / (1 - q)))
+    }
+
+    /// LR for a candidate who has no template for this cue, given the best modelled LR on the same track:
+    /// with probability `lookalikeRate` they look like the best match, otherwise like a random impostor (LR 1).
+    func unmodelledLikelihoodRatio(bestModelled: Double) -> Double {
+        max(1, lookalikeRate * bestModelled + (1 - lookalikeRate))
+    }
+
+    /// Clothing feature print. Calibration values are assumptions until the replay study (research §9.3).
+    static let clothes = CueModel(calibration: .init(threshold: 0.75, slope: 25), lookalikeRate: 1, lrRange: 0.01...100)
+    /// Generic image feature print on a face crop: not identity-trained, so it may confirm but never decide alone.
+    static let genericFace = CueModel(calibration: .init(threshold: 0.80, slope: 15), lookalikeRate: 1, lrRange: 0.5...3)
+}
+
+/// Per-model calibration. A model is only trusted as far as its entry says; unknown models get the conservative
+/// defaults. A licence-clean identity-trained face model adds its own entry after the §6 benchmark (face-embedding.md).
+struct IdentityCalibrationTable: Sendable {
+    var clothes: [String: CueModel] = [:]
+    var face: [String: CueModel] = [:]
+    var defaultClothes = CueModel.clothes
+    var defaultFace = CueModel.genericFace
+    static let standard = IdentityCalibrationTable()
+
+    func clothes(_ modelID: String?) -> CueModel { modelID.flatMap { clothes[$0] } ?? defaultClothes }
+    func face(_ modelID: String?) -> CueModel { modelID.flatMap { face[$0] } ?? defaultFace }
+}
+
+/// P(p shot) ∝ Prior(p) × Π_views Σ_gated tracks w(track)·LR_p(track)   (research §7.3)
 ///
-/// `.auto` also needs *positive* evidence for the winner (Π L_view > 1). Otherwise a weak match for a consented
-/// player (front/rear domain gap, bad light) would push the posterior onto a player nobody observed, making
-/// consent worse than turn order alone; and a pick nobody's evidence supports is turn order, so it says so.
+/// Open set: a candidate with no template for a cue (no consent, guest, failed enrolment) is not "LR 1": they might
+/// wear the same shirt. Their LR for that cue is `CueModel.unmodelledLikelihoodRatio` of the best modelled match,
+/// so a consented player can never out-score an unmodelled one on clothes alone (S1/S6/S9). Only tracks that pass
+/// the `ShooterGate` count; with none, the answer is turn order (S8).
+///
+/// `.auto` also needs *positive* evidence for the winner (Π L_view > 1): a pick nobody's evidence supports is turn order.
 struct ShooterAttributor: Sendable {
     struct Parameters: Hashable, Sendable {
         var expectedPrior = 0.80
@@ -174,16 +245,23 @@ struct ShooterAttributor: Sendable {
         var margin = 0.30
         var poseSharpness = 8.0
         var distancePenalty = 2.0
-        var clothes = SimilarityCalibration(threshold: 0.75, slope: 25)
-        var face = SimilarityCalibration(threshold: 0.75, slope: 25)
+        var clothes = CueModel.clothes
+        var face = CueModel.genericFace
+        var gate = ShooterGate.standard
         var lrRange: ClosedRange<Double> = 0.01...100
+        /// Below this posterior for the turn-order pick (and no safe auto pick) the card asks instead.
+        var askBelow = 0.5
+        /// `.auto` needs the pick's evidence to beat every other plausible shooter's (open-set) evidence by this
+        /// factor, independent of the prior: the 0.8 turn prior alone may never turn a tie into a confident call
+        /// (a lookalike guest shooting out of turn, lookalike teammates).
+        var minEvidenceRatio = 4.0
     }
     var parameters = Parameters()
 
     func prior(_ ctx: AttributionContext) -> [UUID: Double] {
         let ids = ctx.roster.ids
         guard !ids.isEmpty else { return [:] }
-        let team = ctx.teamInTurn ?? Set(ids)
+        let team = ctx.plausibleShooters
         let others = ids.filter { $0 != ctx.expectedShooter }
         let onTeam = others.filter { team.contains($0) }
         let offTeam = others.filter { !team.contains($0) }
@@ -199,6 +277,9 @@ struct ShooterAttributor: Sendable {
         return z > 0 ? p.mapValues { $0 / z } : Dictionary(uniqueKeysWithValues: ids.map { ($0, 1 / Double(ids.count)) })
     }
 
+    /// Tracks that could be the shooter.
+    func gated(_ view: [TrackEvidence]) -> [TrackEvidence] { view.filter(parameters.gate.admits) }
+
     private func weights(_ tracks: [TrackEvidence]) -> [Double] {
         let raw = tracks.map { parameters.poseSharpness * ($0.poseScore - parameters.distancePenalty * $0.distanceToCueBall) }
         let m = raw.max() ?? 0
@@ -207,28 +288,44 @@ struct ShooterAttributor: Sendable {
         return e.map { $0 / z }
     }
 
-    private func likelihoodRatio(_ p: UUID, _ t: TrackEvidence, _ consent: RecognitionConsent) -> Double {
-        var logLR = 0.0
-        if consent.clothes, let s = t.appearanceSimilarity[p] { logLR += logit(parameters.clothes.probability(s)) }
-        if consent.face, let s = t.faceSimilarity[p] { logLR += logit(parameters.face.probability(s)) }
-        return min(parameters.lrRange.upperBound, max(parameters.lrRange.lowerBound, exp(logLR)))
+    /// LR of every roster player for one track. `openSet`: unmodelled candidates get the lookalike LR per cue (for the
+    /// posterior); otherwise they get 1, so only a real template match counts as *positive* evidence for `.auto`.
+    func likelihoodRatios(_ t: TrackEvidence, roster: IdentityRoster, openSet: Bool = true) -> [UUID: Double] {
+        func cue(_ sims: (UUID) -> Double?, _ consented: (RecognitionConsent) -> Bool, _ model: CueModel) -> [UUID: Double]? {
+            var modelled: [UUID: Double] = [:]
+            for e in roster.entries where consented(e.consent) {
+                if let s = sims(e.playerID) { modelled[e.playerID] = model.likelihoodRatio(s) }
+            }
+            guard let best = modelled.values.max() else { return nil }   // cue not observed on this track
+            let other = openSet ? model.unmodelledLikelihoodRatio(bestModelled: best) : 1
+            return Dictionary(uniqueKeysWithValues: roster.ids.map { ($0, modelled[$0] ?? other) })
+        }
+        let cues = [cue({ t.appearanceSimilarity[$0] }, \.clothes, parameters.clothes),
+                    cue({ t.faceSimilarity[$0] }, \.face, parameters.face)].compactMap { $0 }
+        var lr = Dictionary(uniqueKeysWithValues: roster.ids.map { ($0, 1.0) })
+        for c in cues { for (p, v) in c { lr[p, default: 1] *= v } }
+        return lr.mapValues { min(parameters.lrRange.upperBound, max(parameters.lrRange.lowerBound, $0)) }
     }
 
-    private func logit(_ q: Double) -> Double {
-        let c = min(1 - 1e-12, max(1e-12, q))
-        return log(c / (1 - c))
+    /// log Π_views L_view(p) for every roster player, over gated tracks only.
+    private func logEvidence(_ views: [[TrackEvidence]], roster: IdentityRoster, openSet: Bool = true) -> [UUID: Double] {
+        var out = Dictionary(uniqueKeysWithValues: roster.ids.map { ($0, 0.0) })
+        for view in views {
+            let tracks = gated(view)
+            guard !tracks.isEmpty else { continue }
+            let w = weights(tracks)
+            let lrs = tracks.map { likelihoodRatios($0, roster: roster, openSet: openSet) }
+            for p in roster.ids {
+                let l = zip(lrs, w).reduce(0.0) { $0 + $1.1 * ($1.0[p] ?? 1) }
+                out[p]! += log(max(l, 1e-300))
+            }
+        }
+        return out
     }
 
     func posterior(views: [[TrackEvidence]], context ctx: AttributionContext) -> [UUID: Double] {
-        var logp = prior(ctx).mapValues { log(max($0, 1e-300)) }
-        for view in views where !view.isEmpty {
-            let w = weights(view)
-            for p in Array(logp.keys) {
-                let consent = ctx.roster.consent(of: p)
-                let l = zip(view, w).reduce(0.0) { $0 + $1.1 * likelihoodRatio(p, $1.0, consent) }
-                logp[p]! += log(max(l, 1e-300))
-            }
-        }
+        let ev = logEvidence(views, roster: ctx.roster)
+        let logp = prior(ctx).mapValues { log(max($0, 1e-300)) }.merging(ev) { $0 + $1 }
         guard let m = logp.values.max() else { return [:] }
         let e = logp.mapValues { exp($0 - m) }
         let z = e.values.reduce(0, +)
@@ -239,29 +336,31 @@ struct ShooterAttributor: Sendable {
         let post = posterior(views: views, context: ctx)
         let ranked = post.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key.uuidString < $1.key.uuidString }
         let track = shooterTrack(views)
+        let open = logEvidence(views, roster: ctx.roster)
+        func separated(_ p: UUID) -> Bool {
+            let mine = open[p] ?? 0
+            return ctx.plausibleShooters.allSatisfy { $0 == p || mine - (open[$0] ?? 0) >= log(parameters.minEvidenceRatio) }
+        }
         if let top = ranked.first, top.value >= parameters.decideAt,
            top.value - (ranked.dropFirst().first?.value ?? 0) >= parameters.margin,
-           evidence(for: top.key, views: views, roster: ctx.roster) > 1 {
+           evidence(for: top.key, views: views, roster: ctx.roster) > 1, separated(top.key) {
             return Attribution(playerID: top.key, source: .auto, confidence: top.value, shooterTrackID: track)
         }
-        return Attribution(playerID: ctx.expectedShooter, source: .turnOrder,
-                           confidence: post[ctx.expectedShooter] ?? 0, shooterTrackID: track)
+        let p = post[ctx.expectedShooter] ?? 0
+        let ask = !ctx.roster.contains(ctx.expectedShooter) || (track != nil && p < parameters.askBelow)
+        return Attribution(playerID: ctx.expectedShooter, source: .turnOrder, confidence: p, shooterTrackID: track,
+                           needsConfirmation: ask)
     }
 
-    /// Π_views L_view(p): > 1 only when the views actually look like p.
+    /// Π_views L_view(p) from p's own templates: > 1 only when the gated views actually look like p.
+    /// An unmodelled player never has positive evidence (they can't be ruled out, but they can't be recognised).
     func evidence(for p: UUID, views: [[TrackEvidence]], roster: IdentityRoster) -> Double {
-        let consent = roster.consent(of: p)
-        var logL = 0.0
-        for view in views where !view.isEmpty {
-            let w = weights(view)
-            logL += log(max(zip(view, w).reduce(0.0) { $0 + $1.1 * likelihoodRatio(p, $1.0, consent) }, 1e-300))
-        }
-        return exp(logL)
+        exp(logEvidence(views, roster: roster, openSet: false)[p] ?? 0)
     }
 
-    /// The most shooter-like track across all views (for template updates on correction).
-    private func shooterTrack(_ views: [[TrackEvidence]]) -> Int? {
-        views.flatMap { $0 }.max {
+    /// The most shooter-like *gated* track across all views; nil when nobody is in shooting pose at the cue ball.
+    func shooterTrack(_ views: [[TrackEvidence]]) -> Int? {
+        views.flatMap(gated).max {
             ($0.poseScore - parameters.distancePenalty * $0.distanceToCueBall)
                 < ($1.poseScore - parameters.distancePenalty * $1.distanceToCueBall)
         }?.trackID
@@ -269,24 +368,36 @@ struct ShooterAttributor: Sendable {
 }
 
 /// Which shooter-track appearance vectors may be held in session RAM, and whom they may teach
-/// (research §7.2/§7.4: non-matching and bystander embeddings are never stored).
+/// (research §7.2/§7.4). Samples only ever come from a gated shooter track, never from bystanders.
 enum AppearanceLearning {
     /// Cosine to a player's session template above which a vector "plausibly is" them. Assumption; tune on replays.
-    static let matchFloor = 0.55
+    static let matchFloor = 0.65
 
-    /// May `sample` extend player `p`'s session template? Clothes consent required. A player with no template yet
-    /// can only be seeded on their own turn (turn-order bind); otherwise the sample must resemble their template.
-    static func canTeach(_ sample: Embedding, _ p: UUID, roster: IdentityRoster,
-                         gallery: [UUID: [Embedding]], expectedShooter: UUID?) -> Bool {
-        guard roster.consent(of: p).clothes else { return false }
-        let g = gallery[p] ?? []
-        if g.isEmpty { return p == expectedShooter }
-        return (g.compactMap { sample.cosine($0) }.max() ?? -1) >= matchFloor
+    static func resemblance(_ sample: Embedding, _ templates: [Embedding]) -> Double {
+        templates.compactMap { sample.cosine($0) }.max() ?? -1
     }
 
-    /// Keep the vector only if it could teach some clothes-consented player; anything else is dropped at once.
+    /// Turn-order bind (research §7.2): may the shooter sample of the expected shooter's own turn extend their
+    /// template? Never when the sample looks more like someone else. A first-turn seed (empty template) follows the
+    /// research rule; extending an existing template also needs every plausible shooter to be clothes-consented,
+    /// so a non-consenting player's or guest's vector can't be learned into someone else's template by turn order.
+    static func turnOrderBind(_ sample: Embedding, roster: IdentityRoster, gallery: [UUID: [Embedding]],
+                              expectedShooter: UUID?, plausible: Set<UUID>?) -> UUID? {
+        guard let p = expectedShooter, roster.consent(of: p).clothes else { return nil }
+        let own = gallery[p] ?? []
+        let bestOther = gallery.filter { $0.key != p && roster.consent(of: $0.key).clothes }
+            .values.map { resemblance(sample, $0) }.max() ?? -1
+        if own.isEmpty { return bestOther < matchFloor ? p : nil }
+        let everyone = (plausible ?? Set(roster.ids)).union([p])
+        guard everyone.allSatisfy({ roster.consent(of: $0).clothes }) else { return nil }
+        return (bestOther < matchFloor || resemblance(sample, own) >= bestOther) ? p : nil
+    }
+
+    /// Keep the vector only if it resembles some clothes-consented player's template, or would be turn-order bound.
+    /// Anything else (a stranger, a non-consenting player who looks like nobody consented) is dropped at once.
     static func mayHold(_ sample: Embedding, roster: IdentityRoster, gallery: [UUID: [Embedding]],
-                        expectedShooter: UUID?) -> Bool {
-        roster.clothesConsented.contains { canTeach(sample, $0, roster: roster, gallery: gallery, expectedShooter: expectedShooter) }
+                        expectedShooter: UUID?, plausible: Set<UUID>? = nil) -> Bool {
+        roster.clothesConsented.contains { resemblance(sample, gallery[$0] ?? []) >= matchFloor }
+            || turnOrderBind(sample, roster: roster, gallery: gallery, expectedShooter: expectedShooter, plausible: plausible) != nil
     }
 }

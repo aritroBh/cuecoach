@@ -6,7 +6,7 @@ import Testing
 // Adversarial stress suite for player recognition (Phase 5).
 // Drives the real pure pipeline (VisionShooterIdentifier → ShooterAttributor → IdentitySession) with a scripted
 // PersonAnalyzing fake and synthetic embeddings whose intra/inter-class cosines are controlled exactly.
-// Tests that expose real bugs are kept but disabled with "STRESS-FINDING S<n>" so the suite stays green.
+// Tests named after a STRESS-FINDING S<n> were red against the first implementation; all are enabled now.
 // Every scenario prints one "STRESS-METRIC" line with measured rates.
 
 // MARK: - Deterministic randomness
@@ -85,7 +85,8 @@ struct StressAnalyzer: PersonAnalyzing {
         if fails { throw CancellationError() }
         return scene.map {
             ObservedPerson(box: $0.box, joints: $0.joints,
-                           appearance: wants.appearance ? $0.appearance : nil, face: wants.face ? $0.face : nil)
+                           appearance: wants.appearance ? $0.appearance : nil, face: wants.face ? $0.face : nil,
+                           faceQuality: wants.face ? $0.faceQuality : nil)
         }
     }
 }
@@ -146,6 +147,7 @@ final class StressTable {
     var tally = StressTally()
     var teams: [[UUID]]?
     var frames = 2
+    var faceMatching = StrokeFaceMatching.off
     /// Shot → true shooter (to check stats after taps).
     var truth: [UUID: UUID] = [:]
     private let image = testImage(width: 4, height: 4)
@@ -187,7 +189,8 @@ final class StressTable {
             return ObservedPerson(
                 box: box, joints: j,
                 appearance: StressSpace.body(StressSpace.around(p.clothes, cos: rng.uniform(StressSpace.observation), &rng)),
-                face: face ? StressSpace.face(StressSpace.around(p.face, cos: rng.uniform(StressSpace.observation), &rng)) : nil)
+                face: face ? StressSpace.face(StressSpace.around(p.face, cos: rng.uniform(StressSpace.observation), &rng)) : nil,
+                faceQuality: face ? 0.9 : nil)
         }
         if let s = shooter { out.append(person(s, StressPose.shooterBox, StressPose.shooterJoints, face: shooterFaceVisible)) }
         for (k, b) in bystanders.prefix(7).enumerated() {
@@ -206,7 +209,8 @@ final class StressTable {
         let people = scene(shooter: shooterVisible ? actual : nil, bystanders: bystanders,
                            faceVisible: faceVisible, shooterFaceVisible: faceVisible)
         let window = StrokeWindow(frames: (0..<frames).map { _ in IdentityFrame(image: image, cueBall: StressPose.cue) })
-        let identifier = VisionShooterIdentifier(analyzer: StressAnalyzer(scene: people, fails: analyzerFails))
+        let identifier = VisionShooterIdentifier(analyzer: StressAnalyzer(scene: people, fails: analyzerFails),
+                                                 faceMatching: faceMatching)
         let att = await session.identifyShot(shot, window: window, expectedShooter: expected,
                                              teamInTurn: team(of: expected), using: identifier)
         let truthID = players[actual].id
@@ -314,7 +318,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
         await Self.lookalikes(n: n, c: c)
     }
 
-    @Test(.disabled("STRESS-FINDING S11: 8 players in lookalike quads at cos 0.90 -> 3.33% confident wrong autos (4/120); un-fitted calibration + max-over-templates noise (Attribution.swift:177, 212, 238-245)"))
+    @Test
     func lookalikeQuadsAtNinetyNeverProduceConfidentWrongCalls() async {
         await Self.lookalikes(n: 8, c: 0.90)
     }
@@ -345,7 +349,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
     }
 
     // 2v2, team jerseys. Only A (team 1) consented; teammate B did not. B's shots must stay B's (turn order).
-    @Test(.disabled("STRESS-FINDING S1: consented A auto-steals 88.3% (53/60) of non-consented same-shirt teammate B's own-turn shots; non-consented LR is fixed at 1 so any decent match for A wins (Attribution.swift:210-214, 238-245)"))
+    @Test
     func sameShirtNonConsentedTeammateIsNotStolen() async {
         var rng = StressRNG(seed: 400)
         let shirt1 = StressSpace.randomUnit(&rng), shirt2 = StressSpace.randomUnit(&rng)
@@ -393,7 +397,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
     }
 
     // A takes off a jacket after 30 strokes; the shirt underneath looks like B's (cos 0.9 to B). User taps every wrong card.
-    @Test(.disabled("STRESS-FINDING S3: after A's jacket change (new shirt ~B), 51.7% of strokes are confident wrong autos to B despite 31 taps; canTeach's 0.55 floor blocks learning A's new look (Attribution.swift:279-285)"))
+    @Test
     func jacketChangeIsLearnedFromTaps() async {
         var rng = StressRNG(seed: 600)
         let ps = StressLooks.players(StressLooks.distinct(2, &rng), consent: clothesOnly, &rng)
@@ -411,7 +415,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
     }
 
     // Clothes today differ from registration day (orthogonal look). Taps should make recognition work again this session.
-    @Test(.disabled("STRESS-FINDING S4: registered players in different clothes than at registration get 0% auto for the whole session; registration seeds block turn-order bind and the 0.55 floor blocks taps (Attribution.swift:279-285, IdentitySession.swift:118-123)"))
+    @Test
     func differentClothesThanAtRegistrationIsRelearned() async {
         var rng = StressRNG(seed: 650)
         let ps = StressLooks.players(StressLooks.distinct(2, &rng), consent: clothesOnly, &rng)
@@ -460,19 +464,19 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
 
     // Same, end to end through VisionShooterIdentifier + IdentitySession: face-consented players whose face is
     // visible should be identified. Face templates are held but the identifier never compares them.
-    @Test(.disabled("STRESS-FINDING S5: face templates are never compared at stroke time; face-only players with a visible face get 0/59 auto (attributor alone: 120/120) (ShooterIdentifier.swift:46, 56)"))
+    @Test
     func pipelineIdentifiesVisibleFaces() async {
         var rng = StressRNG(seed: 750)
         let ps = StressLooks.players(StressLooks.distinct(4, &rng), consent: faceOnly, &rng)
         let table = StressTable(ps, seed: 19)
+        table.faceMatching = .shooterOnly
         await table.play(200, outOfTurn: 0.15, faceVisible: 0.3)
         stressMetric("pipeline face-only 30% visible", table.tally)
         #expect(StressTally.rate(table.tally.faceVisibleAuto, table.tally.faceVisibleShots) >= 0.8)
     }
 
     // An unregistered guest whose clothes resemble registered A shoots on the guest's own turn.
-    @Test(.disabled("STRESS-FINDING S6: lookalike guest auto-merged into registered A: n=2 5.0%/5.0%/48.3% at cos 0.85/0.90/0.95, n=4 0/0/1.7% (Attribution.swift:210-214, 238-245)"),
-          arguments: [2, 4], [0.85, 0.90, 0.95])
+    @Test(arguments: [2, 4], [0.85, 0.90, 0.95])
     func lookalikeGuestIsNeverMergedIntoRegistered(n: Int, c: Double) async {
         var rng = StressRNG(seed: 800 + UInt64(n) * 10 + UInt64(c * 100))
         var ps = StressLooks.players(StressLooks.distinct(n, &rng), consent: clothesOnly, &rng)
@@ -486,7 +490,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
 
     // Registered A's stored templates are unusable (model upgrade) so A has consent but no session template.
     // On A's first turn the shooter is occluded and a guest stands nearby. The guest's clothes must not seed A.
-    @Test(.disabled("STRESS-FINDING S7: with A occluded on A's first turn, a non-consented bystander's clothes seed A's template; that bystander's next shots auto-go to A (30/31 wrong) (Attribution.swift:263-268, IdentitySession.swift:118-123, ShooterIdentifier.swift:84-86)"))
+    @Test
     func occludedFirstTurnDoesNotSeedFromBystander() async {
         var rng = StressRNG(seed: 850)
         var ps = StressLooks.players(StressLooks.distinct(2, &rng), consent: .none, &rng)
@@ -505,8 +509,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
     }
 
     // Shooter unobservable (occluded / out of frame); another consented player stands in view. Must be turn order.
-    @Test(.disabled("STRESS-FINDING S8: shooter unobservable -> standing bystander gets the full relative softmax weight and is auto-attributed: n=2 83.3%, n=4 13.3%, n=8 0% wrong (Attribution.swift:202-207)"),
-          arguments: [2, 4, 8])
+    @Test(arguments: [2, 4, 8])
     func unobservableShooterFallsBackToTurnOrder(n: Int) async {
         var rng = StressRNG(seed: 900 + UInt64(n))
         let ps = StressLooks.players(StressLooks.distinct(n, &rng), consent: clothesOnly, &rng)
@@ -573,7 +576,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
     }
 
     // After a tap, the same mistake should not keep repeating stroke after stroke (non-consented same-shirt teammate).
-    @Test(.disabled("STRESS-FINDING S9: taps give no negative feedback; the same wrong auto call repeats on 18/20 strokes after the first correction (IdentitySession.swift:147-157)"))
+    @Test
     func correctionStopsTheSameMistakeRepeating() async {
         var rng = StressRNG(seed: 1050)
         let shirt = StressSpace.randomUnit(&rng)
@@ -674,7 +677,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
         #expect(mc.all.misattribution <= mc.all.turnOrderBaseline)
     }
 
-    @Test(.disabled("STRESS-FINDING S10: 10k random sessions: 672/15902 guest shots (4.23%) auto-merged into registered profiles; overall autoWrong 4.00% of shots (see S1/S6/S8)"))
+    @Test
     func monteCarloTenThousandSessionsNeverMergesGuests() async {
         let mc = await Self.monteCarlo(sessions: 10_000, seed: 0xC0FFEE)
         stressMetric("monte-carlo 10k sessions (guest merge)", mc.all)

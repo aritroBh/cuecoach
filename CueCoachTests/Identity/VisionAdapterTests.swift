@@ -36,6 +36,41 @@ import Testing
         #expect(VisionPersonAnalyzer.upperBody(BodyJoints(points: [.neck: .zero])) == nil)
     }
 
+    @Test func eightPlayersAreKeptAndTheShooterIsNeverCappedAway() {
+        // CX-6 / R1: rank by distance to the cue ball before the cap; the cap covers SPEC's eight players.
+        #expect(VisionPersonAnalyzer().maxPeople >= 8)
+        let cue = CGPoint(x: 0.5, y: 0.3)
+        var people = (0..<9).map { k in
+            ObservedPerson(box: CGRect(x: 0.05 + 0.1 * Double(k), y: 0.5, width: 0.05, height: 0.4),
+                           joints: BodyJoints(points: [.leftWrist: CGPoint(x: 0.07 + 0.1 * Double(k), y: 0.7)]))
+        }
+        let shooter = ObservedPerson(box: CGRect(x: 0.3, y: 0.25, width: 0.2, height: 0.2),
+                                     joints: BodyJoints(points: [.leftWrist: CGPoint(x: 0.49, y: 0.31)]))
+        people.append(shooter)                                   // Vision returned the shooter last
+        let kept = VisionPersonAnalyzer.nearestFirst(people, cueBall: cue, limit: 8)
+        #expect(kept.count == 8)
+        #expect(kept.first?.box == shooter.box)
+    }
+
+    @Test func gateAdmitsOnlyTheShooterForEmbedding() {
+        // CX-1: Vision only embeds people in shooting pose at the cue ball.
+        let cue = CGPoint(x: 0.5, y: 0.3)
+        let wants = AnalysisWants(appearance: true, face: true, cueBall: cue)
+        let shooter = BodyJoints(points: [.neck: CGPoint(x: 0.45, y: 0.42), .root: CGPoint(x: 0.25, y: 0.40),
+                                          .leftWrist: CGPoint(x: 0.49, y: 0.31)])
+        let stander = BodyJoints(points: [.neck: CGPoint(x: 0.85, y: 0.7), .root: CGPoint(x: 0.85, y: 0.45),
+                                          .leftWrist: CGPoint(x: 0.83, y: 0.5)])
+        #expect(wants.admits(shooter, box: CGRect(x: 0.2, y: 0.25, width: 0.3, height: 0.25)))
+        #expect(!wants.admits(stander, box: CGRect(x: 0.78, y: 0.3, width: 0.14, height: 0.5)))
+    }
+
+    @Test func boxFaceAlignerMakesASquarePaddedCrop() throws {
+        let img = testImage(width: 200, height: 200)
+        let c = try #require(BoxFaceAligner().aligned(img, face: CGRect(x: 0.4, y: 0.4, width: 0.1, height: 0.2)))
+        #expect(abs(c.width - c.height) <= 1)          // square up to pixel rounding
+        #expect(c.height > 40)
+    }
+
     @Test func facesGoToTheNearestHeadNotTheFirstOverlappingBox() {
         // Two players stand close: inflated boxes overlap. Each face must land on its own person.
         let p1 = ObservedPerson(box: CGRect(x: 0.30, y: 0.2, width: 0.20, height: 0.6),

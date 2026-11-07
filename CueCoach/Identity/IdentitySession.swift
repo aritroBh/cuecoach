@@ -30,14 +30,18 @@ struct AttributionStats: Hashable, Sendable {
 @MainActor
 final class IdentitySession {
     static let maxExemplars = 8
+    /// A held (unbound) shooter vector lives only while its post-shot card can still be tapped: the last N shots.
+    static let tapWindow = 4
 
     private struct Record {
         var original: Attribution
         var current: Attribution
         var sample: Embedding?
         var expectedShooter: UUID?
+        var plausible: Set<UUID>?
         /// Player whose template `sample` was added to (turn-order bind or tap), so a later tap can undo it.
         var boundTo: UUID?
+        var seq: Int
     }
 
     let faceModelID: String
@@ -49,28 +53,44 @@ final class IdentitySession {
     private var records: [UUID: Record] = [:]
     /// Bumped by revoke/end so an in-flight identification computed from older templates is discarded.
     private var epoch = 0
+    private var seq = 0
     private(set) var hasEnded = false
 
     init(profiles: [PlayerProfile], guests: [UUID] = [], faceModelID: String, bodyModelID: String) {
         self.faceModelID = faceModelID
         self.bodyModelID = bodyModelID
-        var entries: [RosterEntry] = []
-        for p in profiles {
-            let r = p.recognition
-            let consent = RecognitionConsent(faceData: r?.faceEmbedding, appearanceData: r?.appearanceEmbedding)
-            entries.append(RosterEntry(playerID: p.id, consent: consent))
-            let t = IdentityTemplates(r, faceModelID: faceModelID, bodyModelID: bodyModelID)
-            if consent.face, !t.face.isEmpty { face[p.id] = t.face }
-            if consent.clothes, !t.body.isEmpty {
-                let seeds = Array(t.body.prefix(Self.maxExemplars / 2))
-                appearance[p.id] = seeds
-                appearanceSeedCount[p.id] = seeds.count
-            }
+        roster = IdentityRoster(entries: [])
+        for p in profiles { addPlayer(p) }
+        for g in guests { addGuest(g) }
+    }
+
+    // MARK: roster changes (a player joins or leaves mid-session)
+
+    /// Adds a profile (or refreshes it from its stored row). Consent = the stored templates, as at session start.
+    func addPlayer(_ p: PlayerProfile) {
+        guard !hasEnded else { return }
+        if roster.contains(p.id) { removePlayer(p.id) }
+        let r = p.recognition
+        let consent = RecognitionConsent(faceData: r?.faceEmbedding, appearanceData: r?.appearanceEmbedding)
+        roster.entries.append(RosterEntry(playerID: p.id, consent: consent))
+        let t = IdentityTemplates(r, faceModelID: faceModelID, bodyModelID: bodyModelID)
+        if consent.face, !t.face.isEmpty { face[p.id] = t.face }
+        if consent.clothes, !t.body.isEmpty {
+            let seeds = Array(t.body.prefix(Self.maxExemplars / 2))
+            appearance[p.id] = seeds
+            appearanceSeedCount[p.id] = seeds.count
         }
-        for g in guests where !entries.contains(where: { $0.playerID == g }) {
-            entries.append(RosterEntry(playerID: g, consent: .none, isGuest: true))
-        }
-        roster = IdentityRoster(entries: entries)
+    }
+
+    func addGuest(_ g: UUID) {
+        guard !hasEnded, !roster.contains(g) else { return }
+        roster.entries.append(RosterEntry(playerID: g, consent: .none, isGuest: true))
+    }
+
+    /// A player leaves: their identity data is purged (as on revoke) and they can no longer be picked.
+    func removePlayer(_ player: UUID) {
+        revoke(player)
+        roster.entries.removeAll { $0.playerID == player }
     }
 
     func snapshot() -> IdentitySnapshot {
@@ -95,12 +115,9 @@ final class IdentitySession {
         return true
     }
 
-    private func mayHold(_ e: Embedding, expected: UUID?) -> Bool {
-        e.modelID == bodyModelID && AppearanceLearning.mayHold(e, roster: roster, gallery: appearance, expectedShooter: expected)
-    }
-
-    private func canTeach(_ e: Embedding, _ p: UUID, expected: UUID?) -> Bool {
-        AppearanceLearning.canTeach(e, p, roster: roster, gallery: appearance, expectedShooter: expected)
+    private func mayHold(_ e: Embedding, expected: UUID?, plausible: Set<UUID>?) -> Bool {
+        e.modelID == bodyModelID
+            && AppearanceLearning.mayHold(e, roster: roster, gallery: appearance, expectedShooter: expected, plausible: plausible)
     }
 
     /// Removes one learned (non-seed) exemplar again.
@@ -111,17 +128,27 @@ final class IdentitySession {
         appearance[player] = list.isEmpty ? nil : list
     }
 
-    func record(shot: UUID, _ id: ShooterIdentification, expectedShooter: UUID? = nil) {
+    func record(shot: UUID, _ id: ShooterIdentification, expectedShooter: UUID? = nil, teamInTurn: Set<UUID>? = nil) {
         guard !hasEnded else { return }
-        let keep = id.shooterAppearance.flatMap { mayHold($0, expected: expectedShooter) ? $0 : nil }
-        var r = Record(original: id.attribution, current: id.attribution, sample: keep, expectedShooter: expectedShooter)
-        // Turn-order bind (research §7.2): a consented player with no template is seeded on their own turn.
+        let plausible = expectedShooter.map {
+            AttributionContext(roster: roster, expectedShooter: $0, teamInTurn: teamInTurn).plausibleShooters
+        }
+        let keep = id.shooterAppearance.flatMap { mayHold($0, expected: expectedShooter, plausible: plausible) ? $0 : nil }
+        seq += 1
+        var r = Record(original: id.attribution, current: id.attribution, sample: keep, expectedShooter: expectedShooter,
+                       plausible: plausible, seq: seq)
+        // Turn-order bind (research §7.2): the expected shooter's own-turn sample seeds or extends their template.
         let p = id.attribution.playerID
-        if let s = keep, p == expectedShooter, appearance[p]?.isEmpty ?? true, canTeach(s, p, expected: expectedShooter),
+        if let s = keep, p == expectedShooter,
+           AppearanceLearning.turnOrderBind(s, roster: roster, gallery: appearance, expectedShooter: p, plausible: plausible) == p,
            bind(p, appearance: s) {
             r.boundTo = p
         }
         records[shot] = r
+        // Close the tap window on older shots: their unbound vectors are dropped now.
+        for (k, old) in records where old.sample != nil && old.boundTo == nil && old.seq <= seq - Self.tapWindow {
+            var o = old; o.sample = nil; records[k] = o
+        }
     }
 
     func identifyShot(_ shot: UUID, window: StrokeWindow, expectedShooter: UUID, teamInTurn: Set<UUID>?,
@@ -132,25 +159,26 @@ final class IdentitySession {
             let result = await identifier.identify(window, snapshot: snapshot(), expectedShooter: expectedShooter,
                                                    teamInTurn: teamInTurn)
             guard epoch == started, !hasEnded else { continue }
-            record(shot: shot, result, expectedShooter: expectedShooter)
+            record(shot: shot, result, expectedShooter: expectedShooter, teamInTurn: teamInTurn)
             return result.attribution
         }
         let fallback = Attribution(playerID: expectedShooter, source: .turnOrder, confidence: 0, shooterTrackID: nil)
-        record(shot: shot, ShooterIdentification(attribution: fallback, shooterAppearance: nil), expectedShooter: expectedShooter)
+        record(shot: shot, ShooterIdentification(attribution: fallback, shooterAppearance: nil), expectedShooter: expectedShooter,
+               teamInTurn: teamInTurn)
         return fallback
     }
 
     func attribution(for shot: UUID) -> Attribution? { records[shot]?.current }
 
-    /// One tap on the post-shot card (any phone). Becomes session training signal for the player tapped,
-    /// only if they consented to clothes and the sample plausibly is them; a wrong earlier bind is undone.
+    /// One tap on the post-shot card (any phone). A tap is a human label for a vector that came from the gated
+    /// shooter track, so it teaches the tapped player when they consented to clothes, however different the sample
+    /// looks from their old template (jacket off, other clothes than at registration). A wrong earlier bind is undone.
     func correct(shot: UUID, to player: UUID) -> Attribution? {
         guard var r = records[shot], roster.contains(player) else { return nil }
+        let changed = player != r.current.playerID || r.current.needsConfirmation
         r.current = Attribution(playerID: player, source: .tap, confidence: 1, shooterTrackID: r.original.shooterTrackID)
         if let s = r.sample, let b = r.boundTo, b != player { unbind(b, appearance: s); r.boundTo = nil }
-        if let s = r.sample, r.boundTo == nil, canTeach(s, player, expected: r.expectedShooter), bind(player, appearance: s) {
-            r.boundTo = player
-        }
+        if changed, let s = r.sample, r.boundTo == nil, bind(player, appearance: s) { r.boundTo = player }
         if r.boundTo == nil { r.sample = nil }
         records[shot] = r
         return r.current
@@ -181,7 +209,7 @@ final class IdentitySession {
             if r.boundTo == player { r.boundTo = nil }
             // Drop anything held for this player or no longer justified by anyone else's consent.
             if r.current.playerID == player || r.original.playerID == player { r.sample = nil }
-            if let s = r.sample, r.boundTo == nil, !mayHold(s, expected: r.expectedShooter) { r.sample = nil }
+            if let s = r.sample, r.boundTo == nil, !mayHold(s, expected: r.expectedShooter, plausible: r.plausible) { r.sample = nil }
             records[k] = r
         }
     }

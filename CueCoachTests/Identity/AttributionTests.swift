@@ -162,12 +162,31 @@ private func person(_ track: Int, pose: Double, dist: Double,
         #expect(out.source == .turnOrder)
     }
 
+    /// An identity-trained face model: an unmodelled stranger rarely scores like a template (F4/F6 benchmark value).
+    static let identityFace = CueModel(calibration: .init(threshold: 0.75, slope: 25), lookalikeRate: 0.01, lrRange: 0.01...100)
+
     @Test func faceOnlyCountsWithFaceConsent() {
         let r = roster([(Synth.a, .init(clothes: false, face: false)), (Synth.b, .init(clothes: false, face: true))])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
-        let withFace = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, face: [Synth.b: 0.99])]], context: ctx)
+        var trained = ShooterAttributor(); trained.parameters.face = Self.identityFace
+        let withFace = trained.attribute(views: [[person(1, pose: 0.95, dist: 0.05, face: [Synth.b: 0.99])]], context: ctx)
         #expect(withFace.playerID == Synth.b)
         #expect(withFace.source == .auto)
+    }
+
+    @Test func genericFaceEmbeddingNeverOverridesAnUnmodelledExpectedShooter() {
+        // CX-7 / F4: the generic feature print is not identity-trained; A (no template) may score like B's face.
+        let r = roster([(Synth.a, .none), (Synth.b, .init(clothes: false, face: true))])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, face: [Synth.b: 0.99])]], context: ctx)
+        #expect(out.playerID == Synth.a && out.source == .turnOrder)
+    }
+
+    @Test func genericFaceCanStillConfirmAmongModelledPlayers() {
+        let r = roster([(Synth.a, .init(clothes: false, face: true)), (Synth.b, .init(clothes: false, face: true))])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, face: [Synth.a: 0.95, Synth.b: 0.3])]], context: ctx)
+        #expect(out.playerID == Synth.a && out.source == .auto)
     }
 
     @Test func neverPicksSomeoneOutsideTheRoster() {
@@ -177,18 +196,86 @@ private func person(_ track: Int, pose: Double, dist: Double,
         #expect(out.playerID == Synth.a)
     }
 
-    @Test func expectedShooterOutsideRosterStillReturnsExpected() {
-        // Defensive: caller error → turn order wins, never a crash.
+    @Test func expectedShooterOutsideRosterAsksInsteadOfGuessing() {
+        // CX-2: caller error (stale turn state) → never a silent pick; the card asks with one tap.
         let ctx = AttributionContext(roster: roster([]), expectedShooter: Synth.c)
-        #expect(attributor.attribute(views: [], context: ctx) == Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0, shooterTrackID: nil))
+        #expect(attributor.attribute(views: [], context: ctx)
+                == Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0, shooterTrackID: nil, needsConfirmation: true))
     }
 
     @Test func teamPriorNarrowsToTeamInTurn() {
         // A and C are team 1 (in turn); B is team 2. Clothes evidence equally between C and B → C wins.
-        let r = roster([(Synth.a, .none), (Synth.b, .init(clothes: true, face: false)), (Synth.c, .init(clothes: true, face: false))])
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
+                        (Synth.c, .init(clothes: true, face: false))])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a, teamInTurn: [Synth.a, Synth.c])
-        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.b: 0.99, Synth.c: 0.99])]], context: ctx)
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05,
+                                                       clothes: [Synth.a: 0.1, Synth.b: 0.99, Synth.c: 0.99])]], context: ctx)
         #expect(out.playerID == Synth.c)
+    }
+
+    @Test func consentedLookalikeNeverStealsFromANonConsentedExpectedShooter() {
+        // S1: team shirts. A consented, teammate B not. B shoots on B's turn and matches A's shirt at 0.98.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .none), (Synth.c, .none), (Synth.d, .none)])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.b, teamInTurn: [Synth.a, Synth.b])
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.98])]], context: ctx)
+        #expect(out.playerID == Synth.b && out.source == .turnOrder)
+    }
+
+    @Test func guestLookalikeIsNeverMergedOnTheirOwnTurn() {
+        // S6: unregistered guest G in clothes like registered A.
+        let r = roster([(Synth.a, .init(clothes: true, face: false))], guests: [Synth.d])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.d)
+        for cos in [0.80, 0.90, 0.95, 0.99] {
+            let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: cos])]], context: ctx)
+            #expect(out.playerID == Synth.d && out.source == .turnOrder, "cos \(cos)")
+        }
+    }
+
+    @Test func standingBystanderIsNeverEvidenceWhenTheShooterIsHidden() {
+        // S8: shooter occluded; a consented player stands 0.35 from the cue ball and matches strongly.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false))])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        let out = attributor.attribute(views: [[person(1, pose: 0.05, dist: 0.35, clothes: [Synth.b: 0.97, Synth.a: 0.1])]], context: ctx)
+        #expect(out.playerID == Synth.a && out.source == .turnOrder)
+        #expect(out.shooterTrackID == nil)
+        #expect(!out.needsConfirmation)
+    }
+
+    @Test func clearlyNotTheExpectedShooterAsksWithOneTap() {
+        // CX-2: A (consented) expected, but the person at the cue ball looks nothing like A and a guest is present.
+        let r = roster([(Synth.a, .init(clothes: true, face: false))], guests: [Synth.d])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.05])]], context: ctx)
+        #expect(out.source == .turnOrder && out.needsConfirmation)
+    }
+
+    @Test func lookalikeGuestShootingOutOfTurnIsNotConfirmedAsTheExpectedPlayer() {
+        // S10: A expected; guest G (could wear A's shirt) shoots and matches A. The turn prior alone must not make it
+        // `.auto` — attribution stays A by turn order, never a confident merge.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
+                        (Synth.c, .init(clothes: true, face: false))], guests: [Synth.d])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.9, Synth.b: 0.2, Synth.c: 0.2])]], context: ctx)
+        #expect(out.playerID == Synth.a && out.source == .turnOrder)
+    }
+
+    @Test func unmodelledExpectedShooterIsNeverAuto() {
+        // The open-set lookalike LR keeps D possible; it is not recognition, so D stays turn order.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
+                        (Synth.c, .none), (Synth.d, .none)])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.d)
+        let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.93, Synth.b: 0.48])]], context: ctx)
+        #expect(out.playerID == Synth.d && out.source == .turnOrder)
+    }
+
+    @Test func staleTeamInTurnIsIgnored() {
+        // CX-9: expected shooter not in the team in turn (foul / re-rack / roster change) → the team is not trusted.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
+                        (Synth.c, .init(clothes: true, face: false))])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a, teamInTurn: [Synth.b])
+        #expect(ctx.plausibleShooters == [Synth.a, Synth.b, Synth.c])
+        let p = attributor.prior(ctx)
+        #expect(abs(p[Synth.b]! - p[Synth.c]!) < 1e-12)
     }
 
     @Test func multipleViewsCombine() {
@@ -220,17 +307,21 @@ private func person(_ track: Int, pose: Double, dist: Double,
     /// Synthetic 2v2: A, B consent to clothes, C, D don't. Similarity noise σ = 0.06.
     /// `genuine` is the mean cosine of the real shooter against their own template (0.92 = same camera;
     /// ~0.6 = the unmeasured front-enrol / rear-observe domain gap, research §7.1).
-    private func synthSession(outOfTurnRate: Double, genuine: Double = 0.92, n: Int = 800) -> SynthResult {
+    /// `allConsented`: C, D consent too. Otherwise C, D are unmodelled, and (S1) nobody may be auto-picked over them.
+    private func synthSession(outOfTurnRate: Double, genuine: Double = 0.92, n: Int = 800,
+                              allConsented: Bool = true) -> SynthResult {
         var rng = SplitMix(seed: 42)
         let players = [Synth.a, Synth.b, Synth.c, Synth.d]
+        let cd: RecognitionConsent = allConsented ? .init(clothes: true, face: false) : .none
         let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
-                        (Synth.c, .none), (Synth.d, .none)])
+                        (Synth.c, cd), (Synth.d, cd)])
+        let modelled = allConsented ? players : [Synth.a, Synth.b]
         var inTurn = (0, 0), outConsented = (0, 0), all = 0, baseline = 0, wrongAuto = 0
         for i in 0..<n {
             let expected = players[i % 4]
             let actual = rng.unit() < outOfTurnRate ? players[(i + 1 + Int(rng.unit() * 3)) % 4] : expected
             var sims: [UUID: Double] = [:]
-            for p in [Synth.a, Synth.b] {
+            for p in modelled {
                 sims[p] = min(1, max(-1, (p == actual ? genuine : 0.45) + 0.06 * rng.gaussian()))
             }
             let ctx = AttributionContext(roster: r, expectedShooter: expected)
@@ -272,11 +363,20 @@ private func person(_ track: Int, pose: Double, dist: Double,
         #expect(r.overall >= r.turnOrderOnly + 0.08, "\(r)")
     }
 
+    @Test func mixedConsentTableNeverAutoPicksWrongAndNeverLosesToTurnOrder() {
+        // Non-consented C, D may look like anyone: out-of-turn catches are given up for safety, never a wrong auto.
+        for rate in [0.0, 0.1, 0.3] {
+            let r = synthSession(outOfTurnRate: rate, allConsented: false)
+            #expect(r.wrongAuto == 0, "rate \(rate)")
+            #expect(r.overall >= r.turnOrderOnly - 1e-9, "rate \(rate)")
+        }
+    }
+
     @Test func domainGapWeakGenuineMatchesAreNeverWorseThanTurnOrder() {
         // Front-enrolled vs rear-observed: genuine cosine ≈ 0.6, below threshold. Must degrade to turn order,
         // never to a confident pick of someone with no positive evidence.
         for rate in [0.0, 0.1, 0.3] {
-            let r = synthSession(outOfTurnRate: rate, genuine: 0.6)
+            let r = synthSession(outOfTurnRate: rate, genuine: 0.6, allConsented: false)
             #expect(r.wrongAuto == 0, "rate \(rate)")
             #expect(r.overall >= r.turnOrderOnly - 1e-9, "rate \(rate)")
         }

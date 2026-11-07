@@ -166,6 +166,32 @@ let bodyModel = "fake.body.v1"
         // Profile + history untouched.
         #expect(try Fixture.count(PlayerProfile.self, stack.competitiveContext) == 1)
     }
+
+    @Test func deleteDuringRegistrationIsNeverUndone() async throws {
+        // CX-3: the user taps delete while embeddings are still being computed; nothing may be written afterwards.
+        let (stack, owner, face, _) = try setup()
+        let body = DeletingExtractor(modelID: bodyModel) { try? IdentityPrivacy.deleteMyRecognitionData(stack: stack, session: nil) { _ in } }
+        await #expect(throws: RegistrationError.deletedDuringRegistration) {
+            try await RecognitionRegistrar(stack: stack, face: face, body: body)
+                .register(owner, decision: ConsentDecision(consent: .init(clothes: true, face: false), agreedAt: .now), capture: capture)
+        }
+        #expect(owner.recognition == nil)
+        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 0)
+    }
+}
+
+/// Extractor that runs `during` (on the main actor) on its first call, e.g. a delete racing a registration.
+final class DeletingExtractor: EmbeddingExtracting, @unchecked Sendable {
+    let modelID: String
+    private let lock = NSLock()
+    private var fired = false
+    let during: @MainActor () -> Void
+    init(modelID: String, during: @escaping @MainActor () -> Void) { self.modelID = modelID; self.during = during }
+    func embedding(of image: CGImage) async throws -> Embedding {
+        let first = lock.withLock { defer { fired = true }; return !fired }
+        if first { await during() }
+        return Synth.axis(image.width % Synth.dim, model: modelID)
+    }
 }
 
 @MainActor
@@ -364,6 +390,81 @@ let bodyModel = "fake.body.v1"
         #expect(att.playerID == Synth.b && att.source == .turnOrder)
         #expect(s.attribution(for: shot) == nil)
         #expect(s.stats.total == 0)
+    }
+
+    // MARK: learning from taps and turn order (S3, S4, CX-8), the tap window, roster changes (CX-9)
+
+    @Test func tapTeachesTheTappedPlayerEvenWhenTheyLookDifferentNow() {
+        // S3 / CX-8: A took a jacket off; the new crop resembles B, not A's template. The tap must still teach A.
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), consentedProfile(Synth.b, body: 2)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let shot = UUID()
+        let newLook = Synth.near(2, cos: 0.8, other: 7, model: bodyModel)
+        s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.b, source: .auto, confidence: 0.9, shooterTrackID: 1),
+                                                   shooterAppearance: newLook), expectedShooter: Synth.a)
+        _ = s.correct(shot: shot, to: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a]?.contains(newLook.normalised!) == true)
+        #expect(s.snapshot().appearanceGallery[Synth.b]?.contains(newLook.normalised!) != true)
+    }
+
+    @Test func ownTurnShotsKeepRefreshingTheTemplateWhenEveryoneConsented() {
+        // S4: today's clothes differ from registration; own-turn shots extend the template (seeds are kept).
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), consentedProfile(Synth.b, body: 2)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let today = Synth.axis(9, model: bodyModel)
+        s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                     shooterAppearance: today), expectedShooter: Synth.a)
+        let g = s.snapshot().appearanceGallery[Synth.a]!
+        #expect(g.contains(today) && g.contains(Synth.axis(1, model: bodyModel)))
+    }
+
+    @Test func ownTurnBindNeverLearnsWhenANonConsentingPlayerCouldBeShooting() {
+        // CX-1: B didn't consent and could be the one shooting on A's turn; their vector must not join A's template.
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.b)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                     shooterAppearance: Synth.axis(9, model: bodyModel)), expectedShooter: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a] == [Synth.axis(1, model: bodyModel)])
+        #expect(s.pendingSampleCount == 0)
+    }
+
+    @Test func ownTurnBindSkipsASampleThatLooksLikeSomeoneElse() {
+        // B shot out of turn on A's turn: the sample matches B's template, so it doesn't poison A's.
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), consentedProfile(Synth.b, body: 2)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let bLike = Synth.near(2, cos: 0.95, other: 9, model: bodyModel)
+        s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                     shooterAppearance: bLike), expectedShooter: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a] == [Synth.axis(1, model: bodyModel)])
+    }
+
+    @Test func heldSamplesAreDroppedWhenTheTapWindowCloses() {
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.c)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let first = UUID()
+        s.record(shot: first, ShooterIdentification(attribution: Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                    shooterAppearance: Synth.near(1, cos: 0.8, other: 6, model: bodyModel)), expectedShooter: Synth.c)
+        #expect(s.pendingSampleCount == 1)
+        for _ in 0..<IdentitySession.tapWindow {
+            s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0.8, shooterTrackID: nil),
+                                                         shooterAppearance: nil), expectedShooter: Synth.c)
+        }
+        #expect(s.pendingSampleCount == 0)
+        _ = s.correct(shot: first, to: Synth.a)                         // stats still move, nothing is learned
+        #expect(s.attribution(for: first)?.playerID == Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a] == [Synth.axis(1, model: bodyModel)])
+    }
+
+    @Test func playersCanJoinAndLeaveMidSession() {
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1)], faceModelID: faceModel, bodyModelID: bodyModel)
+        s.addPlayer(consentedProfile(Synth.b, body: 2))
+        s.addGuest(Synth.d)
+        #expect(s.snapshot().roster.ids.count == 3)
+        #expect(s.snapshot().appearanceGallery[Synth.b] == [Synth.axis(2, model: bodyModel)])
+        s.removePlayer(Synth.a)
+        let snap = s.snapshot()
+        #expect(!snap.roster.contains(Synth.a) && snap.appearanceGallery[Synth.a] == nil)
+        #expect(s.correct(shot: UUID(), to: Synth.a) == nil)
     }
 }
 

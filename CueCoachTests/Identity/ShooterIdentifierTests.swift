@@ -15,8 +15,8 @@ final class FakeAnalyzer: PersonAnalyzing, @unchecked Sendable {
         lock.withLock { _wants.append(wants) }
         if failing.contains(image.width) { throw CancellationError() }
         return (script[image.width] ?? []).map {
-            ObservedPerson(box: $0.box, joints: $0.joints,
-                           appearance: wants.appearance ? $0.appearance : nil, face: wants.face ? $0.face : nil)
+            ObservedPerson(box: $0.box, joints: $0.joints, appearance: wants.appearance ? $0.appearance : nil,
+                           face: wants.face ? $0.face : nil, faceQuality: wants.face ? $0.faceQuality : nil)
         }
     }
 }
@@ -165,7 +165,11 @@ private func snapshot(clothes: [UUID: Embedding], roster entries: [RosterEntry])
         p.recognition = RecognitionData(faceEmbedding: nil,
                                         appearanceEmbedding: try! EmbeddingCodec.encode([Synth.axis(1, model: bodyModel)]),
                                         optedInAt: Date(timeIntervalSince1970: 1_700_000_000), version: 1)
+        // B consented too: with a non-consenting B, A could never be picked over B (B might wear A's shirt, S1).
         let q = PlayerProfile(id: Synth.b, name: "B", avatarSymbol: "star", avatarColor: "blue")
+        q.recognition = RecognitionData(faceEmbedding: nil,
+                                        appearanceEmbedding: try! EmbeddingCodec.encode([Synth.axis(2, model: bodyModel)]),
+                                        optedInAt: Date(timeIntervalSince1970: 1_700_000_000), version: 1)
         let session = await IdentitySession(profiles: [p, q], faceModelID: faceModel, bodyModelID: bodyModel)
         let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.near(1, cos: 0.97, other: 8, model: bodyModel))]
         let shot = UUID()
@@ -184,6 +188,79 @@ private func snapshot(clothes: [UUID: Embedding], roster entries: [RosterEntry])
                                              using: VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people, 2: people])))
         #expect(att.playerID == Synth.d)
         #expect(session.snapshot().appearanceGallery[Synth.d] == [Synth.axis(6, model: bodyModel)])
+    }
+}
+
+@Suite struct ShooterGateAndFaceTests {
+    let clothesAB = [RosterEntry(playerID: Synth.a, consent: .init(clothes: true, face: false)),
+                     RosterEntry(playerID: Synth.b, consent: .init(clothes: true, face: false))]
+
+    @Test func bystandersAreNeverComparedAndTheirVectorsNeverKept() async {
+        // CX-1 / S7: only the gated shooter track is matched; a standing bystander's vector is ignored.
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.axis(0, model: bodyModel)),
+                      ObservedPerson(box: standerBox, joints: standingJoints, appearance: Synth.axis(1, model: bodyModel))]
+        let snap = snapshot(clothes: [Synth.a: Synth.axis(0, model: bodyModel), Synth.b: Synth.axis(1, model: bodyModel)], roster: clothesAB)
+        let analyzer = FakeAnalyzer(script: [1: people])
+        let out = await VisionShooterIdentifier(analyzer: analyzer)
+            .identify(window(1), snapshot: snap, expectedShooter: Synth.a, teamInTurn: nil)
+        let byPose = out.evidence.sorted { $0.poseScore > $1.poseScore }
+        #expect(!byPose[0].appearanceSimilarity.isEmpty)
+        #expect(byPose[1].appearanceSimilarity.isEmpty && byPose[1].faceSimilarity.isEmpty)
+        #expect(analyzer.wants.allSatisfy { $0.cueBall == cue && $0.gate == .standard })
+        #expect(out.attribution.playerID == Synth.a)
+    }
+
+    @Test func occludedShooterWithBystanderInViewIsTurnOrderAndKeepsNothing() async {
+        // S7 / S8: nobody at the cue ball → no evidence, no sample, whoever stands in view.
+        let people = [ObservedPerson(box: standerBox, joints: standingJoints, appearance: Synth.axis(1, model: bodyModel))]
+        let snap = snapshot(clothes: [Synth.a: Synth.axis(0, model: bodyModel), Synth.b: Synth.axis(1, model: bodyModel)], roster: clothesAB)
+        let out = await VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people, 2: people]))
+            .identify(window(2), snapshot: snap, expectedShooter: Synth.a, teamInTurn: nil)
+        #expect(out.attribution.playerID == Synth.a && out.attribution.source == .turnOrder)
+        #expect(out.attribution.shooterTrackID == nil && out.shooterAppearance == nil)
+    }
+
+    func faceSnapshot() -> IdentitySnapshot {
+        IdentitySnapshot(roster: IdentityRoster(entries: [RosterEntry(playerID: Synth.a, consent: .init(clothes: false, face: true)),
+                                                          RosterEntry(playerID: Synth.b, consent: .init(clothes: false, face: true))]),
+                         appearanceGallery: [:],
+                         faceGallery: [Synth.a: [Synth.axis(2, model: faceModel)], Synth.b: [Synth.axis(3, model: faceModel)]])
+    }
+
+    @Test func shooterOnlyFaceMatchingIdentifiesAVisibleGoodFace() async {
+        // S5: with face matching on, the gated shooter's face is compared against face templates.
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, face: Synth.near(3, cos: 0.95, other: 9, model: faceModel), faceQuality: 0.8),
+                      ObservedPerson(box: standerBox, joints: standingJoints, face: Synth.axis(2, model: faceModel), faceQuality: 0.9)]
+        let analyzer = FakeAnalyzer(script: [1: people, 2: people])
+        let id = VisionShooterIdentifier(analyzer: analyzer, faceMatching: .shooterOnly)
+        let out = await id.identify(window(2), snapshot: faceSnapshot(), expectedShooter: Synth.b, teamInTurn: nil)
+        #expect(analyzer.wants.allSatisfy { $0.face && !$0.appearance })
+        #expect(out.attribution.playerID == Synth.b && out.attribution.source == .auto)
+        #expect(out.evidence.filter { !$0.faceSimilarity.isEmpty }.count == 1)    // the bystander's face never compared
+    }
+
+    @Test func poorQualityFacesNeverVote() async {
+        // F4: a low faceCaptureQuality crop is not evidence (would otherwise push the posterior to A).
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, face: Synth.axis(2, model: faceModel), faceQuality: 0.2)]
+        let id = VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people]), faceMatching: .shooterOnly)
+        let out = await id.identify(window(1), snapshot: faceSnapshot(), expectedShooter: Synth.b, teamInTurn: nil)
+        #expect(out.evidence.allSatisfy { $0.faceSimilarity.isEmpty })
+        #expect(out.attribution.playerID == Synth.b && out.attribution.source == .turnOrder)
+    }
+
+    @Test func calibrationIsChosenByTheTemplatesModelID() async {
+        // F4 / CX-7: a model with its own calibration entry is trusted as far as that entry says, and no further.
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, face: Synth.near(3, cos: 0.95, other: 9, model: faceModel), faceQuality: 0.9)]
+        let snap = IdentitySnapshot(roster: IdentityRoster(entries: [RosterEntry(playerID: Synth.a),
+                                                                     RosterEntry(playerID: Synth.b, consent: .init(clothes: false, face: true))]),
+                                    appearanceGallery: [:], faceGallery: [Synth.b: [Synth.axis(3, model: faceModel)]])
+        let generic = VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people]), faceMatching: .shooterOnly)
+        #expect(await generic.identify(window(1), snapshot: snap, expectedShooter: Synth.a, teamInTurn: nil).attribution.source == .turnOrder)
+        var table = IdentityCalibrationTable.standard
+        table.face[faceModel] = ShooterAttributionTests.identityFace
+        let trained = VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people]), faceMatching: .shooterOnly, calibrations: table)
+        let out = await trained.identify(window(1), snapshot: snap, expectedShooter: Synth.a, teamInTurn: nil)
+        #expect(out.attribution.playerID == Synth.b && out.attribution.source == .auto)
     }
 }
 
