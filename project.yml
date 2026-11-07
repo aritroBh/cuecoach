@@ -1,0 +1,51 @@
+name: CueCoach
+options:
+  bundleIdPrefix: com.aritrobh
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: 5C8TDH7J2X   # free Personal Team — no restricted capabilities
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+    GENERATE_INFOPLIST_FILE: YES
+packages:
+  CueCore:
+    path: Packages/CueCore
+targets:
+  CueCoach:
+    type: application
+    platform: iOS
+    sources: [CueCoach]
+    dependencies:
+      - package: CueCore
+        product: CueCore
+    info:
+      path: CueCoach/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: CueCoach
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        NSCameraUsageDescription: CueCoach watches the table to draw aim lines and rate shots. Video stays on your phone.
+        NSLocalNetworkUsageDescription: CueCoach links phones around the same table to share ball positions.
+        NSBonjourServices: [_cuecoach._tcp, _cuecoach._udp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aritrobh.cuecoach
+  CueCoachTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [CueCoachTests]
+    dependencies: [{target: CueCoach}]
+  CueCoachUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [CueCoachUITests]
+    dependencies: [{target: CueCoach}]
+schemes:
+  CueCoach:
+    build: {targets: {CueCoach: all, CueCoachTests: [test], CueCoachUITests: [test]}}
+    test: {targets: [CueCoachTests, CueCoachUITests]}
