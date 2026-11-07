@@ -26,8 +26,8 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [x] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
 - [x] Rules: Codex review 2 rounds (round-2 scotch-rotation findings overruled by user D17); 207 tests; merged
 - [x] Physics: pooltool fixture generator (500 shots) — Codex
-- [~] Physics round 2 (f24a5e5) re-review: prior findings FIXED (499/500 on old fixture), visual check OK (break, stop, follow/draw, bank); REJECT on 2 new MAJOR (path clamping into rail, false offTable in pocket mouth) → Codex round 3
-- [ ] Physics: fixture suite within tolerance
+- [x] Physics: merged (Codex worker; Claude supervisor APPROVE after 3 rounds): 96.2% pooltool (break 80% — tie-break order only), simple 20/20, jaw 4/4, 16-ball break ~1.6 ms; visual path renders checked
+- [x] Physics: fixture suite within tolerance (D10)
 - [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
 - [x] Persistence: training/competitive isolation test
 - [x] Design system (design-system/cuecoach/MASTER.md via ui-ux-pro-max)
