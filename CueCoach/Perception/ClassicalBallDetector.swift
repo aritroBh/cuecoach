@@ -119,6 +119,24 @@ struct ClassicalBallDetector: BallDetector {
         return out
     }
 
+    /// Classify a ball found by another cue (LiDAR) at a source-image point: felt reference from a ring around it.
+    static func classify(_ img: PixelImage, sourcePoint p: Vec2, radiusPx: Double) -> (kind: BallKind, number: Int?) {
+        let (cx, cy) = img.toWorking(p.x, p.y)
+        let r = radiusPx / img.scale
+        var hs: [(UInt8, UInt8, UInt8)] = []
+        for k in 0..<24 {
+            let a = Double(k) * .pi / 12
+            for m in [2.0, 2.6] {
+                let x = Int((cx + m * r * cos(a)).rounded()), y = Int((cy + m * r * sin(a)).rounded())
+                if x >= 0, y >= 0, x < img.width, y < img.height { hs.append(img.pixel(x, y)) }
+            }
+        }
+        guard !hs.isEmpty, cx >= 0, cy >= 0, cx < Double(img.width), cy < Double(img.height) else { return (.unknown, nil) }
+        func med(_ f: ((UInt8, UInt8, UInt8)) -> UInt8) -> UInt8 { hs.map(f).sorted()[hs.count / 2] }
+        let felt = ColorMath.hsv(med { $0.0 }, med { $0.1 }, med { $0.2 })
+        return ClassicalBallDetector().classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: felt)
+    }
+
     // MARK: - Helpers
 
     private func bounds(geo: FrameGeometry, img: PixelImage) -> (Int, Int, Int, Int) {
@@ -205,7 +223,7 @@ struct ClassicalBallDetector: BallDetector {
         return gaps
     }
 
-    private func classify(_ img: PixelImage, cx: Double, cy: Double, r: Double,
+    func classify(_ img: PixelImage, cx: Double, cy: Double, r: Double,
                           feltHSV: (h: Double, s: Double, v: Double)) -> (kind: BallKind, number: Int?) {
         var white = 0.0, black = 0.0, colored = 0.0, all = 0.0
         var hx = 0.0, hy = 0.0, vsum = 0.0

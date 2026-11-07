@@ -16,9 +16,13 @@ struct SyntheticTableScene: Sendable {
     static let felt: (UInt8, UInt8, UInt8) = (24, 112, 74)
     static let cushionFelt: (UInt8, UInt8, UInt8) = (20, 100, 66)
 
+    /// A cue stick lying over the cloth at ball-centre height: tip point, direction toward the ball, length.
+    struct Stick: Sendable { var tip: Vec2; var direction: Vec2; var length: Double = 1.0 }
+
     var frame: TableFrame
     var camera: CameraModel
     var balls: [Ball]
+    var stick: Stick? = nil
 
     var plane: Plane3 { frame.plane }
 
@@ -46,6 +50,45 @@ struct SyntheticTableScene: Sendable {
 
     /// Ground-truth image point of a ball centre.
     func imagePoint(_ b: Ball) -> Vec2? { camera.project(frame.world(b.position, height: TableSpec.ballRadius)) }
+
+    /// Synthetic LiDAR: ray-cast the cloth plane and ball spheres at a low resolution (like ARKit's 256×192).
+    func renderDepth(width: Int = 256, height: Int = 144, noise: Double = 0, seed: UInt64 = 1) -> DepthMap {
+        let k = camera.intrinsics.scaled(toWidth: Double(width), height: Double(height))
+        var cam = camera
+        cam.intrinsics = k
+        let plane = frame.plane
+        let R = TableSpec.ballRadius
+        let centres = balls.map { frame.world($0.position, height: R) }
+        var state = seed
+        func gauss() -> Double {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            let u = max(1e-12, Double(state >> 11) / Double(1 << 53))
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            let v = Double(state >> 11) / Double(1 << 53)
+            return (-2 * log(u)).squareRoot() * cos(2 * .pi * v)
+        }
+        var out = [Float](repeating: 0, count: width * height)
+        let w2c = camera.worldToCamera
+        for y in 0..<height {
+            for x in 0..<width {
+                let ray = cam.ray(through: Vec2(Double(x) + 0.5, Double(y) + 0.5))
+                var best = plane.intersect(origin: ray.origin, direction: ray.direction)
+                var bestT = best.map { simd_distance($0, ray.origin) } ?? .infinity
+                for c in centres {
+                    let f = ray.origin - c
+                    let b = simd_dot(f, ray.direction), cc = simd_dot(f, f) - R * R
+                    let disc = b * b - cc
+                    guard disc >= 0 else { continue }
+                    let t = -b - disc.squareRoot()
+                    if t > 0 && t < bestT { bestT = t; best = ray.origin + ray.direction * t }
+                }
+                guard let p = best else { continue }
+                let pc = w2c * SIMD4(p, 1)
+                out[y * width + x] = Float(-pc.z + noise * gauss())
+            }
+        }
+        return DepthMap(width: width, height: height, depth: out, confidence: nil)
+    }
 
     func render() -> CGImage? {
         let W = Int(camera.intrinsics.width), H = Int(camera.intrinsics.height)
@@ -107,6 +150,13 @@ struct SyntheticTableScene: Sendable {
             ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.85))
             ctx.fillEllipse(in: CGRect(x: c.x - r * 0.45, y: c.y - r * 0.6, width: r * 0.3, height: r * 0.3))
             ctx.restoreGState()
+        }
+        if let st = stick {
+            // Tapered maple shaft: 13 mm at the tip to 30 mm at the butt, a bit above the ball plane.
+            let u = st.direction.normalized, n = u.perpendicular
+            let butt = st.tip - u * st.length
+            let quad = [st.tip + n * 0.0065, st.tip - n * 0.0065, butt - n * 0.015, butt + n * 0.015]
+            fill(poly(quad, height: TableSpec.ballRadius * 1.4), (214, 184, 140))
         }
         return ctx.makeImage()
     }

@@ -6,6 +6,10 @@ struct PerceptionFrame: Sendable {
     var image: PixelImage
     var camera: CameraModel   // intrinsics in source-image pixels
     var timestamp: Double
+    /// LiDAR depth aligned with the image (ARKit sceneDepth), when available.
+    var depth: DepthMap? = nil
+    /// Shooter wrists from Vision body pose, source pixels.
+    var wrists: [Vec2] = []
 }
 
 struct PerceptionResult: Sendable {
@@ -23,6 +27,11 @@ struct PerceptionResult: Sendable {
     var shotStarted = false
     /// Emitted once when a shot ends.
     var shot: ShotRecord? = nil
+    /// The player's live aim from the cue stick (SPEC §5.6), when the cue is visible.
+    var liveAim: LiveAimTrace? = nil
+    /// 0…1: live aim vs suggested ghost line; the overlay merges them as this approaches 1.
+    var convergence: Double = 0
+    var depthBalls = 0
 
     var confirmed: [TrackedBall] { tracks.filter(\.confirmed) }
 }
@@ -34,6 +43,9 @@ actor PerceptionPipeline {
     private var table: TableFrame?
     private var legal: Set<BallID>
     private var segmenter: ShotSegmenter?
+    private var cueTracker = CueAimTracker()
+    private let cueDetector = CueLineDetector()
+    private let depthFinder = DepthBallFinder()
 
     init(detector: any BallDetector = ClassicalBallDetector()) {
         self.detector = detector
@@ -45,6 +57,7 @@ actor PerceptionPipeline {
         table = t
         tracker.reset()
         segmenter = t.map { ShotSegmenter(spec: $0.spec) }
+        cueTracker = CueAimTracker()
     }
 
     func setLegal(_ l: Set<BallID>) { legal = l }
@@ -53,7 +66,12 @@ actor PerceptionPipeline {
         guard let table else { return nil }
         let t0 = Date()
         let geo = FrameGeometry(frame: table, camera: f.camera)
-        let dets = detector.detect(in: f.image, geometry: geo)
+        var dets = detector.detect(in: f.image, geometry: geo)
+        var depthBalls: [Vec2] = []
+        if let d = f.depth {
+            depthBalls = depthFinder.find(depth: d, camera: f.camera, table: table)
+            dets = DepthFusion.merge(dets, depthBalls: depthBalls, image: f.image, geometry: geo)
+        }
         let ms = Date().timeIntervalSince(t0) * 1000
         let tracks = tracker.update(dets, at: f.timestamp)
         let rest = tracker.isAtRest
@@ -75,13 +93,29 @@ actor PerceptionPipeline {
                 }
             }
         }
+        // Live aim from the cue stick (only while the balls are still: that's when the player aims).
+        var live: LiveAimTrace?
+        var convergence = 0.0
+        let cueBall = confirmed.first { marks[$0.id] == .cue }
+        if let cb = cueBall {
+            let others = confirmed.filter { $0.id != cb.id }.map(\.position)
+            let obs = cb.speed < 0.2 ? cueDetector.detect(in: f.image, geometry: geo, cue: cb.position, others: others,
+                                                          wrists: f.wrists) : nil
+            _ = cueTracker.update(obs, at: f.timestamp)
+            if let d = cueTracker.direction, cueTracker.cueVisible(at: f.timestamp) {
+                live = LiveAimTrace.trace(cue: cb.position, direction: d, balls: others, spec: table.spec)
+                if let a = aim { convergence = LiveAimTrace.convergence(live: d, cue: cb.position, suggestedGhost: a.ghost) }
+            }
+        }
         let wasInShot = segmenter?.inShot ?? false
-        let cueID = confirmed.first { marks[$0.id] == .cue }?.id
-        let shot = segmenter?.update(tracks: tracks, cueID: cueID, atRest: rest, at: f.timestamp)
+        let cueID = cueBall?.id
+        let strokeGate: Bool? = cueTracker.cueVisible(at: f.timestamp) ? cueTracker.strokeRecent(at: f.timestamp) : nil
+        let shot = segmenter?.update(tracks: tracks, cueID: cueID, atRest: rest, at: f.timestamp, strokeRecent: strokeGate)
         let started = !wasInShot && (segmenter?.inShot ?? false)
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
-                                shotStarted: started, shot: shot)
+                                shotStarted: started, shot: shot, liveAim: live, convergence: convergence,
+                                depthBalls: depthBalls.count)
     }
 }
 

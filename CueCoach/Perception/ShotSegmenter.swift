@@ -26,11 +26,14 @@ enum Rail: String, Sendable { case head, foot, left, right }
 
 protocol ShotSegmenting: Sendable {
     /// Feed every tracker update; returns a record when a shot ends.
-    mutating func update(tracks: [TrackedBall], cueID: Int?, atRest: Bool, at t: Double) -> ShotRecord?
+    /// `strokeRecent`: nil when no cue stick has been seen (no stroke evidence either way); false when the
+    /// cue is visible but hasn't stroked — then cue-ball motion (a hand nudge) does not start a shot.
+    mutating func update(tracks: [TrackedBall], cueID: Int?, atRest: Bool, at t: Double, strokeRecent: Bool?) -> ShotRecord?
     var inShot: Bool { get }
 }
 
-/// SPEC §5.3: a shot starts when the cue ball's speed crosses a threshold for 2 frames (from rest);
+/// SPEC §5.3: a shot starts when the cue ball's speed crosses a threshold for 2 frames (from rest) right after
+/// a detected stroke (when the cue stick is visible);
 /// it ends when every ball has been at rest for N frames (the tracker's at-rest flag).
 struct ShotSegmenter: ShotSegmenting {
     var spec: TableSpec
@@ -49,13 +52,14 @@ struct ShotSegmenter: ShotSegmenting {
 
     init(spec: TableSpec) { self.spec = spec }
 
-    mutating func update(tracks: [TrackedBall], cueID: Int?, atRest: Bool, at t: Double) -> ShotRecord? {
+    mutating func update(tracks: [TrackedBall], cueID: Int?, atRest: Bool, at t: Double,
+                         strokeRecent: Bool? = nil) -> ShotRecord? {
         let confirmed = tracks.filter(\.confirmed)
         if !inShot {
             if atRest { lastRest = Dictionary(uniqueKeysWithValues: confirmed.map { ($0.id, $0.position) }) }
             guard let cueID, let cue = confirmed.first(where: { $0.id == cueID }) else { fastFrames = 0; return nil }
             fastFrames = cue.speed > startSpeed ? fastFrames + 1 : 0
-            guard fastFrames >= startFrames, !lastRest.isEmpty else { return nil }
+            guard fastFrames >= startFrames, !lastRest.isEmpty, strokeRecent ?? true else { return nil }
             inShot = true
             fastFrames = 0
             record = ShotRecord(start: t, end: t, preState: lastRest, finalState: [:], cueID: cueID, firstContact: nil,

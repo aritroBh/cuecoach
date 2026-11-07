@@ -8,6 +8,7 @@ import simd
 import SwiftUI
 import Synchronization
 import UIKit
+import Vision
 
 /// Full-screen ARKit camera with the table overlay anchored in 3D.
 struct ARLiveView: UIViewRepresentable {
@@ -49,6 +50,7 @@ final class ARLiveController: NSObject {
     private var tableFrame: TableFrame?
     private var limitedSince: Date?
     private var revalidating = false
+    private var wasMerged = false
 
     init(model: LiveModel, locator: any TableLocating) {
         self.model = model
@@ -355,6 +357,9 @@ final class ARLiveController: NSObject {
             // Shot events are haptic only (no audio, no text while aiming).
             if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
             if r.shot != nil { UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6) }
+            let merged = r.convergence > 0.8
+            if merged && !wasMerged { UISelectionFeedbackGenerator().selectionChanged() }  // aim locked onto the line
+            wasMerged = merged
         }
     }
 }
@@ -371,7 +376,9 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     private let onResult: @MainActor (PerceptionResult?, Status) -> Void
     private let onEstimate: @MainActor (TableEstimate?) -> Void
     private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
-                               interval: 1.0 / 30, width: 960))
+                               interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [Vec2]()))
+    /// Used only on `queue`.
+    private let poseRequest = VNDetectHumanBodyPoseRequest()
 
     init(pipeline: PerceptionPipeline, locator: any TableLocating,
          onResult: @escaping @MainActor (PerceptionResult?, Status) -> Void,
@@ -442,7 +449,9 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
             }
             return
         }
-        let pf = PerceptionFrame(image: img, camera: cam, timestamp: frame.timestamp)
+        let wrists = bodyPoseWrists(frame)
+        let pf = PerceptionFrame(image: img, camera: cam, timestamp: frame.timestamp, depth: Self.depthMap(frame),
+                                 wrists: wrists)
         let pipeline = pipeline
         var rs = status
         rs.isResult = true
@@ -460,6 +469,59 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         c.planeDetection = [.horizontal]
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics = [.sceneDepth] }
         session.run(c)
+    }
+
+    /// Shooter wrists (source pixels) from Vision body pose, refreshed at ~6 Hz on the ANE.
+    private func bodyPoseWrists(_ frame: ARFrame) -> [Vec2] {
+        let now = frame.timestamp
+        let due = state.withLock { s -> Bool in
+            guard now - s.lastPose > 0.16 else { return false }
+            s.lastPose = now
+            return true
+        }
+        guard due else { return state.withLock { $0.wrists } }
+        let w = Double(CVPixelBufferGetWidth(frame.capturedImage)), h = Double(CVPixelBufferGetHeight(frame.capturedImage))
+        let handler = VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: .up)
+        var found: [Vec2] = []
+        if (try? handler.perform([poseRequest])) != nil {
+            for obs in poseRequest.results ?? [] {
+                for joint in [VNHumanBodyPoseObservation.JointName.leftWrist, .rightWrist] {
+                    if let p = try? obs.recognizedPoint(joint), p.confidence > 0.3 {
+                        found.append(Vec2(Double(p.location.x) * w, (1 - Double(p.location.y)) * h))
+                    }
+                }
+            }
+        }
+        state.withLock { $0.wrists = found }
+        return found
+    }
+
+    /// LiDAR depth (smoothed when available), copied out so the ARFrame isn't retained.
+    private static func depthMap(_ frame: ARFrame) -> DepthMap? {
+        guard let sd = frame.smoothedSceneDepth ?? frame.sceneDepth else { return nil }
+        let map = sd.depthMap
+        guard CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32 else { return nil }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), rb = CVPixelBufferGetBytesPerRow(map)
+        var depth = [Float](repeating: 0, count: w * h)
+        for y in 0..<h {
+            let row = (base + y * rb).assumingMemoryBound(to: Float.self)
+            for x in 0..<w { depth[y * w + x] = row[x] }
+        }
+        var conf: [UInt8]?
+        if let cm = sd.confidenceMap {
+            CVPixelBufferLockBaseAddress(cm, .readOnly)
+            if let cb = CVPixelBufferGetBaseAddress(cm) {
+                let crb = CVPixelBufferGetBytesPerRow(cm)
+                var c = [UInt8](repeating: 0, count: w * h)
+                for y in 0..<h { let row = (cb + y * crb).assumingMemoryBound(to: UInt8.self); for x in 0..<w { c[y * w + x] = row[x] } }
+                conf = c
+            }
+            CVPixelBufferUnlockBaseAddress(cm, .readOnly)
+        }
+        return DepthMap(width: w, height: h, depth: depth, confidence: conf)
     }
 
     private static func depthConfidence(_ frame: ARFrame) -> Double? {
@@ -521,6 +583,9 @@ final class TableOverlay {
     private let objectLine: ModelEntity
     private let ghost: ModelEntity
     private var dashes: [ModelEntity] = []
+    private let liveLine: ModelEntity
+    private let liveObject: ModelEntity
+    private let liveGhost: ModelEntity
     private let R = Float(TableSpec.ballRadius)
     private var dimmed = false
 
@@ -554,6 +619,10 @@ final class TableOverlay {
         objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
         ghost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.9, outer: R), materials: [OverlayMesh.material(.white, 0.9)])
         for e in [cueLine, objectLine, ghost] { e.isEnabled = false; anchor.addChild(e) }
+        liveLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.006, material: OverlayMesh.material(.white, 1))
+        liveObject = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.7))
+        liveGhost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.88, outer: R), materials: [OverlayMesh.material(.white, 1)])
+        for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false; anchor.addChild(e) }
         for _ in 0..<14 {
             let d = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.45))
             d.isEnabled = false
@@ -564,7 +633,7 @@ final class TableOverlay {
     func setDimmed(_ d: Bool) {
         dimmed = d
         for e in outline { e.model?.materials = [OverlayMesh.material(.white, d ? 0.2 : 0.6)] }
-        if d { for e in ballRings + dashes + [cueLine, objectLine, ghost] { e.isEnabled = false } }
+        if d { for e in ballRings + dashes + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost] { e.isEnabled = false } }
     }
 
     func update(_ r: PerceptionResult?) {
@@ -584,14 +653,38 @@ final class TableOverlay {
             ring.model?.materials = [OverlayMesh.material(color, alpha)]
             ring.scale = r?.marks[t.id] == .cue ? [1.1, 1.1, 1] : [1, 1, 1]
         }
+        // Live aim from the cue stick: bright, turns green as it merges with the suggestion.
+        let live = r?.liveAim
+        if let live {
+            let merged = (r?.convergence ?? 0) > 0.8
+            let c: UIColor = merged ? Self.green : .white
+            OverlayMesh.place(liveLine, from: live.cue.f, to: live.end.f, z: R)
+            liveLine.model?.materials = [OverlayMesh.material(c, 0.95)]
+            liveLine.isEnabled = true
+            if let g = live.ghost, let od = live.objectDirection, let i = live.hitIndex, i >= 0 {
+                liveGhost.position = [Float(g.x), Float(g.y), R]
+                liveGhost.model?.materials = [OverlayMesh.material(c, 0.95)]
+                let start = g + od * (2 * TableSpec.ballRadius)
+                let end = AimPlanner.clipToTable(from: start, dir: od, maxLength: 0.6, spec: spec)
+                OverlayMesh.place(liveObject, from: start.f, to: end.f, z: R)
+                liveObject.model?.materials = [OverlayMesh.material(c, 0.7)]
+                liveGhost.isEnabled = true; liveObject.isEnabled = true
+            } else { liveGhost.isEnabled = false; liveObject.isEnabled = false }
+        } else {
+            for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false }
+        }
         guard let aim = r?.aim else {
             for e in dashes + [cueLine, objectLine, ghost] { e.isEnabled = false }
             return
         }
+        // With a live cue the suggestion becomes a faint guide.
+        let guide = live == nil ? 1.0 : 0.3
         let color = aim.ease > 0.35 ? Self.green : aim.ease > 0.15 ? Self.yellow : Self.red
         OverlayMesh.place(cueLine, from: aim.cue.f, to: aim.ghost.f, z: R)                 // Line 1
+        cueLine.model?.materials = [OverlayMesh.material(.white, 0.9 * guide)]
+        ghost.model?.materials = [OverlayMesh.material(.white, 0.9 * guide)]
         OverlayMesh.place(objectLine, from: aim.object.f, to: aim.pocketPoint.f, z: R)     // Line 2 (throw-compensated)
-        objectLine.model?.materials = [OverlayMesh.material(color, 0.85)]
+        objectLine.model?.materials = [OverlayMesh.material(color, 0.85 * guide)]
         ghost.position = [Float(aim.ghost.x), Float(aim.ghost.y), R]
         for e in [cueLine, objectLine, ghost] { e.isEnabled = true }
         // Line 3: dashed cue path after contact.
