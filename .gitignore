@@ -1,0 +1,22 @@
+.DS_Store
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+build/
+.build/
+.swiftpm/
+*.xcresult
+# Python
+.venv/
+__pycache__/
+*.pyc
+# Media & data (public repo — never commit footage/datasets without a license check)
+*.mov
+*.mp4
+tools/datasets/
+tools/footage/
+*.mlpackage/
+!CueCoach/Resources/Models/*.mlpackage/
+# Scratch
+scratch/
+.worktrees/
