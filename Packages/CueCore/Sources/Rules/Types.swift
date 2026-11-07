@@ -150,9 +150,27 @@ public struct GameState: Hashable, Codable, Sendable {
     public var phase: Phase
     /// Object balls still in play (cue ball excluded).
     public var onTable: Set<BallID>
+    /// Per team, the shooting order of its player slots (SPEC §4; editable with `RulesEngine.reorder`).
+    public var lineups: [[Int]]
+    /// Player slot (of team `shooter`) at the table.
+    public var activePlayer: Int
+    /// Per team, the slot that plays that team's next new turn (WPA Reg 27: turns alternate within a team).
+    public var nextUp: [Int]
+    /// Per team, the slot that takes that team's next break (WPA Reg 27(2)).
+    public var nextBreaker: [Int]
+    /// Slot that took this rack's opening break (re-breaks after a stalemate, WPA 4.11/5.9).
+    public var breakingPlayer: Int
 
     public init(ruleSet: RuleSetID, teams: Int, shooter: Int, breaker: Int, groups: [Int: BallGroup]?,
-                ballInHand: BallInHand, consecutiveFouls: [Int: Int], phase: Phase, onTable: Set<BallID>) {
+                ballInHand: BallInHand, consecutiveFouls: [Int: Int], phase: Phase, onTable: Set<BallID>,
+                lineups: [[Int]] = [], activePlayer: Int = 0, nextUp: [Int] = [], nextBreaker: [Int] = [],
+                breakingPlayer: Int = 0) {
+        let lineups = lineups.isEmpty ? Array(repeating: [0], count: teams) : lineups
+        self.lineups = lineups
+        self.activePlayer = activePlayer
+        self.nextUp = nextUp.isEmpty ? lineups.map { $0[0] } : nextUp
+        self.nextBreaker = nextBreaker.isEmpty ? lineups.map { $0[0] } : nextBreaker
+        self.breakingPlayer = breakingPlayer
         self.ruleSet = ruleSet
         self.teams = teams
         self.shooter = shooter

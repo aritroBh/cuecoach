@@ -8,11 +8,30 @@ public struct RulesEngine: Hashable, Codable, Sendable {
     /// 9-ball three-ball break rule (WPA 5.3(c), Reg 16). House rule D13: ON by default.
     public let threeBallRule: Bool
 
-    public init(ruleSet: RuleSetID, teams: Int = 2, threeBallRule: Bool = true) {
+    /// Players per team (SPEC §4: 1v1 … 4v4).
+    public let playersPerTeam: Int
+
+    public init(ruleSet: RuleSetID, teams: Int = 2, playersPerTeam: Int = 1, threeBallRule: Bool = true) {
         precondition(teams >= 2, "need at least two teams")
+        precondition(playersPerTeam >= 1, "need at least one player per team")
         self.ruleSet = ruleSet
         self.teams = teams
+        self.playersPerTeam = playersPerTeam
         self.threeBallRule = threeBallRule
+    }
+
+    /// Two teams sized by the session format (SPEC §4).
+    public init(ruleSet: RuleSetID, format: GameFormat, threeBallRule: Bool = true) {
+        self.init(ruleSet: ruleSet, teams: 2, playersPerTeam: format.playersPerTeam, threeBallRule: threeBallRule)
+    }
+
+    /// Mid-game edit of a team's shooting order (SPEC §4). `order` must be a permutation of the team's slots;
+    /// otherwise `g` is returned unchanged. Who is at the table and who is up next / breaks next are kept.
+    public func reorder(team: Int, order: [Int], in g: GameState) -> GameState {
+        guard g.lineups.indices.contains(team), order.sorted() == g.lineups[team].sorted() else { return g }
+        var n = g
+        n.lineups[team] = order
+        return n
     }
 
     var rack: Set<BallID> {
@@ -23,8 +42,53 @@ public struct RulesEngine: Hashable, Codable, Sendable {
 
     /// A fresh rack. The cue ball starts in hand above the head string (WPA 4.3(a), 5.3(a); RULES.md B6).
     public func newGame(breaker: Int = 0) -> GameState {
-        GameState(ruleSet: ruleSet, teams: teams, shooter: breaker, breaker: breaker, groups: nil,
-                  ballInHand: .behindHeadString, consecutiveFouls: [:], phase: .breakShot, onTable: rack)
+        let lineups = Array(repeating: Array(0..<playersPerTeam), count: teams)
+        var g = GameState(ruleSet: ruleSet, teams: teams, shooter: breaker, breaker: breaker, groups: nil,
+                          ballInHand: .behindHeadString, consecutiveFouls: [:], phase: .breakShot, onTable: rack,
+                          lineups: lineups)
+        startBreak(&g, team: breaker)
+        return g
+    }
+
+    /// Fresh rack keeping the roster of `g`.
+    func freshRack(from g: GameState, breaker: Int) -> GameState {
+        var n = newGame(breaker: breaker)
+        n.lineups = g.lineups
+        n.nextUp = g.nextUp
+        n.nextBreaker = g.nextBreaker
+        startBreak(&n, team: breaker)
+        return n
+    }
+
+    /// WPA Reg 27(2): each team's breakers alternate regardless of who shot last.
+    func startBreak(_ g: inout GameState, team: Int) {
+        let p = g.nextBreaker[team]
+        g.activePlayer = p
+        g.breakingPlayer = p
+        g.nextBreaker[team] = successor(of: p, in: g.lineups[team])
+        g.nextUp[team] = successor(of: p, in: g.lineups[team])
+    }
+
+    /// A team comes to the table for a new turn: its next member in order shoots (SPEC §4, WPA Reg 27).
+    func newTurn(_ g: inout GameState, team: Int) {
+        let p = g.nextUp[team]
+        g.activePlayer = p
+        g.nextUp[team] = successor(of: p, in: g.lineups[team])
+    }
+
+    func successor(of p: Int, in lineup: [Int]) -> Int {
+        guard let i = lineup.firstIndex(of: p) else { return lineup[0] }
+        return lineup[(i + 1) % lineup.count]
+    }
+
+    /// Rotation bookkeeping after a shot or choice: a change of team at the table starts that team's new turn.
+    func rotated(_ r: RuleResult, from g: GameState, forceNewTurn: Bool = false) -> RuleResult {
+        guard !r.reRack, r.nextState.winner == nil else { return r }
+        var r = r
+        if forceNewTurn || r.nextState.shooter != g.shooter {
+            newTurn(&r.nextState, team: r.nextState.shooter)
+        }
+        return r
     }
 
     /// Balls the shooter may legally contact first (drives the red ring).
@@ -73,15 +137,29 @@ public struct RulesEngine: Hashable, Codable, Sendable {
     public func nextGame(after g: GameState) -> GameState {
         guard let w = g.winner else { return g }
         switch ruleSet {
-        case .barEight: return newGame(breaker: w)                 // RULES.md B25
-        case .wpaEight, .wpaNine: return newGame(breaker: next(g.breaker)) // WPA 1.3
+        case .barEight: return freshRack(from: g, breaker: w)                 // RULES.md B25
+        case .wpaEight, .wpaNine: return freshRack(from: g, breaker: next(g.breaker)) // WPA 1.3
         }
     }
 
     /// Stalemate: the original breaker of the rack breaks again (WPA 4.11, 5.9; RULES.md B24).
-    public func stalemate(_ g: GameState) -> GameState { newGame(breaker: g.breaker) }
+    public func stalemate(_ g: GameState) -> GameState { sameBreaker(g, team: g.breaker, player: g.breakingPlayer) }
+
+    /// Fresh rack broken by a specific player (no breaker-rotation advance).
+    func sameBreaker(_ g: GameState, team: Int, player: Int) -> GameState {
+        var n = freshRack(from: g, breaker: team)
+        n.nextBreaker = g.nextBreaker
+        n.activePlayer = player
+        n.breakingPlayer = player
+        n.nextUp[team] = successor(of: player, in: n.lineups[team])
+        return n
+    }
 
     public func apply(_ o: ShotOutcome, to g: GameState) -> RuleResult {
+        rotated(evaluate(o, g), from: g)
+    }
+
+    func evaluate(_ o: ShotOutcome, _ g: GameState) -> RuleResult {
         switch g.phase {
         case .awaitingOption, .over:
             return RuleResult(nextState: g) // nothing to apply until the option is chosen / rack restarts
@@ -102,6 +180,13 @@ public struct RulesEngine: Hashable, Codable, Sendable {
 
     /// Resolve a pending option. Returns the state for the next shot; an option not on offer is a no-op.
     public func choose(_ option: PlayerOption, in g: GameState) -> RuleResult {
+        // WPA Reg 27(4): a pass-back is not a turn for the passer; the standard "push out for the partner"
+        // approach means the other member of the pushing (or breaking) team plays next.
+        guard case .awaitingOption(let p) = g.phase, p.options.contains(option) else { return RuleResult(nextState: g) }
+        return rotated(resolve(option, g), from: g, forceNewTurn: option == .handBack)
+    }
+
+    func resolve(_ option: PlayerOption, _ g: GameState) -> RuleResult {
         guard case .awaitingOption(let p) = g.phase, p.options.contains(option) else { return RuleResult(nextState: g) }
         var n = g
         var spots: [BallID] = []
@@ -184,8 +269,10 @@ extension RulesEngine {
     }
 
     /// Fresh rack with the same teams, `breaker` to break; keeps `g.breaker` (the rack's original breaker).
+    /// The offending team re-breaking keeps the same athlete; another team breaks with its next breaker (Reg 27(2)).
     func reRacked(_ g: GameState, breakingTeam: Int) -> GameState {
-        var n = newGame(breaker: breakingTeam)
+        var n = breakingTeam == g.shooter ? sameBreaker(g, team: breakingTeam, player: g.activePlayer)
+                                          : freshRack(from: g, breaker: breakingTeam)
         n.breaker = g.breaker
         return n
     }
@@ -198,6 +285,8 @@ extension RulesEngine {
     }
 
     /// Bookkeeping for WPA 3.13: a foul adds one for the shooter, a legal shot clears it.
+    /// Interpretation: counted PER TEAM, not per athlete. WPA 3.13 / Reg 27 define no per-athlete count in
+    /// doubles, so A1 foul, A2 foul, A1 foul (no intervening legal shot by the team) is three fouls (5.8).
     func countFouls(_ n: inout GameState, shooter: Int, fouled: Bool) {
         n.consecutiveFouls[shooter] = fouled ? n.consecutiveFouls[shooter, default: 0] + 1 : 0
     }
