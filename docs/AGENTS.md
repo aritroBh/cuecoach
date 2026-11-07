@@ -15,7 +15,7 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 |---|---|---|---|
 | Rules | Claude | Codex | OmniRoute |
 | Physics + pooltool fixtures | Codex | Claude | Cursor |
-| Persistence (SwiftData, backup JSON) | Claude ✱ | Cursor (review-only) | Codex |
+| Persistence (SwiftData, backup JSON) | Claude ✱ | Codex † | — |
 | Virtual table UI | Claude | Antigravity (design + code) | Codex |
 
 ✱ Cursor was the planned worker, but auto mode blocks `cursor-agent --force` (unattended command execution). Cursor reviews instead until the user allows it.
@@ -24,3 +24,5 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 | Date | Module | Wrote | Reviewed | Result |
 |---|---|---|---|---|
 | 2026-11-06 | Geometry contracts | Claude (head) | — (contract, reviewed with Phase 1) | merged to bootstrap |
+
+† Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
