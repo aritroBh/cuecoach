@@ -100,8 +100,45 @@ public struct RulesEngine: Hashable, Codable, Sendable {
         }
     }
 
+    /// Resolve a pending option. Returns the state for the next shot; an option not on offer is a no-op.
     public func choose(_ option: PlayerOption, in g: GameState) -> RuleResult {
-        RuleResult(nextState: g)
+        guard case .awaitingOption(let p) = g.phase, p.options.contains(option) else { return RuleResult(nextState: g) }
+        var n = g
+        var spots: [BallID] = []
+        switch option {
+        case .acceptTable:
+            // WPA 4.3(d)(1)/(g)(1)/(h)(1), Reg 16(2)-(3) (no push-out after accepting), 5.4.
+            n.shooter = p.chooser
+            n.ballInHand = .none
+            n.phase = ruleSet == .wpaNine ? .inPlay : (n.groups == nil ? .open : .inPlay)
+        case .handBack:
+            // Reg 16(4): handed back after an illegal break, the breaker may push out; 5.4: after a push-out.
+            n.shooter = g.shooter
+            n.ballInHand = .none
+            n.phase = p.reason == .threeBallRule ? .pushOutAvailable : .inPlay
+        case .ballInHandAboveHeadString:                                   // WPA 4.3(g)(2), (h)(2)
+            n.shooter = p.chooser
+            n.ballInHand = .behindHeadString
+            n.phase = .open
+        case .reBreak:                                                     // WPA 4.3(d)(2), (e)(2), (f)(2)
+            return RuleResult(nextState: reRacked(g, breakingTeam: p.chooser), turnPasses: p.chooser != g.shooter,
+                              reRack: true)
+        case .reBreakByOffender:                                           // WPA 4.3(d)(3)
+            return RuleResult(nextState: reRacked(g, breakingTeam: g.shooter), turnPasses: false, reRack: true)
+        case .spotEightAndAccept:                                          // WPA 4.3(e)(1); breaker continues (interp. 1)
+            n.onTable.insert(.eight)
+            spots = [.eight]
+            n.shooter = p.chooser
+            n.ballInHand = .none
+            n.phase = .open
+        case .spotEightBallInHandAboveHeadString:                          // WPA 4.3(f)(1)
+            n.onTable.insert(.eight)
+            spots = [.eight]
+            n.shooter = p.chooser
+            n.ballInHand = .behindHeadString
+            n.phase = .open
+        }
+        return RuleResult(nextState: n, turnPasses: n.shooter != g.shooter, spot: spots)
     }
 }
 
