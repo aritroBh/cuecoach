@@ -1,0 +1,6 @@
+# Model weights are never committed (size + licenses). Fetch with fetch-models.sh.
+Models/
+*.safetensors
+CueVLMBench.xcodeproj/
+results/raw/
+Vendor/

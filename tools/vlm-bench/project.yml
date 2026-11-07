@@ -1,0 +1,61 @@
+name: CueVLMBench
+options:
+  bundleIdPrefix: com.aritrobh
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: 5C8TDH7J2X
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+    GENERATE_INFOPLIST_FILE: YES
+packages:
+  BenchCore:
+    path: BenchCore
+  # Pinned, offline sources assembled by ./vendor.sh (gitignored Vendor/).
+  mlx-swift-lm:
+    path: Vendor/mlx-swift-lm
+  swift-transformers:
+    path: Vendor/swift-transformers-lite
+targets:
+  CueVLMBench:
+    type: application
+    platform: iOS
+    sources:
+      - path: CueVLMBench/Sources
+      - path: CueVLMBench/TestSet
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: BenchCore
+        product: BenchCore
+      - package: mlx-swift-lm
+        product: MLXVLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: swift-transformers
+        product: Tokenizers
+      - sdk: FoundationModels.framework
+    entitlements:
+      path: CueVLMBench/CueVLMBench.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: CueVLMBench/Info.plist
+      properties:
+        CFBundleDisplayName: VLM Bench
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aritrobh.cuevlmbench
+        SWIFT_STRICT_CONCURRENCY: minimal
+schemes:
+  CueVLMBench:
+    build: {targets: {CueVLMBench: all}}
+    run: {config: Release}
