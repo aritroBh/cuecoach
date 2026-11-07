@@ -61,10 +61,14 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
 // cue ball leaves the cloth before first contact → .airborne(.cue).
 enum TraceEvent { case ballBall(BallID, BallID), cushion(BallID), pocket(BallID, Pocket), airborne(BallID) }
 struct ShotTraceSummary { var events: [TraceEvent] }                      // time order
-struct ShotIntent { target: BallID?, pocket: Pocket?, isSafety: Bool, isBank: Bool }   // called / engine-chosen
+struct ShotIntent { target: BallID?, pocket: Pocket?, isSafety: Bool, isBank: Bool, isCombo: Bool }  // called / engine-chosen
 static func ShotFeatures.extract(pre: TableState, post: TableState, trace: ShotTraceSummary,
                                  intent: ShotIntent = .unknown, thresholds: FeatureThresholds = .standard) -> ShotFeatures
 // ShotFeatures { cutBucket, distanceBucket, pocketType, kind }; bank/combo follow the attempt, not the outcome.
+// With a called target, combo = intent.isCombo (hitting another ball first on a direct call is a miss) and bank =
+// intent.isBank or no direct line to the called/dropped pocket; a cushion-then-drop never relabels a called shot.
+// No contact events: target = a ball seen dropping, else one missing from `post`, else the nearest.
+// Break-and-run needs at least one shot after the break (winning on the break alone is not a run).
 // Pass intent whenever known (engine's chosen candidate in 9-ball): without it a missed bank/combo that also
 // had a direct pot is classified as the direct attempt.
 

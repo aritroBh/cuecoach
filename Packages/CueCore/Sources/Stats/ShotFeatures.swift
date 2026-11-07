@@ -90,21 +90,27 @@ public struct ShotIntent: Hashable, Codable, Sendable {
     public var isSafety: Bool
     /// The intended shot is a bank (e.g. the engine's chosen candidate banks the target).
     public var isBank: Bool
-    public init(target: BallID? = nil, pocket: Pocket? = nil, isSafety: Bool = false, isBank: Bool = false) {
+    /// The intended shot is a combination: the cue ball plays another object ball into `target`. When `target`
+    /// is known and this is false, hitting a different ball first is a miss on a direct attempt, not a combo.
+    public var isCombo: Bool
+    public init(target: BallID? = nil, pocket: Pocket? = nil, isSafety: Bool = false, isBank: Bool = false,
+                isCombo: Bool = false) {
         self.target = target
         self.pocket = pocket
         self.isSafety = isSafety
         self.isBank = isBank
+        self.isCombo = isCombo
     }
     public static let unknown = ShotIntent()
 
-    private enum CodingKeys: String, CodingKey { case target, pocket, isSafety, isBank }
+    private enum CodingKeys: String, CodingKey { case target, pocket, isSafety, isBank, isCombo }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         target = try c.decodeIfPresent(BallID.self, forKey: .target)
         pocket = try c.decodeIfPresent(Pocket.self, forKey: .pocket)
         isSafety = try c.decodeIfPresent(Bool.self, forKey: .isSafety) ?? false
         isBank = try c.decodeIfPresent(Bool.self, forKey: .isBank) ?? false
+        isCombo = try c.decodeIfPresent(Bool.self, forKey: .isCombo) ?? false
     }
 }
 
@@ -141,12 +147,14 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
     ///
     /// Bank and combo are decided from what was *attempted*, so a miss is classified like the same shot made
     /// (otherwise per-kind pot % only ever sees successes):
-    /// - Combo: intended target ≠ first contact; without intent, a pocketed ball (other than the first-contact
-    ///   ball) that was struck by an object ball, or a first-contact ball with no direct pot whose first
-    ///   post-contact event is hitting another object ball.
-    /// - Bank: `intent.isBank`; or the target hit a cushion after contact and then dropped; or the intended pocket
-    ///   (any pocket, without one) has no direct pot and — for an uncalled miss — the target's first
-    ///   post-contact event was a cushion.
+    /// - Combo: with a called target, `intent.isCombo` (a direct attempt that hits another ball first stays
+    ///   direct); without one, a pocketed ball (other than the first-contact ball) that was struck by an object
+    ///   ball, or a first-contact ball with no direct pot whose first post-contact event is hitting another ball.
+    /// - Bank: `intent.isBank`; or the intended pocket (the called one, or for a called target the one it dropped
+    ///   in) has no direct pot; without a called target, also the target hitting a cushion after contact and then
+    ///   dropping, or — for a miss — no direct pot to any pocket and a cushion as the target's first post-contact
+    ///   event.
+    /// - Target without contact events: a ball seen dropping, else one missing from `post`, else the nearest.
     /// Without intent, a missed bank/combo where a direct pot also existed is indistinguishable from a missed
     /// direct shot and is classified as the direct attempt.
     /// - Parameters:
@@ -213,18 +221,29 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
             }
         }
 
-        let target: BallID = intent.target ?? inferredCombo ?? firstContact
-            ?? onTable.min { $0.value.position.distance(to: cue) < $1.value.position.distance(to: cue) }!.key
+        // No contact seen: prefer a ball the trace saw drop, then one the post state shows gone, then the nearest.
+        func nearest(_ ids: some Sequence<BallID>) -> BallID? {
+            ids.compactMap { id in pre.balls[id].map { (id, $0.position.distance(to: cue)) } }
+                .min { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0 < $1.0 }?.0
+        }
+        let left = onTable.keys.filter { post.onTable[$0] == nil }
+        let fallback = nearest(pocketOf.keys.filter { !$0.isCue }) ?? nearest(left) ?? nearest(onTable.keys)!
+
+        let target: BallID = intent.target ?? inferredCombo ?? firstContact ?? fallback
         guard let targetPos = pre.balls[target]?.position else { return neutral }
-        let isCombo = firstContact.map { $0 != target } ?? false
+        // Called target: combo only when the call says so (a direct attempt that hits another ball first is a miss).
+        let isCombo = intent.target != nil ? intent.isCombo && firstContact.map { $0 != target } != false
+                                           : firstContact.map { $0 != target } ?? false
         let firstPos = firstContact.flatMap { pre.balls[$0]?.position }
         /// Where the target is struck from: the cue ball, or the first ball for a combo.
         let striker = isCombo ? (firstPos ?? cue) : cue
 
         // Bank attempt (see doc comment).
-        let observedBank = isBank(target, events: events, contact: firstContactIndex, pocketIndex: pocketEventIndex(target))
+        // The outcome (cushion then drop) only stands in for the attempt when no target was called.
+        let observedBank = intent.target == nil
+            && isBank(target, events: events, contact: firstContactIndex, pocketIndex: pocketEventIndex(target))
         let geometricBank: Bool
-        if let p = intent.pocket {
+        if let p = intent.pocket ?? (intent.target != nil ? pocketOf[target] : nil) {
             geometricBank = directCut(targetPos, from: striker, p) >= directPotLimitDegrees
         } else if pocketOf[target] == nil {
             geometricBank = !hasDirectPot(targetPos, from: striker) && { if case .cushion = next(target) { true } else { false } }()

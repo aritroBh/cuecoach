@@ -174,6 +174,15 @@ struct RunOutTests {
         #expect(a.runOuts == 0)
     }
 
+    @Test func gameWonOnTheBreak_isNotABreakAndRun() {
+        // codex-1: 9 on the snap — one shot, no run.
+        let g = cgame([cshot(alice, team: 0, made: true, isBreak: true, pocketedCount: 2)], winner: 0)
+        let a = Aggregates.game(g, player: alice)
+        #expect(a.breakAndRuns == 0)
+        #expect(a.runOuts == 0)
+        #expect(a.wins == 1)
+    }
+
     @Test func runOutAfterOpponentVisit() {
         let g = cgame([
             cshot(bob, team: 1, isBreak: true, pocketedCount: 0),

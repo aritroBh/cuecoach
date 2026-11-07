@@ -136,7 +136,8 @@ public struct Aggregates: Hashable, Codable, Sendable {
             let visit = g.shots[start...]
             let clean = visit.allSatisfy { !$0.fouled && $0.made && !$0.isSafety }
             if clean {
-                if start == 0, visit.first?.isBreak == true { a.breakAndRuns = 1 }
+                // Winning on the break alone (e.g. the 9 on the snap) is not a run.
+                if start == 0, visit.first?.isBreak == true { if visit.count > 1 { a.breakAndRuns = 1 } }
                 else if visit.first?.isBreak == false, visit.count >= policy.minRunOutShots { a.runOuts = 1 }
             }
         }

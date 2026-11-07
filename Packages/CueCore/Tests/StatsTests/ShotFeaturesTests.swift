@@ -181,8 +181,36 @@ struct ShotKindTests {
         let o2 = obj + (footRight - obj).normalized * 0.15
         let pre = table([0: cue, 1: obj, 2: o2])
         let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .ballBall(b(1), b(2))])
-        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(2), pocket: .footRight))
+        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t,
+                                     intent: ShotIntent(target: b(2), pocket: .footRight, isCombo: true))
         #expect(f.kind == .combo)
+    }
+
+    @Test func directAttemptThatHitsTheWrongBallFirst_isNotCombo() {
+        // codex-2: called ball 1 direct; the cue ball fouls into ball 2 first. A miss, not a combination.
+        let o2 = obj + (cue - obj).normalized * 0.15
+        let pre = table([0: cue, 1: obj, 2: o2])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(2)), .ballBall(b(2), b(1))])
+        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(1), pocket: .footRight))
+        #expect(f.kind == .plain)
+        #expect(f.cutBucket == .c15to30)
+    }
+
+    @Test func calledDirectShotThatSlopsInOffACushion_isNotBank() {
+        // codex-3: intent says direct to footRight; the ball rattles off a cushion and drops. Still a direct attempt.
+        let pre = table([0: cue, 1: obj])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1)), .pocket(b(1), .footRight)])
+        let f = ShotFeatures.extract(pre: pre, post: afterPocketing(pre, [1]), trace: t,
+                                     intent: ShotIntent(target: b(1), pocket: .footRight))
+        #expect(f.kind == .plain)
+    }
+
+    @Test func calledTargetWithoutPocket_slopBankIntoDirectPocket_isNotBank() {
+        // codex-3: target known, pocket not called; the dropped pocket had a direct line, so the attempt was direct.
+        let pre = table([0: cue, 1: obj])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1)), .pocket(b(1), .footRight)])
+        let f = ShotFeatures.extract(pre: pre, post: afterPocketing(pre, [1]), trace: t, intent: ShotIntent(target: b(1)))
+        #expect(f.kind == .plain)
     }
 
     @Test func slopPocketOfUnstruckBallIsNotCombo() {
@@ -255,6 +283,19 @@ struct ShotKindTests {
         let pre = table([1: obj])
         let f = ShotFeatures.extract(pre: pre, post: pre, trace: potTrace(1, .footRight))
         #expect(f.kind == .plain && f.cutBucket == .c0to15)
+    }
+
+    @Test func noContactEvents_targetIsTheBallThatLeftTheTable() {
+        // codex-4: tracker missed every event; post state shows the far ball (2) gone, not the nearest (1).
+        let far = Vec2(0.3, 0.3)   // head end
+        let pre = table([0: cue, 1: obj, 2: far])
+        let viaPost = ShotFeatures.extract(pre: pre, post: afterPocketing(pre, [2]), trace: ShotTraceSummary(events: []))
+        let direct = ShotFeatures.extract(pre: table([0: cue, 2: far]), post: afterPocketing(table([0: cue, 2: far]), [2]),
+                                          trace: ShotTraceSummary(events: []))
+        let nearest = ShotFeatures.extract(pre: pre, post: pre, trace: ShotTraceSummary(events: []))
+        #expect(viaPost == direct)
+        #expect(nearest.cutBucket == .c15to30)   // ball 1 is a constructed 20° cut
+        #expect(viaPost.cutBucket != .c15to30)
     }
 
     @Test func pocketFromPostStateWhenTraceLacksPocketEvent() {
@@ -370,7 +411,7 @@ struct MissedBankComboTests {
         let o2 = obj + (footRight - obj).normalized * 0.15
         let pre = table([0: cue, 1: obj, 2: o2])
         let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .ballBall(b(1), b(2))])
-        #expect(ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(2))).kind == .combo)
+        #expect(ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(2), isCombo: true)).kind == .combo)
     }
 
     @Test func missedComboWithoutIntent_isComboWhenFirstBallHasNoDirectPot() {
@@ -410,5 +451,11 @@ struct ShotIntentCodingTests {
     @Test func roundTripsIsBank() throws {
         let i = ShotIntent(target: b(4), pocket: .sideLeft, isBank: true)
         #expect(try JSONDecoder().decode(ShotIntent.self, from: JSONEncoder().encode(i)) == i)
+    }
+    @Test func roundTripsIsComboAndDefaultsItFalse() throws {
+        let i = ShotIntent(target: b(4), pocket: .sideLeft, isCombo: true)
+        #expect(try JSONDecoder().decode(ShotIntent.self, from: JSONEncoder().encode(i)) == i)
+        let old = try JSONDecoder().decode(ShotIntent.self, from: Data(#"{"pocket":"sideLeft","isBank":true}"#.utf8))
+        #expect(old.isCombo == false)
     }
 }
