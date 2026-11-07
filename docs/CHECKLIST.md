@@ -26,7 +26,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [x] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
 - [x] Rules: Codex review 2 rounds (round-2 scotch-rotation findings overruled by user D17); 207 tests; merged
 - [x] Physics: pooltool fixture generator (500 shots) — Codex
-- [~] Physics: supervisor (Claude) REJECTED a9fc236 — jaw cushions one-sided, weak fixtures, 16-ball break 13 ms; Codex fixing
+- [~] Physics round 2 (f24a5e5): 96.0% pooltool (break 82%, cluster 98%, sparse 97%), simple 20/20, 16-ball break 1.6–2.3 ms — Claude re-review + path renders running
 - [ ] Physics: fixture suite within tolerance
 - [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
 - [x] Persistence: training/competitive isolation test
@@ -64,4 +64,4 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Screens B: Session lobby (lineups D17, rule vote) + Post-shot card (D18) + Game review (timeline, diagram, win-prob, SotG, MVP) — .worktrees/screens-b (Sim G)
 - [~] Zero-tap automatic table locating (user at table: manual points mismatched) — AutoTableLocator, .worktrees/autocal (Claude; Codex review; workflow wf_ff3aa1d8)
 - [~] Core ML table-keypoint model (6 pockets + 4 cushion corners, YOLO-pose, synthetic data) — .worktrees/tablekp (Codex)
-- [~] AR v0 Antigravity UX review: REJECT (7 findings) → camera worker fixing; Codex code review running
+- [~] AR: zero-tap build 5c0f529 INSTALLED (auto-lock ghost table, green/red rings, 3 lines, spin/power, 4K+thermal, LiDAR mesh, 106 tests); Codex review 6 MAJOR → fixing
