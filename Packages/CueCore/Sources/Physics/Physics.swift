@@ -250,17 +250,12 @@ public struct ShotTrace: Hashable, Codable, Sendable {
                 result.balls[id] = advance(ball, by: time - snapshot.time, params: params)
             }
         }
-        for id in result.balls.keys.sorted() {
-            guard var ball = result.balls[id], ball.motion != .pocketed else { continue }
-            ball.position = clamped(ball.position, to: result.spec)
-            result.balls[id] = ball
-        }
         return result
     }
 
     public func path(of id: BallID, sampleDT: Double) -> [Vec2] {
         guard let initialBall = initial.balls[id] else { return [] }
-        let start = initialBall.motion == .pocketed ? initialBall.position : clamped(initialBall.position, to: final.spec)
+        let start = initialBall.position
         guard sampleDT > 0 && sampleDT.isFinite else { return [start] }
         var result = [start]
         var time = sampleDT
@@ -270,8 +265,7 @@ public struct ShotTrace: Hashable, Codable, Sendable {
                 snapshotIndex += 1
             }
             if let ball = snapshots[snapshotIndex].state.balls[id] {
-                result.append(clamped(advance(ball, by: time - snapshots[snapshotIndex].time, params: params).position,
-                                      to: final.spec))
+                result.append(advance(ball, by: time - snapshots[snapshotIndex].time, params: params).position)
             }
             time += sampleDT
         }
@@ -327,8 +321,7 @@ public struct Simulator: Sendable {
             snapshots.append(Snapshot(time: time, state: current))
             let firstChanged = candidate.firstBall
             if let ball = current.balls[firstChanged], ball.motion == .stationary,
-               ball.position.x < 0 || ball.position.x > current.spec.length ||
-                ball.position.y < 0 || ball.position.y > current.spec.width {
+               isOffTable(ball.position, spec: current.spec, geometry: geometry, params: params) {
                 let offTable = Candidate(time: time, event: .offTable(firstChanged))
                 apply(offTable, to: &current, geometry: geometry, params: params)
                 events.append(TimedEvent(time: time, event: offTable.event))
@@ -336,8 +329,7 @@ public struct Simulator: Sendable {
             }
             if let secondChanged = candidate.secondBall,
                let ball = current.balls[secondChanged], ball.motion == .stationary,
-               ball.position.x < 0 || ball.position.x > current.spec.length ||
-                ball.position.y < 0 || ball.position.y > current.spec.width {
+               isOffTable(ball.position, spec: current.spec, geometry: geometry, params: params) {
                 let offTable = Candidate(time: time, event: .offTable(secondChanged))
                 apply(offTable, to: &current, geometry: geometry, params: params)
                 events.append(TimedEvent(time: time, event: offTable.event))
@@ -404,8 +396,8 @@ public struct Simulator: Sendable {
                                                 order: pocketBase + index))
                 }
             }
-            if let dt = offTableTime(first, currentTime: time, horizon: transitionHorizon,
-                                      spec: state.spec, params: params) {
+            if let dt = offTableTime(first, horizon: transitionHorizon,
+                                      spec: state.spec, geometry: geometry, params: params) {
                 candidates.append(Candidate(time: time + dt, event: .offTable(firstID),
                                             order: pocketBase + geometry.pockets.count))
             }
@@ -927,29 +919,53 @@ private func linearCushionTime(_ ball: BallState, segment: CushionSegment, horiz
     return best
 }
 
-private func offTableTime(_ ball: BallState, currentTime: Double, horizon: Double,
-                          spec: TableSpec, params p: PhysicsParams) -> Double? {
-    if currentTime == 0 && ball.motion != .pocketed &&
-        (ball.position.x < 0 || ball.position.x > spec.length || ball.position.y < 0 || ball.position.y > spec.width) {
-        return 0
-    }
+private func offTableTime(_ ball: BallState, horizon: Double, spec: TableSpec,
+                          geometry: TableGeometry, params p: PhysicsParams) -> Double? {
+    if isOffTable(ball.position, spec: spec, geometry: geometry, params: p) { return 0 }
     guard ball.motion != .stationary && ball.motion != .spinning && ball.motion != .pocketed else { return nil }
-    let margin = max(p.cornerPocketDepth + p.cornerPocketRadius, p.sidePocketDepth + p.sidePocketRadius) + p.ballRadius
+    let margin = p.cushionWidth + p.ballRadius
     var earliest: Double?
-    if let time = edgeCrossingTime(ball, axisX: true, boundary: -margin, outward: -1, margin: margin,
-                                   horizon: horizon, spec: spec, params: p) {
+
+    func consider(_ time: Double?) {
+        guard let time,
+              isOffTable(position(ball, after: time, params: p), spec: spec, geometry: geometry, params: p),
+              earliest == nil || time < earliest! else { return }
         earliest = time
     }
-    if let time = edgeCrossingTime(ball, axisX: true, boundary: spec.length + margin, outward: 1, margin: margin,
-                                   horizon: horizon, spec: spec, params: p),
-       earliest == nil || time < earliest! { earliest = time }
-    if let time = edgeCrossingTime(ball, axisX: false, boundary: -margin, outward: -1, margin: margin,
-                                   horizon: horizon, spec: spec, params: p),
-       earliest == nil || time < earliest! { earliest = time }
-    if let time = edgeCrossingTime(ball, axisX: false, boundary: spec.width + margin, outward: 1, margin: margin,
-                                   horizon: horizon, spec: spec, params: p),
-       earliest == nil || time < earliest! { earliest = time }
+
+    consider(edgeCrossingTime(ball, axisX: true, boundary: -margin, outward: -1, margin: margin,
+                              horizon: horizon, spec: spec, params: p))
+    consider(edgeCrossingTime(ball, axisX: true, boundary: spec.length + margin, outward: 1, margin: margin,
+                              horizon: horizon, spec: spec, params: p))
+    consider(edgeCrossingTime(ball, axisX: false, boundary: -margin, outward: -1, margin: margin,
+                              horizon: horizon, spec: spec, params: p))
+    consider(edgeCrossingTime(ball, axisX: false, boundary: spec.width + margin, outward: 1, margin: margin,
+                              horizon: horizon, spec: spec, params: p))
     return earliest
+}
+
+private func isOffTable(_ position: Vec2, spec: TableSpec, geometry: TableGeometry, params p: PhysicsParams) -> Bool {
+    let margin = p.cushionWidth + p.ballRadius
+    guard position.x <= -margin || position.x >= spec.length + margin ||
+            position.y <= -margin || position.y >= spec.width + margin else { return false }
+    return !isInsidePocketMouthOrJaw(position, geometry: geometry, params: p)
+}
+
+private func isInsidePocketMouthOrJaw(_ position: Vec2, geometry: TableGeometry, params p: PhysicsParams) -> Bool {
+    if geometry.pockets.contains(where: { position.distance(to: $0.center) <= $0.radius + p.ballRadius }) ||
+        geometry.circularCushions.contains(where: {
+            position.distance(to: $0.center) <= $0.radius + p.ballRadius
+        }) { return true }
+    return geometry.linearCushions.contains { segment in
+        guard segment.rail == .cornerJaw || segment.rail == .sideJaw else { return false }
+        return distance(position, to: segment) <= p.ballRadius
+    }
+}
+
+private func distance(_ point: Vec2, to segment: CushionSegment) -> Double {
+    let direction = segment.end - segment.start
+    let progress = min(1, max(0, (point - segment.start).dot(direction) / direction.lengthSquared))
+    return point.distance(to: segment.start + direction * progress)
 }
 
 private func edgeCrossingTime(_ ball: BallState, axisX: Bool, boundary: Double, outward: Double,
@@ -1016,10 +1032,6 @@ private func pocketTime(_ ball: BallState, pocket: PocketTarget, horizon: Double
 private func position(_ ball: BallState, after dt: Double, params p: PhysicsParams) -> Vec2 {
     let a = acceleration(of: ball, params: p)
     return ball.position + ball.velocity * dt + a * (0.5 * dt * dt)
-}
-
-private func clamped(_ position: Vec2, to spec: TableSpec) -> Vec2 {
-    Vec2(min(spec.length, max(0, position.x)), min(spec.width, max(0, position.y)))
 }
 
 private func outwardNormal(_ rail: Rail) -> Vec2 {

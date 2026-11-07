@@ -61,6 +61,9 @@ PHYSICAL_PARAMS = {
     "f_c": F_CUSHION,
     "g": GRAVITY,
 }
+REJECTED_SHOTS: list[dict] = []
+CONTACT_TOLERANCE = 0.001
+POSITION_JUMP_TOLERANCE = 1e-5
 
 FRICTION = AlciatoreBallBallFriction(
     a=MU_BALL_BALL_A,
@@ -90,7 +93,41 @@ def table_spec(size: str) -> tuple[float, float, PocketTableSpecs]:
 
 
 def point(x: float, y: float) -> dict[str, float]:
-    return {"x": round(x, 9), "y": round(y, 9)}
+    return {"x": x, "y": y}
+
+
+def sanity_issues(result: pt.System) -> list[str]:
+    bad_contacts = []
+    bad_jumps = []
+    for index, event in enumerate(result.events):
+        if event.event_type.value == "ball_ball":
+            first, second = event.agents
+            distance = math.dist(first.initial.xyz[:2], second.initial.xyz[:2])
+            if abs(distance - 2 * RADIUS) > CONTACT_TOLERANCE:
+                bad_contacts.append(f"event {index} distance {distance:.6f} m")
+        if event.event_type.value == "ball_pocket":
+            continue
+        for agent in event.agents:
+            if getattr(agent.agent_type, "value", None) != "ball" or agent.initial is None or agent.final is None:
+                continue
+            distance = math.dist(agent.initial.xyz[:2], agent.final.xyz[:2])
+            if distance > POSITION_JUMP_TOLERANCE:
+                bad_jumps.append(f"event {index} ball {agent.id} moved {distance:.6f} m during the event")
+
+    for ball_id, ball in result.balls.items():
+        states = ball.history.states
+        for index, (before, after) in enumerate(zip(states, states[1:])):
+            elapsed = abs(after.t - before.t)
+            distance = math.dist(before.rvw[0][:2], after.rvw[0][:2])
+            if elapsed <= 1e-9 and distance > POSITION_JUMP_TOLERANCE:
+                bad_jumps.append(f"ball {ball_id} state {index} jumped {distance:.6f} m at t={before.t:.6f} s")
+
+    issues = []
+    if bad_contacts:
+        issues.append(f"{len(bad_contacts)} ball-ball contact(s) away from 2R; first {bad_contacts[0]}")
+    if bad_jumps:
+        issues.append(f"{len(bad_jumps)} position jump(s) between states; first {bad_jumps[0]}")
+    return issues
 
 
 def make_shot(
@@ -101,7 +138,7 @@ def make_shot(
     direction: tuple[float, float],
     speed: float,
     tip: tuple[float, float],
-) -> dict:
+) -> dict | None:
     length, width, specs = table_spec(size)
     # pooltool stores transverse position in x and lengthwise position in y, with +y
     # toward the foot rail. CueCoach +x points toward the head rail.
@@ -131,6 +168,10 @@ def make_shot(
     )
     system = pt.System(cue=cue, table=table, balls=balls)
     result = pt.simulate(system, engine=ENGINE, max_events=4096)
+    issues = sanity_issues(result)
+    if issues:
+        REJECTED_SHOTS.append({"id": shot_id, "tag": tag, "reasons": issues})
+        return None
 
     events = []
     event_names = {
@@ -178,11 +219,11 @@ def make_shot(
     return {
         "id": shot_id,
         "tag": tag,
-        "table": {"size": size, "lengthM": round(length, 9), "widthM": round(width, 9)},
+        "table": {"size": size, "lengthM": length, "widthM": width},
         "initial": {"balls": initial_balls},
         "stroke": {
             "direction": point(dx, dy),
-            "speed": round(speed, 9),
+            "speed": speed,
             "tipOffset": point(a, b),
         },
         "events": events,
@@ -205,18 +246,26 @@ REGRESSION_DATA = {
 
 
 def regression_shots() -> list[dict]:
-    return [
-        make_shot(f"random_{index:03d}", "regression", size, positions, direction, speed, tip)
-        for index, (size, positions, direction, speed, tip) in REGRESSION_DATA.items()
-    ]
+    shots = []
+    for index, (size, positions, direction, speed, tip) in REGRESSION_DATA.items():
+        shot = make_shot(f"random_{index:03d}", "regression", size, positions, direction, speed, tip)
+        if shot is not None:
+            shots.append(shot)
+    return shots
 
 
 def random_shots(rng: random.Random) -> list[dict]:
     shots = []
+    coverage_rng = random.Random(SEED ^ 0xC0AC)
 
     def random_tip(low: float, high: float) -> tuple[float, float]:
         angle = rng.uniform(0, math.tau)
         radius = rng.uniform(low, high)
+        return radius * math.cos(angle), radius * math.sin(angle)
+
+    def coverage_tip(low: float, high: float) -> tuple[float, float]:
+        angle = coverage_rng.uniform(0, math.tau)
+        radius = coverage_rng.uniform(low, high)
         return radius * math.cos(angle), radius * math.sin(angle)
 
     def random_position(size: str, existing: list[tuple[int, float, float]], gap: float) -> tuple[float, float]:
@@ -244,11 +293,12 @@ def random_shots(rng: random.Random) -> list[dict]:
                     positions.append((len(positions) + 1,
                                       apex_x + row * diameter * math.sqrt(3) / 2,
                                       center_y + (column - row / 2) * diameter))
-            cue_y = center_y
+            off_center = index % 10 == 0
+            cue_y = center_y + (coverage_rng.choice((-1, 1)) * coverage_rng.uniform(0.02, 0.06) if off_center else 0)
             positions.insert(0, (0, length * 0.22, cue_y))
-            angle = 0.0
+            angle = coverage_rng.choice((-1, 1)) * coverage_rng.uniform(0.05, 0.12) if off_center else 0.0
             speed = rng.uniform(6.0, 11.0)
-            tip = (0.0, 0.0)
+            tip = coverage_tip(0.32, 0.5) if off_center else (0.0, 0.0)
         elif category == "cluster":
             diameter = 2 * RADIUS + 1e-6
             cluster_count = rng.randint(2, min(4, object_count))
@@ -272,6 +322,8 @@ def random_shots(rng: random.Random) -> list[dict]:
             angle = rng.uniform(0, math.tau)
             speed = rng.uniform(6.0, 9.0) if rng.random() < 0.02 else rng.uniform(0.5, 4.5)
             tip = random_tip(0.04, 0.28)
+            if index % 10 == 0:
+                tip = coverage_tip(0.32, 0.5)
         else:
             for number in range(1, object_count + 1):
                 x, y = random_position(size, positions, 2 * RADIUS + 0.04)
@@ -281,17 +333,14 @@ def random_shots(rng: random.Random) -> list[dict]:
             angle = rng.uniform(0, math.tau)
             speed = rng.uniform(6.0, 9.0) if rng.random() < 0.02 else rng.uniform(0.5, 4.5)
             tip = random_tip(0.04, 0.28)
-        shots.append(
-            make_shot(
-                f"stress_{index:03d}",
-                category,
-                size,
-                positions,
-                (math.cos(angle), math.sin(angle)),
-                speed,
-                tip,
-            )
+            if index % 10 == 0:
+                tip = coverage_tip(0.32, 0.5)
+        shot = make_shot(
+            f"stress_{index:03d}", category, size, positions,
+            (math.cos(angle), math.sin(angle)), speed, tip,
         )
+        if shot is not None:
+            shots.append(shot)
     return shots
 
 
@@ -303,7 +352,9 @@ def simple_shots() -> list[dict]:
             speed: float, tip: tuple[float, float]) -> None:
         nonlocal index
         index += 1
-        shots.append(make_shot(f"simple_{index:02d}_{name}", "simple", size, positions, direction, speed, tip))
+        shot = make_shot(f"simple_{index:02d}_{name}", "simple", size, positions, direction, speed, tip)
+        if shot is not None:
+            shots.append(shot)
 
     for size, speed in [("sevenFoot", 2.0), ("nineFoot", 3.0), ("sevenFoot", 4.0), ("nineFoot", 5.0)]:
         length, width = TABLES[size]
@@ -348,7 +399,9 @@ def simple_shots() -> list[dict]:
 def main() -> None:
     if pt.__version__ != "0.6.0":
         raise RuntimeError(f"expected pooltool 0.6.0, found {pt.__version__}")
+    REJECTED_SHOTS.clear()
     shots = random_shots(random.Random(SEED)) + regression_shots() + simple_shots()
+    random_rejections = [shot for shot in REJECTED_SHOTS if shot["tag"] in {"break", "cluster", "sparse"}]
     fixture = {
         "formatVersion": 1,
         "pooltoolVersion": pt.__version__,
@@ -406,6 +459,13 @@ def main() -> None:
             "pooltool": "x is transverse and y is lengthwise; +y points toward the foot rail; origin is head-left",
             "conversion": "pooltool(x,y) = cuecoach(y,length-x); directions rotate by -90 degrees",
         },
+        "generatorAudit": {
+            "randomShotAttempts": 500,
+            "rejectedRandomShotCount": len(random_rejections),
+            "rejectedRandomShots": random_rejections,
+            "rejectedShotCount": len(REJECTED_SHOTS),
+            "rejectedShots": REJECTED_SHOTS.copy(),
+        },
         "shots": shots,
     }
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -414,6 +474,9 @@ def main() -> None:
     if size > 5 * 1024 * 1024:
         OUTPUT.unlink()
         raise RuntimeError(f"fixture file exceeded 5 MiB ({size} bytes)")
+    print(f"Rejected {len(REJECTED_SHOTS)} anomalous shots; recorded in generatorAudit")
+    for rejected in REJECTED_SHOTS:
+        print(f"  {rejected['id']} [{rejected['tag']}]: {'; '.join(rejected['reasons'])}")
     print(f"Wrote {len(shots)} shots ({size:,} bytes) to {OUTPUT}")
 
 
