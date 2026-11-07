@@ -85,6 +85,36 @@ struct DepthBallFinder: Sendable {
     }
 }
 
+extension DepthFusion {
+    /// Rejects colour detections that LiDAR shows are flat (a white mark, a sticker, a reflection): enough valid
+    /// depth samples within a ball radius of the detection, and none reaches ball height.
+    static func verify(_ dets: [BallDetection], depth: DepthMap, camera: CameraModel, table: TableFrame,
+                       flatBelow: Double = 0.02, minSamples: Int = 4) -> [BallDetection] {
+        let k = camera.intrinsics.scaled(toWidth: Double(depth.width), height: Double(depth.height))
+        var dc = camera
+        dc.intrinsics = k
+        let toTable = table.tableToWorld.inverse * camera.cameraToWorld
+        return dets.filter { det in
+            guard let c = dc.project(table.world(det.tablePoint, height: TableSpec.ballRadius)) else { return true }
+            let cx = Int(c.x), cy = Int(c.y)
+            var n = 0, tallest = -1.0
+            for y in (cy - 3)...(cy + 3) where y >= 0 && y < depth.height {
+                for x in (cx - 3)...(cx + 3) where x >= 0 && x < depth.width {
+                    if let conf = depth.confidence, conf[y * depth.width + x] < 1 { continue }
+                    let z = Double(depth.value(x, y))
+                    guard z.isFinite, z > 0.1 else { continue }
+                    let pc = SIMD4((Double(x) + 0.5 - k.cx) / k.fx * z, -(Double(y) + 0.5 - k.cy) / k.fy * z, -z, 1)
+                    let t = toTable * pc
+                    guard Vec2(t.x, t.y).distance(to: det.tablePoint) < TableSpec.ballRadius * 1.2 else { continue }
+                    n += 1
+                    tallest = max(tallest, t.z)
+                }
+            }
+            return n < minSamples || tallest >= flatBelow
+        }
+    }
+}
+
 /// Merges depth-found balls into colour detections: any depth ball with no colour detection nearby is added,
 /// classified from the image at that spot (colour may still say "unknown").
 enum DepthFusion {

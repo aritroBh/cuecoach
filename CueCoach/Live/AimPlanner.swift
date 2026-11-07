@@ -62,7 +62,9 @@ enum AimPlanner {
     }
 
     /// Best (object ball, pocket) for the cue ball, or nil if nothing is makeable.
-    static func suggest(cue: Vec2, objects: [Vec2], spec: TableSpec,
+    /// - objects: target candidates. - blockers: every other ball on the table (illegal / unknown included);
+    ///   a shot whose cue path or object path is obstructed by any ball is never suggested.
+    static func suggest(cue: Vec2, objects: [Vec2], blockers: [Vec2] = [], spec: TableSpec,
                         predictor: any ShotPredictor = GeometricShotPredictor()) -> AimSuggestion? {
         let R = TableSpec.ballRadius
         var best: AimSuggestion?
@@ -90,7 +92,7 @@ enum AimPlanner {
                     let inward = Vec2(0, pocket == .sideLeft ? -1 : 1)
                     if u.dot(inward) < cos(60 * .pi / 180) { continue }
                 }
-                let others = objects.enumerated().filter { $0.offset != oi }.map(\.element)
+                let others = objects.enumerated().filter { $0.offset != oi }.map(\.element) + blockers
                 guard clear(from: cue, to: ghost, of: others, radius: 2 * R),
                       clear(from: obj, to: pp, of: others + [cue], radius: 2 * R) else { continue }
                 let distance = shot.length + want.length

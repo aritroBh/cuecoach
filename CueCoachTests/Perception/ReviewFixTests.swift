@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreVideo
 import Foundation
 import Geometry
 import simd
@@ -175,5 +176,110 @@ struct ThermalExtrasTests {
         #expect(CapturePolicy.extras(.max) == .init(mesh: true, smoothedDepth: true, personOcclusion: true))
         #expect(!CapturePolicy.extras(.high).mesh)
         #expect(!CapturePolicy.extras(.survival).personOcclusion)
+    }
+}
+
+struct ReviewRound3Tests {
+    @Test func relockingDimsAndDistrustsTheTable() {
+        let s = LiveStatus.derive(planeFound: true, corners: 4, calibrated: true, trackingOK: true, bumped: false, relocking: true)
+        #expect(s == .relocking && s.showsRecalibratePulse && !s.trustsTable)
+        #expect(LiveStatus.calibrated.trustsTable && !LiveStatus.trackingLost.trustsTable)
+    }
+
+    @Test func staleAndOutOfOrderResultsAreDropped() {
+        var o = FrameOrdering()
+        let a = o.accept(seq: 5, epoch: 1, currentEpoch: 1)
+        let b = o.accept(seq: 4, epoch: 1, currentEpoch: 1)    // older frame finished late
+        let c = o.accept(seq: 9, epoch: 0, currentEpoch: 1)    // from before a tracking change
+        let d = o.accept(seq: 10, epoch: 1, currentEpoch: 1)
+        #expect(a && !b && !c && d)
+    }
+
+    func ball(_ id: Int, _ p: Vec2, _ v: Vec2 = .zero) -> TrackedBall {
+        TrackedBall(id: id, position: p, velocity: v, kind: id == 1 ? .cue : .solid, tentativeNumber: nil, confirmed: true)
+    }
+
+    @Test func vanishedMovingBallBlocksShotEnd() {
+        var s = ShotSegmenter(spec: TableSpec(size: .sevenFoot))
+        var t = 0.0
+        _ = s.update(tracks: [ball(1, Vec2(0.5, 0.5)), ball(2, Vec2(1.2, 0.5))], cueID: 1, atRest: true, at: t)
+        for _ in 0..<3 { t += 1 / 30; _ = s.update(tracks: [ball(1, Vec2(0.6, 0.5), Vec2(1, 0)), ball(2, Vec2(1.2, 0.5))], cueID: 1, atRest: false, at: t) }
+        #expect(s.inShot)
+        // Ball 2 moves mid-table, then a player's arm hides it; the visible cue ball has stopped.
+        for _ in 0..<5 { t += 1 / 30; _ = s.update(tracks: [ball(1, Vec2(1.1, 0.5)), ball(2, Vec2(1.4, 0.5), Vec2(0.8, 0))], cueID: 1, atRest: false, at: t) }
+        t += 1 / 30
+        let e1 = s.update(tracks: [ball(1, Vec2(1.1, 0.5))], cueID: 1, atRest: true, at: t)
+        t += 0.8
+        let e2 = s.update(tracks: [ball(1, Vec2(1.1, 0.5))], cueID: 1, atRest: true, at: t)
+        #expect(e1 == nil && e2 == nil)
+        // It reappears at rest → the shot can end.
+        t += 1 / 30
+        let rec = s.update(tracks: [ball(1, Vec2(1.1, 0.5)), ball(2, Vec2(1.6, 0.5))], cueID: 1, atRest: true, at: t)
+        #expect(rec != nil && rec?.finalState[2] == Vec2(1.6, 0.5))
+    }
+
+    @Test func blockedBestShotFallsBackToAClearOne() throws {
+        let spec = TableSpec(size: .sevenFoot)
+        let cue = Vec2(0.5, 0.5)
+        let easy = Vec2(1.0, 0.5)          // straight toward the foot... but an illegal ball sits in the way
+        let blocker = Vec2(0.75, 0.5)
+        let other = Vec2(0.9, 0.85)
+        let s = try #require(AimPlanner.suggest(cue: cue, objects: [easy, other], blockers: [blocker], spec: spec))
+        #expect(AimPlanner.clear(from: s.cue, to: s.ghost, of: [blocker], radius: 2 * TableSpec.ballRadius))
+        #expect(AimPlanner.clear(from: s.object, to: s.pocketPoint, of: [blocker], radius: 2 * TableSpec.ballRadius))
+    }
+
+    @Test func lidarRejectsAFlatBallSizedWhiteMark() throws {
+        var scene = SyntheticTableScene.demo()
+        let real = scene.balls[0]
+        scene.balls = [real]
+        let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
+        let depth = scene.renderDepth()
+        let fake = BallDetection(imagePoint: geo.ball.apply(Vec2(1.5, 0.6))!, tablePoint: Vec2(1.5, 0.6), radiusPx: 12,
+                                 confidence: 1, kind: .cue, tentativeNumber: 0)
+        let truth = BallDetection(imagePoint: geo.ball.apply(real.position)!, tablePoint: real.position, radiusPx: 12,
+                                  confidence: 1, kind: .cue, tentativeNumber: 0)
+        let kept = DepthFusion.verify([fake, truth], depth: depth, camera: scene.camera, table: scene.frame)
+        #expect(kept.count == 1 && kept[0].tablePoint == real.position)
+    }
+}
+
+struct BufferReuseTests {
+    func makeBuffer() -> CVPixelBuffer {
+        var pb: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 1920, 1440, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, nil, &pb)
+        let buf = pb!
+        CVPixelBufferLockBaseAddress(buf, [])
+        let y = YCbCr.fromRGB(24, 112, 74)
+        let yp = CVPixelBufferGetBaseAddressOfPlane(buf, 0)!.assumingMemoryBound(to: UInt8.self)
+        let cp = CVPixelBufferGetBaseAddressOfPlane(buf, 1)!.assumingMemoryBound(to: UInt8.self)
+        for r in 0..<1440 { memset(yp + r * CVPixelBufferGetBytesPerRowOfPlane(buf, 0), Int32(y.0), 1920) }
+        let crb = CVPixelBufferGetBytesPerRowOfPlane(buf, 1)
+        for r in 0..<720 { for x in 0..<960 { cp[r * crb + 2 * x] = y.1; cp[r * crb + 2 * x + 1] = y.2 } }
+        CVPixelBufferUnlockBaseAddress(buf, [])
+        return buf
+    }
+
+    @Test func steadyStateReusesStorage() throws {
+        let pb = makeBuffer()
+        var buffer: [UInt8] = []
+        var first: UnsafeRawPointer?
+        do {
+            let img = try #require(PixelImage.convert(pb, maxWidth: 960, into: &buffer))
+            #expect(img.width == 960)
+            first = buffer.withUnsafeBytes { UnsafeRawPointer($0.baseAddress) }
+        }
+        _ = try #require(PixelImage.convert(pb, maxWidth: 960, into: &buffer))
+        let second = buffer.withUnsafeBytes { UnsafeRawPointer($0.baseAddress) }
+        #expect(first == second, "storage was reallocated")
+    }
+
+    @Test func fixedPointMatchesFloatConversion() {
+        for (y, cb, cr) in [(30, 90, 200), (200, 128, 128), (120, 40, 60), (16, 128, 128), (235, 240, 16)] as [(UInt8, UInt8, UInt8)] {
+            for vr in [false, true] {
+                let a = YCbCr.toRGB(y, cb, cr, videoRange: vr), b = YCbCr.toRGBFast(y, cb, cr, videoRange: vr)
+                #expect(abs(Int(a.0) - Int(b.0)) <= 2 && abs(Int(a.1) - Int(b.1)) <= 2 && abs(Int(a.2) - Int(b.2)) <= 2)
+            }
+        }
     }
 }

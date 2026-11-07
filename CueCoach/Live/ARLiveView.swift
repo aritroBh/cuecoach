@@ -51,6 +51,9 @@ final class ARLiveController: NSObject {
     private var limitedSince: Date?
     private var revalidating = false
     private var wasMerged = false
+    private var resultOrder = FrameOrdering()
+    private var lastStatusSeq = -1
+    private var estimateOrder = FrameOrdering()
 
     init(model: LiveModel, locator: any TableLocating) {
         self.model = model
@@ -67,7 +70,7 @@ final class ARLiveController: NSObject {
         view = v
         let tap = FrameTap(pipeline: pipeline, locator: locator,
                            onResult: { [weak self] r, s in self?.handle(r, s) },
-                           onEstimate: { [weak self] e in self?.handleEstimate(e) })
+                           onEstimate: { [weak self] e, s in self?.handleEstimate(e, s) })
         self.tap = tap
         v.session.delegate = tap
         v.session.delegateQueue = tap.queue
@@ -202,18 +205,22 @@ final class ARLiveController: NSObject {
 
     // MARK: Locator
 
-    private func handleEstimate(_ e: TableEstimate?) {
+    private func handleEstimate(_ e: TableEstimate?, _ s: FrameTap.Status) {
+        guard let tap, estimateOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
         if revalidating, let e, e.locked, let current = tableFrame {
             // After relocalization: keep the lock if the table is where we left it, else re-anchor.
             let now = current.corners.map { current.world($0) }
             let moved = e.corners.map { c in now.map { simd_distance($0, c) }.min() ?? 0 }.max() ?? 0
             revalidating = false
+            model.relocking = false
             if moved > 0.06, let fit = TableFitter.fit(corners: e.corners, viewer: viewerPosition(), size: current.spec.size) {
                 install(fit.frame)
             }
-            tap?.setMode(.detecting)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            self.tap?.setMode(.detecting)
             return
         }
+        if revalidating { return }   // still relocking: keep the old table hidden, don't treat as a new table
         guard let e, !model.calibrated, !model.manualCorrection, !model.tapMode else { return }
         model.editor.setProposal(e.corners)
         model.ghostConfidence = e.confidence
@@ -312,21 +319,18 @@ final class ARLiveController: NSObject {
         }
     }
 
-    /// Re-run the locator once after relocalization; perception resumes when it answers.
+    /// After relocalization the old table frame can't be trusted: dim, stop perception, and relock.
+    /// Perception resumes only on a fresh lock (no timeout back onto the stale frame); the pulsing
+    /// recalibrate button restarts from scratch if the user prefers.
     private func revalidate() {
         revalidating = true
+        model.relocking = true
+        model.noteResult(nil)
         tap?.setMode(.idle)
         let locator = locator
         Task {
             await locator.reset()
             await MainActor.run { [weak self] in self?.tap?.setMode(.locating) }
-        }
-        // Don't stall forever: resume detecting after 4 s even without a fresh lock.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            guard let self, self.revalidating else { return }
-            self.revalidating = false
-            self.tap?.setMode(.detecting)
         }
     }
 
@@ -338,7 +342,10 @@ final class ARLiveController: NSObject {
             planeFoundAt = Date()
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
-        if model.trackingOK != s.trackingOK {
+        // Status ticks are ordered too: an older "tracking normal" must not overwrite a newer "limited".
+        let fresh = s.seq > lastStatusSeq
+        if fresh { lastStatusSeq = s.seq }
+        if fresh, model.trackingOK != s.trackingOK {
             model.trackingOK = s.trackingOK
             if !s.trackingOK {
                 limitedSince = Date()
@@ -350,7 +357,9 @@ final class ARLiveController: NSObject {
             }
         }
         if let d = s.depthConfidence { model.depthConfidence = d }
-        guard model.calibrated, s.isResult else { return }
+        if let c = s.convertMs { model.convertMs = model.convertMs * 0.8 + c * 0.2 }
+        guard model.calibrated, s.isResult, model.status.trustsTable, let tap,
+              resultOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
         model.noteResult(r)
         overlay?.update(r)
         if let r {
@@ -367,29 +376,39 @@ final class ARLiveController: NSObject {
 /// ARSession delegate on its own queue: turns ARFrames into small Sendable frames, drops frames while busy.
 /// Locating mode feeds the table locator; detecting mode feeds ball perception.
 final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
-    struct Status: Sendable { var planeFound: Bool; var trackingOK: Bool; var depthConfidence: Double?; var isResult = false }
+    struct Status: Sendable {
+        var planeFound: Bool; var trackingOK: Bool; var depthConfidence: Double?; var isResult = false
+        var seq = 0; var epoch = 0
+        var convertMs: Double?
+    }
     enum Mode: Sendable { case idle, locating, detecting }
 
     let queue = DispatchQueue(label: "cuecoach.arframes", qos: .userInteractive)
     private let pipeline: PerceptionPipeline
     private let locator: any TableLocating
     private let onResult: @MainActor (PerceptionResult?, Status) -> Void
-    private let onEstimate: @MainActor (TableEstimate?) -> Void
+    private let onEstimate: @MainActor (TableEstimate?, Status) -> Void
     private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
-                               interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [Vec2]()))
+                               interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [Vec2](),
+                               seq: 0, epoch: 0, lastTracking: true))
+
+    /// Current epoch: results stamped with an older one are stale.
+    var epoch: Int { state.withLock { $0.epoch } }
     /// Used only on `queue`.
     private let poseRequest = VNDetectHumanBodyPoseRequest()
+    /// Reused working-image storage (only touched on `queue`, and only while no job holds it).
+    nonisolated(unsafe) private var workBuffer: [UInt8] = []
 
     init(pipeline: PerceptionPipeline, locator: any TableLocating,
          onResult: @escaping @MainActor (PerceptionResult?, Status) -> Void,
-         onEstimate: @escaping @MainActor (TableEstimate?) -> Void) {
+         onEstimate: @escaping @MainActor (TableEstimate?, Status) -> Void) {
         self.pipeline = pipeline
         self.locator = locator
         self.onResult = onResult
         self.onEstimate = onEstimate
     }
 
-    func setMode(_ m: Mode) { state.withLock { $0.mode = m } }
+    func setMode(_ m: Mode) { state.withLock { $0.mode = m; $0.epoch += 1 } }
 
     func setTier(_ t: CapturePolicy.Tier) {
         state.withLock {
@@ -405,20 +424,26 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        let (mode, sendStatus, plane, width): (Mode, Bool, Bool, Int) = state.withLock { s in
+        let trackingNow: Bool = { if case .normal = frame.camera.trackingState { return true } else { return false } }()
+        let (mode, sendStatus, plane, width, seq, epoch): (Mode, Bool, Bool, Int, Int, Int) = state.withLock { s in
             let now = frame.timestamp
+            if trackingNow != s.lastTracking { s.lastTracking = trackingNow; s.epoch += 1 }
+            s.seq += 1
+            let seq = s.seq, epoch = s.epoch
             let status = now - s.lastStatus > 0.25
             if status { s.lastStatus = now }
             let interval = s.mode == .locating ? 0.2 : s.interval
-            guard s.mode != .idle, !s.busy, now - s.lastRun >= interval * 0.9 else { return (.idle, status, s.planeFound, 0) }
-            if s.mode == .locating && !s.planeFound { return (.idle, status, s.planeFound, 0) }
+            guard s.mode != .idle, !s.busy, now - s.lastRun >= interval * 0.9 else {
+                return (.idle, status, s.planeFound, 0, seq, epoch)
+            }
+            if s.mode == .locating && !s.planeFound { return (.idle, status, s.planeFound, 0, seq, epoch) }
             s.busy = true
             s.lastRun = now
-            return (s.mode, status, s.planeFound, s.width)
+            return (s.mode, status, s.planeFound, s.width, seq, epoch)
         }
-        let tracking: Bool = { if case .normal = frame.camera.trackingState { return true } else { return false } }()
+        let tracking = trackingNow
         let status = Status(planeFound: plane, trackingOK: tracking,
-                            depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil)
+                            depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil, seq: seq, epoch: epoch)
         let onResult = onResult, onEstimate = onEstimate
         // World-anchored work is meaningless while ARKit is relocalizing: pause it.
         guard mode != .idle, tracking else {
@@ -426,10 +451,13 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
             if sendStatus { Task { @MainActor in onResult(nil, status) } }
             return
         }
-        guard let img = PixelImage(pixelBuffer: frame.capturedImage, maxWidth: mode == .locating ? 960 : width) else {
+        let c0 = CACurrentMediaTime()
+        guard let img = PixelImage.convert(frame.capturedImage, maxWidth: mode == .locating ? 960 : width,
+                                           into: &workBuffer) else {
             state.withLock { $0.busy = false }
             return
         }
+        let convertMs = (CACurrentMediaTime() - c0) * 1000
         let cam = CameraModel(arCamera: frame.camera)
         if mode == .locating {
             let planes = frame.anchors.compactMap { a -> LocatorPlane? in
@@ -445,7 +473,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
             Task.detached(priority: .userInitiated) { [weak self] in
                 let e = await locator.ingest(lf)
                 self?.state.withLock { $0.busy = false }
-                await MainActor.run { onEstimate(e); onResult(nil, status) }
+                await MainActor.run { onEstimate(e, status); onResult(nil, status) }
             }
             return
         }
@@ -455,6 +483,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         let pipeline = pipeline
         var rs = status
         rs.isResult = true
+        rs.convertMs = convertMs
         let resultStatus = rs
         Task.detached(priority: .userInitiated) { [weak self] in
             let r = await pipeline.process(pf)

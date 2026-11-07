@@ -32,6 +32,8 @@ struct PerceptionResult: Sendable {
     /// 0…1: live aim vs suggested ghost line; the overlay merges them as this approaches 1.
     var convergence: Double = 0
     var depthBalls = 0
+    /// Whole pipeline time for this frame (detect + depth + track + cue + aim), ms.
+    var totalMs: Double = 0
 
     var confirmed: [TrackedBall] { tracks.filter(\.confirmed) }
 }
@@ -70,6 +72,7 @@ actor PerceptionPipeline {
         var depthBalls: [Vec2] = []
         if let d = f.depth {
             depthBalls = depthFinder.find(depth: d, camera: f.camera, table: table)
+            dets = DepthFusion.verify(dets, depth: d, camera: f.camera, table: table)
             dets = DepthFusion.merge(dets, depthBalls: depthBalls, image: f.image, geometry: geo)
         }
         let ms = Date().timeIntervalSince(t0) * 1000
@@ -81,17 +84,12 @@ actor PerceptionPipeline {
         var aim: AimSuggestion?
         if rest, let cue = confirmed.first(where: { marks[$0.id] == .cue }) {
             let others = confirmed.filter { $0.id != cue.id }
-            let targets = others.filter { marks[$0.id] == .legal || marks[$0.id] == .unknown }.map(\.position)
-            // Blockers include every other ball; targets only legal-looking ones.
-            aim = AimPlanner.suggest(cue: cue.position, objects: targets, spec: table.spec)
-            if let a = aim {
-                let blockers = others.map(\.position).filter { $0 != a.object }
-                let R = TableSpec.ballRadius
-                if !AimPlanner.clear(from: a.cue, to: a.ghost, of: blockers, radius: 2 * R)
-                    || !AimPlanner.clear(from: a.object, to: a.pocketPoint, of: blockers, radius: 2 * R) {
-                    aim = nil
-                }
-            }
+            // Known-legal balls are the targets; unidentified ones only when nothing is identified as legal.
+            let legalBalls = others.filter { marks[$0.id] == .legal }
+            let targets = legalBalls.isEmpty ? others.filter { marks[$0.id] == .unknown } : legalBalls
+            let blockers = others.filter { t in !targets.contains { $0.id == t.id } }.map(\.position)
+            aim = AimPlanner.suggest(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
+                                     spec: table.spec)
         }
         // Live aim from the cue stick (only while the balls are still: that's when the player aims).
         var live: LiveAimTrace?
@@ -115,7 +113,7 @@ actor PerceptionPipeline {
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence,
-                                depthBalls: depthBalls.count)
+                                depthBalls: depthBalls.count, totalMs: Date().timeIntervalSince(t0) * 1000)
     }
 }
 

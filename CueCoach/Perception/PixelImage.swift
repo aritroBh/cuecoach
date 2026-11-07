@@ -32,10 +32,18 @@ struct PixelImage: Sendable {
 
     /// From a BGRA or 420 YCbCr (ARKit `capturedImage`) pixel buffer, point-sampled at an integer stride.
     init?(pixelBuffer pb: CVPixelBuffer, maxWidth: Int = 960) {
+        var scratch: [UInt8] = []
+        guard let img = PixelImage.convert(pb, maxWidth: maxWidth, into: &scratch) else { return nil }
+        self = img
+    }
+
+    /// Converts into `buffer`, reusing its storage when nothing else still holds it (steady state: no per-frame
+    /// allocation). The returned image shares that storage until the next call writes again.
+    static func convert(_ pb: CVPixelBuffer, maxWidth: Int, into buffer: inout [UInt8]) -> PixelImage? {
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
         let s = PixelImage.stride(forWidth: w, maxWidth: maxWidth)
         let ow = w / s, oh = h / s
-        var out = [UInt8](repeating: 0, count: ow * oh * 3)
+        if buffer.count != ow * oh * 3 { buffer = [UInt8](repeating: 0, count: ow * oh * 3) }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         let fmt = CVPixelBufferGetPixelFormatType(pb)
@@ -44,7 +52,7 @@ struct PixelImage: Sendable {
             guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
             let rb = CVPixelBufferGetBytesPerRow(pb)
             let src = base.assumingMemoryBound(to: UInt8.self)
-            out.withUnsafeMutableBufferPointer { o in
+            buffer.withUnsafeMutableBufferPointer { o in
                 for y in 0..<oh {
                     let row = src + (y * s) * rb
                     for x in 0..<ow {
@@ -60,14 +68,14 @@ struct PixelImage: Sendable {
             let yrb = CVPixelBufferGetBytesPerRowOfPlane(pb, 0), crb = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
             let yp = yb.assumingMemoryBound(to: UInt8.self), cp = cb.assumingMemoryBound(to: UInt8.self)
             let video = fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            out.withUnsafeMutableBufferPointer { o in
+            buffer.withUnsafeMutableBufferPointer { o in
                 for y in 0..<oh {
                     let sy = y * s
                     let yrow = yp + sy * yrb, crow = cp + (sy / 2) * crb
                     for x in 0..<ow {
                         let sx = x * s
                         let c = crow + (sx / 2) * 2
-                        let rgb = YCbCr.toRGB(yrow[sx], c[0], c[1], videoRange: video)
+                        let rgb = YCbCr.toRGBFast(yrow[sx], c[0], c[1], videoRange: video)
                         let i = (y * ow + x) * 3
                         o[i] = rgb.0; o[i + 1] = rgb.1; o[i + 2] = rgb.2
                     }
@@ -76,7 +84,7 @@ struct PixelImage: Sendable {
         default:
             return nil
         }
-        self.init(width: ow, height: oh, rgb: out, scale: Double(s), sourceWidth: w, sourceHeight: h)
+        return PixelImage(width: ow, height: oh, rgb: buffer, scale: Double(s), sourceWidth: w, sourceHeight: h)
     }
 
     /// From a CGImage (replay, tests), downsampled to ≤ maxWidth.
@@ -123,6 +131,16 @@ enum YCbCr {
         if videoRange { yy = (yy - 16) * 255 / 219; u *= 255 / 224; v *= 255 / 224 }
         func c(_ d: Double) -> UInt8 { UInt8(max(0, min(255, d.rounded()))) }
         return (c(yy + 1.402 * v), c(yy - 0.344136 * u - 0.714136 * v), c(yy + 1.772 * u))
+    }
+
+    /// Fixed-point BT.601 (16.16), same result as `toRGB` within ±1.
+    @inline(__always) static func toRGBFast(_ y: UInt8, _ cb: UInt8, _ cr: UInt8, videoRange: Bool = false) -> (UInt8, UInt8, UInt8) {
+        // All terms in 16.16 fixed point (64-bit, no intermediate rounding).
+        var yy = Int(y) << 16
+        var u = (Int(cb) - 128) << 16, v = (Int(cr) - 128) << 16
+        if videoRange { yy = (Int(y) - 16) * 76309; u = (Int(cb) - 128) * 74711; v = (Int(cr) - 128) * 74711 }
+        @inline(__always) func c(_ d: Int) -> UInt8 { UInt8(clamping: (d + 32768) >> 16) }
+        return (c(yy + (91881 * v) >> 16), c(yy - (22554 * u + 46802 * v) >> 16), c(yy + (116130 * u) >> 16))
     }
 
     static func fromRGB(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> (UInt8, UInt8, UInt8) {

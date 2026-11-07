@@ -10,10 +10,13 @@ enum LiveStatus: Equatable, Sendable {
     case calibrated     // tracking the table
     case trackingLost   // AR tracking limited: dim overlay, pulse recalibrate
     case phoneMoved     // a bump: pulse recalibrate briefly
+    case relocking      // after relocalization: overlay dimmed, no perception, until the table locks again
 
-    static func derive(planeFound: Bool, corners: Int, calibrated: Bool, trackingOK: Bool, bumped: Bool) -> LiveStatus {
+    static func derive(planeFound: Bool, corners: Int, calibrated: Bool, trackingOK: Bool, bumped: Bool,
+                       relocking: Bool = false) -> LiveStatus {
         if calibrated {
             if !trackingOK { return .trackingLost }
+            if relocking { return .relocking }
             if bumped { return .phoneMoved }
             return .calibrated
         }
@@ -22,7 +25,9 @@ enum LiveStatus: Equatable, Sendable {
         return .placing
     }
 
-    var showsRecalibratePulse: Bool { self == .trackingLost || self == .phoneMoved }
+    var showsRecalibratePulse: Bool { self == .trackingLost || self == .phoneMoved || self == .relocking }
+    /// World-anchored guidance and perception results are only trusted in this state.
+    var trustsTable: Bool { self == .calibrated || self == .phoneMoved }
 }
 
 /// Phone bump detector from CoreMotion user acceleration (g) and rotation rate (rad/s).
@@ -62,5 +67,16 @@ enum TargetLegality {
         case .stripe: return legal.contains { $0.group == .stripes } ? .legal : .illegal
         default: return .unknown
         }
+    }
+}
+
+/// Drops stale perception results: frames are numbered when dispatched; an epoch bumps whenever
+/// tracking state changes or the table is (re)locked, so results from before it are discarded.
+struct FrameOrdering: Sendable {
+    private(set) var lastApplied = -1
+    mutating func accept(seq: Int, epoch: Int, currentEpoch: Int) -> Bool {
+        guard epoch == currentEpoch, seq > lastApplied else { return false }
+        lastApplied = seq
+        return true
     }
 }
