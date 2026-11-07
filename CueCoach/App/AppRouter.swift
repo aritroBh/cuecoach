@@ -7,13 +7,34 @@ enum ShellRoute: Hashable { case gameHub, newGame, joinNearby, training }
 enum ShellSheet: String, Identifiable { case settings, profile; var id: String { rawValue } }
 
 /// One trip into the camera. `game` is nil in Training.
-@MainActor final class LiveSession: Identifiable {
+@MainActor @Observable final class LiveSession: Identifiable {
     let id = UUID()
     let mode: ShellLiveMode
     let game: GameSessionModel?
     let drill: DrillID?
+    /// Someone is aiming (Live's aim signal). No text may appear: the menu closes and can't open (SPEC §2).
+    private(set) var isAiming = false
+    private var menuOpen = false
+
     init(mode: ShellLiveMode, game: GameSessionModel?, drill: DrillID?) {
         self.mode = mode; self.game = game; self.drill = drill
+    }
+
+    var menuAvailable: Bool { !isAiming }
+    var isMenuOpen: Bool {
+        get { menuOpen && !isAiming }
+        set { menuOpen = newValue && !isAiming }
+    }
+
+    func aimStarted() {
+        isAiming = true
+        menuOpen = false
+        game?.aimStarted()
+    }
+
+    func aimEnded() {
+        isAiming = false
+        game?.aimEnded()
     }
 }
 
@@ -30,6 +51,8 @@ final class AppRouter {
     var path: [ShellRoute] = []
     var sheet: ShellSheet?
     private(set) var stage: ShellStage?
+    /// Builds the game's mesh from the lobby's session tag (production: `MeshGameLink`).
+    @ObservationIgnored var meshFactory: ((UInt16) -> any GameMeshLink)?
 
     func openGame() { path = [.gameHub] }
     func openNewGame() { path = [.gameHub, .newGame] }
@@ -37,7 +60,13 @@ final class AppRouter {
     func openTraining() { path = [.training] }
 
     func startGame(_ config: GameConfig) {
-        stage = .live(LiveSession(mode: .game, game: GameSessionModel(config: config), drill: nil))
+        if case .live(let old)? = stage { old.game?.mesh?.stop(); old.game?.mesh = nil }
+        let game = GameSessionModel(config: config)
+        if let tag = config.sessionTag, let link = meshFactory?(tag) {
+            link.start()
+            game.mesh = link
+        }
+        stage = .live(LiveSession(mode: .game, game: game, drill: nil))
     }
 
     func startTraining(drill: DrillID, level: AssistLevel) {
@@ -47,6 +76,8 @@ final class AppRouter {
     /// End game (menu) → review. Ignored in Training or when nothing is live.
     func endGame() {
         guard case .live(let s)? = stage, let game = s.game else { return }
+        game.mesh?.stop()
+        game.mesh = nil
         stage = .review(game.reviewData())
     }
 

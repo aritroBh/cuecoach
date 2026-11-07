@@ -109,6 +109,75 @@ import Training
         #expect(data.isFinished)
     }
 
+    @MainActor final class FakeLink: GameMeshLink {
+        var peerCount = 1
+        var started = 0, stopped = 0
+        func start() { started += 1 }
+        func stop() { stopped += 1 }
+    }
+
+    @Test func meshGameStartsTheSessionWithTheLobbyTagAndStopsItAtTheEnd() {
+        let r = AppRouter()
+        var tags: [UInt16] = []
+        let link = FakeLink()
+        r.meshFactory = { tags.append($0); return link }
+        var c = config
+        c.sessionTag = 42
+        r.startGame(c)
+        #expect(tags == [42])
+        #expect(link.started == 1)
+        r.endGame()
+        #expect(link.stopped == 1)
+        r.finishReview()
+        #expect(link.stopped == 1)
+    }
+
+    @Test func secondStartStopsThePreviousMeshLink() {
+        let r = AppRouter()
+        let links = [FakeLink(), FakeLink()]
+        var i = 0
+        r.meshFactory = { _ in defer { i += 1 }; return links[i] }
+        var c = config
+        c.sessionTag = 7
+        r.startGame(c)
+        r.startGame(c)
+        #expect(links[0].stopped == 1)
+        #expect(links[1].started == 1)
+    }
+
+    @Test func menuIsUnavailableWhileAiming() {
+        let r = AppRouter()
+        r.startGame(config)
+        guard case .live(let s)? = r.stage else { Issue.record("no live"); return }
+        #expect(s.menuAvailable)
+        s.isMenuOpen = true
+        s.aimStarted()
+        #expect(!s.menuAvailable)
+        #expect(!s.isMenuOpen)            // an open menu closes the moment aiming starts (SPEC §2)
+        s.isMenuOpen = true
+        #expect(!s.isMenuOpen)            // and can't reopen until the shot ends
+        s.aimEnded()
+        #expect(s.menuAvailable)
+    }
+
+    @Test func aimingAlsoSilencesTheBadge() {
+        let r = AppRouter()
+        r.startGame(config)
+        guard case .live(let s)? = r.stage, let g = s.game else { Issue.record("no live"); return }
+        g.shotSettled(rating: .good, turnPasses: false)
+        #expect(g.badge.current != nil)
+        s.aimStarted()
+        #expect(g.badge.current == nil)
+    }
+
+    @Test func singlePhoneGameHasNoMesh() {
+        let r = AppRouter()
+        var made = 0
+        r.meshFactory = { _ in made += 1; return FakeLink() }
+        r.startGame(config)
+        #expect(made == 0)
+    }
+
     @Test func sheetsOpenFromHome() {
         let r = AppRouter()
         r.sheet = .settings

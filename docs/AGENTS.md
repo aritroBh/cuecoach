@@ -25,5 +25,8 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 |---|---|---|---|---|
 | 2026-11-06 | Geometry contracts | Claude (head) | — (contract, reviewed with Phase 1) | merged to bootstrap |
 | 2026-11-06 | Engine (candidates, evaluator, win model, ratings) | Claude (worker subagent) | Phase-2 supervisor, with Codex findings | round 1 rejected (4 major, 4 minor); fixes on `wt/engine`, awaiting re-review |
+| 2026-11-07 | App shell (Home, Game setup, Join nearby, Training picker, in-game chrome, MPC lobby) | Claude (worker subagent) | Codex (code) + Codex (UX, screenshots) ‡ | see `wt/app-shell` commits |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
+
+‡ Antigravity (planned UX reviewer) returned 429 quota exhausted (resets in ~7 days), so Codex did the UX pass from the screenshots too.

@@ -31,7 +31,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSCameraUsageDescription: CueCoach watches the table to draw aim lines and rate shots. Video stays on your phone.
         NSLocalNetworkUsageDescription: CueCoach links phones around the same table to share ball positions.
-        NSBonjourServices: [_cuecoach._tcp, _cuecoach._udp]
+        NSBonjourServices: [_cuecoach._tcp, _cuecoach._udp, _cuecoach-lb._tcp, _cuecoach-lb._udp]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aritrobh.cuecoach

@@ -18,14 +18,21 @@ struct GameSetupView: View {
     var body: some View {
         ZStack {
             ShellBackground()
-            ScrollView {
-                VStack(spacing: 28) {
-                    rules
-                    players
-                    table
-                    phones
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 28) {
+                        rules
+                        players
+                        table
+                        phones
+                    }
+                    .padding(16)
                 }
-                .padding(16)
+                .onChange(of: shake) {
+                    // Blocked Start: bring the missing seat into view (it may be offscreen at AX sizes).
+                    guard let seat = model.firstEmptySeat else { return }
+                    withAnimation(reduce || forced ? nil : .smooth(duration: 0.35)) { proxy.scrollTo(seat.id, anchor: .center) }
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -85,16 +92,16 @@ struct GameSetupView: View {
             if model.isTeams {
                 HStack(spacing: 12) {
                     ForEach(2...GameSetupModel.maxPerTeam, id: \.self) { n in
-                        Button { model.setPlayersPerTeam(n) } label: {
-                            Text("\(n)v\(n)")
-                                .font(.body.weight(.semibold)).monospacedDigit()
-                                .foregroundStyle(model.playersPerTeam == n ? Color.black : SBColor.ink)
-                                .frame(minWidth: 64, minHeight: 48)
-                                .background(Capsule().fill(model.playersPerTeam == n ? SBColor.ink : SBColor.surface))
+                        // Same tile language as the other choices (no pill chips): dots per side + count.
+                        ChoiceTile(selected: model.playersPerTeam == n, id: "setup.size.\(n)",
+                                   label: "\(n) versus \(n)") {
+                            model.setPlayersPerTeam(n)
+                        } content: {
+                            HStack(spacing: 3) {
+                                ForEach(0..<n, id: \.self) { _ in Circle().fill(SBColor.teamA).frame(width: 8, height: 8) }
+                            }
+                            Text("\(n)v\(n)").font(.body.weight(.semibold)).monospacedDigit()
                         }
-                        .buttonStyle(ShellPressStyle())
-                        .accessibilityAddTraits(model.playersPerTeam == n ? .isSelected : [])
-                        .accessibilityIdentifier("setup.size.\(n)")
                     }
                 }
             }
@@ -206,6 +213,7 @@ struct SeatOrderRow: View {
     let reduceMotion: Bool
     let pick: (SeatRef) -> Void
     @State private var pulse = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let order = model.seatOrder
@@ -218,6 +226,7 @@ struct SeatOrderRow: View {
                     }
                     seatButton(seat, number: i + 1)
                 }
+                .id(seat.id)
             }
         }
         .onChange(of: shake) {
@@ -244,11 +253,15 @@ struct SeatOrderRow: View {
                 }
                 .frame(width: 64, height: 64)
                 .scaleEffect(blocking && pulse ? 1.18 : 1)
+                // The first empty seat breathes from the start so a blocked Start is never a mystery.
+                .modifier(Breathe(active: blocking && !reduceMotion))
                 Text(p?.name ?? "\(GameSetupModel.teamLetter(seat.team))\(seat.slot + 1)")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(p == nil ? SBColor.inkMuted : SBColor.ink)
-                    .lineLimit(1)
-                    .frame(maxWidth: 88)
+                    .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: typeSize.isAccessibilitySize ? 220 : 88)
             }
             .contentShape(Rectangle())
         }
@@ -366,5 +379,19 @@ struct SeatPickerSheet: View {
             .contentShape(Rectangle())
         }
         .accessibilityIdentifier(id)
+    }
+}
+
+/// Gentle repeating scale on the seat that blocks Start (off with Reduce Motion; the dashed + glyph remains).
+struct Breathe: ViewModifier {
+    var active: Bool
+    func body(content: Content) -> some View {
+        if active {
+            content.phaseAnimator([false, true]) { v, up in v.scaleEffect(up ? 1.1 : 1) } animation: { up in
+                up ? .easeOut(duration: 0.4) : .easeIn(duration: 0.4).delay(1.2)
+            }
+        } else {
+            content
+        }
     }
 }

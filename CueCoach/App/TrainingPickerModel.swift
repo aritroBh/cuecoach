@@ -21,7 +21,10 @@ final class TrainingPickerModel {
     }
 
     /// What this level draws while aiming in the chosen drill (drives the level preview sketch).
-    var previewElements: Set<OverlayElement> { level.visibleWhileAiming(in: drill) }
+    var previewElements: Set<OverlayElement> { sketch(for: level) }
+
+    /// What `level` draws while aiming in the selected drill (each level disc's sketch).
+    func sketch(for level: AssistLevel) -> Set<OverlayElement> { level.visibleWhileAiming(in: drill) }
 
     func start() { onStart?(drill, level) }
 

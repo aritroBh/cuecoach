@@ -28,6 +28,10 @@ struct AppShellRoot: View {
         .environment(\.shellForceReduceMotion, env.reduceMotion)
         .environment(\.sbForceReduceMotion, env.reduceMotion)
         .preferredColorScheme(.dark)
+        .onAppear { router.meshFactory = env.meshFactory }
+        #if DEBUG
+        .task { await ShellAutopilot.run(env: env, router: router) }
+        #endif
     }
 
     private var coverBinding: Binding<Bool> {
@@ -111,10 +115,10 @@ struct ProfileSheet: View {
                         .padding(.horizontal, 16)
                         .frame(minHeight: 56)
                         .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.surface))
-                        .accessibilityIdentifier("profile.name")
+                        .accessibilityIdentifier("shell.profile.nameField")
                         .onSubmit(save)
                     ShellStartButton(title: "Save", symbol: "checkmark", enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty,
-                                     id: "profile.save", action: save)
+                                     id: "shell.profile.save", action: save)
                 }
                 .padding(16)
             }

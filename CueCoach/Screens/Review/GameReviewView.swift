@@ -48,7 +48,24 @@ public struct GameReviewView: View {
     @ViewBuilder private var content: some View {
         switch model.phase {
         case .failed:
-            centered("exclamationmark.triangle", "Unavailable", tint: SBColor.caution, id: "review.failed")
+            VStack(spacing: 24) {
+                centered("exclamationmark.triangle", "Unavailable", tint: SBColor.caution, id: "review.failed")
+                if model.canRetry {
+                    Button { Task { await model.retry() } } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(SBFont.glyph(28, .semibold))
+                            .foregroundStyle(SBColor.ink)
+                            .frame(width: 72, height: 72)
+                            .background(Circle().fill(SBColor.surface))
+                            .overlay(Circle().strokeBorder(SBColor.ink.opacity(0.2), lineWidth: 1))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Try again")
+                    .accessibilityIdentifier("review.retry")
+                }
+            }
+            .frame(maxWidth: .infinity)
         case .loading:
             VStack(spacing: 24) {
                 Skeleton(height: 200, reduceMotion: reduceMotion)
@@ -60,12 +77,15 @@ public struct GameReviewView: View {
             .accessibilityIdentifier("review.loading")
         case .loaded:
             if model.isEmpty {
-                centered("circle.dashed", "No shots", tint: SBColor.inkMuted, id: "review.empty")
+                centered("circle.slash", "No shots", tint: SBColor.inkMuted, id: "review.empty")
             } else if wide {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard }
                     VStack(alignment: .leading, spacing: 32) { sotgCard; mvpCard }
                 }
+            } else if typeSize.isAccessibilitySize {
+                // AX sizes: the replay (the hero) comes first so it isn't pushed under the Done bar.
+                VStack(alignment: .leading, spacing: 32) { replayCard; timeline; winChance; sotgCard; mvpCard }
             } else {
                 VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard; sotgCard; mvpCard }
             }
@@ -90,7 +110,7 @@ public struct GameReviewView: View {
                 Text("Game \(d.gameIndex + 1)")
                     .font(SBFont.largeTitle).foregroundStyle(SBColor.ink)
                     .accessibilityAddTraits(.isHeader)
-            } else {
+            } else if model.phase == .loading {
                 // Title-sized placeholder: no made-up game number while loading.
                 Text("Game 0").font(SBFont.largeTitle).hidden()
                     .overlay(alignment: .leading) {
@@ -167,14 +187,24 @@ public struct GameReviewView: View {
         VStack(alignment: .leading, spacing: 16) {
             sectionTitle("Win chance")
             if model.showsChart {
-                WinChanceChart(model: model)
-                    .frame(height: 180)
-            } else if let first = model.shots.first, let last = model.shots.last {
-                HStack(spacing: 16) {
-                    EvalBar(p: model.winProbBefore(first))
-                    Image(systemName: "arrow.right").font(SBFont.headline).foregroundStyle(SBColor.inkMuted)
-                    EvalBar(p: model.winProbAfter(last))
+                HStack(spacing: 8) {
+                    VStack { TeamRing(team: 0); Spacer(); TeamRing(team: 1) }
+                        .padding(.vertical, 4)
+                    WinChanceChart(model: model)
                 }
+                .frame(height: 180)
+            } else if let first = model.shots.first, let last = model.shots.last {
+                let before = model.winProbBefore(first), after = model.winProbAfter(last)
+                HStack(spacing: 12) {
+                    TeamRing(team: 0)
+                    VStack(spacing: 8) {
+                        EvalBar(p: before).opacity(0.5)
+                        EvalBar(p: after, delta: before)
+                    }
+                    TeamRing(team: 1)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Team A win chance \(Int((before * 100).rounded())) to \(Int((after * 100).rounded())) percent")
                 .accessibilityIdentifier("review.evalbars")
             }
         }
@@ -390,6 +420,7 @@ public struct GameReviewView: View {
 
     private func sectionTitle(_ s: String) -> some View {
         Text(s).font(SBFont.title).foregroundStyle(SBColor.ink)
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)   // ui-QA-3: headings don't crowd out the hero
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -408,18 +439,44 @@ public struct GameReviewView: View {
 // MARK: - Pieces
 
 /// Horizontal eval bar: Team A share on the left (solid), Team B on the right (hatched by opacity).
+/// With `delta`, the change since that value is outlined so the swing reads without colour.
 struct EvalBar: View {
     var p: Double
+    var delta: Double? = nil
     var body: some View {
         GeometryReader { g in
-            HStack(spacing: 0) {
-                Rectangle().fill(SBColor.teamA).frame(width: g.size.width * min(max(p, 0), 1))
-                Rectangle().fill(SBColor.teamB.opacity(0.85))
+            let w = g.size.width
+            let x = w * min(max(p, 0), 1)
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Rectangle().fill(SBColor.teamA).frame(width: x)
+                    Rectangle().fill(SBColor.teamB.opacity(0.85))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                if let d = delta {
+                    let x0 = w * min(max(d, 0), 1)
+                    RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(SBColor.ink, lineWidth: 2)
+                        .frame(width: max(abs(x - x0), 4), height: 20)
+                        .offset(x: min(x, x0))
+                }
+                Rectangle().fill(SBColor.ink).frame(width: 2, height: 20).offset(x: x - 1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .frame(height: 20)
         }
-        .frame(height: 12)
+        .frame(height: 20)
         .accessibilityHidden(true)
+    }
+}
+
+/// Team marker that doesn't rely on colour: solid ring = Team A, dashed ring = Team B.
+struct TeamRing: View {
+    var team: Int
+    var size: CGFloat = 20
+    var body: some View {
+        Circle().stroke(SBColor.team(team), style: SBColor.teamStroke(team, width: 3))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
@@ -460,11 +517,11 @@ private struct WinChanceChart: View {
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
             ForEach(model.chartMarkers) { s in
                 PointMark(x: .value("Shot", model.chartX(s)), y: .value("Team A", model.winProbAfter(s)))
-                    .foregroundStyle(RatingBadgeStyle.of(s.rating).tone.color)
-                    .symbolSize(36)
+                    .foregroundStyle(SBColor.ink)
+                    .symbolSize(28)
             }
             if let sel = model.selectedShot {
-                RuleMark(x: .value("Shot", model.chartX(sel)))
+                RuleMark(x: .value("Shot", model.chartX(sel)), yStart: .value("Low", 0), yEnd: .value("High", 1))
                     .foregroundStyle(SBColor.ink.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1))
             }
@@ -477,6 +534,8 @@ private struct WinChanceChart: View {
             }
         }
         .chartLegend(.hidden)
+        .chartPlotStyle { $0.clipped() }
+        .clipped()
         // System selection gesture: coexists with the page's vertical scroll (a raw drag would swallow it).
         .chartXSelection(value: Binding<Int?>(
             get: { model.selectedShot.map(model.chartX) },

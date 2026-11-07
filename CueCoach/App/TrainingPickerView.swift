@@ -36,7 +36,7 @@ struct TrainingPickerView: View {
                                            label: "Level \(l.rawValue), \(TrainingPickerModel.levelName(l))") {
                                     model.level = l
                                 } content: {
-                                    LevelSketch(elements: l.visibleWhileAiming(in: .straightIn)).frame(width: 56, height: 40)
+                                    LevelSketch(elements: model.sketch(for: l)).frame(width: 56, height: 40)
                                     Text("\(l.rawValue)").font(.title3.weight(.bold)).monospacedDigit()
                                 }
                             }
@@ -79,6 +79,15 @@ struct LevelSketch: View {
             if elements.contains(.ghostBall) {
                 ctx.stroke(Path(ellipseIn: CGRect(x: ghost.x - 5, y: ghost.y - 5, width: 10, height: 10)),
                            with: .color(.white.opacity(0.9)), lineWidth: 1.5)
+            }
+            if elements.contains(.positionZone) {
+                let zone = CGRect(x: w * 0.22, y: h * 0.12, width: w * 0.26, height: h * 0.3)
+                ctx.fill(Path(ellipseIn: zone), with: .color(SBColor.legal.opacity(0.35)))
+                ctx.stroke(Path(ellipseIn: zone), with: .color(SBColor.legal), lineWidth: 1)
+            }
+            if elements.contains(.cueAfterContactLine) {
+                var p = Path(); p.move(to: ghost); p.addLine(to: CGPoint(x: w * 0.35, y: h * 0.27))
+                ctx.stroke(p, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
             }
             ctx.fill(Path(ellipseIn: CGRect(x: pocket.x - 4, y: pocket.y - 4, width: 8, height: 8)), with: .color(.black))
             ctx.fill(Path(ellipseIn: CGRect(x: obj.x - 5, y: obj.y - 5, width: 10, height: 10)), with: .color(SBColor.caution))

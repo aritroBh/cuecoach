@@ -127,3 +127,19 @@ right +); speed ratio (actual/intended − 1); cueBallDistance m (past target +)
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`
 (Foundation Models + rule fallback).
+
+## App shell (CueCoach/App, docs/design/app-shell.md)
+```swift
+enum ShellLiveMode { case game; case training(level: Int) }       // mirrors Live's LiveMode (D24); LiveScreenAdapter is the one call site
+struct GameConfig: Codable { var ruleSet; var tableSize; var teams: [[ShellPlayer]]; var sessionTag: UInt16?
+                             var rotation: [ShellPlayer] }          // D17 A1, B1, A2, B2, …
+@MainActor protocol GameLobbyMesh { var onEvent: ((LobbyEvent) -> Void)?
+    func browse(); func stopBrowsing(); func join(gameID:); func leave()
+    func host(_: NearbyGame); func stopHosting(); func publish(lineup: LobbyLineup); func announceStart(_: GameConfig) }
+enum LobbyEvent { gamesChanged, joined, rejectedFull, hostLeft, started(GameConfig), lineupChanged(LobbyLineup), unavailable, phonesChanged }
+```
+`MPCGameLobby` implements it on its own MPC service `cuecoach-lb` (adverts in discovery info, JSON messages,
+encryption required). On Start every phone opens `MultipeerMeshSession.multipeer(sessionTag:)` with the
+host's random tag (`MeshGameLink`). `FakeGameLobbyMesh` drives tests; `OfflineGameLobby` = one phone.
+Guests are `ShellPlayer(isGuest: true)` in memory only, never written to SwiftData.
+Measured table size: Live writes `UserDefaults "cc.table.measured"` (TableSize raw value); setup preselects it.

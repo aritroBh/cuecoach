@@ -93,6 +93,23 @@ import Engine
         #expect(d.shots.isEmpty)
     }
 
+    @Test func reorderingATeamKeepsTheCurrentShooter() {
+        let s = teams()
+        s.passTurn()                      // B1 shooting
+        s.swap(team: 0, 0, 1)             // team A order becomes A2, A1
+        #expect(s.shooter == b1)
+        #expect(s.rotation.map(\.name) == ["A2", "B1", "A1", "B2"])
+        s.passTurn()
+        #expect(s.shooter == a1)          // next A player in the new order
+    }
+
+    @Test func reorderIgnoresBadIndices() {
+        let s = teams()
+        s.swap(team: 0, 0, 5)
+        s.swap(team: 3, 0, 1)
+        #expect(s.rotation.map(\.name) == ["A1", "B1", "A2", "B2"])
+    }
+
     @Test func pauseToggles() {
         let s = teams()
         #expect(!s.isMenuOpen)

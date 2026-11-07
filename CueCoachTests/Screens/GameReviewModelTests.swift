@@ -55,6 +55,34 @@ import Engine
         #expect(m.phase == .failed)
     }
 
+    @MainActor final class FlakySource: GameReviewSource {
+        var fails: Int
+        let payload: GameReviewData
+        init(fails: Int, payload: GameReviewData) { self.fails = fails; self.payload = payload }
+        func load() async throws -> GameReviewData {
+            if fails > 0 { fails -= 1; throw ReviewLoadError() }
+            return payload
+        }
+    }
+
+    @Test func retryAfterFailureLoads() async {
+        let shots = (0..<2).map { shot($0, .good, by: a1, team: 0) }
+        let m = GameReviewModel(source: FlakySource(fails: 1, payload: data(shots: shots)))
+        await m.load()
+        #expect(m.phase == .failed)
+        #expect(m.canRetry)
+        await m.retry()
+        #expect(m.phase == .loaded)
+        #expect(m.shots.count == 2)
+    }
+
+    @Test func retryWithoutSourceIsUnavailable() async {
+        let m = GameReviewModel(data: data(shots: []))
+        #expect(!m.canRetry)
+        await m.retry()
+        #expect(m.phase == .loaded)
+    }
+
     @Test func chartNeedsFourPoints() {
         let three = (0..<3).map { shot($0, .good, by: a1, team: 0) }
         let m = GameReviewModel(data: data(shots: three, series: [0.5, 0.6, 0.4]))

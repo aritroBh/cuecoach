@@ -41,6 +41,15 @@ public final class GameReviewModel {
         do { apply(try await source.load()) } catch { phase = .failed }
     }
 
+    /// The failed state's retry button (ui-QA-2): only when there is a source to reload from.
+    var canRetry: Bool { source != nil }
+
+    func retry() async {
+        guard source != nil else { return }
+        phase = .loading
+        await load()
+    }
+
     private func apply(_ d: GameReviewData) {
         data = d
         phase = .loaded

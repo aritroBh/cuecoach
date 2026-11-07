@@ -80,11 +80,13 @@ struct ShellStartButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: symbol)
+            // Blocked = surface + lock glyph at full contrast; the screen points at what's missing.
+            Label(title, systemImage: enabled ? symbol : "lock.fill")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(enabled ? Color.black : SBColor.inkMuted)
+                .foregroundStyle(enabled ? Color.black : SBColor.ink)
                 .frame(maxWidth: .infinity, minHeight: 64)
                 .background(Capsule().fill(enabled ? SBColor.legal : SBColor.surface))
+                .overlay(Capsule().strokeBorder(SBColor.ink.opacity(enabled ? 0 : 0.25), lineWidth: 1))
                 .contentShape(Capsule())
         }
         .buttonStyle(ShellPressStyle())

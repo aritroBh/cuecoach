@@ -11,7 +11,7 @@ struct NearbyGame: Identifiable, Hashable, Sendable {
 }
 
 /// A phone that joined this host (one more camera angle).
-struct NearbyPhone: Identifiable, Hashable, Sendable {
+struct NearbyPhone: Identifiable, Hashable, Sendable, Codable {
     var id: String
     var name: String?
 }
@@ -22,6 +22,8 @@ enum LobbyEvent: Hashable, Sendable {
     case rejectedFull(gameID: String)
     case hostLeft(gameID: String)
     case started(gameID: String, GameConfig)
+    /// The host changed rules, table or seats (joiners mirror it while waiting).
+    case lineupChanged(gameID: String, LobbyLineup)
     /// Local network permission denied or MPC failed to start.
     case unavailable
     /// Host side: phones that joined this game.
@@ -39,6 +41,7 @@ enum LobbyEvent: Hashable, Sendable {
     func leave()
     func host(_ advert: NearbyGame)
     func stopHosting()
+    func publish(lineup: LobbyLineup)
     func announceStart(_ config: GameConfig)
 }
 
@@ -51,6 +54,7 @@ enum LobbyEvent: Hashable, Sendable {
     func leave() {}
     func host(_ advert: NearbyGame) {}
     func stopHosting() {}
+    func publish(lineup: LobbyLineup) {}
     func announceStart(_ config: GameConfig) {}
 }
 
@@ -63,6 +67,7 @@ enum LobbyEvent: Hashable, Sendable {
     private(set) var leaveCount = 0
     private(set) var advert: NearbyGame?
     private(set) var announced: GameConfig?
+    private(set) var lineup: LobbyLineup?
     /// Scripted reactions (UI tests). Each runs after `delay` seconds.
     var onBrowse: [(Double, LobbyEvent)] = []
     var onJoin: [(Double, LobbyEvent)] = []
@@ -81,6 +86,7 @@ enum LobbyEvent: Hashable, Sendable {
         if first { play(onHost) }
     }
     func stopHosting() { hosting = false }
+    func publish(lineup: LobbyLineup) { self.lineup = lineup }
     func announceStart(_ config: GameConfig) { announced = config }
 
     private func play(_ script: [(Double, LobbyEvent)]) {

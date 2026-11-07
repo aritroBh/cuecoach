@@ -39,6 +39,15 @@ import Training
         #expect(m.previewElements == [.objectToPocketLine])
     }
 
+    @Test func levelSketchesFollowTheSelectedDrill() {
+        let m = TrainingPickerModel(defaults: defaults())
+        m.drill = .positionPlay
+        #expect(m.sketch(for: .ghostOnly).contains(.positionZone))
+        #expect(m.sketch(for: .none).isEmpty)          // D1: level 4 shows nothing, not even the zone
+        m.drill = .straightIn
+        #expect(!m.sketch(for: .ghostOnly).contains(.positionZone))
+    }
+
     @Test func everyDrillHasAShortNameAndSymbol() {
         for d in DrillID.allCases {
             let n = TrainingPickerModel.name(d)

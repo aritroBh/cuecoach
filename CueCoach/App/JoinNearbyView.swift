@@ -59,6 +59,7 @@ struct JoinNearbyView: View {
         case .joined(let g):
             GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(SBColor.legal))) {}
                 .disabled(true)
+            if let l = model.lineup { LineupStrip(lineup: l) }
             StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: !reduceMotion, id: "join.waiting")
             cancelButton
         case .full:
@@ -151,5 +152,53 @@ private struct GameRow: View {
         .accessibilityLabel("\(game.host?.name ?? "Nearby") game, \(SettingsViewModel.ruleLabel(game.ruleSet)), \(game.seatsFilled) of \(game.seatsTotal) players")
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("join.game.\(game.id)")
+    }
+}
+
+/// The host's lineup in D17 order, mirrored live while this phone waits.
+private struct LineupStrip: View {
+    let lineup: LobbyLineup
+    @Environment(\.dynamicTypeSize) private var typeSize
+    var body: some View {
+        let n = lineup.seats.map(\.count).max() ?? 0
+        let order = (0..<n).flatMap { slot in (0..<lineup.seats.count).map { SeatRef(team: $0, slot: slot) } }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                SARuleBall(number: SettingsViewModel.ruleBall(lineup.ruleSet), size: 32)
+                SATableSilhouette(size: lineup.tableSize).frame(width: 56, height: 28)
+                Text("\(SettingsViewModel.feet(lineup.tableSize)) ft").font(.body.weight(.semibold)).foregroundStyle(SBColor.inkMuted)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(SettingsViewModel.ruleLabel(lineup.ruleSet)), \(SettingsViewModel.feet(lineup.tableSize)) foot table")
+            .accessibilityIdentifier("join.lineup.rules.\(lineup.ruleSet.rawValue)")
+            FlowRow(spacing: 8) {
+                ForEach(order, id: \.self) { seat in
+                    let p = lineup.seats[seat.team].indices.contains(seat.slot) ? lineup.seats[seat.team][seat.slot] : nil
+                    VStack(spacing: 6) {
+                        if let p {
+                            SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 48, team: seat.team)
+                        } else {
+                            Circle().strokeBorder(SBColor.team(seat.team), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                                .frame(width: 48, height: 48)
+                        }
+                        Text(p?.name ?? "\(GameSetupModel.teamLetter(seat.team))\(seat.slot + 1)")
+                            .font(.footnote.weight(.semibold)).foregroundStyle(p == nil ? SBColor.inkMuted : SBColor.ink)
+                            .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: typeSize.isAccessibilitySize ? 220 : 80)
+                    }
+                    .frame(minWidth: 56)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel((p?.name ?? "Empty seat") + ", team \(GameSetupModel.teamLetter(seat.team))")
+                    .accessibilityIdentifier("join.lineup.\(p?.name ?? "empty")")
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("join.lineup")
     }
 }

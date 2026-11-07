@@ -19,6 +19,8 @@ struct GameConfig: Hashable, Sendable, Codable {
     var tableSize: TableSize
     /// `teams[team][slot]`, team 0 = A, 1 = B.
     var teams: [[ShellPlayer]]
+    /// Mesh session for this game (MultipeerMeshSession `sessionTag`); nil = this phone only.
+    var sessionTag: UInt16? = nil
 
     var playersPerTeam: Int { teams.map(\.count).max() ?? 0 }
 
@@ -60,4 +62,16 @@ enum ShellPalette {
     static let names = SBColor.avatarNames
     static let symbols = ["hare.fill", "bolt.fill", "leaf.fill", "flame.fill", "star.fill", "moon.fill",
                           "tortoise.fill", "bird.fill"]
+}
+
+/// The host's lineup as joiners see it while they wait (seats may be empty).
+struct LobbyLineup: Hashable, Sendable, Codable {
+    var ruleSet: RuleSetID
+    var tableSize: TableSize
+    var seats: [[ShellPlayer?]]
+    /// D17 order of the seated players.
+    var rotation: [ShellPlayer] {
+        let n = seats.map(\.count).max() ?? 0
+        return (0..<n).flatMap { slot in seats.compactMap { $0.indices.contains(slot) ? $0[slot] : nil } }
+    }
 }

@@ -68,7 +68,7 @@ struct RuleBallot: Hashable, Codable, Sendable { var voteID: UInt64; var choice:
 struct RuleVoteResult: Hashable, Codable, Sendable { var voteID: UInt64; var winner: RuleSetID }
 
 /// One tracked ball in table coordinates (metres), from one phone's tracker.
-struct BallDetection: Hashable, Codable, Sendable {
+struct MeshBallDetection: Hashable, Codable, Sendable {
     var ball: BallID
     var position: Vec2
     /// 1-σ position uncertainty, metres.
@@ -80,10 +80,10 @@ struct BallDetection: Hashable, Codable, Sendable {
 struct TableStateFrame: Hashable, Codable, Sendable {
     /// Capture time on the sender's host clock, nanoseconds. The host converts with the clock-sync offset.
     var captureTime: Int64
-    var balls: [BallDetection]
+    var balls: [MeshBallDetection]
 }
 
-struct ShotRecord: Hashable, Codable, Sendable {
+struct MeshShotRecord: Hashable, Codable, Sendable {
     var shotID: UUID
     var shooterTeam: Int
     var outcome: ShotOutcome
@@ -93,7 +93,7 @@ struct ShotRecord: Hashable, Codable, Sendable {
 /// Replicated game-log event. `GameState = fold(log)` on any phone (mesh-identity.md §2.5).
 enum GameEvent: Hashable, Codable, Sendable {
     case ruleSetChosen(RuleSetID)
-    case shot(ShotRecord)
+    case shot(MeshShotRecord)
     case shooterCorrection(shotID: UUID, team: Int)
 }
 

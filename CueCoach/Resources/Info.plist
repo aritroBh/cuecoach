@@ -24,6 +24,8 @@
 	<array>
 		<string>_cuecoach._tcp</string>
 		<string>_cuecoach._udp</string>
+		<string>_cuecoach-lb._tcp</string>
+		<string>_cuecoach-lb._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>CueCoach watches the table to draw aim lines and rate shots. Video stays on your phone.</string>

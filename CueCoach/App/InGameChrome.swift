@@ -31,9 +31,9 @@ struct LiveHost: View {
 /// Top-right menu (LiveScreen keeps the top-left ✕), team discs (Game only), post-shot badge.
 /// No text while aiming: discs are avatars + team colour + ring shape; the menu is icon-only until opened.
 struct InGameChrome: View {
-    let session: LiveSession
+    @Bindable var session: LiveSession
     let router: AppRouter
-    @State private var menuOpen = false
+    private var menuOpen: Bool { session.isMenuOpen }
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.shellForceReduceMotion) private var forced
 
@@ -46,7 +46,8 @@ struct InGameChrome: View {
             VStack(spacing: 12) {
                 HStack {
                     Spacer()
-                    menuButton
+                    // Hidden while anyone aims: the menu has words (SPEC §2).
+                    if session.menuAvailable { menuButton } else { Color.clear.frame(width: 56, height: 56) }
                 }
                 if let game = session.game, game.hasLineup {
                     TurnDiscs(game: game, reduceMotion: reduce || forced)
@@ -57,13 +58,19 @@ struct InGameChrome: View {
             if menuOpen { menu.transition(.opacity) }
         }
         .animation(reduce || forced ? nil : .smooth(duration: 0.3), value: menuOpen)
+        .overlay(alignment: .bottomLeading) {
+            Color.clear.frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier("chrome.mesh")
+                .accessibilityValue("peers:\(session.game?.mesh?.peerCount ?? 1)")
+        }
         #if DEBUG
         .task { await ShellLaunch.demoShotIfRequested(session.game) }
         #endif
     }
 
     private var menuButton: some View {
-        Button { menuOpen = true } label: {
+        Button { session.isMenuOpen = true } label: {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
@@ -79,19 +86,22 @@ struct InGameChrome: View {
 
     private var menu: some View {
         ZStack(alignment: .bottom) {
-            Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { menuOpen = false }
+            Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { session.isMenuOpen = false }
                 .accessibilityHidden(true)
-            HStack(spacing: 16) {
-                menuAction("Resume", symbol: "play.fill", tint: SBColor.ink, id: "chrome.resume") { menuOpen = false }
-                if session.game != nil {
-                    menuAction("End game", symbol: "flag.checkered", tint: SBColor.danger, id: "chrome.endGame") {
-                        menuOpen = false
-                        router.endGame()
-                    }
-                } else {
-                    menuAction("Stop", symbol: "stop.fill", tint: SBColor.danger, id: "chrome.stop") {
-                        menuOpen = false
-                        router.stopTraining()
+            VStack(spacing: 16) {
+                if let game = session.game, game.hasLineup { OrderEditor(game: game) }
+                HStack(spacing: 16) {
+                    menuAction("Resume", symbol: "play.fill", tint: SBColor.ink, id: "chrome.resume") { session.isMenuOpen = false }
+                    if session.game != nil {
+                        menuAction("End game", symbol: "flag.checkered", tint: SBColor.danger, id: "chrome.endGame") {
+                            session.isMenuOpen = false
+                            router.endGame()
+                        }
+                    } else {
+                        menuAction("Stop", symbol: "stop.fill", tint: SBColor.danger, id: "chrome.stop") {
+                            session.isMenuOpen = false
+                            router.stopTraining()
+                        }
                     }
                 }
             }
@@ -146,5 +156,47 @@ struct TurnDiscs: View {
         .accessibilityValue(active ? "shooting" : "waiting")
         .accessibilityHint(active ? "" : "Double tap to give them the turn")
         .accessibilityIdentifier("chrome.team.\(team)")
+    }
+}
+
+/// Mid-game shooting order (SPEC §4): tap one player, then another on the same team, to swap them.
+/// Only inside the menu, which can't open while anyone aims.
+struct OrderEditor: View {
+    let game: GameSessionModel
+    @State private var picked: (team: Int, slot: Int)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(0..<game.teams.count, id: \.self) { t in
+                HStack(spacing: 12) {
+                    TeamRing(team: t, size: 16)
+                    ForEach(Array(game.teams[t].enumerated()), id: \.element.id) { i, p in
+                        let isPicked = picked.map { $0.team == t && $0.slot == i } ?? false
+                        Button {
+                            if let pk = picked, pk.team == t {
+                                game.swap(team: t, pk.slot, i)
+                                picked = nil
+                            } else {
+                                picked = (t, i)
+                            }
+                        } label: {
+                            SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 44, team: t)
+                                .overlay(Circle().stroke(SBColor.ink, lineWidth: isPicked ? 3 : 0).padding(-8))
+                                .frame(width: 56, height: 56)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(ShellPressStyle())
+                        .accessibilityLabel("\(p.name), team \(GameSetupModel.teamLetter(t)), position \(i + 1)")
+                        .accessibilityHint("Tap another player on this team to swap")
+                        .accessibilityIdentifier("chrome.order.\(t).\(i)")
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.bg.opacity(0.6)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chrome.order")
     }
 }

@@ -56,20 +56,22 @@ enum SetupIssue: Hashable, Sendable {
 @MainActor @Observable
 final class GameSetupModel {
     var ruleSet: RuleSetID { didSet { readvertise() } }
-    var tableSize: TableSize
+    var tableSize: TableSize { didSet { readvertise() } }
     let measuredTable: TableSize?
     private(set) var seats: [[ShellPlayer?]] = [[nil], [nil]] { didSet { readvertise() } }
     private(set) var rosterPlayers: [ShellPlayer]
     private(set) var joinedPhones: [NearbyPhone] = []
     private(set) var blockedStartCount = 0
     private(set) var isHosting = false
+    /// Start is one-shot: a second tap can't mint another session tag or a second Live.
+    private(set) var hasStarted = false
 
     @ObservationIgnored private let roster: any RosterStore
     @ObservationIgnored private let mesh: (any GameLobbyMesh)?
     @ObservationIgnored private var guestCount = 0
     @ObservationIgnored var onStart: ((GameConfig) -> Void)?
     /// Advertised id of this phone's game.
-    @ObservationIgnored let gameID = UUID().uuidString
+    @ObservationIgnored let gameID = String(UUID().uuidString.prefix(8))
 
     static let maxPerTeam = 4
 
@@ -160,8 +162,11 @@ final class GameSetupModel {
 
     @discardableResult
     func start() -> GameConfig? {
+        guard !hasStarted else { return nil }
         guard isValid else { blockedStartCount += 1; return nil }
-        let cfg = GameConfig(ruleSet: ruleSet, tableSize: tableSize, teams: seats.map { $0.compactMap { $0 } })
+        hasStarted = true
+        let cfg = GameConfig(ruleSet: ruleSet, tableSize: tableSize, teams: seats.map { $0.compactMap { $0 } },
+                             sessionTag: isHosting ? LobbyWire.randomSessionTag() : nil)
         if isHosting { mesh?.announceStart(cfg) }
         onStart?(cfg)
         return cfg
@@ -175,7 +180,7 @@ final class GameSetupModel {
         mesh.onEvent = { [weak self] e in
             if case .phonesChanged(let phones) = e { self?.joinedPhones = phones }
         }
-        mesh.host(advert)
+        readvertise()
     }
 
     func endHosting() {
@@ -193,7 +198,13 @@ final class GameSetupModel {
 
     // MARK: Private
 
-    private func readvertise() { if isHosting { mesh?.host(advert) } }
+    var lineup: LobbyLineup { LobbyLineup(ruleSet: ruleSet, tableSize: tableSize, seats: seats) }
+
+    private func readvertise() {
+        guard isHosting, let mesh else { return }
+        mesh.host(advert)
+        mesh.publish(lineup: lineup)
+    }
 
     private func isValid(_ s: SeatRef) -> Bool {
         seats.indices.contains(s.team) && seats[s.team].indices.contains(s.slot)

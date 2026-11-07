@@ -193,6 +193,42 @@ import Rules
         #expect(mesh.announced == cfg)
     }
 
+    @Test func hostPublishesLineupOnEveryChange() {
+        let mesh = FakeGameLobbyMesh()
+        let (m, _) = make(mesh: mesh)
+        m.beginHosting()
+        #expect(mesh.lineup?.seats == [[nil], [nil]])
+        m.assign(ari, to: SeatRef(team: 0, slot: 0))
+        #expect(mesh.lineup?.seats == [[ari], [nil]])
+        m.ruleSet = .wpaNine
+        #expect(mesh.lineup?.ruleSet == .wpaNine)
+        m.tableSize = .nineFoot
+        #expect(mesh.lineup?.tableSize == .nineFoot)
+        #expect(mesh.advert?.seatsFilled == 1)
+    }
+
+    @Test func notHostingPublishesNothing() {
+        let mesh = FakeGameLobbyMesh()
+        let (m, _) = make(mesh: mesh)
+        m.assign(ari, to: SeatRef(team: 0, slot: 0))
+        #expect(mesh.lineup == nil)
+    }
+
+    @Test func startIsOneShot() {
+        let mesh = FakeGameLobbyMesh()
+        let (m, _) = make(mesh: mesh)
+        var starts = 0
+        m.onStart = { _ in starts += 1 }
+        m.beginHosting()
+        m.assign(ari, to: SeatRef(team: 0, slot: 0))
+        m.assign(sam, to: SeatRef(team: 1, slot: 0))
+        let first = m.start()
+        #expect(first != nil)
+        #expect(m.start() == nil)
+        #expect(starts == 1)
+        #expect(mesh.announced == first)
+    }
+
     @Test func endHostingStopsAdvertising() {
         let mesh = FakeGameLobbyMesh()
         let (m, _) = make(mesh: mesh)

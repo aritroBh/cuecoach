@@ -62,6 +62,7 @@ Each module: TDD worker → Codex review + Claude adversarial verification → f
 - [~] Adversarial QA audit of merged code: rules, persistence, privacy, geometry — .worktrees/audit (Sim E)
 Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) · AR v0 reviews: Codex (code) + Antigravity (UX) · YOLO detector (Codex) · Physics fixes (Codex) · VLM A/B: Apple FM vs Qwen3.5-2B vs Gemma-4-E2B (MLX, downloaded)
 - [~] Screens A: Settings (privacy delete, backup, rule defaults, table size) + Player profile (stats, radar, pro comp, history, Training tab) — .worktrees/screens-a (Sim F)
+- [~] App shell: Home (Game / Training), New game (rules, singles/teams D17, guests, table), Join nearby (real MPC lobby + fake), Training picker, in-game chrome, review → Home — .worktrees/app-shell (Sim G)
 - [~] Screens B: Session lobby (lineups D17, rule vote) + Post-shot card (D18) + Game review (timeline, diagram, win-prob, SotG, MVP) — .worktrees/screens-b (Sim G)
 - [~] Zero-tap automatic table locating (user at table: manual points mismatched) — AutoTableLocator, .worktrees/autocal (Claude; Codex review; workflow wf_ff3aa1d8)
 - [~] Core ML table-keypoint model: pipeline committed (6c16646); paused until the detector's package download finishes (shared cache, slow network)

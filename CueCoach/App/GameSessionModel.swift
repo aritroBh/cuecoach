@@ -15,15 +15,22 @@ struct SessionShot: Hashable, Sendable {
 @MainActor @Observable
 final class GameSessionModel {
     let config: GameConfig
-    let rotation: [ShellPlayer]
+    /// Current order per team (editable mid-game, SPEC §4).
+    private(set) var teams: [[ShellPlayer]]
+    /// D17 order: A1, B1, A2, B2, …
+    var rotation: [ShellPlayer] {
+        GameConfig(ruleSet: config.ruleSet, tableSize: config.tableSize, teams: teams).rotation
+    }
     private(set) var turnIndex = 0
     private(set) var shots: [SessionShot] = []
     var isMenuOpen = false
+    /// The game's mesh session when other phones joined (nil = this phone only).
+    var mesh: (any GameMeshLink)?
     @ObservationIgnored let badge = PostShotBadgeModel()
 
     init(config: GameConfig) {
         self.config = config
-        rotation = config.rotation
+        teams = config.teams
     }
 
     /// Joiner phones may not know the lineup yet (camera angle only).
@@ -33,7 +40,7 @@ final class GameSessionModel {
         rotation.isEmpty ? ShellPlayer(id: UUID(), name: "", symbol: "person.fill", colorName: "blue")
                          : rotation[turnIndex % rotation.count]
     }
-    var shootingTeam: Int { config.team(of: shooter) }
+    var shootingTeam: Int { teams.firstIndex { $0.contains(shooter) } ?? 0 }
     /// The other team's next player (shown dimmed).
     var waitingShooter: ShellPlayer? { rotation.isEmpty ? nil : rotation[(turnIndex + 1) % rotation.count] }
 
@@ -44,6 +51,14 @@ final class GameSessionModel {
     func handTurn(toTeam team: Int) {
         guard hasLineup, team != shootingTeam else { return }
         passTurn()
+    }
+
+    /// Swap two players within a team; the player shooting now keeps the turn.
+    func swap(team: Int, _ a: Int, _ b: Int) {
+        guard teams.indices.contains(team), teams[team].indices.contains(a), teams[team].indices.contains(b), a != b else { return }
+        let current = shooter
+        teams[team].swapAt(a, b)
+        if let i = rotation.firstIndex(of: current) { turnIndex = i }
     }
 
     func record(rating: DecisionRating) {
@@ -66,7 +81,7 @@ final class GameSessionModel {
 
     func reviewData() -> GameReviewData {
         func rp(_ p: ShellPlayer) -> ReviewPlayer { ReviewPlayer(id: p.id, name: p.name, symbol: p.symbol, colorName: p.colorName) }
-        var teams = config.teams.map { $0.map(rp) }
+        var teams = self.teams.map { $0.map(rp) }
         while teams.count < 2 { teams.append([]) }
         let reviewShots = shots.map {
             ReviewShot(id: $0.id, index: $0.index, shooter: rp($0.shooter), team: $0.team, rating: $0.rating,

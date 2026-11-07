@@ -8,10 +8,8 @@ import Rules
 @Suite struct JoinNearbyModelTests {
     let host = ShellPlayer(id: UUID(), name: "Sam", symbol: "bolt.fill", colorName: "orange")
     var game: NearbyGame { NearbyGame(id: "g1", host: host, ruleSet: .wpaNine, seatsFilled: 1, seatsTotal: 2) }
-    var config: GameConfig {
-        GameConfig(ruleSet: .wpaNine, tableSize: .nineFoot,
-                   teams: [[host], [ShellPlayer(id: UUID(), name: "Kim", symbol: "leaf.fill", colorName: "teal")]])
-    }
+    let kim = ShellPlayer(id: UUID(), name: "Kim", symbol: "leaf.fill", colorName: "teal")
+    var config: GameConfig { GameConfig(ruleSet: .wpaNine, tableSize: .nineFoot, teams: [[host], [kim]]) }
 
     func make() -> (JoinNearbyModel, FakeGameLobbyMesh) {
         let mesh = FakeGameLobbyMesh()
@@ -97,6 +95,30 @@ import Rules
         m.appear()
         mesh.emit(.started(gameID: "g1", config))
         #expect(started == nil)
+    }
+
+    @Test func hostLineupSyncsWhileWaiting() {
+        let (m, mesh) = make()
+        m.appear()
+        mesh.emit(.gamesChanged([game]))
+        m.join(game)
+        mesh.emit(.joined(gameID: "g1"))
+        mesh.emit(.lineupChanged(gameID: "g1", LobbyLineup(ruleSet: .wpaNine, tableSize: .nineFoot, seats: [[host], [nil]])))
+        #expect(m.lineup?.seats == [[host], [nil]])
+        mesh.emit(.lineupChanged(gameID: "g1", LobbyLineup(ruleSet: .wpaNine, tableSize: .nineFoot, seats: [[host], [kim]])))
+        #expect(m.lineup?.rotation.map(\.name) == ["Sam", "Kim"])
+        mesh.emit(.lineupChanged(gameID: "other", LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[nil], [nil]])))
+        #expect(m.lineup?.ruleSet == .wpaNine)
+    }
+
+    @Test func leavingClearsTheLineup() {
+        let (m, mesh) = make()
+        m.appear()
+        m.join(game)
+        mesh.emit(.joined(gameID: "g1"))
+        mesh.emit(.lineupChanged(gameID: "g1", LobbyLineup(ruleSet: .wpaNine, tableSize: .nineFoot, seats: [[host], [nil]])))
+        m.backToList()
+        #expect(m.lineup == nil)
     }
 
     @Test func permissionDeniedShowsUnavailable() {

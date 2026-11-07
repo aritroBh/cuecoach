@@ -19,6 +19,7 @@ struct StoredTableMeasurement: TableMeasurementSource {
     let measurement: any TableMeasurementSource
     let defaults: UserDefaults
     var reduceMotion = false
+    var meshFactory: ((UInt16) -> any GameMeshLink)? = { MeshGameLink(sessionTag: $0) }
 
     init(roster: any RosterStore, owners: any OwnerStore, settings: any SettingsStore, mesh: any GameLobbyMesh,
          measurement: any TableMeasurementSource, defaults: UserDefaults) {
@@ -28,8 +29,10 @@ struct StoredTableMeasurement: TableMeasurementSource {
 
     static func production() -> ShellEnvironment {
         let stack = (try? PersistenceStack()) ?? (try! PersistenceStack(inMemory: true))
-        return ShellEnvironment(roster: PersistenceRoster(stack: stack), owners: PersistenceOwnerStore(stack: stack),
-                                settings: PersistenceSettingsStore(stack: stack), mesh: OfflineGameLobby(),
+        let owners = PersistenceOwnerStore(stack: stack)
+        return ShellEnvironment(roster: PersistenceRoster(stack: stack), owners: owners,
+                                settings: PersistenceSettingsStore(stack: stack),
+                                mesh: MPCGameLobby(localName: { owners.owner?.name ?? "Phone" }),
                                 measurement: StoredTableMeasurement(), defaults: .standard)
     }
 

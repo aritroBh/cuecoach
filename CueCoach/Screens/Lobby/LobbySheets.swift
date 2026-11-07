@@ -16,6 +16,10 @@ struct JoinHostSheet: View {
                     model.browse()
                 }
             }
+            // ui-QA-10: the mode toggle above, the tappable nearby hosts below a divider.
+            if !model.nearbyHosts.isEmpty || model.meshAvailability == .discovering {
+                Divider().overlay(SBColor.ink.opacity(0.15))
+            }
             if model.nearbyHosts.isEmpty && model.meshAvailability == .discovering {
                 HStack(spacing: 16) {
                     ForEach(0..<3, id: \.self) { _ in Circle().fill(SBColor.ink.opacity(0.08)).frame(width: 64, height: 64) }
@@ -36,10 +40,11 @@ struct JoinHostSheet: View {
                     }
                 }
             }
-            Spacer()
         }
-        .padding(.top, 40)
+        .padding(.top, 32)
+        .padding(.bottom, 16)
         .padding(.horizontal, 16)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func bigButton(_ symbol: String, _ word: String, id: String, active: Bool = false,

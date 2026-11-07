@@ -34,15 +34,21 @@ public struct LobbyView: View {
                 }
                 .padding(.horizontal, 24)
             } else {
-                VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 32) {
-                            header; peersRow; teamsBlock; rulesBlock; tableBlock
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 24)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 32) {
+                        header; peersRow; teamsBlock; rulesBlock; tableBlock
                     }
-                    startBar.padding(.horizontal, 16).padding(.bottom, 8)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+                }
+                // ui-QA-5: content scrolls under the bar and fades instead of being sliced.
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    startBar.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 8)
+                        .background(alignment: .top) {
+                            LinearGradient(colors: [SBColor.bg.opacity(0), SBColor.bg], startPoint: .top, endPoint: .bottom)
+                                .frame(height: 32).offset(y: -32).allowsHitTesting(false)
+                        }
+                        .background(SBColor.bg)
                 }
             }
         }
@@ -50,10 +56,10 @@ public struct LobbyView: View {
         .sheet(item: $sheet) { s in
             Group {
                 switch s {
-                case .join: JoinHostSheet(model: model) { sheet = nil }.presentationDetents([.height(sheetHeight(320))])
+                case .join: JoinHostSheet(model: model) { sheet = nil }.presentationDetents([.height(sheetHeight(model.nearbyHosts.isEmpty && model.meshAvailability != .discovering ? 190 : 290))])
                 case .identity(let seat):
                     IdentitySheet(model: model, seat: seat) { sheet = nil }
-                        .presentationDetents([.height(sheetHeight(model.canCreatePlayers ? 380 : 240)), .large])
+                        .presentationDetents([.height(sheetHeight(model.canCreatePlayers ? 320 : 200)), .large])
                 case .meshDenied: MeshDeniedSheet { sheet = nil }.presentationDetents([.height(sheetHeight(280))])
                 }
             }
@@ -167,7 +173,8 @@ public struct LobbyView: View {
             .accessibilityLabel("Team \(LobbyModel.teamName(team))")
             ForEach(0..<model.teams[team].count, id: \.self) { slot in
                 SeatRow(model: model, seat: SeatRef(team: team, slot: slot),
-                        pulse: pulseSeat == SeatRef(team: team, slot: slot), reduceMotion: reduceMotion) {
+                        pulse: (pulseSeat ?? (model.isHost && !model.canStart ? model.blockingSeat : nil)) == SeatRef(team: team, slot: slot),
+                        reduceMotion: reduceMotion) {
                     sheet = .identity(SeatRef(team: team, slot: slot))
                 }
             }
@@ -269,14 +276,15 @@ public struct LobbyView: View {
                 Task { try? await Task.sleep(for: .seconds(0.8)); pulseSeat = nil }
             }
         } label: {
+            // ui-QA-4: locked = surface + lock glyph at full contrast (≥4.5:1); the blocking seat pulses above.
             HStack(spacing: 8) {
-                Image(systemName: "play.fill").font(SBFont.headline)
+                Image(systemName: model.canStart ? "play.fill" : "lock.fill").font(SBFont.headline)
                 Text("Start").font(SBFont.headline)
             }
-            .foregroundStyle(SBColor.bg)
+            .foregroundStyle(model.canStart ? SBColor.bg : SBColor.ink)
             .frame(maxWidth: .infinity, minHeight: 56)
-            .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.legal))
-            .opacity(model.canStart ? 1 : 0.4)
+            .background(RoundedRectangle(cornerRadius: 14).fill(model.canStart ? SBColor.legal : SBColor.surface))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(SBColor.ink.opacity(model.canStart ? 0 : 0.25), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Start")
@@ -476,16 +484,8 @@ private struct VoteDisc: View {
                     Image(systemName: symbol).font(SBFont.glyph(52, .regular))
                         .foregroundStyle(SBColor.ink)
                         .frame(width: 72, height: 72)
+                        // ui-QA-6: one selected treatment (the ring); votes are the dots below.
                         .overlay { if mine { Circle().strokeBorder(SBColor.legal, lineWidth: 3) } }
-                        .shadow(color: leading ? SBColor.legal.opacity(0.65) : .clear, radius: 12)
-                    if rule == .wpaEight {
-                        Image(systemName: "checkmark.seal").font(SBFont.glyph(16, .semibold))
-                            .foregroundStyle(SBColor.inkMuted).offset(x: 2, y: 2)
-                    }
-                    if mine {
-                        Image(systemName: "checkmark.circle.fill").font(SBFont.glyph(20, .semibold))
-                            .foregroundStyle(SBColor.legal, SBColor.bg).offset(x: 4, y: 52)
-                    }
                 }
                 Text(label).font(SBFont.caption).foregroundStyle(SBColor.ink).lineLimit(1)
                 HStack(spacing: 4) {

@@ -15,6 +15,8 @@ final class JoinNearbyModel {
 
     private(set) var state: State = .searching
     private(set) var games: [NearbyGame] = []
+    /// The joined host's lineup, mirrored live while waiting.
+    private(set) var lineup: LobbyLineup?
     @ObservationIgnored private let mesh: any GameLobbyMesh
     @ObservationIgnored var onStart: ((GameConfig) -> Void)?
 
@@ -39,6 +41,7 @@ final class JoinNearbyModel {
 
     func backToList() {
         leaveIfInGame()
+        lineup = nil
         state = .searching
     }
 
@@ -66,6 +69,8 @@ final class JoinNearbyModel {
             if case .joined(let g) = state, g.id == id { onStart?(config) }
         case .unavailable:
             state = .unavailable
+        case .lineupChanged(let id, let l):
+            if currentGame?.id == id { lineup = l }
         case .phonesChanged:
             break
         }
