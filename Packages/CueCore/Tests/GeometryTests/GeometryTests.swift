@@ -44,7 +44,7 @@ struct TableSpecTests {
     @Test func sixPocketsAtCornersAndSides() {
         let spec = TableSpec(size: .nineFoot)
         #expect(spec.pockets.count == 6)
-        #expect(spec.pocketCenter(.footLeft) == Vec2(0, 0) || spec.pocketCenter(.footLeft).length < 0.05)
+        #expect(spec.pocketCenter(.headLeft) == Vec2(0, 0))
         let side = spec.pocketCenter(.sideRight)
         #expect(abs(side.x - spec.length / 2) < 1e-9)
         #expect(Pocket.sideLeft.isSide && !Pocket.headRight.isSide)
@@ -81,4 +81,12 @@ struct TableStateTests {
         let back = try JSONDecoder().decode(TableState.self, from: data)
         #expect(back == state)
     }
+}
+
+// Head end (kitchen, head spot at L/4) and head pockets must be on the same end of the table.
+@Test func headPocketsAreAtHeadEnd() {
+    let t = TableSpec(size: .sevenFoot)
+    for p in [Pocket.headLeft, .headRight] { #expect(t.pocketCenter(p).x < t.headStringX) }
+    for p in [Pocket.footLeft, .footRight] { #expect(t.pocketCenter(p).x > t.footSpot.x - 0.001) }
+    #expect(t.pocketCenter(.headLeft).y == 0 && t.pocketCenter(.footLeft).y == 0)
 }

@@ -46,17 +46,18 @@ public struct TableSpec: Hashable, Codable, Sendable {
     /// or the midpoint of the long rail (sides).
     public func pocketCenter(_ p: Pocket) -> Vec2 {
         switch p {
-        case .footLeft: Vec2(0, 0)
-        case .footRight: Vec2(0, width)
+        // Head end (head spot, kitchen) is x = 0; foot end (foot spot, rack) is x = length.
+        case .headLeft: Vec2(0, 0)
+        case .headRight: Vec2(0, width)
         case .sideLeft: Vec2(length / 2, 0)
         case .sideRight: Vec2(length / 2, width)
-        case .headLeft: Vec2(length, 0)
-        case .headRight: Vec2(length, width)
+        case .footLeft: Vec2(length, 0)
+        case .footRight: Vec2(length, width)
         }
     }
 
     public var footSpot: Vec2 { Vec2(length * 0.75, width / 2) }
     public var headSpot: Vec2 { Vec2(length * 0.25, width / 2) }
-    /// Head string: line through the head spot, parallel to the head rail (kitchen = x > headString... see headStringX).
+    /// Head string: line through the head spot, parallel to the head rail (kitchen = x < headStringX, the head end at x = 0).
     public var headStringX: Double { length * 0.25 }
 }
