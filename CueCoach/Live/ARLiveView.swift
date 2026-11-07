@@ -1,5 +1,7 @@
 #if !targetEnvironment(simulator)
 import ARKit
+import Combine
+import CoreMotion
 import Geometry
 import RealityKit
 import simd
@@ -10,127 +12,249 @@ import UIKit
 /// Full-screen ARKit camera with the table overlay anchored in 3D.
 struct ARLiveView: UIViewRepresentable {
     let model: LiveModel
+    var locator: any TableLocating = FeltQuadLocator()
 
-    func makeCoordinator() -> ARLiveController { ARLiveController(model: model) }
+    func makeCoordinator() -> ARLiveController { ARLiveController(model: model, locator: locator) }
 
     func makeUIView(context: Context) -> ARView {
-        let c = context.coordinator
         let view = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
         view.renderOptions.insert(.disableMotionBlur)
         view.renderOptions.insert(.disableDepthOfField)
-        c.attach(view)
+        context.coordinator.attach(view)
         return view
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {}
 
-    static func dismantleUIView(_ uiView: ARView, coordinator: ARLiveController) {
-        coordinator.stop()
-    }
+    static func dismantleUIView(_ uiView: ARView, coordinator: ARLiveController) { coordinator.stop() }
 }
 
 @MainActor
 final class ARLiveController: NSObject {
     let model: LiveModel
+    private let locator: any TableLocating
     private weak var view: ARView?
     private let pipeline = PerceptionPipeline()
     private var tap: FrameTap?
-    private var cornerWorld: [SIMD3<Double>] = []
-    private var cornerAnchors: [AnchorEntity] = []
+    private var markers: CornerMarkers?
     private var overlay: TableOverlay?
-    private let haptic = UIImpactFeedbackGenerator(style: .light)
     private var thermalObserver: NSObjectProtocol?
+    private var sceneUpdate: Cancellable?
+    private var markerKey = ""
+    private var tier: CapturePolicy.Tier = .max
+    private let motion = CMMotionManager()
+    private var bump = BumpDetector()
+    private var wasAtRest = true
+    private var lastStatus: LiveStatus = .searching
+    private var planeFoundAt: Date?
 
-    init(model: LiveModel) {
+    init(model: LiveModel, locator: any TableLocating) {
         self.model = model
+        self.locator = locator
         super.init()
-        model.undo = { [weak self] in self?.undoCorner() }
-        model.recalibrate = { [weak self] in self?.resetCalibration() }
+        model.undo = { [weak self] in self?.undo() }
+        model.recalibrate = { [weak self] in self?.recalibrate() }
+        model.confirm = { [weak self] in self?.confirm() }
+        model.dragHandle = { [weak self] i, p in self?.drag(i, to: p) }
+        model.startTapMode = { [weak self] in self?.startTapMode() }
     }
 
     func attach(_ v: ARView) {
         view = v
-        let tap = FrameTap(pipeline: pipeline) { [weak self] result, status in
-            self?.handle(result, status)
-        }
+        let tap = FrameTap(pipeline: pipeline, locator: locator,
+                           onResult: { [weak self] r, s in self?.handle(r, s) },
+                           onEstimate: { [weak self] e in self?.handleEstimate(e) })
         self.tap = tap
         v.session.delegate = tap
         v.session.delegateQueue = tap.queue
-        let config = Self.configuration()
-        model.formatLabel = "\(Int(config.videoFormat.imageResolution.width))x\(Int(config.videoFormat.imageResolution.height))@\(config.videoFormat.framesPerSecond)"
-        v.session.run(config)
+        tier = CapturePolicy.Tier(ProcessInfo.processInfo.thermalState)
+        runSession(v)
         v.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
+        let hud = UILongPressGestureRecognizer(target: self, action: #selector(hudGesture(_:)))
+        hud.numberOfTouchesRequired = 3
+        hud.minimumPressDuration = 0.8
+        v.addGestureRecognizer(hud)
+        let m = CornerMarkers()
+        v.scene.addAnchor(m.anchor)
+        markers = m
+        sceneUpdate = v.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+            MainActor.assumeIsolated { self?.everyFrame() }
+        }
         thermalObserver = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.model.thermal = ProcessInfo.processInfo.thermalState }
+            MainActor.assumeIsolated { self?.thermalChanged() }
         }
+        startMotion()
+        tap.setMode(.locating)
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
     func stop() {
         view?.session.pause()
+        motion.stopDeviceMotionUpdates()
+        sceneUpdate?.cancel()
         UIApplication.shared.isIdleTimerDisabled = false
         if let o = thermalObserver { NotificationCenter.default.removeObserver(o) }
     }
 
-    /// Highest-fps, then highest-resolution format; LiDAR depth + person occlusion when supported.
-    static func configuration() -> ARWorldTrackingConfiguration {
+    @objc private func hudGesture(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        let d = UserDefaults.standard
+        d.set(!d.bool(forKey: "dev.hud"), forKey: "dev.hud")
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    // MARK: Session / formats / thermal
+
+    private func runSession(_ v: ARView) {
+        let config = Self.configuration(tier: tier)
+        let f = config.videoFormat
+        model.formatLabel = "\(Int(f.imageResolution.width))x\(Int(f.imageResolution.height))@\(f.framesPerSecond)"
+        tap?.setTier(tier)
+        v.session.run(config)  // no reset: the table anchor survives a format change
+    }
+
+    private func thermalChanged() {
+        let state = ProcessInfo.processInfo.thermalState
+        model.thermal = state
+        let newTier = CapturePolicy.Tier(state)
+        guard newTier != tier, let v = view else { return }
+        tier = newTier
+        runSession(v)
+    }
+
+    static func configuration(tier: CapturePolicy.Tier) -> ARWorldTrackingConfiguration {
         let c = ARWorldTrackingConfiguration()
         c.planeDetection = [.horizontal]
         c.environmentTexturing = .none
-        let formats = ARWorldTrackingConfiguration.supportedVideoFormats
-        if let best = formats.max(by: { a, b in
-            if a.framesPerSecond != b.framesPerSecond { return a.framesPerSecond < b.framesPerSecond }
-            return a.imageResolution.width * a.imageResolution.height < b.imageResolution.width * b.imageResolution.height
-        }) { c.videoFormat = best }
+        let formats = ARWorldTrackingConfiguration.supportedVideoFormats.filter { $0.captureDeviceType == .builtInWideAngleCamera }
+        func pf(_ f: ARConfiguration.VideoFormat) -> CapturePolicy.Format {
+            .init(width: Int(f.imageResolution.width), height: Int(f.imageResolution.height), fps: f.framesPerSecond)
+        }
+        let fourK = ARWorldTrackingConfiguration.recommendedVideoFormatFor4KResolution
+        if let pick = CapturePolicy.choose(formats.map(pf), tier: tier, fourK: fourK.map(pf)) {
+            if let k = fourK, pf(k) == pick { c.videoFormat = k }
+            else if let f = formats.first(where: { pf($0) == pick }) { c.videoFormat = f }
+        }
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            c.sceneReconstruction = .meshWithClassification
+        }
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics.insert(.sceneDepth) }
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) { c.frameSemantics.insert(.smoothedSceneDepth) }
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
             c.frameSemantics.insert(.personSegmentationWithDepth)
         }
         return c
     }
 
-    // MARK: Calibration taps
+    private func startMotion() {
+        guard motion.isDeviceMotionAvailable else { return }
+        motion.deviceMotionUpdateInterval = 1.0 / 20
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] dm, _ in
+            guard let dm else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.model.calibrated else { return }
+                let a = dm.userAcceleration, r = dm.rotationRate
+                let bumped = self.bump.update(userAcceleration: (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot(),
+                                              rotationRate: (r.x * r.x + r.y * r.y + r.z * r.z).squareRoot(),
+                                              at: dm.timestamp)
+                if self.model.bumped != bumped { self.model.bumped = bumped }
+            }
+        }
+    }
+
+    // MARK: Per render frame: handle positions + markers + state transitions
+
+    private func everyFrame() {
+        guard let v = view else { return }
+        let editor = model.editor
+        let alpha = model.manualCorrection || model.tapMode ? 1 : 0.25 + 0.75 * model.ghostConfidence
+        let key = "\(editor.revision)-\(Int(alpha * 10))-\(model.calibrated)"
+        if key != markerKey {
+            markerKey = key
+            markers?.rebuild(corners: editor.corners, perimeter: editor.perimeter, outlier: editor.outlier,
+                             alpha: alpha, hidden: model.calibrated)
+        }
+        if model.calibrated {
+            if !model.handles.isEmpty { model.handles = [] }
+        } else {
+            model.handles = editor.corners.map { w in v.project(w.f).map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) } }
+        }
+        let st = model.status
+        if st != lastStatus {
+            if st == .trackingLost || st == .phoneMoved { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
+            overlay?.setDimmed(st.showsRecalibratePulse)
+            lastStatus = st
+        }
+        // Tap-4 only as a last resort: after 12 s with a plane but no confident ghost.
+        if !model.calibrated, !model.showTapFallback, let t = planeFoundAt, Date().timeIntervalSince(t) > 12,
+           model.ghostConfidence < 0.5 {
+            model.showTapFallback = true
+        }
+    }
+
+    // MARK: Locator
+
+    private func handleEstimate(_ e: TableEstimate?) {
+        guard let e, !model.calibrated, !model.manualCorrection, !model.tapMode else { return }
+        model.editor.setProposal(e.corners)
+        model.ghostConfidence = e.confidence
+        if e.locked { confirm() }
+    }
+
+    // MARK: Corners (correction drag, tap-4 fallback)
 
     @objc private func tapped(_ g: UITapGestureRecognizer) {
-        guard let v = view, !model.calibrated, cornerWorld.count < 4 else { return }
-        let p = g.location(in: v)
-        let hit = v.raycast(from: p, allowing: .existingPlaneGeometry, alignment: .horizontal).first
-            ?? v.raycast(from: p, allowing: .estimatedPlane, alignment: .horizontal).first
-        guard let hit else { return }
-        let t = hit.worldTransform.columns.3
-        let w = SIMD3<Double>(Double(t.x), Double(t.y), Double(t.z))
-        cornerWorld.append(w)
-        let a = AnchorEntity(world: SIMD3<Float>(t.x, t.y, t.z))
-        a.addChild(ModelEntity(mesh: .generateSphere(radius: 0.012), materials: [UnlitMaterial(color: .white)]))
-        v.scene.addAnchor(a)
-        cornerAnchors.append(a)
-        haptic.impactOccurred()
-        model.cornersPlaced = cornerWorld.count
-        if cornerWorld.count == 4 { finishCalibration() }
-    }
-
-    private func undoCorner() {
-        guard !cornerWorld.isEmpty, !model.calibrated else { return }
-        cornerWorld.removeLast()
-        if let a = cornerAnchors.popLast() { view?.scene.removeAnchor(a) }
-        model.cornersPlaced = cornerWorld.count
-    }
-
-    private func finishCalibration() {
-        guard let v = view else { return }
-        let camT = v.cameraTransform.translation
-        let viewer = SIMD3<Double>(Double(camT.x), Double(camT.y), Double(camT.z))
-        // All corners onto one plane at their mean height (ARKit world is gravity-aligned).
-        let meanY = cornerWorld.map(\.y).reduce(0, +) / 4
-        let flat = cornerWorld.map { SIMD3($0.x, meanY, $0.z) }
-        guard let fit = TableFitter.fit(corners: flat, viewer: viewer) else {
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
-            resetCalibration()
+        guard let v = view, !model.calibrated else { return }
+        guard model.planeFound else {
+            model.notReadyTick += 1
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
             return
         }
-        for a in cornerAnchors { v.scene.removeAnchor(a) }
-        cornerAnchors = []
+        guard model.tapMode || model.editor.outlier != nil else { return }
+        guard let w = worldPoint(at: g.location(in: v), in: v) else {
+            model.notReadyTick += 1
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            return
+        }
+        if model.editor.add(w) { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+    }
+
+    private func startTapMode() {
+        model.tapMode = true
+        model.manualCorrection = true
+        model.editor.reset()
+    }
+
+    /// Screen → table-plane point: the corners' plane once known, else ARKit planes.
+    private func worldPoint(at p: CGPoint, in v: ARView) -> SIMD3<Double>? {
+        if let plane = model.editor.plane, let ray = v.ray(through: p) {
+            return plane.intersect(origin: ray.origin.d, direction: simd_normalize(ray.direction.d))
+        }
+        let hit = v.raycast(from: p, allowing: .existingPlaneGeometry, alignment: .horizontal).first
+            ?? v.raycast(from: p, allowing: .estimatedPlane, alignment: .horizontal).first
+        guard let t = hit?.worldTransform.columns.3 else { return nil }
+        return SIMD3(Double(t.x), Double(t.y), Double(t.z))
+    }
+
+    private func drag(_ i: Int, to p: CGPoint) {
+        guard let v = view, !model.calibrated, let w = worldPoint(at: p, in: v) else { return }
+        if !model.manualCorrection { model.manualCorrection = true }
+        model.editor.move(i, to: w)
+    }
+
+    private func undo() {
+        guard !model.calibrated else { return }
+        model.editor.undo()
+    }
+
+    private func confirm() {
+        guard let v = view, !model.calibrated else { return }
+        let t = v.cameraTransform.translation
+        guard let fit = model.editor.confirm(viewer: SIMD3(Double(t.x), Double(t.y), Double(t.z))) else {
+            if model.manualCorrection || model.tapMode { UINotificationFeedbackGenerator().notificationOccurred(.error) }
+            return
+        }
         let o = TableOverlay(frame: fit.frame)
         v.scene.addAnchor(o.anchor)
         overlay = o
@@ -139,34 +263,38 @@ final class ARLiveController: NSObject {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         let pipeline = pipeline, frame = fit.frame
         Task { await pipeline.setTable(frame) }
-        tap?.setActive(true)
+        tap?.setMode(.detecting)
     }
 
-    private func resetCalibration() {
-        tap?.setActive(false)
-        let pipeline = pipeline
-        Task { await pipeline.setTable(nil) }
+    private func recalibrate() {
+        tap?.setMode(.idle)
+        let pipeline = pipeline, locator = locator
         if let o = overlay { view?.scene.removeAnchor(o.anchor) }
         overlay = nil
-        for a in cornerAnchors { view?.scene.removeAnchor(a) }
-        cornerAnchors = []
-        cornerWorld = []
-        model.cornersPlaced = 0
-        model.calibrated = false
-        model.noteResult(nil)
+        model.clearCalibration()
+        planeFoundAt = model.planeFound ? Date() : nil
+        Task {
+            await pipeline.setTable(nil)
+            await locator.reset()
+            await MainActor.run { [weak self] in self?.tap?.setMode(.locating) }
+        }
     }
 
-    private var wasAtRest = true
+    // MARK: Results
 
     private func handle(_ r: PerceptionResult?, _ s: FrameTap.Status) {
-        model.planeFound = model.planeFound || s.planeFound
-        model.trackingOK = s.trackingOK
-        model.depthConfidence = s.depthConfidence
-        guard model.calibrated else { return }
+        if s.planeFound && !model.planeFound {
+            model.planeFound = true
+            planeFoundAt = Date()
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        if model.trackingOK != s.trackingOK { model.trackingOK = s.trackingOK }
+        if let d = s.depthConfidence { model.depthConfidence = d }
+        guard model.calibrated, s.isResult else { return }
         model.noteResult(r)
         overlay?.update(r)
         if let r {
-            if wasAtRest && !r.atRest && r.tracks.contains(where: { $0.confirmed && $0.speed > 0.3 }) {
+            if wasAtRest && !r.atRest && r.confirmed.contains(where: { $0.speed > 0.3 }) {
                 UIImpactFeedbackGenerator(style: .soft).impactOccurred()  // shot started (haptic only)
             }
             wasAtRest = r.atRest
@@ -175,20 +303,36 @@ final class ARLiveController: NSObject {
 }
 
 /// ARSession delegate on its own queue: turns ARFrames into small Sendable frames, drops frames while busy.
+/// Locating mode feeds the table locator; detecting mode feeds ball perception.
 final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
-    struct Status: Sendable { var planeFound: Bool; var trackingOK: Bool; var depthConfidence: Double? }
+    struct Status: Sendable { var planeFound: Bool; var trackingOK: Bool; var depthConfidence: Double?; var isResult = false }
+    enum Mode: Sendable { case idle, locating, detecting }
 
     let queue = DispatchQueue(label: "cuecoach.arframes", qos: .userInteractive)
     private let pipeline: PerceptionPipeline
+    private let locator: any TableLocating
     private let onResult: @MainActor (PerceptionResult?, Status) -> Void
-    private let state = Mutex((busy: false, active: false, planeFound: false, lastStatus: 0.0))
+    private let onEstimate: @MainActor (TableEstimate?) -> Void
+    private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
+                               interval: 1.0 / 30, width: 960))
 
-    init(pipeline: PerceptionPipeline, onResult: @escaping @MainActor (PerceptionResult?, Status) -> Void) {
+    init(pipeline: PerceptionPipeline, locator: any TableLocating,
+         onResult: @escaping @MainActor (PerceptionResult?, Status) -> Void,
+         onEstimate: @escaping @MainActor (TableEstimate?) -> Void) {
         self.pipeline = pipeline
+        self.locator = locator
         self.onResult = onResult
+        self.onEstimate = onEstimate
     }
 
-    func setActive(_ a: Bool) { state.withLock { $0.active = a } }
+    func setMode(_ m: Mode) { state.withLock { $0.mode = m } }
+
+    func setTier(_ t: CapturePolicy.Tier) {
+        state.withLock {
+            $0.interval = CapturePolicy.detectInterval(t)
+            $0.width = CapturePolicy.detectWidth(source: t == .max ? 3840 : 1920, tier: t)
+        }
+    }
 
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
         if anchors.contains(where: { ($0 as? ARPlaneAnchor)?.alignment == .horizontal }) {
@@ -197,43 +341,65 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        let (go, sendStatus, plane): (Bool, Bool, Bool) = state.withLock { s in
+        let (mode, sendStatus, plane, width): (Mode, Bool, Bool, Int) = state.withLock { s in
             let now = frame.timestamp
             let status = now - s.lastStatus > 0.25
             if status { s.lastStatus = now }
-            guard s.active, !s.busy else { return (false, status, s.planeFound) }
+            let interval = s.mode == .locating ? 0.2 : s.interval
+            guard s.mode != .idle, !s.busy, now - s.lastRun >= interval * 0.9 else { return (.idle, status, s.planeFound, 0) }
+            if s.mode == .locating && !s.planeFound { return (.idle, status, s.planeFound, 0) }
             s.busy = true
-            return (true, status, s.planeFound)
+            s.lastRun = now
+            return (s.mode, status, s.planeFound, s.width)
         }
         let tracking: Bool = { if case .normal = frame.camera.trackingState { return true } else { return false } }()
         let status = Status(planeFound: plane, trackingOK: tracking,
                             depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil)
-        let onResult = onResult
-        guard go else {
+        let onResult = onResult, onEstimate = onEstimate
+        guard mode != .idle else {
             if sendStatus { Task { @MainActor in onResult(nil, status) } }
             return
         }
-        guard let img = PixelImage(pixelBuffer: frame.capturedImage, maxWidth: 960) else {
+        guard let img = PixelImage(pixelBuffer: frame.capturedImage, maxWidth: mode == .locating ? 960 : width) else {
             state.withLock { $0.busy = false }
             return
         }
-        let k = frame.camera.intrinsics, res = frame.camera.imageResolution
-        let intr = CameraIntrinsics(fx: Double(k[0][0]), fy: Double(k[1][1]), cx: Double(k[2][0]), cy: Double(k[2][1]),
-                                    width: Double(res.width), height: Double(res.height))
-        let cam = CameraModel(intrinsics: intr, cameraToWorld: frame.camera.transform.toDouble)
+        let cam = CameraModel(arCamera: frame.camera)
+        if mode == .locating {
+            let planes = frame.anchors.compactMap { a -> LocatorPlane? in
+                guard let p = a as? ARPlaneAnchor, p.alignment == .horizontal else { return nil }
+                let c = p.transform * SIMD4<Float>(p.center, 1)
+                let ext = p.planeExtent
+                return LocatorPlane(center: SIMD3(Double(c.x), Double(c.y), Double(c.z)),
+                                    extent: SIMD2(Double(ext.width), Double(ext.height)),
+                                    isTable: p.classification == .table)
+            }
+            let lf = LocatorFrame(image: img, camera: cam, planes: planes, timestamp: frame.timestamp)
+            let locator = locator
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let e = await locator.ingest(lf)
+                self?.state.withLock { $0.busy = false }
+                await MainActor.run { onEstimate(e); onResult(nil, status) }
+            }
+            return
+        }
         let pf = PerceptionFrame(image: img, camera: cam, timestamp: frame.timestamp)
         let pipeline = pipeline
+        var rs = status
+        rs.isResult = true
+        let resultStatus = rs
         Task.detached(priority: .userInitiated) { [weak self] in
             let r = await pipeline.process(pf)
             self?.state.withLock { $0.busy = false }
-            await MainActor.run { onResult(r, status) }
+            await MainActor.run { onResult(r, resultStatus) }
         }
     }
 
     func session(_ session: ARSession, didFailWithError error: Error) {
-        // Fall back to a plain configuration (e.g. a semantics combination the device refuses).
+        // Drop the heavy extras, keep LiDAR depth.
         let c = ARWorldTrackingConfiguration()
         c.planeDetection = [.horizontal]
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics = [.sceneDepth] }
         session.run(c)
     }
 
@@ -255,72 +421,153 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     }
 }
 
+/// Glowing corner markers on the cloth + the ghost outline between them while locating/correcting.
+@MainActor
+final class CornerMarkers {
+    let anchor = AnchorEntity(world: SIMD3<Float>(0, 0, 0))
+
+    func rebuild(corners: [SIMD3<Double>], perimeter: [SIMD3<Double>], outlier: Int?, alpha: Double, hidden: Bool) {
+        for c in anchor.children.map({ $0 }) { c.removeFromParent() }
+        guard !hidden else { return }
+        for (i, w) in corners.enumerated() {
+            let color = i == outlier ? TableOverlay.red : TableOverlay.green
+            let a = i == outlier ? 1 : alpha
+            let dot = ModelEntity(mesh: .generateSphere(radius: 0.018), materials: [OverlayMesh.material(color, a)])
+            dot.position = w.f + [0, 0.02, 0]
+            anchor.addChild(dot)
+            let halo = ModelEntity(mesh: OverlayMesh.ring(inner: 0.035, outer: 0.05), materials: [OverlayMesh.material(color, a * 0.8)])
+            halo.position = w.f + [0, 0.003, 0]
+            halo.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
+            anchor.addChild(halo)
+        }
+        let ring = perimeter
+        let closed = ring.count == 4
+        let n = closed ? 4 : max(0, ring.count - 1)
+        for i in 0..<n {
+            let a = ring[i], b = ring[(i + 1) % ring.count]
+            anchor.addChild(OverlayMesh.segment3D(from: a.f + [0, 0.004, 0], to: b.f + [0, 0.004, 0], width: 0.008,
+                                                  material: OverlayMesh.material(.white, alpha * 0.85)))
+        }
+    }
+}
+
 /// RealityKit entities in table coordinates (x length, y width, z up).
 @MainActor
 final class TableOverlay {
     let anchor: AnchorEntity
     private let spec: TableSpec
+    private var outline: [ModelEntity] = []
     private var ballRings: [ModelEntity] = []
     private let cueLine: ModelEntity
     private let objectLine: ModelEntity
     private let ghost: ModelEntity
+    private var dashes: [ModelEntity] = []
     private let R = Float(TableSpec.ballRadius)
+    private var dimmed = false
+
+    static let green = UIColor(red: 0.29, green: 0.87, blue: 0.5, alpha: 1)    // #4ADE80
+    static let yellow = UIColor(red: 0.98, green: 0.8, blue: 0.08, alpha: 1)   // #FACC15
+    static let red = UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)     // #F87171
 
     init(frame: TableFrame) {
         spec = frame.spec
         anchor = AnchorEntity(world: frame.tableToWorld.toFloat)
         let L = Float(spec.length), W = Float(spec.width)
-        let outline = OverlayMesh.material(.white, 0.55)
         let edges: [(SIMD2<Float>, SIMD2<Float>)] = [([0, 0], [L, 0]), ([L, 0], [L, W]), ([L, W], [0, W]), ([0, W], [0, 0])]
-        for (a, b) in edges { anchor.addChild(OverlayMesh.segment(from: a, to: b, z: 0.002, width: 0.006, material: outline)) }
-        let pocketMat = OverlayMesh.material(.white, 0.7)
+        for (a, b) in edges {
+            let e = OverlayMesh.segment(from: a, to: b, z: 0.002, width: 0.006, material: OverlayMesh.material(.white, 0.55))
+            outline.append(e); anchor.addChild(e)
+        }
         for p in spec.pockets {
             let c = spec.pocketCenter(p)
             let r = Float((p.isSide ? spec.sideMouth : spec.cornerMouth) / 2)
-            let e = ModelEntity(mesh: OverlayMesh.ring(inner: r - 0.006, outer: r), materials: [pocketMat])
+            let e = ModelEntity(mesh: OverlayMesh.ring(inner: r - 0.006, outer: r), materials: [OverlayMesh.material(.white, 0.7)])
             e.position = [Float(c.x), Float(c.y), 0.003]
-            anchor.addChild(e)
+            outline.append(e); anchor.addChild(e)
         }
-        let ringMesh = OverlayMesh.ring(inner: R * 1.12, outer: R * 1.32)
+        let ringMesh = OverlayMesh.ring(inner: R * 1.12, outer: R * 1.34)
         for _ in 0..<16 {
             let e = ModelEntity(mesh: ringMesh, materials: [OverlayMesh.material(.white, 0.45)])
             e.isEnabled = false
-            anchor.addChild(e)
-            ballRings.append(e)
+            anchor.addChild(e); ballRings.append(e)
         }
         cueLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.9))
-        objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.5))
-        ghost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.92, outer: R), materials: [OverlayMesh.material(.white, 0.9)])
+        objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
+        ghost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.9, outer: R), materials: [OverlayMesh.material(.white, 0.9)])
         for e in [cueLine, objectLine, ghost] { e.isEnabled = false; anchor.addChild(e) }
+        for _ in 0..<14 {
+            let d = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.45))
+            d.isEnabled = false
+            anchor.addChild(d); dashes.append(d)
+        }
+    }
+
+    func setDimmed(_ d: Bool) {
+        dimmed = d
+        for e in outline { e.model?.materials = [OverlayMesh.material(.white, d ? 0.2 : 0.6)] }
+        if d { for e in ballRings + dashes + [cueLine, objectLine, ghost] { e.isEnabled = false } }
     }
 
     func update(_ r: PerceptionResult?) {
-        let tracks = (r?.tracks ?? []).filter(\.confirmed)
+        guard !dimmed else { return }
+        let tracks = r?.confirmed ?? []
         for (i, ring) in ballRings.enumerated() {
             guard i < tracks.count else { ring.isEnabled = false; continue }
             let t = tracks[i]
             ring.isEnabled = true
             ring.position = [Float(t.position.x), Float(t.position.y), 0.004]
-            let cue = t.kind == .cue
-            ring.model?.materials = [OverlayMesh.material(cue ? .white : .white, cue ? 0.95 : 0.4)]
-            ring.scale = cue ? [1.1, 1.1, 1] : [1, 1, 1]
+            let (color, alpha): (UIColor, Double) = switch r?.marks[t.id] ?? .unknown {
+            case .cue: (.white, 0.95)
+            case .legal: (Self.green, 0.85)
+            case .illegal: (Self.red, 0.8)
+            case .unknown: (.white, 0.35)
+            }
+            ring.model?.materials = [OverlayMesh.material(color, alpha)]
+            ring.scale = r?.marks[t.id] == .cue ? [1.1, 1.1, 1] : [1, 1, 1]
         }
         guard let aim = r?.aim else {
-            for e in [cueLine, objectLine, ghost] { e.isEnabled = false }
+            for e in dashes + [cueLine, objectLine, ghost] { e.isEnabled = false }
             return
         }
-        let color: UIColor = aim.ease > 0.35 ? UIColor(red: 0.29, green: 0.87, blue: 0.5, alpha: 1)
-            : aim.ease > 0.15 ? UIColor(red: 0.98, green: 0.8, blue: 0.08, alpha: 1)
-            : UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)
-        OverlayMesh.place(cueLine, from: aim.cue.f, to: aim.ghost.f, z: R)
-        OverlayMesh.place(objectLine, from: aim.object.f, to: aim.pocketPoint.f, z: R)
-        objectLine.model?.materials = [OverlayMesh.material(color, 0.75)]
+        let color = aim.ease > 0.35 ? Self.green : aim.ease > 0.15 ? Self.yellow : Self.red
+        OverlayMesh.place(cueLine, from: aim.cue.f, to: aim.ghost.f, z: R)                 // Line 1
+        OverlayMesh.place(objectLine, from: aim.object.f, to: aim.pocketPoint.f, z: R)     // Line 2 (throw-compensated)
+        objectLine.model?.materials = [OverlayMesh.material(color, 0.85)]
         ghost.position = [Float(aim.ghost.x), Float(aim.ghost.y), R]
         for e in [cueLine, objectLine, ghost] { e.isEnabled = true }
+        // Line 3: dashed cue path after contact.
+        var segs: [(SIMD2<Float>, SIMD2<Float>)] = []
+        if aim.cuePath.count >= 2 {
+            let a = aim.cuePath[0].f, b = aim.cuePath[aim.cuePath.count - 1].f
+            let len = simd_length(b - a), dash: Float = 0.04, gap: Float = 0.03
+            if len > 0.01 {
+                let u = (b - a) / len
+                var s = Float(TableSpec.ballRadius)
+                while s < len && segs.count < dashes.count {
+                    segs.append((a + u * s, a + u * min(len, s + dash)))
+                    s += dash + gap
+                }
+            }
+        }
+        for (i, d) in dashes.enumerated() {
+            if i < segs.count { OverlayMesh.place(d, from: segs[i].0, to: segs[i].1, z: R); d.isEnabled = true }
+            else { d.isEnabled = false }
+        }
     }
 }
 
 private extension Vec2 { var f: SIMD2<Float> { [Float(x), Float(y)] } }
+private extension SIMD3<Double> { var f: SIMD3<Float> { SIMD3<Float>(Float(x), Float(y), Float(z)) } }
+private extension SIMD3<Float> { var d: SIMD3<Double> { SIMD3<Double>(Double(x), Double(y), Double(z)) } }
+
+extension CameraModel {
+    init(arCamera c: ARCamera) {
+        let k = c.intrinsics, res = c.imageResolution
+        self.init(intrinsics: CameraIntrinsics(fx: Double(k[0][0]), fy: Double(k[1][1]), cx: Double(k[2][0]),
+                                               cy: Double(k[2][1]), width: Double(res.width), height: Double(res.height)),
+                  cameraToWorld: c.transform.toDouble)
+    }
+}
 
 @MainActor
 enum OverlayMesh {
@@ -341,8 +588,8 @@ enum OverlayMesh {
         }
         for i in 0..<segments {
             let a = UInt32(2 * i), b = a + 1, c = UInt32(2 * ((i + 1) % segments)), d = c + 1
-            idx += [a, b, d, a, d, c]   // up
-            idx += [a, d, b, a, c, d]   // down
+            idx += [a, b, d, a, d, c]
+            idx += [a, d, b, a, c, d]
         }
         var desc = MeshDescriptor(name: "ring")
         desc.positions = MeshBuffers.Positions(pos)
@@ -362,6 +609,15 @@ enum OverlayMesh {
         e.position = [(a.x + b.x) / 2, (a.y + b.y) / 2, z]
         e.orientation = simd_quatf(angle: atan2(d.y, d.x), axis: [0, 0, 1])
         e.scale = [len, 1, 1]
+    }
+
+    static func segment3D(from a: SIMD3<Float>, to b: SIMD3<Float>, width: Float, material: UnlitMaterial) -> ModelEntity {
+        let e = ModelEntity(mesh: .generateBox(size: [1, width * 0.5, width]), materials: [material])
+        let d = b - a, len = max(0.001, simd_length(d))
+        e.position = (a + b) / 2
+        e.orientation = simd_quatf(from: [1, 0, 0], to: d / len)
+        e.scale = [len, 1, 1]
+        return e
     }
 }
 #endif

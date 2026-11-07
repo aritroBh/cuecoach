@@ -2,6 +2,7 @@ import Geometry
 import SwiftUI
 
 /// Live camera screen. Device: ARKit + RealityKit. Simulator / `-cuecoach.replay`: synthetic replay.
+/// No text anywhere except the dev HUD (D9, 3-finger long-press).
 struct LiveScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model = LiveModel()
@@ -19,11 +20,13 @@ struct LiveScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             content.ignoresSafeArea()
+            HandlesLayer(model: model).ignoresSafeArea()
             controls
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .accessibilityIdentifier("live.view")
+        .onAppear { if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true } }
     }
 
     @ViewBuilder private var content: some View {
@@ -35,70 +38,204 @@ struct LiveScreen: View {
     }
 
     private var controls: some View {
-        VStack {
+        let st = model.status
+        return VStack(spacing: 12) {
             HStack(alignment: .top) {
                 CircleButton(symbol: "xmark", id: "live.close") { dismiss() }
                 Spacer()
                 if !model.calibrated {
-                    CornerGlyph(placed: model.cornersPlaced, searching: !model.planeFound && !Self.useReplay)
-                        .accessibilityIdentifier("live.cornerGlyph")
-                        .accessibilityValue("\(model.cornersPlaced)")
+                    CoachingGlyph(status: st, confidence: model.ghostConfidence, placed: model.editor.corners.count,
+                                  tapMode: model.tapMode, shake: model.notReadyTick)
+                        .accessibilityIdentifier("live.coach")
+                        .accessibilityValue("\(st)")
                 }
                 Spacer()
-                CircleButton(symbol: "ladybug", id: "live.devHUD", dim: !showHUD) { showHUD.toggle() }
+                Color.clear.frame(width: 56, height: 56)
             }
             if showHUD { DebugHUD(model: model).frame(maxWidth: .infinity, alignment: .trailing) }
             Spacer()
-            HStack {
-                if model.calibrated {
-                    CircleButton(symbol: "scope", id: "live.recalibrate", tint: model.trackingOK ? .white : .yellow) {
-                        model.recalibrate()
-                    }
-                } else if model.cornersPlaced > 0 {
-                    CircleButton(symbol: "arrow.uturn.backward", id: "live.undo") { model.undo() }
+            if st.showsRecalibratePulse {
+                PulsingButton(symbol: "scope", tint: Color(red: 0.98, green: 0.8, blue: 0.08), id: "live.recalibratePulse") {
+                    model.recalibrate()
                 }
                 Spacer()
+            }
+            HStack(alignment: .bottom, spacing: 16) {
+                if model.calibrated {
+                    CircleButton(symbol: "scope", id: "live.recalibrate") { model.recalibrate() }
+                } else if model.tapMode && !model.editor.corners.isEmpty {
+                    CircleButton(symbol: "arrow.uturn.backward", id: "live.undo") { model.undo() }
+                } else if model.showTapFallback && !model.tapMode {
+                    CircleButton(symbol: "hand.tap", id: "live.tapMode", dim: true) { model.startTapMode() }
+                }
+                Spacer()
+                if !model.calibrated && model.editor.isComplete && (model.manualCorrection || model.tapMode) {
+                    ConfirmButton { model.confirm() }
+                }
+                if model.calibrated, model.status == .calibrated, let aim = model.aim {
+                    ShotDock(spin: aim.spin, power: aim.power)
+                }
             }
         }
         .padding(16)
         .overlay(alignment: .bottomTrailing) {
-            // Machine-readable state for UI tests (not visible).
             Color.clear.frame(width: 1, height: 1)
                 .accessibilityElement()
                 .accessibilityIdentifier("live.overlay")
-                .accessibilityValue("calibrated:\(model.calibrated) balls:\(model.ballCount) aim:\(model.hasAim)")
+                .accessibilityValue("calibrated:\(model.calibrated) balls:\(model.ballCount) aim:\(model.aim != nil)")
         }
     }
 }
 
-/// Table glyph: 2:1 outline with 4 corner dots; placed corners fill, the next one pulses. No text.
-struct CornerGlyph: View {
+/// Top-centre coaching: sweep animation while searching; a ghost table filling as the locator converges;
+/// corner dots (order-free) in tap mode. Shakes when a tap can't be used yet.
+struct CoachingGlyph: View {
+    var status: LiveStatus
+    var confidence: Double
     var placed: Int
-    var searching: Bool
-    @State private var pulse = false
+    var tapMode: Bool
+    var shake: Int
+    @State private var sweep = false
+    @State private var shakeOffset: CGFloat = 0
+
+    private let green = Color(red: 0.29, green: 0.87, blue: 0.5)
 
     var body: some View {
         let w: CGFloat = 112, h: CGFloat = 56
         ZStack {
-            RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(searching ? 0.35 : 0.8), lineWidth: 2)
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(status == .searching ? Color.white.opacity(0.4) : green.opacity(0.4 + 0.6 * confidence), lineWidth: 2)
                 .frame(width: w, height: h)
-            ForEach(0..<4, id: \.self) { i in
-                let pos = [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: w, y: h), CGPoint(x: 0, y: h)][i]
-                Circle()
-                    .fill(i < placed ? Color.white : Color.white.opacity(0.15))
-                    .overlay(Circle().stroke(.white, lineWidth: i == placed ? 2 : 0))
-                    .frame(width: 16, height: 16)
-                    .scaleEffect(i == placed && pulse ? 1.35 : 1)
-                    .position(x: pos.x + 8, y: pos.y + 8)
-            }
-            if searching {
-                Image(systemName: "viewfinder").font(.system(size: 22, weight: .semibold)).foregroundStyle(.white.opacity(0.8))
+            if status == .searching {
+                Image(systemName: "iphone.gen3")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .rotationEffect(.degrees(-20))
+                    .offset(x: sweep ? 40 : -40)
+            } else if tapMode {
+                ForEach(0..<4, id: \.self) { i in
+                    let pos = [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: w, y: h), CGPoint(x: 0, y: h)][i]
+                    Circle().fill(i < placed ? green : Color.white.opacity(0.2))
+                        .frame(width: 16, height: 16)
+                        .position(x: pos.x + 8, y: pos.y + 8)
+                }
+            } else {
+                // Ghost table converging: felt fills with confidence.
+                RoundedRectangle(cornerRadius: 6).fill(green.opacity(0.35 * confidence)).frame(width: w, height: h)
+                Image(systemName: confidence >= 1 ? "checkmark" : "viewfinder")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(green)
+                    .symbolEffect(.pulse, isActive: confidence < 1)
             }
         }
         .frame(width: w + 16, height: h + 16)
         .padding(10)
         .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 20))
-        .onAppear { withAnimation(.easeInOut(duration: 0.8).repeatForever()) { pulse = true } }
+        .offset(x: shakeOffset)
+        .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever()) { sweep = true } }
+        .onChange(of: shake) {
+            withAnimation(.spring(response: 0.12, dampingFraction: 0.2)) { shakeOffset = 14 }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.4).delay(0.12)) { shakeOffset = 0 }
+        }
+    }
+}
+
+/// Draggable corner handles (correction only). The finger drags from where it lands, so it never hides the centre.
+struct HandlesLayer: View {
+    let model: LiveModel
+    @State private var dragStart: [Int: CGPoint] = [:]
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(model.handles.enumerated()), id: \.offset) { i, p in
+                if let p, !model.calibrated {
+                    let bad = model.editor.outlier == i
+                    let color = bad ? Color(red: 0.97, green: 0.44, blue: 0.44) : Color(red: 0.29, green: 0.87, blue: 0.5)
+                    ZStack {
+                        Circle().stroke(color, lineWidth: 3).frame(width: 44, height: 44)
+                        Circle().fill(color).frame(width: 6, height: 6)
+                    }
+                    .frame(width: 64, height: 64)
+                    .contentShape(Circle())
+                    .scaleEffect(bad && pulse ? 1.25 : 1)
+                    .opacity(model.manualCorrection || model.tapMode || bad ? 1 : 0.35 + 0.65 * model.ghostConfidence)
+                    .position(p)
+                    .gesture(DragGesture(minimumDistance: 2)
+                        .onChanged { g in
+                            let start = dragStart[i] ?? p
+                            if dragStart[i] == nil { dragStart[i] = p }
+                            model.dragHandle(i, CGPoint(x: start.x + g.translation.width, y: start.y + g.translation.height))
+                        }
+                        .onEnded { _ in dragStart[i] = nil; UIImpactFeedbackGenerator(style: .light).impactOccurred() })
+                    .accessibilityIdentifier("calib.handle.\(i)")
+                }
+            }
+        }
+        .onAppear { withAnimation(.easeInOut(duration: 0.5).repeatForever()) { pulse = true } }
+    }
+}
+
+/// Suggested spin (cue-ball face with a strike dot) and power (5-step meter). Suggestions only; no numbers.
+struct ShotDock: View {
+    var spin: SpinSuggestion
+    var power: Int
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            ZStack {
+                Circle().fill(.white.opacity(0.92))
+                Circle().stroke(.black.opacity(0.15), lineWidth: 1)
+                Circle().fill(Color(red: 0.97, green: 0.44, blue: 0.44))
+                    .frame(width: 12, height: 12)
+                    .offset(x: CGFloat(spin.tip.x) * 52, y: CGFloat(-spin.tip.y) * 52)
+            }
+            .frame(width: 64, height: 64)
+            VStack(spacing: 4) {
+                ForEach((1...5).reversed(), id: \.self) { step in
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(step <= power ? Color.white : Color.white.opacity(0.2))
+                        .frame(width: 20, height: 9)
+                }
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 20))
+        .accessibilityIdentifier("live.shotDock")
+    }
+}
+
+struct ConfirmButton: View {
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(width: 72, height: 72)
+                .background(Circle().fill(Color(red: 0.29, green: 0.87, blue: 0.5)))
+        }
+        .accessibilityIdentifier("calib.confirm")
+    }
+}
+
+struct PulsingButton: View {
+    var symbol: String
+    var tint: Color
+    var id: String
+    var action: () -> Void
+    @State private var on = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 96, height: 96)
+                .background(.ultraThinMaterial.opacity(0.7), in: Circle())
+                .overlay(Circle().stroke(tint, lineWidth: 3).scaleEffect(on ? 1.3 : 1).opacity(on ? 0 : 0.9))
+        }
+        .accessibilityIdentifier(id)
+        .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true } }
     }
 }
 
@@ -112,9 +249,9 @@ struct CircleButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(tint.opacity(dim ? 0.45 : 1))
-                .frame(width: 56, height: 56)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(tint.opacity(dim ? 0.55 : 1))
+                .frame(width: 60, height: 60)
                 .background(.ultraThinMaterial.opacity(0.7), in: Circle())
         }
         .accessibilityIdentifier(id)
@@ -127,9 +264,10 @@ struct DebugHUD: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
             Text("\(Int(model.fps)) fps · det \(String(format: "%.1f", model.detectMs)) ms")
-            Text("balls \(model.ballCount) · rest \(model.atRest ? "y" : "n") · aim \(model.hasAim ? "y" : "n")")
+            Text("balls \(model.ballCount) · rest \(model.atRest ? "y" : "n") · aim \(model.aim != nil ? "y" : "n")")
             Text("plane \(model.planeFound ? "y" : "n") · track \(model.trackingOK ? "ok" : "lim") · \(model.formatLabel)")
-            Text("depth \(model.depthConfidence.map { String(format: "%.0f%%", $0 * 100) } ?? "–") · thermal \(model.thermal.rawValue) · \(model.tableSize?.rawValue ?? "–")")
+            Text("ghost \(Int(model.ghostConfidence * 100))% · depth \(model.depthConfidence.map { String(format: "%.0f%%", $0 * 100) } ?? "–")")
+            Text("thermal \(model.thermal.rawValue) · \(model.tableSize?.rawValue ?? "–") · \(String(describing: model.status))")
         }
         .font(.system(size: 13, weight: .semibold, design: .monospaced))
         .foregroundStyle(.white)
@@ -139,88 +277,126 @@ struct DebugHUD: View {
     }
 }
 
-/// Simulator / replay: synthetic table image, same tap-corners → plane → table frame → detection path.
+/// Simulator / replay: synthetic table image through the same locator → lock → detection path.
 struct ReplayLiveView: View {
     let model: LiveModel
     @State private var scene = SyntheticTableScene.demo()
     @State private var image: CGImage?
     @State private var pixels: PixelImage?
-    @State private var corners: [SIMD3<Double>] = []
     @State private var table: TableFrame?
     @State private var result: PerceptionResult?
     @State private var pipeline = PerceptionPipeline()
+    @State private var locator = FeltQuadLocator()
     @State private var loop: Task<Void, Never>?
+    @State private var viewSize: CGSize = .zero
+
+    private var map: AspectFill {
+        AspectFill(image: CGSize(width: scene.camera.intrinsics.width, height: scene.camera.intrinsics.height), view: viewSize)
+    }
 
     var body: some View {
         GeometryReader { geo in
-            let map = AspectFill(image: CGSize(width: scene.camera.intrinsics.width, height: scene.camera.intrinsics.height),
-                                 view: geo.size)
             Canvas { ctx, _ in
                 if let image { ctx.draw(Image(decorative: image, scale: 1), in: map.imageRect) }
                 draw(&ctx, map)
             }
             .contentShape(Rectangle())
             .onTapGesture { p in tap(map.toImage(p)) }
+            .onAppear { viewSize = geo.size }
+            .onChange(of: geo.size) { viewSize = geo.size; refreshHandles() }
         }
         .onAppear(perform: start)
         .onDisappear { loop?.cancel() }
-        .task { model.undo = { undo() }; model.recalibrate = { reset() } }
+        .onChange(of: model.editor.revision) { refreshHandles() }
+        .task {
+            model.undo = { model.editor.undo() }
+            model.recalibrate = { reset() }
+            model.confirm = { confirm() }
+            model.startTapMode = { model.tapMode = true; model.manualCorrection = true; model.editor.reset() }
+            model.dragHandle = { i, p in
+                guard table == nil, let w = scene.camera.intersect(pixel: map.toImage(p), with: scene.plane) else { return }
+                model.manualCorrection = true
+                model.editor.move(i, to: w)
+            }
+        }
+    }
+
+    private var planes: [LocatorPlane] {
+        let s = scene.frame.spec
+        return [LocatorPlane(center: scene.frame.world(Vec2(s.length / 2, s.width / 2)), extent: SIMD2(1.2, 0.8), isTable: true)]
     }
 
     private func start() {
         model.planeFound = true
         image = scene.render()
         pixels = image.flatMap { PixelImage(cgImage: $0) }
-        let pipeline = pipeline, cam = scene.camera
+        let pipeline = pipeline, locator = locator, cam = scene.camera, planes = planes
         guard let px = pixels else { return }
         loop = Task {
             var t = 0.0
             while !Task.isCancelled {
-                let r = await pipeline.process(PerceptionFrame(image: px, camera: cam, timestamp: t))
                 t += 1.0 / 15
-                if table != nil { result = r; model.noteResult(r) }
+                if table == nil {
+                    if !model.manualCorrection && !model.tapMode {
+                        let e = await locator.ingest(LocatorFrame(image: px, camera: cam, planes: planes, timestamp: t))
+                        if let e, table == nil, !model.manualCorrection {
+                            model.editor.setProposal(e.corners)
+                            model.ghostConfidence = e.confidence
+                            if e.locked { confirm() }
+                        }
+                    }
+                } else {
+                    let r = await pipeline.process(PerceptionFrame(image: px, camera: cam, timestamp: t))
+                    result = r
+                    model.noteResult(r)
+                }
                 try? await Task.sleep(for: .milliseconds(66))
             }
         }
     }
 
+    private func refreshHandles() {
+        model.handles = table == nil ? model.editor.corners.map { w in scene.camera.project(w).map { map.toView($0) } } : []
+    }
+
     private func tap(_ px: Vec2) {
-        guard table == nil, corners.count < 4, let w = scene.camera.intersect(pixel: px, with: scene.plane) else { return }
-        corners.append(w)
-        model.cornersPlaced = corners.count
-        guard corners.count == 4 else { return }
-        guard let fit = TableFitter.fit(corners: corners, viewer: scene.camera.position) else { reset(); return }
+        guard table == nil, model.tapMode || model.editor.outlier != nil,
+              let w = scene.camera.intersect(pixel: px, with: scene.plane) else { return }
+        model.editor.add(w)
+    }
+
+    private func confirm() {
+        guard table == nil, let fit = model.editor.confirm(viewer: scene.camera.position) else { return }
         table = fit.frame
         model.tableSize = fit.frame.spec.size
         model.calibrated = true
+        refreshHandles()
         let pipeline = pipeline, frame = fit.frame
         Task { await pipeline.setTable(frame) }
     }
 
-    private func undo() {
-        guard table == nil, !corners.isEmpty else { return }
-        corners.removeLast(); model.cornersPlaced = corners.count
-    }
-
     private func reset() {
-        corners = []; table = nil; result = nil
-        model.cornersPlaced = 0; model.calibrated = false; model.noteResult(nil)
-        let pipeline = pipeline
-        Task { await pipeline.setTable(nil) }
+        table = nil; result = nil
+        model.clearCalibration()
+        model.planeFound = true
+        let pipeline = pipeline, locator = locator
+        Task { await pipeline.setTable(nil); await locator.reset() }
     }
 
     private func draw(_ ctx: inout GraphicsContext, _ map: AspectFill) {
-        for w in corners where table == nil {
-            if let p = scene.camera.project(w) {
-                let v = map.toView(p)
-                ctx.fill(Path(ellipseIn: CGRect(x: v.x - 6, y: v.y - 6, width: 12, height: 12)), with: .color(.white))
+        let green = Color(red: 0.29, green: 0.87, blue: 0.5), red = Color(red: 0.97, green: 0.44, blue: 0.44)
+        guard let table else {
+            // Ghost outline growing between placed / estimated corners.
+            let pts = model.editor.perimeter.compactMap { scene.camera.project($0).map { map.toView($0) } }
+            if pts.count >= 2 {
+                var p = Path(); p.addLines(pts); if pts.count == 4 { p.closeSubpath() }
+                let a = model.manualCorrection || model.tapMode ? 0.9 : 0.25 + 0.65 * model.ghostConfidence
+                ctx.stroke(p, with: .color(.white.opacity(a)), lineWidth: 2)
             }
+            return
         }
-        guard let table else { return }
         let geo = FrameGeometry(frame: table, camera: scene.camera)
-        func v(_ p: Vec2, ball: Bool = false) -> CGPoint? {
-            (ball ? geo.ball : geo.cloth).apply(p).map { map.toView($0) }
-        }
+        func v(_ p: Vec2, ball: Bool = false) -> CGPoint? { (ball ? geo.ball : geo.cloth).apply(p).map { map.toView($0) } }
         var outline = Path()
         let pts = table.corners.compactMap { v($0) }
         if pts.count == 4 { outline.addLines(pts); outline.closeSubpath() }
@@ -229,9 +405,10 @@ struct ReplayLiveView: View {
             let r = (p.isSide ? table.spec.sideMouth : table.spec.cornerMouth) / 2
             ctx.stroke(circle(table.spec.pocketCenter(p), r, geo.cloth, map), with: .color(.white.opacity(0.7)), lineWidth: 2)
         }
-        for t in (result?.tracks ?? []).filter(\.confirmed) {
-            ctx.stroke(circle(t.position, TableSpec.ballRadius * 1.25, geo.cloth, map),
-                       with: .color(.white.opacity(t.kind == .cue ? 0.95 : 0.45)), lineWidth: t.kind == .cue ? 3 : 2)
+        for t in result?.confirmed ?? [] {
+            let mark = result?.marks[t.id] ?? .unknown
+            let c: Color = switch mark { case .cue: .white; case .legal: green; case .illegal: red; case .unknown: .white.opacity(0.4) }
+            ctx.stroke(circle(t.position, TableSpec.ballRadius * 1.25, geo.cloth, map), with: .color(c), lineWidth: mark == .cue ? 3 : 2)
         }
         if let aim = result?.aim, let a = v(aim.cue, ball: true), let g = v(aim.ghost, ball: true),
            let o = v(aim.object, ball: true), let pk = v(aim.pocketPoint, ball: true) {
@@ -239,9 +416,12 @@ struct ReplayLiveView: View {
             ctx.stroke(l1, with: .color(.white.opacity(0.9)), lineWidth: 2)
             ctx.stroke(circle(aim.ghost, TableSpec.ballRadius, geo.ball, map), with: .color(.white.opacity(0.9)), lineWidth: 2)
             var l2 = Path(); l2.move(to: o); l2.addLine(to: pk)
-            let c: Color = aim.ease > 0.35 ? Color(red: 0.29, green: 0.87, blue: 0.5)
-                : aim.ease > 0.15 ? Color(red: 0.98, green: 0.8, blue: 0.08) : Color(red: 0.97, green: 0.44, blue: 0.44)
-            ctx.stroke(l2, with: .color(c.opacity(0.85)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+            let c: Color = aim.ease > 0.35 ? green : aim.ease > 0.15 ? Color(red: 0.98, green: 0.8, blue: 0.08) : red
+            ctx.stroke(l2, with: .color(c.opacity(0.85)), lineWidth: 2)
+            if aim.cuePath.count >= 2, let s = v(aim.cuePath[0], ball: true), let e = v(aim.cuePath[aim.cuePath.count - 1], ball: true) {
+                var l3 = Path(); l3.move(to: s); l3.addLine(to: e)
+                ctx.stroke(l3, with: .color(.white.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+            }
         }
     }
 
@@ -260,7 +440,7 @@ struct ReplayLiveView: View {
 struct AspectFill {
     var image: CGSize
     var view: CGSize
-    var scale: CGFloat { max(view.width / image.width, view.height / image.height) }
+    var scale: CGFloat { max(view.width / max(1, image.width), view.height / max(1, image.height)) }
     var offset: CGPoint { CGPoint(x: (view.width - image.width * scale) / 2, y: (view.height - image.height * scale) / 2) }
     var imageRect: CGRect { CGRect(origin: offset, size: CGSize(width: image.width * scale, height: image.height * scale)) }
     func toView(_ p: Vec2) -> CGPoint { CGPoint(x: offset.x + p.x * scale, y: offset.y + p.y * scale) }

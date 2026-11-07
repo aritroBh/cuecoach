@@ -92,11 +92,12 @@ struct ClassicalBallDetector: BallDetector {
         var out: [BallDetection] = []
         var accepted: [(Double, Double, Double)] = []
         for cnd in cands {
-            if accepted.contains(where: { hypot($0.0 - Double(cnd.x), $0.1 - Double(cnd.y)) < 1.2 * $0.2 }) { continue }
+            if accepted.contains(where: { hypot($0.0 - Double(cnd.x), $0.1 - Double(cnd.y)) < 0.7 * $0.2 }) { continue }
             var cx = Double(cnd.x), cy = Double(cnd.y)
             let r = cnd.r
-            for _ in 0..<3 { (cx, cy) = centroid(mask: mask, w: w, h: h, cx: cx, cy: cy, r: r) }
-            if accepted.contains(where: { hypot($0.0 - cx, $0.1 - cy) < 1.4 * max(r, $0.2) }) { continue }
+            let seed = img.pixel(cnd.x, cnd.y)
+            for _ in 0..<2 { (cx, cy) = centroid(mask: mask, img: img, seed: seed, w: w, h: h, cx: cx, cy: cy, r: 0.85 * r) }
+            if accepted.contains(where: { hypot($0.0 - cx, $0.1 - cy) < 0.95 * max(r, $0.2) }) { continue }
             let fill = discFill(mask: mask, w: w, h: h, cx: cx, cy: cy, r: 0.85 * r)
             guard fill >= minDiscFill else { continue }
             guard ringGaps(mask: mask, region: region, w: w, h: h, cx: cx, cy: cy, r: 1.4 * r) >= 2 else { continue }
@@ -104,11 +105,12 @@ struct ClassicalBallDetector: BallDetector {
             guard let t = ballInv.apply(Vec2(sx, sy)) else { continue }
             guard t.x >= 0.6 * R, t.x <= spec.length - 0.6 * R, t.y >= 0.6 * R, t.y <= spec.width - 0.6 * R
             else { continue }
-            if spec.pockets.contains(where: { t.distance(to: spec.pocketCenter($0)) < ($0.isSide ? 0.045 : 0.055) }) {
-                continue
-            }
-            accepted.append((cx, cy, r))
+            let pocketDist = spec.pockets.map { t.distance(to: spec.pocketCenter($0)) - ($0.isSide ? 0.01 : 0) }.min() ?? 1
+            if pocketDist < 0.06 { continue }
             let cls = classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: feltHSV)
+            // Pocket holes look like dark balls: reject dark blobs close to a pocket.
+            if (cls.kind == .eight || cls.kind == .unknown) && pocketDist < 0.11 { continue }
+            accepted.append((cx, cy, r))
             let conf = min(1, max(0, (fill - 0.6) / 0.4)) * (cls.kind == .unknown ? 0.6 : 1)
             out.append(BallDetection(imagePoint: Vec2(sx, sy), tablePoint: t, radiusPx: r * img.scale,
                                      confidence: conf, kind: cls.kind, tentativeNumber: cls.number))
@@ -155,17 +157,26 @@ struct ClassicalBallDetector: BallDetector {
         return (med(hr), med(hg), med(hb))
     }
 
-    private func centroid(mask: [UInt8], w: Int, h: Int, cx: Double, cy: Double, r: Double) -> (Double, Double) {
+    /// Centroid of ball pixels near (cx, cy) whose colour matches the seed: overlapping balls of different
+    /// colours (common when one sits behind another along the view direction) pull apart.
+    private func centroid(mask: [UInt8], img: PixelImage, seed: (UInt8, UInt8, UInt8), w: Int, h: Int,
+                          cx: Double, cy: Double, r: Double) -> (Double, Double) {
         var sx = 0.0, sy = 0.0, n = 0.0
+        var ax = 0.0, ay = 0.0, an = 0.0
         let ri = Int(r.rounded(.up)), r2 = r * r
         let ix = Int(cx.rounded()), iy = Int(cy.rounded())
         for y in max(0, iy - ri)...min(h - 1, iy + ri) {
             for x in max(0, ix - ri)...min(w - 1, ix + ri) where mask[y * w + x] != 0 {
                 let dx = Double(x) - cx, dy = Double(y) - cy
-                if dx * dx + dy * dy <= r2 { sx += Double(x); sy += Double(y); n += 1 }
+                guard dx * dx + dy * dy <= r2 else { continue }
+                ax += Double(x); ay += Double(y); an += 1
+                let p = img.pixel(x, y)
+                let d = abs(Int(p.0) - Int(seed.0)) + abs(Int(p.1) - Int(seed.1)) + abs(Int(p.2) - Int(seed.2))
+                if d < 90 { sx += Double(x); sy += Double(y); n += 1 }
             }
         }
-        return n > 0 ? (sx / n, sy / n) : (cx, cy)
+        if n >= max(4, an * 0.35) { return (sx / n, sy / n) }
+        return an > 0 ? (ax / an, ay / an) : (cx, cy)
     }
 
     private func discFill(mask: [UInt8], w: Int, h: Int, cx: Double, cy: Double, r: Double) -> Double {

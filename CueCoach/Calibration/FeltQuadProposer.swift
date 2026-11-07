@@ -75,7 +75,7 @@ enum FeltQuadProposer {
         }
         let hull = convexHull(boundary)
         guard hull.count >= 4 else { return nil }
-        guard var quad = reduceToQuad(hull) else { return nil }
+        guard var quad = sidesQuad(hull) ?? reduceToQuad(hull) else { return nil }
         quad = refineWithLines(quad, boundary: boundary) ?? quad
         return quad.map { p in
             let (sx, sy) = img.toSource(p.x, p.y)
@@ -98,6 +98,51 @@ enum FeltQuadProposer {
             upper.append(q)
         }
         return Array(lower.dropLast() + upper.dropLast())
+    }
+
+    /// Group consecutive hull edges with similar direction; the 4 longest groups are the table sides
+    /// (short groups are corners cut by pockets). Intersect neighbouring sides.
+    static func sidesQuad(_ hull: [Vec2], angleTol: Double = 8 * .pi / 180) -> [Vec2]? {
+        let n = hull.count
+        guard n >= 4 else { return nil }
+        struct Group { var pts: [Vec2]; var length: Double; var dir: Vec2 }
+        var edges: [(a: Vec2, b: Vec2)] = (0..<n).map { (hull[$0], hull[($0 + 1) % n]) }
+        // Start at the edge with the largest turn before it, so no group wraps around.
+        func ang(_ e: (a: Vec2, b: Vec2)) -> Double { (e.b - e.a).angle }
+        func turn(_ i: Int) -> Double {
+            let d = abs(ang(edges[i]) - ang(edges[(i + n - 1) % n])).truncatingRemainder(dividingBy: 2 * .pi)
+            return min(d, 2 * .pi - d)
+        }
+        let start = (0..<n).max { turn($0) < turn($1) }!
+        edges = Array(edges[start...] + edges[..<start])
+        var groups: [Group] = []
+        for e in edges {
+            let d = e.b - e.a, len = d.length
+            guard len > 0 else { continue }
+            if var g = groups.last {
+                let diff = abs(g.dir.angle - d.angle).truncatingRemainder(dividingBy: 2 * .pi)
+                if min(diff, 2 * .pi - diff) < angleTol {
+                    g.pts.append(e.b); g.length += len
+                    g.dir = (g.pts.last! - g.pts.first!).normalized
+                    groups[groups.count - 1] = g
+                    continue
+                }
+            }
+            groups.append(Group(pts: [e.a, e.b], length: len, dir: d / len))
+        }
+        guard groups.count >= 4 else { return nil }
+        let keep = groups.indices.sorted { groups[$0].length > groups[$1].length }.prefix(4).sorted()
+        let sides = keep.map { groups[$0] }
+        var out: [Vec2] = []
+        for i in 0..<4 {
+            let l1 = sides[(i + 3) % 4], l2 = sides[i]
+            let p1 = l1.pts.first!, d1 = l1.dir, p2 = l2.pts.first!, d2 = l2.dir
+            let den = d1.cross(d2)
+            guard abs(den) > 1e-6 else { return nil }
+            let t = (p2 - p1).cross(d2) / den
+            out.append(p1 + d1 * t)
+        }
+        return out
     }
 
     /// Repeatedly drop the hull vertex whose removal loses the least area.

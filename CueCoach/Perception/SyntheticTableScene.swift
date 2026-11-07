@@ -31,7 +31,7 @@ struct SyntheticTableScene: Sendable {
         let frame = TableFrame(tableToWorld: simd_double4x4(columns: (SIMD4(xAxis, 0), SIMD4(yAxis, 0), SIMD4(up, 0),
                                                                       SIMD4(origin, 1))), spec: spec)
         let k = CameraIntrinsics(fx: 1500, fy: 1500, cx: 960, cy: 540, width: 1920, height: 1080)
-        let cam = CameraModel.lookAt(eye: SIMD3(0.1, 1.95, 2.05), target: SIMD3(0, 0.76, -0.1), intrinsics: k)
+        let cam = CameraModel.lookAt(eye: SIMD3(0.1, 2.15, 2.45), target: SIMD3(0, 0.76, -0.25), intrinsics: k)
         let L = spec.length, W = spec.width
         let balls: [Ball] = [
             Ball(position: Vec2(0.45, W * 0.45), color: (240, 240, 236)),               // cue

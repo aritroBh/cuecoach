@@ -116,10 +116,10 @@ struct PlaneOffsetTests {
             let ballPx = try #require(cam.project(frame.world(p, height: TableSpec.ballRadius)))
             let viaBall = try #require(geo.ballInverse.apply(ballPx))
             let viaCloth = try #require(geo.clothInverse.apply(ballPx))
-            // Up to the 180° symmetry of the rectangle.
-            let mirrored = Vec2(spec.length - p.x, spec.width - p.y)
-            let errBall = min(viaBall.distance(to: p), viaBall.distance(to: mirrored))
-            let errCloth = min(viaCloth.distance(to: p), viaCloth.distance(to: mirrored))
+            // Up to the rectangle's symmetries (image-only calibration can't tell head from foot or left from right).
+            let sym = [p, Vec2(spec.length - p.x, spec.width - p.y), Vec2(spec.length - p.x, p.y), Vec2(p.x, spec.width - p.y)]
+            let errBall = sym.map { viaBall.distance(to: $0) }.min()!
+            let errCloth = sym.map { viaCloth.distance(to: $0) }.min()!
             #expect(errBall < 0.004, "ball-plane error \(errBall)")
             #expect(errCloth > 0.01, "cloth plane should be biased, got \(errCloth)")
         }

@@ -51,7 +51,7 @@ struct BallDetectorTests {
                    .init(position: c + Vec2(2 * R, 0), color: (240, 120, 20)),
                    .init(position: c + Vec2(R, 1.732 * R), color: (30, 60, 190))]
         let dets = try detections(s)
-        #expect(dets.count == 3, "got \(dets.count)")
+        #expect(dets.count == 3, "got \(dets.map { ($0.tablePoint, $0.kind, $0.radiusPx) }) want \(s.balls.map(\.position))")
     }
 
     @Test func worksFromAnObliqueCornerView() throws {
@@ -67,9 +67,14 @@ struct BallDetectorTests {
 struct FeltProposerTests {
     @Test func proposesTableCornersFromFelt() throws {
         let scene = SyntheticTableScene.demo()
-        let img = try #require(PixelImage(cgImage: try #require(scene.render())))
+        let cg = try #require(scene.render())
+        let img = try #require(PixelImage(cgImage: cg))
         let quad = try #require(FeltQuadProposer.propose(img))
         #expect(quad.count == 4)
+        let c = SyntheticTableScene.cushionWidth, s = scene.frame.spec
+        let outerTruth = [Vec2(-c, -c), Vec2(-c, s.width + c), Vec2(s.length + c, s.width + c), Vec2(s.length + c, -c)]
+            .map { scene.camera.project(scene.frame.world($0))! }
+        for t in outerTruth { #expect(quad.map { $0.distance(to: t) }.min()! < 12, "outer corner off: \(quad) vs \(outerTruth)") }
         // Raycast to the table plane, inset the cushion → compare with playing-surface corners.
         let world = quad.compactMap { scene.camera.intersect(pixel: $0, with: scene.plane) }
         #expect(world.count == 4)
