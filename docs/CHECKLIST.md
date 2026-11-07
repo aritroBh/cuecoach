@@ -37,7 +37,7 @@ Parallel now: Physics fix (Codex) · Rules re-review (Codex) · Virtual table bu
 - [ ] Merge, delete branches/worktrees, clean status
 
 ## Ahead-of-phase research (workflow wf_b972a7fb, running in parallel)
-- [~] docs/RATINGS.md — brilliant-shot catalogue + rating algorithm (D2) → user review
+- [~] docs/RATINGS.md — research (workflow) reconciled with docs/RATING_CLASSES.md (D18, 10 classes — done)
 - [~] docs/research/engine.md — candidates, win probability, perf budget
 - [~] docs/research/perception.md — calibration (D12), ball detection, dataset licenses
 - [~] docs/research/mesh-identity.md — MPC protocol, clock sync, clips (D3), recognition privacy

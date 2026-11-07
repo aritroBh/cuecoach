@@ -1,7 +1,14 @@
 import Geometry
 
+/// Chess.com-style shot classes, best → worst (D18; criteria in docs/RATINGS.md).
+/// Raw values are persisted — never rename a case.
 public enum DecisionRating: String, CaseIterable, Codable, Sendable {
-    case brilliant, great, best, good, inaccuracy, mistake, blunder
+    case brilliant, great, best, good, okay, book, inaccuracy, miss, mistake, blunder
+
+    /// Highlighted classes that require a successfully executed shot.
+    public var isSpecial: Bool { self == .brilliant || self == .great }
+    /// Classes that cost the shooter's team.
+    public var isNegative: Bool { [.inaccuracy, .miss, .mistake, .blunder].contains(self) }
 }
 
 public enum ExecutionResult: String, CaseIterable, Codable, Sendable {
