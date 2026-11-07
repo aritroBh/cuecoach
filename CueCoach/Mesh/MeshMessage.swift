@@ -39,6 +39,17 @@ struct PeerStatus: Hashable, Codable, Sendable {
     var onPower: Bool
 }
 
+struct RosterMember: Hashable, Codable, Sendable {
+    var peer: PeerID
+    var status: PeerStatus
+}
+
+/// Host → all: admitted members (≤ 8) and their election inputs. Clients elect only from this list.
+struct RosterUpdate: Hashable, Codable, Sendable {
+    var term: UInt64
+    var members: [RosterMember]
+}
+
 struct HostClaim: Hashable, Codable, Sendable {
     var term: UInt64
     var lastSeq: UInt64
@@ -129,6 +140,7 @@ enum MeshMessage: Hashable, Sendable {
     case leave
     case heartbeat(Heartbeat)
     case peerStatus(PeerStatus)
+    case roster(RosterUpdate)
     case hostClaim(HostClaim)
     case timePing(TimePing)
     case timePong(TimePong)
@@ -154,7 +166,7 @@ enum MeshMessage: Hashable, Sendable {
     case unknown(type: String)
 
     enum Kind: String, CaseIterable, Sendable {
-        case hello, welcome, reject, leave, heartbeat, peerStatus, hostClaim, timePing, timePong
+        case hello, welcome, reject, leave, heartbeat, peerStatus, roster, hostClaim, timePing, timePong
         case ruleVoteOpen, ruleBallot, ruleVoteResult, tableState, proposal, logEntries, logAck, logTailRequest
         case calibration, phaseChange, clipOffer, clipRequest, clipChunk, clipChunkAck, clipComplete, unknown
     }
@@ -167,6 +179,7 @@ enum MeshMessage: Hashable, Sendable {
         case .leave: .leave
         case .heartbeat: .heartbeat
         case .peerStatus: .peerStatus
+        case .roster: .roster
         case .hostClaim: .hostClaim
         case .timePing: .timePing
         case .timePong: .timePong
@@ -216,6 +229,7 @@ extension MeshMessage: Codable {
         case .leave: self = .leave
         case .heartbeat: self = .heartbeat(try body(Heartbeat.self))
         case .peerStatus: self = .peerStatus(try body(PeerStatus.self))
+        case .roster: self = .roster(try body(RosterUpdate.self))
         case .hostClaim: self = .hostClaim(try body(HostClaim.self))
         case .timePing: self = .timePing(try body(TimePing.self))
         case .timePong: self = .timePong(try body(TimePong.self))
@@ -252,6 +266,7 @@ extension MeshMessage: Codable {
         case .leave, .unknown: break
         case .heartbeat(let v): try c.encode(v, forKey: .body)
         case .peerStatus(let v): try c.encode(v, forKey: .body)
+        case .roster(let v): try c.encode(v, forKey: .body)
         case .hostClaim(let v): try c.encode(v, forKey: .body)
         case .timePing(let v): try c.encode(v, forKey: .body)
         case .timePong(let v): try c.encode(v, forKey: .body)

@@ -30,6 +30,8 @@ import Rules
             .leave,
             .heartbeat(Heartbeat(term: 3, host: a, lastSeq: 1, commitSeq: 1, phase: .settled)),
             .peerStatus(PeerStatus(deviceClass: 15, batteryPercent: 42, onPower: true)),
+            .roster(RosterUpdate(term: 3, members: [RosterMember(peer: a, status: PeerStatus(
+                deviceClass: 16, batteryPercent: 50, onPower: false))])),
             .hostClaim(HostClaim(term: 4, lastSeq: 7)),
             .timePing(TimePing(t0: 100)),
             .timePong(TimePong(t0: 100, t1: 150, t2: 151)),
