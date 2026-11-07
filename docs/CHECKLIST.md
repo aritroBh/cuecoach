@@ -78,4 +78,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Recognition hardening workflow: Codex + Antigravity + Claude stress (10k sessions) + face-model licence research → cross-check → fix → re-review
 - [~] Merge reviews: stats, training, screens-a, audit (Codex review → Claude verify → fix → reverify)
 - [~] AR adversarial stress test (.worktrees/capture-stress)
-- [ ] Two phones join one real game (after mesh merges)
+- [x] Engine merged (APPROVE r2; 103 tests) · Mesh merged (APPROVE r2; 12 findings fixed incl. host-migration log recovery). Phase app tests 147/147
+- [ ] Two phones join one real game (mesh merged; needs app shell Join nearby)
+- [~] Table-lock virtual QA workflow: synthetic-table simulator matrix (felt colour × lighting × clutter × distance), Codex/Antigravity/OmniRoute root-cause, UI QA on 15/17 Pro Max simulators
+- [~] Table-keypoint model training (restarted) · ball detector training epoch 4/30
