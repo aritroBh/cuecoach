@@ -44,9 +44,11 @@ final class ARLiveController: NSObject {
     private var tier: CapturePolicy.Tier = .max
     private let motion = CMMotionManager()
     private var bump = BumpDetector()
-    private var wasAtRest = true
     private var lastStatus: LiveStatus = .searching
     private var planeFoundAt: Date?
+    private var tableFrame: TableFrame?
+    private var limitedSince: Date?
+    private var revalidating = false
 
     init(model: LiveModel, locator: any TableLocating) {
         self.model = model
@@ -136,12 +138,15 @@ final class ARLiveController: NSObject {
             if let k = fourK, pf(k) == pick { c.videoFormat = k }
             else if let f = formats.first(where: { pf($0) == pick }) { c.videoFormat = f }
         }
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+        let extras = CapturePolicy.extras(tier)
+        if extras.mesh, ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
             c.sceneReconstruction = .meshWithClassification
         }
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics.insert(.sceneDepth) }
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) { c.frameSemantics.insert(.smoothedSceneDepth) }
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+        if extras.smoothedDepth, ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            c.frameSemantics.insert(.smoothedSceneDepth)
+        }
+        if extras.personOcclusion, ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
             c.frameSemantics.insert(.personSegmentationWithDepth)
         }
         return c
@@ -196,6 +201,17 @@ final class ARLiveController: NSObject {
     // MARK: Locator
 
     private func handleEstimate(_ e: TableEstimate?) {
+        if revalidating, let e, e.locked, let current = tableFrame {
+            // After relocalization: keep the lock if the table is where we left it, else re-anchor.
+            let now = current.corners.map { current.world($0) }
+            let moved = e.corners.map { c in now.map { simd_distance($0, c) }.min() ?? 0 }.max() ?? 0
+            revalidating = false
+            if moved > 0.06, let fit = TableFitter.fit(corners: e.corners, viewer: viewerPosition(), size: current.spec.size) {
+                install(fit.frame)
+            }
+            tap?.setMode(.detecting)
+            return
+        }
         guard let e, !model.calibrated, !model.manualCorrection, !model.tapMode else { return }
         model.editor.setProposal(e.corners)
         model.ghostConfidence = e.confidence
@@ -255,15 +271,27 @@ final class ARLiveController: NSObject {
             if model.manualCorrection || model.tapMode { UINotificationFeedbackGenerator().notificationOccurred(.error) }
             return
         }
-        let o = TableOverlay(frame: fit.frame)
-        v.scene.addAnchor(o.anchor)
-        overlay = o
+        install(fit.frame)
         model.tableSize = fit.frame.spec.size
         model.calibrated = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        let pipeline = pipeline, frame = fit.frame
-        Task { await pipeline.setTable(frame) }
         tap?.setMode(.detecting)
+    }
+
+    private func install(_ frame: TableFrame) {
+        guard let v = view else { return }
+        if let o = overlay { v.scene.removeAnchor(o.anchor) }
+        let o = TableOverlay(frame: frame)
+        v.scene.addAnchor(o.anchor)
+        overlay = o
+        tableFrame = frame
+        let pipeline = pipeline
+        Task { await pipeline.setTable(frame) }
+    }
+
+    private func viewerPosition() -> SIMD3<Double>? {
+        guard let t = view?.cameraTransform.translation else { return nil }
+        return SIMD3(Double(t.x), Double(t.y), Double(t.z))
     }
 
     private func recalibrate() {
@@ -271,12 +299,32 @@ final class ARLiveController: NSObject {
         let pipeline = pipeline, locator = locator
         if let o = overlay { view?.scene.removeAnchor(o.anchor) }
         overlay = nil
+        tableFrame = nil
+        revalidating = false
         model.clearCalibration()
         planeFoundAt = model.planeFound ? Date() : nil
         Task {
             await pipeline.setTable(nil)
             await locator.reset()
             await MainActor.run { [weak self] in self?.tap?.setMode(.locating) }
+        }
+    }
+
+    /// Re-run the locator once after relocalization; perception resumes when it answers.
+    private func revalidate() {
+        revalidating = true
+        tap?.setMode(.idle)
+        let locator = locator
+        Task {
+            await locator.reset()
+            await MainActor.run { [weak self] in self?.tap?.setMode(.locating) }
+        }
+        // Don't stall forever: resume detecting after 4 s even without a fresh lock.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard let self, self.revalidating else { return }
+            self.revalidating = false
+            self.tap?.setMode(.detecting)
         }
     }
 
@@ -288,16 +336,25 @@ final class ARLiveController: NSObject {
             planeFoundAt = Date()
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
-        if model.trackingOK != s.trackingOK { model.trackingOK = s.trackingOK }
+        if model.trackingOK != s.trackingOK {
+            model.trackingOK = s.trackingOK
+            if !s.trackingOK {
+                limitedSince = Date()
+            } else if let since = limitedSince, model.calibrated, Date().timeIntervalSince(since) > 1 {
+                limitedSince = nil
+                revalidate()
+            } else {
+                limitedSince = nil
+            }
+        }
         if let d = s.depthConfidence { model.depthConfidence = d }
         guard model.calibrated, s.isResult else { return }
         model.noteResult(r)
         overlay?.update(r)
         if let r {
-            if wasAtRest && !r.atRest && r.confirmed.contains(where: { $0.speed > 0.3 }) {
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred()  // shot started (haptic only)
-            }
-            wasAtRest = r.atRest
+            // Shot events are haptic only (no audio, no text while aiming).
+            if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+            if r.shot != nil { UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6) }
         }
     }
 }
@@ -356,7 +413,9 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         let status = Status(planeFound: plane, trackingOK: tracking,
                             depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil)
         let onResult = onResult, onEstimate = onEstimate
-        guard mode != .idle else {
+        // World-anchored work is meaningless while ARKit is relocalizing: pause it.
+        guard mode != .idle, tracking else {
+            if mode != .idle { state.withLock { $0.busy = false } }
             if sendStatus { Task { @MainActor in onResult(nil, status) } }
             return
         }

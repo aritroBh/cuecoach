@@ -40,7 +40,17 @@ enum LocatorMath {
     /// highest horizontal plane below the camera that the centre ray hits inside its extent).
     static func plane(for centre: Vec2, camera: CameraModel, planes: [LocatorPlane]) -> Plane3? {
         let ray = camera.ray(through: centre)
-        let below = planes.filter { $0.center.y < camera.position.y - 0.2 }
+        // A table top sits 0.55–1.1 m above the floor; the floor is the lowest plane well below the others.
+        let lowest = planes.map(\.center.y).min()
+        let below = planes.filter { p in
+            guard p.center.y < camera.position.y - 0.2 else { return false }
+            guard let floor = lowest else { return true }
+            if p.center.y - floor > 0.4 { return (0.55...1.1).contains(p.center.y - floor) }
+            // p is (at) the lowest plane: it's the floor whenever anything sits well above it.
+            if planes.contains(where: { $0.center.y - floor > 0.4 }) { return false }
+            // Lone plane: a phone over a pool table is ~0.3–1.4 m above the cloth, not standing-height over a floor.
+            return camera.position.y - p.center.y < 1.4
+        }
         let hits: [(LocatorPlane, SIMD3<Double>)] = below.compactMap { p in
             let pl = Plane3(point: p.center, normal: SIMD3(0, 1, 0))
             guard let h = pl.intersect(origin: ray.origin, direction: ray.direction) else { return nil }
@@ -92,7 +102,8 @@ actor FeltQuadLocator: TableLocating {
         history.append(inner)
         if history.count > 12 { history.removeFirst() }
         guard var est = current() else { return nil }
-        if est.confidence >= 1, case .ok(let fit)? = CornerValidator.check(est.corners, viewer: f.camera.position) {
+        if est.confidence >= 1, case .ok(let fit)? = CornerValidator.check(est.corners, viewer: f.camera.position),
+           fit.sizing.confident, fit.residual < 0.05 {
             est.locked = true
             est.size = fit.sizing.size
             locked = est

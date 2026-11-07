@@ -55,6 +55,18 @@ enum CapturePolicy {
         }
     }
 
+    struct Extras: Equatable, Sendable { var mesh: Bool; var smoothedDepth: Bool; var personOcclusion: Bool }
+
+    /// Heavy AR extras shed first as the phone heats (LiDAR scene depth always stays on).
+    static func extras(_ tier: Tier) -> Extras {
+        switch tier {
+        case .max: Extras(mesh: true, smoothedDepth: true, personOcclusion: true)
+        case .high: Extras(mesh: false, smoothedDepth: true, personOcclusion: true)
+        case .sustained: Extras(mesh: false, smoothedDepth: false, personOcclusion: true)
+        case .survival: Extras(mesh: false, smoothedDepth: false, personOcclusion: false)
+        }
+    }
+
     /// Working width for detection: more pixels from a 4K source while cool.
     static func detectWidth(source: Int, tier: Tier) -> Int {
         switch tier {

@@ -35,6 +35,8 @@ final class LiveModel {
     var depthConfidence: Double?
     var thermal: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
     var formatLabel = ""
+    /// D12 sanity check: observed / expected ball radius (1.0 = the table scale matches 57.15 mm balls).
+    var ballScale: Double?
 
     // Actions wired by the active view (AR or replay).
     var undo: () -> Void = {}
@@ -62,6 +64,7 @@ final class LiveModel {
         atRest = r.atRest
         aim = r.aim
         detectMs = detectMs * 0.8 + r.detectMs * 0.2
+        if let s = r.ballScale { ballScale = s }
     }
 
     func clearCalibration() {

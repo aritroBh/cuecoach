@@ -58,28 +58,28 @@ struct SimpleBallTracker: BallTracker {
         lastT = t
         // Predict.
         for i in tracks.indices { tracks[i].pos += tracks[i].vel * dt }
-        // Greedy association by distance.
-        var pairs: [(ti: Int, di: Int, d: Double)] = []
-        for (ti, tr) in tracks.enumerated() {
+        // Optimal (Hungarian) association on predicted positions, gated per track by its speed.
+        // Normalised cost = distance / gate, so 1 is the gate for every track.
+        let cost: [[Double]] = tracks.map { tr in
             let gate = params.baseGate + 2 * tr.vel.length * dt
-            for (di, det) in detections.enumerated() {
-                let d = tr.pos.distance(to: det.tablePoint)
-                if d < gate { pairs.append((ti, di, d)) }
+            return detections.map { det in
+                let d = tr.pos.distance(to: det.tablePoint) / gate
+                return d <= 1 ? d : 1e6
             }
         }
-        pairs.sort { $0.d < $1.d }
+        let pairs = tracks.isEmpty || detections.isEmpty ? [] : Assignment.solve(cost, gate: 1)
         var usedT = Set<Int>(), usedD = Set<Int>()
-        for p in pairs where !usedT.contains(p.ti) && !usedD.contains(p.di) {
-            usedT.insert(p.ti); usedD.insert(p.di)
-            let det = detections[p.di]
-            var tr = tracks[p.ti]
+        for (ti, di) in pairs {
+            usedT.insert(ti); usedD.insert(di)
+            let det = detections[di]
+            var tr = tracks[ti]
             let r = det.tablePoint - tr.pos
             tr.pos += r * params.alpha
             tr.vel += r * (params.beta / dt)
             tr.hits += 1; tr.misses = 0
             tr.votes[det.kind, default: 0] += det.confidence
             if let n = det.tentativeNumber { tr.numberVotes[n, default: 0] += det.confidence }
-            tracks[p.ti] = tr
+            tracks[ti] = tr
         }
         for i in tracks.indices where !usedT.contains(i) {
             tracks[i].misses += 1

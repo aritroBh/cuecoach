@@ -8,11 +8,12 @@ struct LiveScreen: View {
     @State private var model = LiveModel()
     @AppStorage("dev.hud") private var showHUD = false
 
+    /// Replay exists only in simulator builds (D20): device builds always run the AR pipeline.
     static var useReplay: Bool {
         #if targetEnvironment(simulator)
         true
         #else
-        ProcessInfo.processInfo.arguments.contains("-cuecoach.replay")
+        false
         #endif
     }
 
@@ -32,7 +33,7 @@ struct LiveScreen: View {
         #if targetEnvironment(simulator)
         ReplayLiveView(model: model)
         #else
-        if Self.useReplay { ReplayLiveView(model: model) } else { ARLiveView(model: model) }
+        ARLiveView(model: model)
         #endif
     }
 
@@ -266,7 +267,7 @@ struct DebugHUD: View {
             Text("balls \(model.ballCount) · rest \(model.atRest ? "y" : "n") · aim \(model.aim != nil ? "y" : "n")")
             Text("plane \(model.planeFound ? "y" : "n") · track \(model.trackingOK ? "ok" : "lim") · \(model.formatLabel)")
             Text("ghost \(Int(model.ghostConfidence * 100))% · depth \(model.depthConfidence.map { String(format: "%.0f%%", $0 * 100) } ?? "–")")
-            Text("thermal \(model.thermal.rawValue) · \(model.tableSize?.rawValue ?? "–") · \(String(describing: model.status))")
+            Text("ball scale \(model.ballScale.map { String(format: "%.2f", $0) } ?? "–") · thermal \(model.thermal.rawValue) · \(model.tableSize?.rawValue ?? "–") · \(String(describing: model.status))")
         }
         .font(.system(size: 13, weight: .semibold, design: .monospaced))
         .foregroundStyle(.white)
@@ -276,6 +277,7 @@ struct DebugHUD: View {
     }
 }
 
+#if targetEnvironment(simulator)
 /// Simulator / replay: synthetic table image through the same locator → lock → detection path.
 struct ReplayLiveView: View {
     let model: LiveModel
@@ -434,6 +436,8 @@ struct ReplayLiveView: View {
         return p
     }
 }
+
+#endif
 
 /// Aspect-fill mapping between image pixels and view points.
 struct AspectFill {
