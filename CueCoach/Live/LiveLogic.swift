@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Geometry
 import Rules
@@ -311,10 +312,33 @@ extension LockFailure {
     }
 }
 
-/// When to offer the corner fallback: the locator has had a fair chance (~8 s with a plane) and isn't converging.
+/// When to offer the corner fallback (lock plan step 7): unlocked for ~4 s, or stuck on the same reason for 2.5 s —
+/// with or without a plane.
 enum FallbackPolicy {
-    static func offer(planeFoundFor seconds: Double?, confidence: Double, after: Double = 8) -> Bool {
-        guard let s = seconds else { return false }
-        return s > after && confidence < 0.5
+    static func offer(unlockedFor: Double?, sameFailureFor: Double?, unlockedLimit: Double = 4, sameLimit: Double = 2.5) -> Bool {
+        if let u = unlockedFor, u > unlockedLimit { return true }
+        if let f = sameFailureFor, f > sameLimit { return true }
+        return false
+    }
+}
+
+/// How long the locator has reported the same failure.
+struct FailureTimer: Sendable {
+    private(set) var current: LockFailure?
+    private var since: Double?
+
+    mutating func note(_ f: LockFailure?, at t: Double) {
+        if f != current { current = f; since = f == nil ? nil : t }
+    }
+
+    func sameFor(at t: Double) -> Double? { since.map { t - $0 } }
+}
+
+/// Drag snapping for corner correction: snap to the nearest candidate (rail/pocket corner) within `radius` points.
+enum DragSnap {
+    static func snap(_ p: CGPoint, to targets: [CGPoint], radius: CGFloat) -> CGPoint? {
+        let best = targets.min { hypot($0.x - p.x, $0.y - p.y) < hypot($1.x - p.x, $1.y - p.y) }
+        guard let b = best, hypot(b.x - p.x, b.y - p.y) <= radius else { return nil }
+        return b
     }
 }

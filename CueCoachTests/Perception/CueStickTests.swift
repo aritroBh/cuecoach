@@ -31,8 +31,9 @@ struct CueLineDetectorTests {
         let cg = try #require(scene.render())
         let img = try #require(PixelImage(cgImage: cg))
         let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
-        #expect(CueLineDetector().detect(in: img, geometry: geo, cue: scene.balls[0].position,
-                                         others: scene.balls.dropFirst().map(\.position)) == nil)
+        let o = CueLineDetector().detect(in: img, geometry: geo, cue: scene.balls[0].position,
+                                         others: scene.balls.dropFirst().map(\.position))
+        #expect(o == nil, "phantom stick \(String(describing: o))")
     }
 }
 

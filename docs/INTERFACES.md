@@ -62,3 +62,31 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`
 (Foundation Models + rule fallback).
+
+## Live table locking (capture ↔ Calibration/Auto) — lock plan 2026-11-07
+```swift
+protocol TableLocating: Sendable {                       // CueCoach/Calibration/TableLocating.swift
+    func ingest(_ f: LocatorFrame) async -> TableEstimate?
+    func reset() async
+}
+struct LocatorFrame { var image: PixelImage; var camera: CameraModel; var planes: [LocatorPlane]
+                      var timestamp: Double; var depth: DepthMap?; var trackingNormal: Bool }
+struct TableEstimate { var corners: [SIMD3<Double>]; var confidence: Double; var locked: Bool; var size: TableSize?
+                       var failure: LockFailure?        // glyph + dev HUD (never text on screen)
+                       var frame: TableFrame?           // exact pose when locked — install it, don't re-fit
+                       var generation: Int }            // bumps on (re)lock / held-size change
+enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShape, unstable }
+```
+- **Lock source** = `AutoTableLocating` (adapter over `ClassicalAutoTableLocator`, Calibration/Auto). FeltQuad is a
+  ghost seed only (felt boundary at rail-top height, cushion inset from `AutoTableProfile`), never the lock.
+- Auto `diag.rejection` → `LockFailure`: cloth touches frame → partialTable; cloth too small / too small → tooFar;
+  no plane → noPlane; no cloth colour → noFelt; others → badShape; converging with spread > 2 cm → unstable.
+- **Cadence**: `LocatingGate` (~15 Hz, busy flag) shared by FrameTap and the VirtualTable harness; no locator throttle.
+- **Planes**: an ARKit anchor is an infinite plane at its height (no extent test); without one, Auto takes a
+  provisional LiDAR plane. A level > 1.4 m below the camera is the floor, never the table.
+- **History** expires after a > 1 s timestamp gap or 5 consecutive rejections.
+- **Keypoints**: `TableKeypointModel.provider()` → `TableKeypointProvider` (nil until the tablekp .mlpackage ships).
+- **Live screen mode (D24)**: `LiveScreen(mode: LiveMode)` with `.game` | `.training(level: Int)`;
+  visibility per `OverlayVisibility.of(mode)`.
+- **Acceptance**: `CueCoachTests/VirtualTable` matrix + `LockGate` (0 false locks always; accurate-lock / TTL floors
+  ratcheted per step). Baselines in `CueCoachTests/VirtualTable/Results/`.

@@ -131,11 +131,12 @@ struct VirtualTableTests {
         let out = URL(fileURLWithPath: env["VQA_OUT"] ?? NSTemporaryDirectory() + "virtual-qa")
         let seeds = Int(env["VQA_SEEDS"] ?? "") ?? 20
         var conds = VTCondition.matrix
-        if let only = env["VQA_ONLY"] { let names = only.split(separator: ",").map(String.init); conds = conds.filter { names.contains($0.name) } }
+        if let only = env["VQA_ONLY"], !only.isEmpty { let names = only.split(separator: ",").map(String.init); conds = conds.filter { names.contains($0.name) } }
         let t0 = Date()
         let results = await VTHarness.runMatrix(conditions: conds, seeds: seeds, outDir: out)
         print("[virtual-qa] \(results.count) runs in \(Int(Date().timeIntervalSince(t0))) s → \(out.path)")
-        #expect(results.count == conds.count * seeds * 2)
+        #expect(results.count == conds.count * seeds * VTLocatorKind.selected.count)
+        LockGate.check(results)
     }
 }
 

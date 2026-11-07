@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Geometry
 import Observation
+import UIKit
 
 /// UI state for the live screen (AR on device, replay in the simulator).
 @MainActor @Observable
@@ -11,6 +12,12 @@ final class LiveModel {
     var visibility: OverlayVisibility { OverlayVisibility.of(mode) }
     /// Why the table isn't locked yet (glyph + dev HUD).
     var lockFailure: LockFailure?
+    /// World corners drags snap to (the locator's best current guess).
+    var snapTargets: [SIMD3<Double>] = []
+    var snappedHandle: Int?
+    /// Loupe while dragging a corner.
+    var loupeImage: UIImage?
+    var loupeCenter: CGPoint?
     /// Post-shot rating badge (game mode), auto-dismissed.
     var badge: BadgeStyle?
     private var badgeToken = 0
@@ -99,6 +106,9 @@ final class LiveModel {
         ghostConfidence = 0
         manualCorrection = false
         lockFailure = nil
+        snapTargets = []
+        loupeImage = nil
+        loupeCenter = nil
         relocking = false
         tapMode = false
         showTapFallback = false

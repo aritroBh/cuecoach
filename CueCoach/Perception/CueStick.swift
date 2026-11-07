@@ -20,6 +20,9 @@ struct CueLineDetector: Sendable {
     var passBy = 1.6         // × ball radius: the line must pass this close to the cue-ball centre
     var minExtent = 0.12     // m of stick visible
     var iterations = 160
+    /// A cue addressing the ball has its tip this close (backswing included); farther lines are table structure.
+    var maxTipDistance = 0.22
+    var minConfidence = 0.35
 
     func detect(in img: PixelImage, geometry geo: FrameGeometry, cue: Vec2, others: [Vec2],
                 wrists: [Vec2] = []) -> CueObservation? {
@@ -95,7 +98,9 @@ struct CueLineDetector: Sendable {
         // `best.u` is oriented so the stick lies at negative t: it points from the stick toward the cue ball.
         let tip = best.inl.map(abs).min() ?? 0
         let expected = max(1, (best.inl.map(abs).max()! - tip) / 0.004)  // ~1 inlier per 4 mm of stick
-        return CueObservation(direction: best.u, tipDistance: tip, confidence: min(1, Double(best.inl.count) / expected))
+        let confidence = min(1, Double(best.inl.count) / expected)
+        guard tip <= maxTipDistance, confidence >= minConfidence else { return nil }
+        return CueObservation(direction: best.u, tipDistance: tip, confidence: confidence)
     }
 }
 

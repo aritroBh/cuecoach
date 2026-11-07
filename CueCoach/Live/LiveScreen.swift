@@ -27,6 +27,7 @@ struct LiveScreen: View {
             Color.black.ignoresSafeArea()
             content.ignoresSafeArea().accessibilityIdentifier("live.view")
             HandlesLayer(model: model).ignoresSafeArea()
+            LoupeView(model: model).ignoresSafeArea().allowsHitTesting(false)
             controls
         }
         .statusBarHidden()
@@ -72,6 +73,9 @@ struct LiveScreen: View {
                     CircleButton(symbol: "arrow.uturn.backward", id: "live.undo") { model.undo() }
                 } else if model.showTapFallback && !model.tapMode {
                     PulsingButton(symbol: "hand.tap", tint: .white, id: "live.tapMode", size: 64) { model.startTapMode() }
+                } else if !model.tapMode && !model.manualCorrection {
+                    // Always-available manual path (small, calm) before the automatic offer.
+                    SmallButton(symbol: "hand.tap", id: "live.manual") { model.startTapMode() }
                 }
                 Spacer()
                 if !model.calibrated && model.editor.isComplete && (model.manualCorrection || model.tapMode) {
@@ -133,7 +137,8 @@ struct CoachingGlyph: View {
                 // Ghost table converging: felt fills with confidence.
                 RoundedRectangle(cornerRadius: 6).fill(green.opacity(0.35 * confidence)).frame(width: w, height: h)
                 // What's missing, as a glyph: step back, move closer, hold steady, point at the cloth…
-                let symbol = confidence >= 1 ? "checkmark" : (failure?.symbol ?? "viewfinder")
+                // Never a check before the lock: the glyph only says what's missing (or that it's converging).
+                let symbol = failure?.symbol ?? "viewfinder"
                 Image(systemName: symbol)
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(failure == nil ? green : Color.white)
@@ -181,7 +186,12 @@ struct HandlesLayer: View {
                             if dragStart[i] == nil { dragStart[i] = p }
                             model.dragHandle(i, CGPoint(x: start.x + g.translation.width, y: start.y + g.translation.height))
                         }
-                        .onEnded { _ in dragStart[i] = nil; UIImpactFeedbackGenerator(style: .light).impactOccurred() })
+                        .onEnded { _ in
+                            dragStart[i] = nil
+                            model.loupeCenter = nil
+                            model.loupeImage = nil
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        })
                     .accessibilityIdentifier("calib.handle.\(i)")
                 }
             }
@@ -236,6 +246,48 @@ struct RatingBadge: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("live.badge")
+    }
+}
+
+/// Magnifier above the finger while a corner is dragged (a crop of the live view, 2.5×).
+struct LoupeView: View {
+    let model: LiveModel
+    var body: some View {
+        GeometryReader { geo in
+            if let c = model.loupeCenter, let img = model.loupeImage {
+                let d: CGFloat = 120, zoom: CGFloat = 2.5
+                let sx = img.size.width / max(1, geo.size.width), sy = img.size.height / max(1, geo.size.height)
+                let crop = CGRect(x: (c.x - d / zoom / 2) * sx, y: (c.y - d / zoom / 2) * sy, width: d / zoom * sx, height: d / zoom * sy)
+                if let cg = img.cgImage?.cropping(to: CGRect(x: crop.minX * img.scale, y: crop.minY * img.scale,
+                                                             width: crop.width * img.scale, height: crop.height * img.scale)) {
+                    ZStack {
+                        Image(decorative: cg, scale: 1).resizable().interpolation(.none)
+                        Image(systemName: "plus").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+                    }
+                    .frame(width: d, height: d)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                    .position(x: c.x, y: max(d / 2 + 8, c.y - d))
+                    .accessibilityIdentifier("live.loupe")
+                }
+            }
+        }
+    }
+}
+
+struct SmallButton: View {
+    var symbol: String
+    var id: String
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial.opacity(0.5), in: Circle())
+        }
+        .accessibilityIdentifier(id)
     }
 }
 
@@ -324,7 +376,7 @@ struct ReplayLiveView: View {
     @State private var table: TableFrame?
     @State private var result: PerceptionResult?
     @State private var pipeline = PerceptionPipeline()
-    @State private var locator = FeltQuadLocator()
+    @State private var locator = AutoTableLocating()
     @State private var loop: Task<Void, Never>?
     @State private var viewSize: CGSize = .zero
 
@@ -350,7 +402,11 @@ struct ReplayLiveView: View {
             model.undo = { model.editor.undo() }
             model.recalibrate = { reset() }
             model.confirm = { confirm() }
-            model.startTapMode = { model.tapMode = true; model.manualCorrection = true; model.editor.reset() }
+            model.startTapMode = {
+                model.manualCorrection = true
+                model.showTapFallback = false
+                if !model.editor.isComplete { model.tapMode = true; model.editor.reset() }
+            }
             model.dragHandle = { i, p in
                 guard table == nil, let w = scene.camera.intersect(pixel: map.toImage(p), with: scene.plane) else { return }
                 model.manualCorrection = true
@@ -369,6 +425,7 @@ struct ReplayLiveView: View {
         image = scene.render()
         pixels = image.flatMap { PixelImage(cgImage: $0) }
         let pipeline = pipeline, locator = locator, cam = scene.camera, planes = planes
+        let depth = scene.renderDepth(width: 256, height: 144)
         guard let px = pixels else { return }
         loop = Task {
             var t = 0.0
@@ -376,12 +433,13 @@ struct ReplayLiveView: View {
                 t += 1.0 / 15
                 if table == nil {
                     if !model.manualCorrection && !model.tapMode {
-                        let e = await locator.ingest(LocatorFrame(image: px, camera: cam, planes: planes, timestamp: t))
+                        let e = await locator.ingest(LocatorFrame(image: px, camera: cam, planes: planes, timestamp: t,
+                                                                  depth: depth))
                         if let e, table == nil, !model.manualCorrection {
                             model.lockFailure = e.failure
-                            model.editor.setProposal(e.corners)
+                            if e.corners.count == 4 { model.editor.setProposal(e.corners) }
                             model.ghostConfidence = e.confidence
-                            if e.locked { confirm() }
+                            if e.locked { if let f = e.frame { lock(f) } else { confirm() } }
                         }
                     }
                 } else {
@@ -402,6 +460,16 @@ struct ReplayLiveView: View {
         guard table == nil, model.tapMode || model.editor.outlier != nil,
               let w = scene.camera.intersect(pixel: px, with: scene.plane) else { return }
         model.editor.add(w)
+    }
+
+    private func lock(_ f: TableFrame) {
+        guard table == nil else { return }
+        table = f
+        model.tableSize = f.spec.size
+        model.calibrated = true
+        refreshHandles()
+        let pipeline = pipeline
+        Task { await pipeline.setTable(f) }
     }
 
     private func confirm() {

@@ -36,12 +36,6 @@ struct LiveModeTests {
         }
     }
 
-    @Test func fallbackOfferedAfterEightSeconds() {
-        #expect(!FallbackPolicy.offer(planeFoundFor: nil, confidence: 0))
-        #expect(!FallbackPolicy.offer(planeFoundFor: 5, confidence: 0))
-        #expect(FallbackPolicy.offer(planeFoundFor: 9, confidence: 0.2))
-        #expect(!FallbackPolicy.offer(planeFoundFor: 9, confidence: 0.8))   // converging: wait
-    }
 }
 
 /// Bar conditions the locator must survive (A2).
@@ -55,7 +49,7 @@ struct BarConditionsTests {
     func cornersMatch(_ scene: SyntheticTableScene, _ quad: [Vec2]) -> Double {
         let c = SyntheticTableScene.cushionWidth, s = scene.frame.spec
         let truth = [Vec2(-c, -c), Vec2(-c, s.width + c), Vec2(s.length + c, s.width + c), Vec2(s.length + c, -c)]
-            .compactMap { scene.camera.project(scene.frame.world($0)) }
+            .compactMap { scene.camera.project(scene.frame.world($0, height: SyntheticTableScene.railTopHeight)) }
         return truth.map { t in quad.map { $0.distance(to: t) }.min()! }.max()!
     }
 

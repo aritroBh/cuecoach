@@ -77,7 +77,7 @@ struct CameraModel: Sendable {
 
 /// The calibrated table: a rigid frame in world space. Table coords (Geometry): x along the length
 /// (head x = 0 → foot x = length), y across, z up from the cloth. Units metres.
-struct TableFrame: Sendable {
+struct TableFrame: Sendable, Equatable {
     var tableToWorld: simd_double4x4
     var spec: TableSpec
 

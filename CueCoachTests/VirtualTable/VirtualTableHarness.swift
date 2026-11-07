@@ -26,7 +26,18 @@ struct VTFrameTapGate: Sendable {
 
 @inline(__always) func vtThreadCPU() -> Double { Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1e9 }
 
-enum VTLocatorKind: String, Sendable, CaseIterable { case feltQuad = "FeltQuadLocator", auto = "ClassicalAutoTableLocator" }
+/// `.app` = what the app ships: `AutoTableLocating` (TableLocating adapter) behind the production `LocatingGate`
+/// (~15 Hz + busy, no plane requirement), fed LiDAR depth and ARKit planes. `.feltQuad`/`.auto` are references.
+enum VTLocatorKind: String, Sendable, CaseIterable {
+    case app = "AppLocator", feltQuad = "FeltQuadLocator", auto = "ClassicalAutoTableLocator"
+
+    /// VQA_LOCATORS=app,feltQuad,auto (default: all).
+    static var selected: [VTLocatorKind] {
+        guard let v = ProcessInfo.processInfo.environment["VQA_LOCATORS"], !v.isEmpty else { return allCases }
+        let names = v.split(separator: ",").map(String.init)
+        return allCases.filter { k in names.contains { $0 == "\(k)" || $0 == k.rawValue } }
+    }
+}
 
 struct VTRunResult: Sendable {
     var locator: VTLocatorKind
@@ -139,6 +150,9 @@ enum VTHarness {
         var gate = VTFrameTapGate()
         let felt = FeltQuadLocator()
         let auto = ClassicalAutoTableLocator()
+        let app = AutoTableLocating()
+        var appGate = LocatingGate()
+        var busyUntil = -Double.infinity
         var cpu = 0.0
         var lockedCorners: [SIMD3<Double>]?
         var lastFrame: VTFrame?
@@ -152,7 +166,11 @@ enum VTHarness {
             if t >= s.trackingReady && t - planes.lastUpdate >= 0.1 {
                 planes.update(t: t, renderer: VTRenderer(scene: s.scene.at(time: t), camera: s.camera(t)))
             }
-            guard gate.offer(timestamp: ts, planeFound: planes.anyDetected(t)) else { continue }
+            if kind == .app {
+                guard appGate.offer(timestamp: ts, busy: ts < busyUntil) else { continue }
+            } else {
+                guard gate.offer(timestamp: ts, planeFound: planes.anyDetected(t)) else { continue }
+            }
             guard t >= s.trackingReady else { continue }   // ARKit still initialising: FrameTap drops the frame
             if res.firstPlane == nil { res.firstPlane = t }
             let frame: VTFrame
@@ -182,6 +200,22 @@ enum VTHarness {
                         res.yawErrDeg = yawError(fit.frame.tableToWorld.columns.0.xyz, s.truth.xAxis)
                     }
                 }
+            case .app:
+                let d = frame.depth
+                let lf = LocatorFrame(image: frame.pixel, camera: frame.camera, planes: frame.planes, timestamp: ts,
+                                      depth: DepthMap(width: d.width, height: d.height, depth: d.depth, confidence: d.confidence))
+                let e = await app.ingest(lf)
+                res.newSamples += 1
+                if let e {
+                    res.lastConfidence = e.confidence
+                    if let f = e.failure { reasons[f.rawValue, default: 0] += 1; res.reason = f.rawValue } else { res.reason = "converging" }
+                    if e.locked {
+                        isLocked = true
+                        lockedCorners = e.corners
+                        res.sizeOK = e.size == s.truth.size
+                        if let fr = e.frame { res.yawErrDeg = yawError(fr.tableToWorld.columns.0.xyz, s.truth.xAxis) }
+                    }
+                }
             case .auto:
                 let k = frame.camera.intrinsics
                 let ai = AutoIntrinsics(fx: k.fx / 2, fy: k.fy / 2, cx: k.cx / 2, cy: k.cy / 2, width: 960, height: 720)
@@ -207,6 +241,7 @@ enum VTHarness {
             let used = vtThreadCPU() - c0 + frame.convertCPU
             cpu += used
             gate.busyUntil = ts + used
+            busyUntil = ts + used
             if isLocked {
                 res.locked = true
                 res.ttlStart = t
@@ -227,13 +262,14 @@ enum VTHarness {
                     res.falseKind = "other surface (y \(String(format: "%.2f", cen.y)))"
                 } else { res.falseKind = "wrong pose on this table" }
             }
-            if kind == .feltQuad { res.reason = nil }
+            if kind == .feltQuad { res.reason = lastEst?.failure?.rawValue }
         } else {
             switch kind {
             case .feltQuad:
-                res.reason = nil   // TableEstimate has no failure reason
+                // The app's real reason (TableEstimate.failure → glyph + dev HUD), plus the harness diagnosis.
+                res.reason = lastEst?.failure?.rawValue
                 res.simDiagnosis = diagnoseFelt(lastFrame, est: lastEst, setup: s)
-            case .auto:
+            case .auto, .app:
                 if let top = reasons.max(by: { $0.value < $1.value }) { res.simDiagnosis = "top rejection: \(top.key) ×\(top.value)" }
             }
         }
@@ -280,11 +316,18 @@ enum VTHarness {
                     var cache: [Int: VTFrame] = [:]
                     var th: VTFrame?
                     var none: VTFrame?
-                    let (a, fc) = await run(s, kind: .feltQuad, cache: &cache, thumbAt: j.seed == 0 ? 1.5 : nil, thumb: &th)
-                    let (b, ac) = await run(s, kind: .auto, cache: &cache, thumb: &none)
+                    var out: [VTRunResult] = []
+                    var fc: [SIMD3<Double>]?, ac: [SIMD3<Double>]?
+                    for k in VTLocatorKind.selected {
+                        let (r, c) = k == VTLocatorKind.selected.first
+                            ? await run(s, kind: k, cache: &cache, thumbAt: j.seed == 0 ? 1.5 : nil, thumb: &th)
+                            : await run(s, kind: k, cache: &cache, thumb: &none)
+                        out.append(r)
+                        if k == .feltQuad { fc = c } else if k == .app || (k == .auto && ac == nil) { ac = c }
+                    }
                     var thumb: VTThumb?
-                    if let f = th { thumb = makeThumb(s, frame: f, felt: fc, auto: ac, results: [a, b]) }
-                    return ([a, b], thumb)
+                    if let f = th { thumb = makeThumb(s, frame: f, felt: fc, auto: ac, results: out) }
+                    return (out, thumb)
                 }
                 return true
             }
@@ -389,7 +432,7 @@ enum VTHarness {
         md += "| condition | locator | n | lock % | accurate % | false % | TTL med (s) | TTL p90 | from plane | err med (cm) | yaw med (°) | size ok | reason % | top failure | cpu ms | in view |\n"
         md += "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
         for r in rs {
-            let top = (r.locator == .auto ? r.reasons : r.diags).max { $0.value < $1.value }.map { "\($0.key) ×\($0.value)" } ?? ""
+            let top = (r.locator == .feltQuad ? r.diags : r.reasons).max { $0.value < $1.value }.map { "\($0.key) ×\($0.value)" } ?? ""
             let fk = r.falseKinds.map { "\($0.key) ×\($0.value)" }.joined(separator: "; ")
             let topAll = [top, fk.isEmpty ? "" : "FALSE: " + fk].filter { !$0.isEmpty }.joined(separator: " / ")
             let lp = pct(r.locked, r.n), ap = pct(r.accurate, r.n), fp = pct(r.falseLocks, r.n)

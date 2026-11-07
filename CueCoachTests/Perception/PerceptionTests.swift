@@ -73,12 +73,14 @@ struct FeltProposerTests {
         #expect(quad.count == 4)
         let c = SyntheticTableScene.cushionWidth, s = scene.frame.spec
         let outerTruth = [Vec2(-c, -c), Vec2(-c, s.width + c), Vec2(s.length + c, s.width + c), Vec2(s.length + c, -c)]
-            .map { scene.camera.project(scene.frame.world($0))! }
+            .map { scene.camera.project(scene.frame.world($0, height: SyntheticTableScene.railTopHeight))! }
         for t in outerTruth { #expect(quad.map { $0.distance(to: t) }.min()! < 12, "outer corner off: \(quad) vs \(outerTruth)") }
         // Raycast to the table plane, inset the cushion → compare with playing-surface corners.
-        let world = quad.compactMap { scene.camera.intersect(pixel: $0, with: scene.plane) }
+        let railTop = Plane3(point: scene.plane.point + scene.plane.normal * SyntheticTableScene.railTopHeight, normal: scene.plane.normal)
+        let world = quad.compactMap { scene.camera.intersect(pixel: $0, with: railTop) }
         #expect(world.count == 4)
         let inner = TableFitter.insetQuad(world, by: SyntheticTableScene.cushionWidth)
+            .map { $0 - scene.plane.normal * SyntheticTableScene.railTopHeight }
         let fit = try #require(TableFitter.fit(corners: inner, viewer: scene.camera.position))
         #expect(fit.sizing.size == .sevenFoot)
         #expect(abs(fit.measuredLength - scene.frame.spec.length) < 0.06, "L \(fit.measuredLength)")

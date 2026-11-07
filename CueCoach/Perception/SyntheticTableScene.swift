@@ -12,7 +12,11 @@ struct SyntheticTableScene: Sendable {
         var stripe: Bool = false
     }
 
-    static let cushionWidth = 0.05
+    /// Real-table cushion geometry (matches `AutoTableProfile`): the felt/wood boundary sits on the rail cap,
+    /// `cushionWidth` outside the nose line and `railTopHeight` above the cloth; the nose is `noseHeight` up.
+    static let cushionWidth = 0.0508
+    static let railTopHeight = 0.045
+    static let noseHeight = 0.0365
     static let felt: (UInt8, UInt8, UInt8) = (24, 112, 74)
     static let cushionFelt: (UInt8, UInt8, UInt8) = (20, 100, 66)
 
@@ -125,13 +129,32 @@ struct SyntheticTableScene: Sendable {
         func darker(_ c: (UInt8, UInt8, UInt8), _ f: Double) -> (UInt8, UInt8, UInt8) {
             (UInt8(Double(c.0) * f), UInt8(Double(c.1) * f), UInt8(Double(c.2) * f))
         }
-        fill(poly(rect(0.16)), railColor)                         // rail
-        fill(poly(rect(Self.cushionWidth)), darker(feltColor, 0.88))  // cushion tops
-        fill(poly(rect(0)), feltColor)                            // playing surface
+        fill(poly(rect(0.16), height: Self.railTopHeight), railColor)   // wooden rail cap
+        fill(poly(rect(0)), feltColor)                                   // playing surface (bed cloth)
+        // Cushions: felt strips from the nose line (nose height) out to the rail cap (rail-top height).
+        let inner = rect(0), outer = rect(Self.cushionWidth)
+        for i in 0..<4 {
+            let a = inner[i], b = inner[(i + 1) % 4], c = outer[(i + 1) % 4], d = outer[i]
+            // Cushion face (cloth → nose), slightly darker, then the cushion top (nose → rail cap).
+            let face = [frame.world(a), frame.world(b), frame.world(b, height: Self.noseHeight), frame.world(a, height: Self.noseHeight)]
+            let fimg = face.compactMap { camera.project($0) }
+            if fimg.count == 4 {
+                let fp = CGMutablePath()
+                fp.addLines(between: fimg.map { CGPoint(x: $0.x, y: $0.y) }); fp.closeSubpath()
+                fill(fp, darker(feltColor, 0.8))
+            }
+            let pts = [frame.world(a, height: Self.noseHeight), frame.world(b, height: Self.noseHeight),
+                       frame.world(c, height: Self.railTopHeight), frame.world(d, height: Self.railTopHeight)]
+            let img = pts.compactMap { camera.project($0) }
+            guard img.count == 4 else { continue }
+            let path = CGMutablePath()
+            path.addLines(between: img.map { CGPoint(x: $0.x, y: $0.y) }); path.closeSubpath()
+            fill(path, darker(feltColor, 0.88))
+        }
         if lampGain > 1 {
             // Lamp hotspot: concentric brighter ellipses over the cloth (clipped to the felt).
             ctx.saveGState()
-            if let felt = poly(rect(Self.cushionWidth)) { ctx.addPath(felt); ctx.clip() }
+            if let felt = poly(rect(0)) { ctx.addPath(felt); ctx.clip() }
             for i in stride(from: 10, through: 1, by: -1) {
                 let f = 1 + (lampGain - 1) * (1 - Double(i) / 10)
                 let c = (UInt8(min(255, Double(feltColor.0) * f)), UInt8(min(255, Double(feltColor.1) * f)),

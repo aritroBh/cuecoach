@@ -55,6 +55,9 @@ enum CapturePolicy {
         }
     }
 
+    /// Locating cadence (lock plan step 2): ~15 Hz; the busy flag is the real load bound.
+    static let locateInterval = 1.0 / 15
+
     struct Extras: Equatable, Sendable { var mesh: Bool; var smoothedDepth: Bool; var personOcclusion: Bool }
 
     /// Heavy AR extras shed first as the phone heats (LiDAR scene depth always stays on).
@@ -74,5 +77,18 @@ enum CapturePolicy {
         case .high: 960
         case .sustained, .survival: 800
         }
+    }
+}
+
+/// FrameTap's admission rule as a value type (shared by FrameTap and the VirtualTable harness):
+/// skip while busy, run at most every `interval × 0.9`. No plane requirement (step 3: provisional LiDAR plane).
+struct LocatingGate: Sendable {
+    var interval = CapturePolicy.locateInterval
+    var lastRun = -Double.infinity
+
+    mutating func offer(timestamp now: Double, busy: Bool) -> Bool {
+        guard !busy, now - lastRun >= interval * 0.9 else { return false }
+        lastRun = now
+        return true
     }
 }

@@ -13,7 +13,8 @@ import Vision
 /// Full-screen ARKit camera with the table overlay anchored in 3D.
 struct ARLiveView: UIViewRepresentable {
     let model: LiveModel
-    var locator: any TableLocating = FeltQuadLocator()
+    /// Lock source = AutoTableLocator (lock plan step 1); FeltQuad only seeds the ghost inside the adapter.
+    var locator: any TableLocating = AutoTableLocating()
 
     func makeCoordinator() -> ARLiveController { ARLiveController(model: model, locator: locator) }
 
@@ -47,6 +48,8 @@ final class ARLiveController: NSObject {
     private var bump = BumpDetector()
     private var lastStatus: LiveStatus = .searching
     private var planeFoundAt: Date?
+    private var locatingSince = Date()
+    private var failureTimer = FailureTimer()
     private var tableFrame: TableFrame?
     private var limitedSince: Date?
     private var revalidating = false
@@ -197,10 +200,11 @@ final class ARLiveController: NSObject {
             overlay?.setDimmed(st.showsRecalibratePulse)
             lastStatus = st
         }
-        // Tap-4 as the last resort: offered automatically after ~8 s with a plane but no converging ghost.
-        if !model.calibrated, !model.showTapFallback,
-           FallbackPolicy.offer(planeFoundFor: planeFoundAt.map { Date().timeIntervalSince($0) },
-                                confidence: model.ghostConfidence) {
+        // Corner fallback: after ~4 s unlocked, or the same failure for 2.5 s (plane or not).
+        let now = Date().timeIntervalSinceReferenceDate
+        if !model.calibrated, !model.showTapFallback, !model.tapMode, !model.manualCorrection,
+           FallbackPolicy.offer(unlockedFor: Date().timeIntervalSince(locatingSince),
+                                sameFailureFor: failureTimer.sameFor(at: now)) {
             model.showTapFallback = true
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
         }
@@ -210,7 +214,12 @@ final class ARLiveController: NSObject {
 
     private func handleEstimate(_ e: TableEstimate?, _ s: FrameTap.Status) {
         guard let tap, estimateOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
-        if !model.calibrated { model.lockFailure = e?.failure }
+        if !model.calibrated {
+            model.lockFailure = e?.failure
+            failureTimer.note(e?.failure, at: Date().timeIntervalSinceReferenceDate)
+            // Candidate corners the user's drags snap to (the locator's current best guess).
+            if let e, e.corners.count == 4, e.confidence >= 0.25 { model.snapTargets = e.corners }
+        }
         if revalidating, let e, e.locked, let current = tableFrame {
             // After relocalization: keep the lock if the table is where we left it, else re-anchor.
             let now = current.corners.map { current.world($0) }
@@ -233,20 +242,17 @@ final class ARLiveController: NSObject {
         }
         if revalidating { return }   // still relocking: keep the old table hidden, don't treat as a new table
         guard let e, !model.calibrated, !model.manualCorrection, !model.tapMode else { return }
-        model.editor.setProposal(e.corners)
+        if e.corners.count == 4 { model.editor.setProposal(e.corners) }
         model.ghostConfidence = e.confidence
-        if e.locked { confirm() }
+        if e.locked {
+            if let frame = e.frame { lockAuto(frame) } else { confirm() }
+        }
     }
 
     // MARK: Corners (correction drag, tap-4 fallback)
 
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         guard let v = view, !model.calibrated else { return }
-        guard model.planeFound else {
-            model.notReadyTick += 1
-            UINotificationFeedbackGenerator().notificationOccurred(.warning)
-            return
-        }
         guard model.tapMode || model.editor.outlier != nil else { return }
         guard let w = worldPoint(at: g.location(in: v), in: v) else {
             model.notReadyTick += 1
@@ -256,10 +262,17 @@ final class ARLiveController: NSObject {
         if model.editor.add(w) { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
     }
 
+    /// Manual fallback keeps the best ghost: with 4 corners it opens straight into drag-to-correct;
+    /// otherwise the user taps the corners (taps work before ARKit finds a plane via estimatedPlane).
     private func startTapMode() {
-        model.tapMode = true
         model.manualCorrection = true
-        model.editor.reset()
+        model.showTapFallback = false
+        if model.editor.isComplete {
+            model.tapMode = false
+        } else {
+            model.tapMode = true
+            model.editor.reset()
+        }
     }
 
     /// Screen → table-plane point: the corners' plane once known, else ARKit planes.
@@ -274,14 +287,41 @@ final class ARLiveController: NSObject {
     }
 
     private func drag(_ i: Int, to p: CGPoint) {
-        guard let v = view, !model.calibrated, let w = worldPoint(at: p, in: v) else { return }
+        guard let v = view, !model.calibrated else { return }
+        // Snap to the locator's candidate corners (rail/pocket evidence) when close.
+        let targets = model.snapTargets.compactMap { v.project($0.f).map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) } }
+        let snapped = DragSnap.snap(p, to: targets, radius: 30)
+        if snapped != nil && model.snappedHandle != i { UISelectionFeedbackGenerator().selectionChanged() }
+        model.snappedHandle = snapped == nil ? nil : i
+        guard let w = worldPoint(at: snapped ?? p, in: v) else { return }
         if !model.manualCorrection { model.manualCorrection = true }
         model.editor.move(i, to: w)
+        updateLoupe(at: snapped ?? p)
+    }
+
+    /// Loupe: a magnified snapshot around the handle being dragged (≈10 Hz).
+    private var lastLoupe = Date.distantPast
+    private func updateLoupe(at p: CGPoint) {
+        guard let v = view, Date().timeIntervalSince(lastLoupe) > 0.1 else { model.loupeCenter = p; return }
+        lastLoupe = Date()
+        model.loupeCenter = p
+        v.snapshot(saveToHDR: false) { [weak self] img in
+            Task { @MainActor in self?.model.loupeImage = img }
+        }
     }
 
     private func undo() {
         guard !model.calibrated else { return }
         model.editor.undo()
+    }
+
+    /// Auto locked: install its exact pose (no re-fit of the corners).
+    private func lockAuto(_ frame: TableFrame) {
+        guard !model.calibrated else { return }
+        model.tableSize = frame.spec.size
+        model.calibrated = true
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        installThenDetect(frame) {}
     }
 
     private func confirm() {
@@ -331,6 +371,8 @@ final class ARLiveController: NSObject {
         revalidating = false
         model.clearCalibration()
         planeFoundAt = model.planeFound ? Date() : nil
+        locatingSince = Date()
+        failureTimer = FailureTimer()
         Task {
             await pipeline.setTable(nil)
             await locator.reset()
@@ -417,6 +459,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     private let onResult: @MainActor (PerceptionResult?, Status) -> Void
     private let onEstimate: @MainActor (TableEstimate?, Status) -> Void
     private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
+                               locateGate: LocatingGate(),
                                interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [[Vec2]](),
                                seq: 0, epoch: 0, lastTracking: true))
 
@@ -460,11 +503,14 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
             let seq = s.seq, epoch = s.epoch
             let status = now - s.lastStatus > 0.25
             if status { s.lastStatus = now }
-            let interval = s.mode == .locating ? 0.2 : s.interval
-            guard s.mode != .idle, !s.busy, now - s.lastRun >= interval * 0.9 else {
-                return (.idle, status, s.planeFound, 0, seq, epoch)
+            // Locating: the shared LocatingGate (~15 Hz + busy), no plane requirement (provisional LiDAR plane).
+            if s.mode == .locating {
+                guard s.locateGate.offer(timestamp: now, busy: s.busy) else { return (.idle, status, s.planeFound, 0, seq, epoch) }
+            } else {
+                guard s.mode != .idle, !s.busy, now - s.lastRun >= s.interval * 0.9 else {
+                    return (.idle, status, s.planeFound, 0, seq, epoch)
+                }
             }
-            if s.mode == .locating && !s.planeFound { return (.idle, status, s.planeFound, 0, seq, epoch) }
             s.busy = true
             s.lastRun = now
             return (s.mode, status, s.planeFound, s.width, seq, epoch)
@@ -496,7 +542,8 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
                                     extent: SIMD2(Double(ext.width), Double(ext.height)),
                                     isTable: p.classification == .table)
             }
-            let lf = LocatorFrame(image: img, camera: cam, planes: planes, timestamp: frame.timestamp)
+            let lf = LocatorFrame(image: img, camera: cam, planes: planes, timestamp: frame.timestamp,
+                                  depth: Self.depthMap(frame), trackingNormal: tracking)
             let locator = locator
             Task.detached(priority: .userInitiated) { [weak self] in
                 let e = await locator.ingest(lf)

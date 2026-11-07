@@ -1,0 +1,60 @@
+import Foundation
+import Testing
+@testable import CueCoach
+
+/// Acceptance gate for the shipped locator (`.app`) over the VirtualTable matrix (lock plan exit gate).
+/// - False locks: 0 in every condition, always.
+/// - Accurate-lock % and p50 TTL: per condition, starting at the measured baseline and tightened as each plan
+///   step lands. Final target on in-scope conditions: ≥ 95 % accurate, p50 TTL < 1.5 s.
+enum LockGate {
+    struct Floor { var accuratePct: Double; var ttlP50: Double? }
+
+    /// In scope for the capture-side steps (1, 2, 3, 7): the whole table can be seen from the session's path.
+    /// Conditions needing Auto steps 4–6 (partial/far/steep fitting, neutral cloth, shadows/occluders) or the
+    /// keypoint seed (step 8) are tracked but not gated on accuracy yet — only on false locks.
+    static let inScope: Set<String> = [
+        "baseline", "felt-blue", "felt-red", "felt-tan", "light-lamp", "light-neon",
+        "clutter-secondTable", "clutter-coffeeTable", "clutter-railObjects", "dist-1.0m",
+        "path-endPan", "hold-portrait", "hold-landscape", "fps-30", "fps-60",
+    ]
+
+    /// Ratchet: raise these as steps land (never lower). Step 1/2/3 run (Results/step123.md), measured − 10 pts
+    /// for timing jitter (the busy flag uses measured CPU), p50 TTL + 0.6 s.
+    static let floors: [String: Floor] = [
+        "baseline": Floor(accuratePct: 30, ttlP50: 2.5),
+        "felt-blue": Floor(accuratePct: 35, ttlP50: 2.5),
+        "felt-red": Floor(accuratePct: 20, ttlP50: 2.4),
+        "felt-tan": Floor(accuratePct: 20, ttlP50: 4.0),
+        "light-lamp": Floor(accuratePct: 35, ttlP50: 2.5),
+        "light-neon": Floor(accuratePct: 20, ttlP50: 4.1),
+        "clutter-secondTable": Floor(accuratePct: 40, ttlP50: 2.5),
+        "clutter-coffeeTable": Floor(accuratePct: 30, ttlP50: 2.5),
+        "clutter-railObjects": Floor(accuratePct: 30, ttlP50: 2.4),
+        "dist-1.0m": Floor(accuratePct: 40, ttlP50: 2.5),
+        "path-endPan": Floor(accuratePct: 45, ttlP50: 2.3),
+        "hold-portrait": Floor(accuratePct: 25, ttlP50: 2.5),
+        "hold-landscape": Floor(accuratePct: 40, ttlP50: 2.5),
+        "fps-30": Floor(accuratePct: 30, ttlP50: 2.5),
+        "fps-60": Floor(accuratePct: 30, ttlP50: 2.5),
+    ]
+    static let defaultFloor = Floor(accuratePct: 0, ttlP50: nil)
+
+    static func check(_ results: [VTRunResult]) {
+        guard ProcessInfo.processInfo.environment["VQA_GATE"] != "0" else { return }
+        let app = results.filter { $0.locator == .app }
+        guard !app.isEmpty else { return }
+        for (cond, runs) in Dictionary(grouping: app, by: \.condition) {
+            let falseLocks = runs.filter(\.falseLock).count
+            #expect(falseLocks == 0, "\(cond): \(falseLocks) false lock(s) — must be 0")
+            guard inScope.contains(cond) else { continue }
+            let floor = floors[cond] ?? defaultFloor
+            let acc = Double(runs.filter(\.accurate).count) / Double(runs.count) * 100
+            #expect(acc >= floor.accuratePct, "\(cond): accurate lock \(Int(acc)) % < floor \(Int(floor.accuratePct)) %")
+            if let maxTTL = floor.ttlP50 {
+                let ttl = runs.filter(\.accurate).compactMap(\.ttlStart).sorted()
+                let p50 = ttl.isEmpty ? .infinity : ttl[ttl.count / 2]
+                #expect(p50 <= maxTTL, "\(cond): p50 TTL \(p50) s > \(maxTTL) s")
+            }
+        }
+    }
+}
