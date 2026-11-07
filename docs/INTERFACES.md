@@ -54,9 +54,49 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
 // Brilliant is assigned post-game (max 1/game, must be Shot of the Game); live it shows as Great.
 ```
 
-## Stats / Training (Phase 6 / 8 — stubs only now)
-`ShotFeatures.extract(pre:post:trace:) -> ShotFeatures`, `Aggregates`, `Archetypes`, `ProComp`;
-`DrillID`, `AssistLevel`, `LevelPolicy`, `BiasDetector`.
+## Stats (Phase 6 — stubs only now)
+`ShotFeatures.extract(pre:post:trace:) -> ShotFeatures`, `Aggregates`, `Archetypes`, `ProComp`.
+
+## Training (Phase 8 — `Packages/CueCore/Sources/Training`, imports Geometry only)
+```swift
+public enum DrillID { case straightIn, increasingCuts, long, rail, sidePocket, positionPlay, spinControl, banks
+                      var hasPositionZone: Bool; var trackedAxes: Set<BiasAxis> }   // trackedAxes: open question
+public enum OverlayElement { case liveAimLine, cueToGhostLine, ghostBall, objectToPocketLine,
+                             cueAfterContactLine, spinDot, powerMeter, positionZone }
+public enum AssistLevel: Int { case full = 1, objectLineOnly, ghostOnly, none     // D1
+                               var showsSuggestedShot: Bool; var harder/easier: AssistLevel?
+                               func visibleWhileAiming(in: DrillID) -> Set<OverlayElement>
+                               func visibleAfterShot(in: DrillID) -> Set<OverlayElement> }
+public struct LevelPolicy { init(window:promoteAt:demoteAt:) throws(LevelPolicyError)   // decoding validates too
+                            static let standard                                      // 10 attempts, ≥0.8 up, ≤0.4 down; gap > 2·epsilon
+                            func record(success:into: inout LevelProgress) -> LevelChange? }
+public struct LevelProgress { var level: AssistLevel; var recent: [Bool]; var successRate: Double? }
+public struct TrainingProgress { func level(for: DrillID) -> AssistLevel
+                                 mutating func record(drill:success:policy:) -> LevelChange? }  // Training store only
+public enum BiasAxis { case cut, side, speed, cueBallDistance, spin; var unit: String; var typicalNoise: Double }
+public struct BiasDetector { struct Config { deadZone, alternativeP, threshold, cap, minimumAttempts
+                                             static let standard /* σ units */; static let calibrated: [BiasAxis: Config]
+                                             func scaled(by:) -> Config }           // decoding validates
+                             init(config:) /* one unit for all axes */; init(configs: [BiasAxis: Config])
+                             mutating func observe(_: BiasAxis, error: Double); func activeBiases() -> [DetectedBias]
+                             mutating func reset(_: BiasAxis) }
+public struct DetectedBias { var key: BiasKey /* axis + BiasDirection */; var evidence: Double
+                             var meanError: Double /* sign == direction */; var attempts: Int; var consistency: Double }
+public enum Correction { hitThicker, hitThinner, favorLeft, favorRight, softer, firmer, shorter, longer, lessSpin, moreSpin
+                         init(for: BiasKey); var label: String /* ≤2 words, no digits */; var visual: FeedbackVisual }
+public enum FeedbackVisual { case averageLineVsCorrect, missHeatmap, arrow(ArrowDirection), spinDotVsIntended }
+public enum BiasStrength { case slight, clear, strong }                        // glow / line spread only
+public struct Feedback { var bias: BiasKey; var correction: Correction; var strength: BiasStrength }
+public struct FeedbackCoach { init(drill:configs: = .calibrated); init(drill:config:)
+                              var current: Feedback?                            // one correction at a time
+                              mutating func record(_: [BiasAxis: Double]); mutating func dismiss() }
+public enum SetupMatcher { static func match(ghosts: [Vec2], detected: [Vec2], tolerance: Double) -> [Bool]
+                           static func isReady(_: [Bool]) -> Bool }
+```
+Error contract for `record`/`observe`: actual − intended, positive = overcut / miss right / too hard /
+cue ball long / more spin. Units: cut rad; side m (object-ball lateral miss at the pocket mouth, shooter's
+right +); speed ratio (actual/intended − 1); cueBallDistance m (past target +); spin ball radii
+(|tip offset| − |intended|). `typicalNoise` per axis is provisional until tuned on real training data.
 
 ## App-side protocols (later phases; declared now so wiring compiles)
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
