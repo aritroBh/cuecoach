@@ -74,23 +74,37 @@ struct ProCompTests {
         #expect(abs(s - 1) < 1e-12)
     }
 
-    @Test func scaleAndLevelInvariant() throws {
-        // A weaker player with the same relative strengths still "plays like" the pro.
-        let weaker = shape.mapValues { $0 * 0.5 + 0.05 }
+    @Test func isPlainCosineOfRawVectors_specSection8() throws {
+        // SPEC §8: cosine similarity. [1,0,0]·[0,1,0] = 0 (the old mean-centred metric gave 0.25).
+        let s = try #require(ProComp.similarity(vec([.cut: 1, .long: 0, .bank: 0]), pro("a", [.cut: 0, .long: 1, .bank: 0])))
+        #expect(abs(s) < 1e-12)
+        let a: [Double] = [0.9, 0.3, 0.8], c: [Double] = [0.2, 0.7, 0.4]
+        let dims: [ArchetypeDimension] = [.cut, .long, .bank]
+        let dot: Double = zip(a, c).map(*).reduce(0, +)
+        let na: Double = a.map { $0 * $0 }.reduce(0, +).squareRoot()
+        let nc: Double = c.map { $0 * $0 }.reduce(0, +).squareRoot()
+        let expected = dot / (na * nc)
+        let got = try #require(ProComp.similarity(vec(Dictionary(uniqueKeysWithValues: zip(dims, a))),
+                                                  pro("b", Dictionary(uniqueKeysWithValues: zip(dims, c)))))
+        #expect(abs(got - expected) < 1e-12)
+    }
+
+    @Test func scaleInvariant() throws {
+        let weaker = shape.mapValues { $0 * 0.5 }
         #expect(abs(try #require(ProComp.similarity(vec(weaker), pro("a", shape))) - 1) < 1e-9)
     }
 
-    @Test func oppositeShapeIsZero() throws {
-        let opposite = shape.mapValues { 1 - $0 }
-        #expect(abs(try #require(ProComp.similarity(vec(opposite), pro("a", shape)))) < 1e-9)
+    @Test func onlySharedDimensionsCount() throws {
+        var mine = shape; mine[.clutch] = 1   // pro has no clutch trait
+        #expect(abs(try #require(ProComp.similarity(vec(mine), pro("a", shape))) - 1) < 1e-9)
     }
 
     @Test func tooFewSharedDimensionsIsNil() {
         #expect(ProComp.similarity(vec([.cut: 0.9, .bank: 0.1]), pro("a", shape)) == nil)
     }
 
-    @Test func flatVectorIsNil() {
-        #expect(ProComp.similarity(vec([.cut: 0.5, .long: 0.5, .bank: 0.5]), pro("a", shape)) == nil)
+    @Test func zeroVectorIsNil() {
+        #expect(ProComp.similarity(vec([.cut: 0, .long: 0, .bank: 0]), pro("a", shape)) == nil)
     }
 
     @Test func nearestPicksMostSimilar() throws {

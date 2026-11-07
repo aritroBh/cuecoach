@@ -83,8 +83,8 @@ public enum ProProfiles {
 /// Closest pro for a player. Field names match the app's persisted `StoredProComp`.
 public struct ProComp: Hashable, Codable, Sendable {
     public var proID: String
-    /// (1 + r) / 2 where r is the cosine similarity of the mean-centred vectors over shared dimensions
-    /// (Pearson r): 1 = same style shape, 0.5 = unrelated, 0 = opposite.
+    /// Cosine similarity (SPEC §8) of the player and pro vectors over shared dimensions. Values are in [0, 1],
+    /// so the similarity is too: 1 = same direction, 0 = no overlap.
     public var similarity: Double
     /// Up to two dimensions (raw values) where both the player and the pro are above their own average.
     public var sharedTraits: [String]
@@ -98,16 +98,15 @@ public struct ProComp: Hashable, Codable, Sendable {
     /// Minimum shared dimensions for a meaningful comparison.
     public static let minSharedDimensions = 3
 
-    /// Cosine similarity of mean-centred vectors (style shape, independent of overall skill level), mapped to [0, 1].
-    /// `nil` with fewer than `minSharedDimensions` shared dimensions or a flat vector.
+    /// Cosine similarity (SPEC §8) over shared dimensions, in [0, 1].
+    /// `nil` with fewer than `minSharedDimensions` shared dimensions or a zero vector.
     public static func similarity(_ v: ArchetypeVector, _ pro: ProProfile) -> Double? {
-        guard let (a, b, _) = centred(v, pro) else { return nil }
+        guard let (a, b, _) = shared(v, pro) else { return nil }
         let dot = zip(a, b).map(*).reduce(0, +)
         let na = a.map { $0 * $0 }.reduce(0, +).squareRoot()
         let nb = b.map { $0 * $0 }.reduce(0, +).squareRoot()
         guard na > 1e-12, nb > 1e-12 else { return nil }
-        let r = max(-1, min(1, dot / (na * nb)))
-        return (1 + r) / 2
+        return max(0, min(1, dot / (na * nb)))
     }
 
     /// Most similar pro (ties → lowest id), or `nil` when no pro can be compared.
@@ -125,11 +124,17 @@ public struct ProComp: Hashable, Codable, Sendable {
         return ProComp(proID: best.0.id, similarity: best.1, sharedTraits: Array(shared))
     }
 
-    private static func centred(_ v: ArchetypeVector, _ pro: ProProfile)
+    private static func shared(_ v: ArchetypeVector, _ pro: ProProfile)
         -> ([Double], [Double], [ArchetypeDimension])? {
         let dims = ArchetypeDimension.allCases.filter { v[$0] != nil && pro.traits[$0] != nil }
         guard dims.count >= minSharedDimensions else { return nil }
-        let a = dims.map { v[$0]! }, b = dims.map { pro.traits[$0]!.value }
+        return (dims.map { v[$0]! }, dims.map { pro.traits[$0]!.value }, dims)
+    }
+
+    /// Shared dimensions, mean-centred per vector (used only to pick "shared traits": both above their own mean).
+    private static func centred(_ v: ArchetypeVector, _ pro: ProProfile)
+        -> ([Double], [Double], [ArchetypeDimension])? {
+        guard let (a, b, dims) = shared(v, pro) else { return nil }
         let ma = a.reduce(0, +) / Double(a.count), mb = b.reduce(0, +) / Double(b.count)
         return (a.map { $0 - ma }, b.map { $0 - mb }, dims)
     }
