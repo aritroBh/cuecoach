@@ -55,7 +55,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 ## All-modules push (workflow wf_4253a676, user: "use all agents", 2026-11-06)
 Each module: TDD worker → Codex review + Claude adversarial verification → fix → re-verify.
 - [~] Engine (Phase 2): candidates, Monte Carlo, win prob, ratings D18 — .worktrees/engine
-- [~] Stats + archetypes + pro comps (Phase 6) — .worktrees/stats
+- [~] Stats + archetypes + pro comps (Phase 6) — .worktrees/stats. Comparison math done; all 10 pro profiles still `estimated` → sourcing real stats (research agent). No pro videos downloaded (ToS/copyright; detector not trained yet)
 - [~] Training logic (Phase 8): drills, assist levels, level policy, bias detector — .worktrees/training
 - [~] Mesh (Phase 5): MPC, protocol, host election/migration, clock sync — .worktrees/mesh (Sim C)
 - [~] Identity (Phase 5): opt-in embeddings, re-ID, shooter attribution + fallback — .worktrees/identity (Sim D)
@@ -69,3 +69,13 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] AR 9ad4e32 INSTALLED: zero-tap lock (floor/coffee-table planes rejected), relocalization re-check, shot events, Hungarian tracker, thermal step-down; 117 unit + 2 UI tests green. Codex re-review running; next: cue-stick aim, Kalman, buffer reuse, depth-based ball detection
 - [~] On-device test runs: CueCoach unit suite via xcodebuild test on 17 Pro Max + 15 Pro Max
 - [x] VLM A/B on BOTH phones (17 Pro Max: OpenSound + OpenCane uninstalled with user OK to free the 3-app slot): Apple FM vs Qwen3.5-2B vs Gemma-4-E2B
+
+## Live product round (2026-11-07, user at the table)
+- [x] D24: two modes. Game = no aim lines, rules helpers + post-shot rating; Training = Lines 1+2, Line 3 at higher levels
+- [~] Visible table-found state (outline + 6 pockets + ball rings), lock-failure reasons, mode-aware overlay: capture worker
+- [~] Codex r4 REJECT (4 MAJOR, 3 MINOR): capture worker
+- [~] App shell: Home (Game / Training) → New game / Join nearby → Live → badge → review: app-shell worker (Antigravity + Codex review)
+- [~] Recognition hardening workflow: Codex + Antigravity + Claude stress (10k sessions) + face-model licence research → cross-check → fix → re-review
+- [~] Merge reviews: stats, training, screens-a, audit (Codex review → Claude verify → fix → reverify)
+- [~] AR adversarial stress test (.worktrees/capture-stress)
+- [ ] Two phones join one real game (after mesh merges)
