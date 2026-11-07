@@ -20,6 +20,9 @@ final class PlayerProfile {
     var isLocalOwner: Bool
     /// Peer profile cached only for the current mesh session; removed by `purgeSessionGuests()`.
     var isSessionGuest: Bool
+    /// Tombstone set by "Delete my recognition data". Device-local, never exported: an import ignores any
+    /// recognition row opted in at or before this instant, so deleted embeddings need a fresh opt-in (audit F4).
+    var recognitionRevokedAt: Date? = nil
     private var createdAtValue: Date
     var createdAt: Date { get { createdAtValue } set { createdAtValue = newValue; updatedAt = .now } }
     var updatedAt: Date

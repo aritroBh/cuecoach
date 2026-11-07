@@ -3,11 +3,13 @@ import SwiftData
 
 extension PersistenceStack {
     /// Settings → "Delete my recognition data": removes the local owner's face/appearance embeddings
-    /// in one call. The profile, games and stats are untouched.
-    func deleteMyRecognitionData() throws {
+    /// in one call and records a revocation tombstone so an older backup can't restore them.
+    /// The profile, games and stats are untouched.
+    func deleteMyRecognitionData(now: Date = .now) throws {
         let ctx = competitiveContext
         let owners = try ctx.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
         for owner in owners {
+            owner.recognitionRevokedAt = now
             if let r = owner.recognition {
                 owner.recognition = nil
                 ctx.delete(r)

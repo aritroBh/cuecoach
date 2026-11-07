@@ -7,7 +7,8 @@ extension PersistenceStack {
     // MARK: Export
 
     /// Serialises both stores to `BackupV1` JSON. Recognition embeddings are left out unless
-    /// `includeRecognition` is set. Session guests are never exported. Rows are sorted by id.
+    /// `includeRecognition` is set, and even then only the local owner's are written: another player's
+    /// biometrics never leave this phone (audit F3). Session guests are never exported. Rows are sorted by id.
     func exportBackup(includeRecognition: Bool = false, exportedAt: Date = .now) throws -> Data {
         try BackupV1(exportedAt: exportedAt, includesRecognition: includeRecognition,
                      competitive: competitiveSection(includeRecognition: includeRecognition),
@@ -26,7 +27,7 @@ extension PersistenceStack {
             .init(id: $0.id, name: $0.name, avatarSymbol: $0.avatarSymbol, avatarColor: $0.avatarColor,
                   isLocalOwner: $0.isLocalOwner, createdAt: $0.createdAt, updatedAt: $0.updatedAt,
                   skillModel: $0.skillModel,
-                  recognition: includeRecognition ? $0.recognition.map {
+                  recognition: includeRecognition && $0.isLocalOwner ? $0.recognition.map {
                       .init(id: $0.id, faceEmbedding: $0.faceEmbedding, appearanceEmbedding: $0.appearanceEmbedding,
                             optedInAt: $0.optedInAt, version: $0.version, updatedAt: $0.updatedAt)
                   } : nil)
@@ -100,11 +101,16 @@ extension PersistenceStack {
     ///
     /// Device-local fields are never taken from a backup: `isLocalOwner` of existing profiles is kept;
     /// a new profile becomes the local owner only if this phone has none yet (fresh-phone restore).
-    /// Recognition rows are read only when the manifest's `includesRecognition` is true.
+    /// Recognition rows are read only when the manifest's `includesRecognition` is true, only for the
+    /// local owner, never over a revocation tombstone, and never onto another row's id (audit F2-F4).
+    ///
+    /// Refuses (`BackupError.pendingChanges`) while either context has unsaved edits, because a failed
+    /// import rolls the contexts back and would otherwise discard that unrelated work (audit F9).
     func importBackup(_ data: Data) throws {
+        let c = competitiveContext, t = trainingContext
+        guard !c.hasChanges, !t.hasChanges else { throw BackupError.pendingChanges }
         let backup = try BackupV1.decode(data)
         try validateParents(backup)
-        let c = competitiveContext, t = trainingContext
         let trainingSnapshot = try trainingSection()
         do {
             try mergeCompetitive(backup.competitive, includeRecognition: backup.includesRecognition, into: c)
@@ -192,19 +198,34 @@ extension PersistenceStack {
                 m.createdAt = d.createdAt; m.skillModel = d.skillModel
                 m.updatedAt = d.updatedAt
             })
+        // Guests are never exported, so a backup profile is a saved one: matching a live guest's id promotes
+        // it, whether or not the backup copy is newer, so the next guest purge keeps it (audit F8).
+        for d in b.profiles { profiles[d.id]?.isSessionGuest = false }
+
+        // RecognitionData.id is unique: inserting a colliding id would upsert over another row (audit F2).
+        var recognitionOwner = Dictionary(try ctx.fetch(FetchDescriptor<RecognitionData>()).map { ($0.id, $0) },
+                                          uniquingKeysWith: { a, _ in a })
         for d in b.profiles where includeRecognition {
-            guard let r = d.recognition, let profile = profiles[d.id] else { continue }
+            guard let r = d.recognition, let profile = profiles[d.id], profile.isLocalOwner else { continue }
+            if let revoked = profile.recognitionRevokedAt,
+               BackupV1.millis(r.optedInAt) <= BackupV1.millis(revoked) { continue }        // audit F4
+            if let other = recognitionOwner[r.id], other !== profile.recognition { continue } // audit F2
             let profileStamp = profile.updatedAt
             defer { profile.updatedAt = profileStamp }   // linking embeddings isn't a profile edit
             if let existing = profile.recognition {
                 guard isNewer(r.updatedAt, than: existing.updatedAt) else { continue }
-                if existing.id != r.id { profile.recognition = nil; ctx.delete(existing) }
+                if existing.id != r.id {
+                    profile.recognition = nil
+                    recognitionOwner[existing.id] = nil
+                    ctx.delete(existing)
+                }
             }
             let row = profile.recognition ?? {
                 let n = RecognitionData(id: r.id, faceEmbedding: nil, appearanceEmbedding: nil,
                                         optedInAt: r.optedInAt, version: r.version)
                 ctx.insert(n)
                 profile.recognition = n
+                recognitionOwner[n.id] = n
                 return n
             }()
             row.faceEmbedding = r.faceEmbedding; row.appearanceEmbedding = r.appearanceEmbedding
@@ -246,8 +267,9 @@ extension PersistenceStack {
                 m.index = d.index; m.shooterID = d.shooterID; m.attributionSource = d.attributionSource
                 m.preState = d.preState; m.postState = d.postState; m.calledPocket = d.calledPocket
                 m.firstContact = d.firstContact; m.railsAfterContact = d.railsAfterContact
+                // Only canonical keys ("8", never "08" / "+8"), so aliases can't collide and trap (audit F1).
                 m.pocketed = Dictionary(uniqueKeysWithValues: d.pocketed.compactMap { k, v in
-                    Int(k).flatMap(BallID.init).map { ($0, v) } })
+                    Int(k).flatMap(BallID.init).flatMap { String($0.number) == k ? ($0, v) : nil } })
                 m.fouls = d.fouls; m.features = d.features; m.made = d.made; m.onTarget = d.onTarget
                 m.cueResult = d.cueResult; m.decisionRating = d.decisionRating
                 m.executionRating = d.executionRating; m.wpaDelta = d.wpaDelta; m.isClutch = d.isClutch

@@ -174,6 +174,8 @@ enum BackupError: Error, Equatable {
     case unsupportedVersion(Int)
     /// A row references a parent that is neither in the backup nor on this device.
     case missingParent(child: String, childID: UUID, parentID: UUID)
+    /// Import refused: a store has unsaved edits that a failed import would otherwise roll back.
+    case pendingChanges
 }
 
 // MARK: - JSON coding (ISO-8601 with milliseconds, sorted keys)
@@ -197,13 +199,29 @@ extension BackupV1 {
         return whole.dropLast() + "." + String(format: "%03lld", frac) + "Z"
     }
 
+    /// Non-finite Doubles (a stat that overflowed, a NaN feature) are written as these strings instead of
+    /// failing the whole export, and read back unchanged (audit F6/F10).
+    static let nonFinite = (positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+
+    /// Parses `s`, rejecting impossible calendar values that the parser would roll over
+    /// ("2023-02-30" → Mar 2): the parsed instant must format back to the same date and time fields.
+    static func parseDate(_ s: String) -> Date? {
+        guard let date = (try? isoFractional.parse(s)) ?? (try? isoWhole.parse(s)) else { return nil }
+        let wholeSeconds = Date(timeIntervalSince1970: (date.timeIntervalSince1970).rounded(.down))
+        let fields = wholeSeconds.formatted(isoWhole).prefix(19)          // "yyyy-MM-ddTHH:mm:ss"
+        return s.hasPrefix(fields) ? date : nil
+    }
+
     static func decode(_ data: Data) throws -> BackupV1 {
         let d = JSONDecoder()
+        d.nonConformingFloatDecodingStrategy = .convertFromString(
+            positiveInfinity: nonFinite.positiveInfinity, negativeInfinity: nonFinite.negativeInfinity,
+            nan: nonFinite.nan)
         d.dateDecodingStrategy = .custom { decoder in
             let c = try decoder.singleValueContainer()
             let s = try c.decode(String.self)
-            if let date = (try? isoFractional.parse(s)) ?? (try? isoWhole.parse(s)) { return date }
-            throw DecodingError.dataCorruptedError(in: c, debugDescription: "Not an ISO-8601 date: \(s)")
+            if let date = parseDate(s) { return date }
+            throw DecodingError.dataCorruptedError(in: c, debugDescription: "Not a valid ISO-8601 date: \(s)")
         }
         let version = try d.decode(Header.self, from: data).version
         guard version == currentVersion else { throw BackupError.unsupportedVersion(version) }
@@ -213,6 +231,9 @@ extension BackupV1 {
     func encoded() throws -> Data {
         let e = JSONEncoder()
         e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        e.nonConformingFloatEncodingStrategy = .convertToString(
+            positiveInfinity: Self.nonFinite.positiveInfinity, negativeInfinity: Self.nonFinite.negativeInfinity,
+            nan: Self.nonFinite.nan)
         e.dateEncodingStrategy = .custom { date, encoder in
             var c = encoder.singleValueContainer()
             try c.encode(Self.isoString(date))

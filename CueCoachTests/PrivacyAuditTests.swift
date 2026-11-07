@@ -40,6 +40,25 @@ private enum Repo {
         shippedSourceDirs.flatMap { files(under: $0) { $0.pathExtension == "swift" } }
     }
 
+    /// Every compilable source that ships (Swift plus any C-family file a target could pick up).
+    static let sourceExtensions: Set<String> = ["swift", "m", "mm", "c", "cc", "cpp", "h", "hpp"]
+    static func shippedSources() -> [URL] {
+        shippedSourceDirs.flatMap { files(under: $0) { sourceExtensions.contains($0.pathExtension.lowercased()) } }
+    }
+
+    /// Directories (bundles) anywhere in the repo whose extension matches, honouring the skip list.
+    static func bundles(withExtensions exts: Set<String>) -> [URL] {
+        guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return []
+        }
+        var out: [URL] = []
+        for case let url as URL in e where (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            if skippedDirNames.contains(url.lastPathComponent) { e.skipDescendants(); continue }
+            if exts.contains(url.pathExtension.lowercased()) { out.append(url); e.skipDescendants() }
+        }
+        return out
+    }
+
     /// Source lines with `//` comments removed (string literals are kept: a URL in a literal is a finding).
     static func codeLines(_ url: URL) -> [(Int, String)] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
@@ -91,7 +110,7 @@ struct PrivacyAuditTests {
             #"Data\(contentsOf:\s*URL\(string:"#,
             #"\bLinkPresentation\b|\bLPMetadataProvider\b"#,
         ]
-        let hits = Repo.hits(forbidden, in: Repo.shippedSwift())
+        let hits = Repo.hits(forbidden, in: Repo.shippedSources())
         #expect(hits.isEmpty, "network API use in shipped code:\n\(hits.joined(separator: "\n"))")
     }
 
@@ -101,7 +120,7 @@ struct PrivacyAuditTests {
             #"^\s*import\s+(Firebase\w*|FirebaseAnalytics|Crashlytics|Sentry|Mixpanel|Amplitude\w*|AppCenter\w*|Segment|PostHog|TelemetryDeck|Bugsnag|Datadog\w*|NewRelic|Instabug|FacebookCore|FBSDK\w*|GoogleMobileAds|AdSupport|AppTrackingTransparency|MetricKit)\b"#,
             #"\bATTrackingManager\b"#, #"\bASIdentifierManager\b"#, #"\bMXMetricManager\b"#,
         ]
-        let hits = Repo.hits(forbidden, in: Repo.shippedSwift())
+        let hits = Repo.hits(forbidden, in: Repo.shippedSources())
         #expect(hits.isEmpty, "telemetry in shipped code:\n\(hits.joined(separator: "\n"))")
     }
 
@@ -119,6 +138,65 @@ struct PrivacyAuditTests {
         ]
         let hits = Repo.hits(forbidden, in: Repo.shippedSwift())
         #expect(hits.isEmpty, "Personal-Team-forbidden capability use:\n\(hits.joined(separator: "\n"))")
+    }
+
+    /// A1: a deny-list only catches SDKs it names. Every module imported by shipped code must be on this
+    /// allow-list (Apple frameworks the spec needs + our own CueCore modules); adding one is a reviewed edit here.
+    static let allowedImports: Set<String> = [
+        // Language / OS
+        "Foundation", "Darwin", "Glibc", "os", "Observation", "Combine", "Dispatch", "simd", "Accelerate",
+        // UI
+        "SwiftUI", "UIKit", "CoreGraphics", "QuartzCore", "CoreImage", "Metal", "MetalKit", "RealityKit", "Charts",
+        // Persistence
+        "SwiftData",
+        // Perception (on-device)
+        "AVFoundation", "AVKit", "Vision", "CoreML", "ARKit", "CoreMotion", "CoreVideo", "CoreMedia", "ImageIO",
+        "UniformTypeIdentifiers", "PhotosUI", "Photos",
+        // Mesh (CLAUDE.md: MultipeerConnectivity only)
+        "MultipeerConnectivity",
+        // CueCore modules
+        "Geometry", "Physics", "Rules", "Engine", "Stats", "Training",
+    ]
+
+    @Test func everyImportInShippedCodeIsAllowListed() {
+        let regex = try! NSRegularExpression(
+            pattern: #"^\s*(?:@\w+(?:\([^)]*\))?\s+)*import\s+(?:(?:struct|class|enum|protocol|typealias|func|var|let)\s+)?([A-Za-z_][A-Za-z0-9_]*)"#)
+        var offenders: [String] = []
+        var seen = 0
+        for url in Repo.shippedSwift() {
+            for (n, line) in Repo.codeLines(url) {
+                let range = NSRange(line.startIndex..., in: line)
+                guard let m = regex.firstMatch(in: line, range: range), let r = Range(m.range(at: 1), in: line) else {
+                    continue
+                }
+                seen += 1
+                let module = String(line[r])
+                if !Self.allowedImports.contains(module) { offenders.append("\(Repo.rel(url)):\(n) imports \(module)") }
+            }
+        }
+        #expect(seen > 10, "import scan saw only \(seen) imports; it would be vacuous")
+        #expect(offenders.isEmpty, "imports not on the allow-list:\n\(offenders.joined(separator: "\n"))")
+    }
+
+    /// A1: no prebuilt binaries or vendored frameworks anywhere in the repo (an SDK could hide in one).
+    @Test func noPrebuiltBinariesOrVendoredFrameworks() {
+        let libs = Repo.files(under: ".") { ["a", "dylib", "so", "o"].contains($0.pathExtension.lowercased()) }
+            .map(Repo.rel)
+        #expect(libs.isEmpty, "prebuilt binaries in repo: \(libs)")
+        let bundles = Repo.bundles(withExtensions: ["framework", "xcframework", "bundle"]).map(Repo.rel)
+        #expect(bundles.isEmpty, "vendored frameworks/bundles in repo: \(bundles)")
+    }
+
+    /// A1: the generated (git-ignored) Xcode project is what actually builds; capabilities added in Xcode's UI
+    /// land in project.pbxproj, which project.yml checks never see. Skipped only when no project is generated.
+    @Test func generatedXcodeProjectHasNoCapabilitiesOrRemotePackages() throws {
+        let url = Repo.root.appendingPathComponent("CueCoach.xcodeproj/project.pbxproj")
+        guard let pbx = try? String(contentsOf: url, encoding: .utf8) else { return }
+        for needle in ["CODE_SIGN_ENTITLEMENTS", "SystemCapabilities", "XCRemoteSwiftPackageReference",
+                       "com.apple.developer", "aps-environment", "wrapper.xcframework", ".xcframework",
+                       "com.apple.security.application-groups", "iCloud"] {
+            #expect(!pbx.contains(needle), "project.pbxproj contains '\(needle)'")
+        }
     }
 
     /// Every on-disk ModelConfiguration must state cloudKitDatabase: .none (the default is .automatic,

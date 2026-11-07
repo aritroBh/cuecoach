@@ -67,17 +67,23 @@ struct StoredAttemptFeatures: Hashable, Codable, Sendable {
 /// JSON blob helper for composite values stored as `Data` columns.
 /// Composite values are stored as JSON blobs rather than SwiftData composite attributes because
 /// `TableState` and `[BallID: Pocket]` use non-String dictionary keys, which SwiftData can't map.
+/// Non-finite Doubles are stored as strings (never a crash, audit F7); an encode that still fails stores an
+/// empty blob, which `decode` reads back as its fallback.
 enum Blob {
     static func encode<T: Encodable>(_ value: T) -> Data {
         let e = JSONEncoder()
         e.outputFormatting = .sortedKeys
         e.dateEncodingStrategy = .millisecondsSince1970
-        do { return try e.encode(value) } catch { preconditionFailure("Blob encode \(T.self): \(error)") }
+        e.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "Infinity",
+                                                                negativeInfinity: "-Infinity", nan: "NaN")
+        return (try? e.encode(value)) ?? Data()
     }
 
     static func decode<T: Decodable>(_ type: T.Type, _ data: Data, fallback: @autoclosure () -> T) -> T {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .millisecondsSince1970
+        d.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "Infinity",
+                                                                  negativeInfinity: "-Infinity", nan: "NaN")
         return (try? d.decode(T.self, from: data)) ?? fallback()
     }
 }

@@ -15,8 +15,8 @@ Competitive.store                          Training.store
 
 | Model | Fields | Notes |
 |---|---|---|
-| `PlayerProfile` | `id: UUID` (unique), `name`, `avatarSymbol`, `avatarColor`, `isLocalOwner: Bool`, `createdAt`, `skillModel: SkillModel` (Codable: aim/speed/spin noise σ, n samples) | One local owner per phone; peers' profiles cached only for the session (`isSessionGuest`) and purged on session end. |
-| `RecognitionData` | `faceEmbedding: Data?`, `appearanceEmbedding: Data?`, `optedInAt`, `version` | Separate entity, `.cascade` from profile. "Delete my recognition data" = delete this row. Never exported in JSON backups unless the user ticks it. |
+| `PlayerProfile` | `id: UUID` (unique), `name`, `avatarSymbol`, `avatarColor`, `isLocalOwner: Bool`, `createdAt`, `skillModel: SkillModel` (Codable: aim/speed/spin noise σ, n samples), `recognitionRevokedAt: Date?` (device-local tombstone, never exported) | One local owner per phone; peers' profiles cached only for the session (`isSessionGuest`) and purged on session end. A backup profile that matches a guest id is promoted to a saved profile. |
+| `RecognitionData` | `faceEmbedding: Data?`, `appearanceEmbedding: Data?`, `optedInAt`, `version` | Separate entity, `.cascade` from profile. "Delete my recognition data" = delete this row and stamp the owner's `recognitionRevokedAt`; an import then ignores rows opted in at or before it. Never exported in JSON backups unless the user ticks it, and then only the local owner's row; import accepts recognition only for the local owner and never onto another row's id. |
 | `Session` | `id`, `startedAt`, `endedAt?`, `ruleSet: RuleSetID`, `format: GameFormat`, `tableSize: TableSize`, `peerDeviceNames: [String]`, `voteTally: [RuleSetID: Int]` | |
 | `Game` | `id`, `session`, `index`, `ruleSet`, `teams: [Team]` (Codable: member player IDs, shooting order), `winnerTeam: Int?`, `winProbSeries: [Double]`, `startedAt`, `endedAt?` | Shooting order editable mid-game → stored as order-change events inside `teams`. |
 | `Shot` | `id`, `game`, `index`, `shooterID: UUID`, `attributionSource` (auto/turnOrder/tap), `preState: TableState`, `postState: TableState`, `calledPocket: Pocket?`, `firstContact: BallID?`, `railsAfterContact: Int`, `pocketed: [BallID: Pocket]`, `fouls: [Foul]`, `features: ShotFeatures` (cut bucket, distance bucket, pocket type, kind bank/combo/kick/rail/jump/safety), `made`, `onTarget`, `cueResult` (inZone/outOfZone/nA), `decisionRating`, `executionRating`, `wpaDelta: Double`, `isClutch`, `timeOnShot: Double`, `clipRef: String?` | Table states stored as Codable value types from `Geometry`. |
@@ -37,5 +37,6 @@ memory, not persisted, so they can never drift from source data.
 
 ## Backup JSON
 `BackupV1 { version: 1, exportedAt, competitive: {profiles, sessions, games, shots, archetypes}, training: {...}, includesRecognition: Bool }`
+Non-finite Doubles are written as the strings `"Infinity"`, `"-Infinity"`, `"NaN"`. Dates must be valid calendar instants (no roll-over). Import refuses while a store has unsaved edits.
 — plain `Codable` DTOs (not the `@Model` classes) so the format is stable. Import merges by UUID; the newer
 `updatedAt` wins. Clips aren't included (size); highlights keep their metadata.
