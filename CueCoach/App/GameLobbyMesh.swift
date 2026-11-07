@@ -44,7 +44,8 @@ enum LobbyEvent: Hashable, Sendable {
     func host(_ advert: NearbyGame)
     func stopHosting()
     func publish(lineup: LobbyLineup)
-    func announceStart(_ config: GameConfig)
+    /// False when the start could not be sent to the joined phones (the host then stays in setup).
+    func announceStart(_ config: GameConfig) -> Bool
 }
 
 /// One-phone mode: nothing nearby, hosting is silent. Everything works with one phone (SPEC §5.7).
@@ -57,7 +58,7 @@ enum LobbyEvent: Hashable, Sendable {
     func host(_ advert: NearbyGame) {}
     func stopHosting() {}
     func publish(lineup: LobbyLineup) {}
-    func announceStart(_ config: GameConfig) {}
+    func announceStart(_ config: GameConfig) -> Bool { true }
 }
 
 /// Recording fake for unit tests; also scripted for XCUITests (`ShellLaunch`).
@@ -70,6 +71,7 @@ enum LobbyEvent: Hashable, Sendable {
     private(set) var advert: NearbyGame?
     private(set) var announced: GameConfig?
     private(set) var lineup: LobbyLineup?
+    var startSucceeds = true
     /// Scripted reactions (UI tests). Each runs after `delay` seconds.
     var onBrowse: [(Double, LobbyEvent)] = []
     var onJoin: [(Double, LobbyEvent)] = []
@@ -89,7 +91,11 @@ enum LobbyEvent: Hashable, Sendable {
     }
     func stopHosting() { hosting = false }
     func publish(lineup: LobbyLineup) { self.lineup = lineup }
-    func announceStart(_ config: GameConfig) { announced = config }
+    func announceStart(_ config: GameConfig) -> Bool {
+        guard startSucceeds else { return false }
+        announced = config
+        return true
+    }
 
     private func play(_ script: [(Double, LobbyEvent)]) {
         for (delay, e) in script {

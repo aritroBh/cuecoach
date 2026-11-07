@@ -150,9 +150,10 @@ enum LobbyWire {
         send(.lineup(lineup), to: admitted)
     }
 
-    func announceStart(_ config: GameConfig) {
-        send(.start(config, sessionTag: config.sessionTag ?? LobbyWire.randomSessionTag()), to: admitted)
-        started = true
+    func announceStart(_ config: GameConfig) -> Bool {
+        let ok = send(.start(config, sessionTag: config.sessionTag ?? LobbyWire.randomSessionTag()), to: admitted)
+        if ok { started = true }
+        return ok
     }
 
     func stopHosting() {
@@ -220,15 +221,17 @@ enum LobbyWire {
         phoneNames = [:]; admitted = []
     }
 
-    private func send(_ m: LobbyWire.Message, to keys: [String]) {
+    /// True when delivered to MPC or when nobody is connected (nothing to send).
+    @discardableResult
+    private func send(_ m: LobbyWire.Message, to keys: [String]) -> Bool {
         let m = LobbyWire.sanitized(m)
-        guard let session else { return }
+        guard let session else { return true }
         let targets = session.connectedPeers.filter { keys.contains($0.displayName) }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else { return true }
         guard LobbyWire.isAcceptable(m), let data = try? LobbyWire.encode(m), data.count <= LobbyWire.maxMessageBytes else {
-            onEvent?(.sendFailed); return
+            onEvent?(.sendFailed); return false
         }
-        do { try session.send(data, toPeers: targets, with: .reliable) } catch { onEvent?(.sendFailed) }
+        do { try session.send(data, toPeers: targets, with: .reliable); return true } catch { onEvent?(.sendFailed); return false }
     }
 
     private func emitGames() {

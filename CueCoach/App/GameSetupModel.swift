@@ -171,7 +171,12 @@ final class GameSetupModel {
         hasStarted = true
         let cfg = GameConfig(ruleSet: ruleSet, tableSize: tableSize, teams: seats.map { $0.compactMap { $0 } },
                              sessionTag: isHosting ? LobbyWire.randomSessionTag() : nil)
-        if isHosting { mesh?.announceStart(cfg) }
+        if isHosting, let mesh, !mesh.announceStart(cfg) {
+            // Joiners didn't get the start: stay here, show "Not sent", let the host try again.
+            hasStarted = false
+            syncFailed = true
+            return nil
+        }
         onStart?(cfg)
         return cfg
     }

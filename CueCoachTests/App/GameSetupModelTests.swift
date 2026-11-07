@@ -259,6 +259,23 @@ import Rules
         #expect(!m.syncFailed)                 // a new publish clears it (fake sends succeed)
     }
 
+    @Test func failedStartKeepsTheHostInSetup() {
+        let mesh = FakeGameLobbyMesh()
+        mesh.startSucceeds = false
+        let (m, _) = make(mesh: mesh)
+        var starts = 0
+        m.onStart = { _ in starts += 1 }
+        m.beginHosting()
+        m.assign(ari, to: SeatRef(team: 0, slot: 0))
+        m.assign(sam, to: SeatRef(team: 1, slot: 0))
+        #expect(m.start() == nil)
+        #expect(starts == 0)
+        #expect(m.syncFailed)
+        mesh.startSucceeds = true
+        #expect(m.start() != nil)             // retry works
+        #expect(starts == 1)
+    }
+
     @Test func endHostingStopsAdvertising() {
         let mesh = FakeGameLobbyMesh()
         let (m, _) = make(mesh: mesh)
