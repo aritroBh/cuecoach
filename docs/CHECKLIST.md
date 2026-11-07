@@ -19,7 +19,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 - [x] User approves schema, interfaces, bar conventions (D11–D14)
 
 ## Phase 1 — Core (branch phase/1-core; worktrees .worktrees/{rules,physics,persistence})
-Parallel now: Physics fix (Codex) · Rules re-review (Codex) · Virtual table build (Claude) · Phase 2+ research workflow (4 tracks: ratings, engine, perception, mesh+identity). Merged: Persistence.
+Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase 2+ research workflow. Merged: Persistence, Rules, Geometry fix (head pockets at x=0).
 - [x] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
 - [x] Rules: bar 8-ball tests + impl
 - [x] Rules: WPA 8-ball tests + impl
@@ -30,8 +30,8 @@ Parallel now: Physics fix (Codex) · Rules re-review (Codex) · Virtual table bu
 - [ ] Physics: fixture suite within tolerance
 - [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
 - [x] Persistence: training/competitive isolation test
-- [ ] Virtual table: design mock (open-pencil / ui-ux-pro-max)
-- [ ] Virtual table: playable 8-ball + 9-ball, XCUITests
+- [x] Virtual table: design system (design-system/cuecoach/MASTER.md via ui-ux-pro-max)
+- [~] Virtual table: playable bar8/WPA8/WPA9 + 2v2, 87 tests + 6 XCUITests green; installed on both phones; Antigravity review running
 - [ ] Cross-vendor review of every module, findings fixed
 - [ ] Device run on iPhone 15 Pro Max, design review
 - [ ] Merge, delete branches/worktrees, clean status
