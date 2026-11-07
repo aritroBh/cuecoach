@@ -41,12 +41,12 @@ TABLES = {
     "nineFoot": (100 * 0.0254, 50 * 0.0254),
 }
 POCKET_IDS = {
-    "lt": "footLeft",
-    "rt": "footRight",
+    "lt": "headLeft",
+    "rt": "headRight",
     "lc": "sideLeft",
     "rc": "sideRight",
-    "lb": "headLeft",
-    "rb": "headRight",
+    "lb": "footLeft",
+    "rb": "footRight",
 }
 
 PHYSICAL_PARAMS = {
@@ -141,7 +141,7 @@ def make_shot(
 ) -> dict | None:
     length, width, specs = table_spec(size)
     # pooltool stores transverse position in x and lengthwise position in y, with +y
-    # toward the foot rail. CueCoach +x points toward the head rail.
+    # toward the foot rail. CueCoach +x points toward the foot rail (head at x = 0).
     table = pt.Table.from_table_specs(specs)
     balls: dict[str, pt.Ball] = {}
     initial_balls = []
@@ -455,7 +455,7 @@ def main() -> None:
             "han2005Restitution": "constant e_c=0.85 in pooltool 0.6.0",
         },
         "coordinateMapping": {
-            "cuecoach": "origin foot-left cushion nose; +x to head rail; +y to opposite long rail",
+            "cuecoach": "origin head-left cushion nose; +x to foot rail; +y to opposite long rail",
             "pooltool": "x is transverse and y is lengthwise; +y points toward the foot rail; origin is head-left",
             "conversion": "pooltool(x,y) = cuecoach(y,length-x); directions rotate by -90 degrees",
         },
