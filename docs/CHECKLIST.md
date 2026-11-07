@@ -19,7 +19,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 - [x] User approves schema, interfaces, bar conventions (D11–D14)
 
 ## Phase 1 — Core (branch phase/1-core; worktrees .worktrees/{rules,physics,persistence})
-Workers running: Rules (Claude) · Physics (Codex) · Persistence (Claude). Virtual table starts after Rules + Physics merge.
+Merged: Persistence. In review: Rules (Codex re-review), Physics (Claude). Building: Virtual table (Claude).
 - [x] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
 - [x] Rules: bar 8-ball tests + impl
 - [x] Rules: WPA 8-ball tests + impl
@@ -28,8 +28,8 @@ Workers running: Rules (Claude) · Physics (Codex) · Persistence (Claude). Virt
 - [~] Physics: pooltool fixture generator (500 shots)
 - [ ] Physics: phenomenon unit tests + impl
 - [ ] Physics: fixture suite within tolerance
-- [~] Persistence: SwiftData models + export/import round-trip
-- [ ] Persistence: training/competitive isolation test
+- [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
+- [x] Persistence: training/competitive isolation test
 - [ ] Virtual table: design mock (open-pencil / ui-ux-pro-max)
 - [ ] Virtual table: playable 8-ball + 9-ball, XCUITests
 - [ ] Cross-vendor review of every module, findings fixed
