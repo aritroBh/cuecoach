@@ -6,7 +6,7 @@ import Darwin
 import Glibc
 #endif
 
-public struct Stroke: Hashable, Sendable {
+public struct Stroke: Hashable, Codable, Sendable {
     public let direction: Vec2
     /// Cue-ball launch speed in metres per second.
     public let speed: Double
@@ -14,12 +14,28 @@ public struct Stroke: Hashable, Sendable {
     public let tipOffset: Vec2
 
     public init(direction: Vec2, speed: Double, tipOffset: Vec2 = .zero) {
-        precondition(direction.length > 0 && direction.length.isFinite)
-        precondition(speed >= 0 && speed.isFinite)
-        precondition(tipOffset.length <= 0.5 && tipOffset.x.isFinite && tipOffset.y.isFinite)
-        self.direction = direction.normalized
+        let directionLength = direction.length
+        self.direction = direction.x.isFinite && direction.y.isFinite && directionLength > 0 && directionLength.isFinite
+            ? direction / directionLength : .zero
         self.speed = speed
-        self.tipOffset = tipOffset
+        let tipLength = tipOffset.length
+        self.tipOffset = tipOffset.x.isFinite && tipOffset.y.isFinite
+            ? (tipLength > 0.5 ? tipOffset * (0.5 / tipLength) : tipOffset)
+            : .zero
+    }
+
+    fileprivate var isValid: Bool {
+        direction.x.isFinite && direction.y.isFinite && direction.length > 0 &&
+            speed >= 0 && speed.isFinite && tipOffset.x.isFinite && tipOffset.y.isFinite && tipOffset.length <= 0.5
+    }
+
+    private enum CodingKeys: String, CodingKey { case direction, speed, tipOffset }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(direction: try values.decode(Vec2.self, forKey: .direction),
+                  speed: try values.decode(Double.self, forKey: .speed),
+                  tipOffset: try values.decode(Vec2.self, forKey: .tipOffset))
     }
 }
 
@@ -118,13 +134,14 @@ public enum Rail: String, Codable, Hashable, Sendable {
 }
 
 public enum PhysicsEventKind: String, Codable, Hashable, Sendable {
-    case ballBall, cushion, pocket, slideToRoll, spinOff, rest
+    case ballBall, cushion, pocket, offTable, slideToRoll, spinOff, rest
 }
 
 public enum PhysicsEvent: Hashable, Codable, Sendable {
     case ballBall(BallID, BallID)
     case cushion(BallID, Rail)
     case pocket(BallID, Pocket)
+    case offTable(BallID)
     case slideToRoll(BallID)
     case spinOff(BallID)
     case rest(BallID)
@@ -134,6 +151,7 @@ public enum PhysicsEvent: Hashable, Codable, Sendable {
         case .ballBall: .ballBall
         case .cushion: .cushion
         case .pocket: .pocket
+        case .offTable: .offTable
         case .slideToRoll: .slideToRoll
         case .spinOff: .spinOff
         case .rest: .rest
@@ -143,13 +161,13 @@ public enum PhysicsEvent: Hashable, Codable, Sendable {
     public var ballIDs: [BallID] {
         switch self {
         case let .ballBall(a, b): [a, b]
-        case let .cushion(ball, _), let .pocket(ball, _), let .slideToRoll(ball), let .spinOff(ball), let .rest(ball): [ball]
+        case let .cushion(ball, _), let .pocket(ball, _), let .offTable(ball), let .slideToRoll(ball), let .spinOff(ball), let .rest(ball): [ball]
         }
     }
 
     fileprivate var priority: Int {
         switch self {
-        case .pocket, .slideToRoll, .rest, .spinOff: 2
+        case .pocket, .offTable, .slideToRoll, .rest, .spinOff: 2
         case .ballBall, .cushion: 3
         }
     }
@@ -165,7 +183,7 @@ public struct TimedEvent: Hashable, Codable, Sendable {
     }
 }
 
-private struct Snapshot: Hashable, Sendable {
+private struct Snapshot: Hashable, Codable, Sendable {
     let time: Double
     let state: TableState
 }
@@ -194,44 +212,67 @@ private struct TableGeometry {
     let pockets: [PocketTarget]
 }
 
-public struct ShotTrace: Hashable, Sendable {
+public struct ShotTrace: Hashable, Codable, Sendable {
     public let events: [TimedEvent]
     public let final: TableState
     public let initial: TableState
     public let duration: Double
+    public let truncated: Bool
     private let snapshots: [Snapshot]
     private let params: PhysicsParams
 
     fileprivate init(events: [TimedEvent], final: TableState, initial: TableState,
-                     duration: Double, snapshots: [Snapshot], params: PhysicsParams) {
+                     duration: Double, snapshots: [Snapshot], params: PhysicsParams, truncated: Bool = false) {
         self.events = events
         self.final = final
         self.initial = initial
         self.duration = duration
+        self.truncated = truncated
         self.snapshots = snapshots
         self.params = params
     }
 
     public func state(at requestedTime: Double) -> TableState {
         let time = requestedTime.isNaN ? 0 : min(duration, max(0, requestedTime))
-        var snapshot = snapshots[0]
-        for item in snapshots where item.time <= time { snapshot = item }
-        guard time > snapshot.time else { return snapshot.state }
+        guard !snapshots.isEmpty else { return initial }
+        var low = 0
+        var high = snapshots.count
+        while low < high {
+            let middle = (low + high) / 2
+            if snapshots[middle].time <= time { low = middle + 1 }
+            else { high = middle }
+        }
+        let snapshot = snapshots[max(0, low - 1)]
         var result = snapshot.state
+        if time > snapshot.time {
+            for id in result.balls.keys.sorted() {
+                guard let ball = result.balls[id] else { continue }
+                result.balls[id] = advance(ball, by: time - snapshot.time, params: params)
+            }
+        }
         for id in result.balls.keys.sorted() {
-            guard let ball = result.balls[id] else { continue }
-            result.balls[id] = advance(ball, by: time - snapshot.time, params: params)
+            guard var ball = result.balls[id], ball.motion != .pocketed else { continue }
+            ball.position = clamped(ball.position, to: result.spec)
+            result.balls[id] = ball
         }
         return result
     }
 
     public func path(of id: BallID, sampleDT: Double) -> [Vec2] {
-        guard let start = initial.balls[id]?.position else { return [] }
+        guard let initialBall = initial.balls[id] else { return [] }
+        let start = initialBall.motion == .pocketed ? initialBall.position : clamped(initialBall.position, to: final.spec)
         guard sampleDT > 0 && sampleDT.isFinite else { return [start] }
         var result = [start]
         var time = sampleDT
+        var snapshotIndex = 0
         while time < duration {
-            if let position = state(at: time).balls[id]?.position { result.append(position) }
+            while snapshotIndex + 1 < snapshots.count && snapshots[snapshotIndex + 1].time <= time {
+                snapshotIndex += 1
+            }
+            if let ball = snapshots[snapshotIndex].state.balls[id] {
+                result.append(clamped(advance(ball, by: time - snapshots[snapshotIndex].time, params: params).position,
+                                      to: final.spec))
+            }
             time += sampleDT
         }
         if duration > 0, let end = final.balls[id]?.position { result.append(end) }
@@ -245,6 +286,10 @@ public struct Simulator: Sendable {
     public init(params: PhysicsParams = .standard) { self.params = params }
 
     public func simulate(_ state: TableState, stroke: Stroke) -> ShotTrace {
+        guard stroke.isValid else {
+            return ShotTrace(events: [], final: state, initial: state, duration: 0,
+                             snapshots: [Snapshot(time: 0, state: state)], params: params)
+        }
         var launched = state
         guard var cue = launched.balls[.cue] else {
             return ShotTrace(events: [], final: state, initial: state, duration: 0,
@@ -258,12 +303,21 @@ public struct Simulator: Sendable {
         var time = 0.0
         var events: [TimedEvent] = []
         var snapshots = [Snapshot(time: 0, state: launched)]
+        var processedEvents = 0
+        let ids = current.balls.keys.sorted()
+        events.reserveCapacity(4096)
+        snapshots.reserveCapacity(4097)
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(1024)
+        appendCandidates(in: current, at: time, ids: ids, geometry: geometry,
+                         changed: nil, alsoChanged: nil, to: &candidates)
 
-        // ponytail: all-pairs quartic search is O(n²); use a spatial broadphase if simulations exceed 16 balls.
         for _ in 0..<4096 {
-            guard let candidate = nextEvent(in: current, geometry: geometry) else { break }
-            let delta = max(0, candidate.time)
-            for id in current.balls.keys.sorted() {
+            guard let candidateIndex = earliestCandidate(in: candidates) else { break }
+            processedEvents += 1
+            let candidate = candidates.remove(at: candidateIndex)
+            let delta = max(0, candidate.time - time)
+            for id in ids {
                 guard let ball = current.balls[id] else { continue }
                 current.balls[id] = advance(ball, by: delta, params: params)
             }
@@ -271,48 +325,108 @@ public struct Simulator: Sendable {
             apply(candidate, to: &current, geometry: geometry, params: params)
             events.append(TimedEvent(time: time, event: candidate.event))
             snapshots.append(Snapshot(time: time, state: current))
+            let firstChanged = candidate.firstBall
+            if let ball = current.balls[firstChanged], ball.motion == .stationary,
+               ball.position.x < 0 || ball.position.x > current.spec.length ||
+                ball.position.y < 0 || ball.position.y > current.spec.width {
+                let offTable = Candidate(time: time, event: .offTable(firstChanged))
+                apply(offTable, to: &current, geometry: geometry, params: params)
+                events.append(TimedEvent(time: time, event: offTable.event))
+                snapshots.append(Snapshot(time: time, state: current))
+            }
+            if let secondChanged = candidate.secondBall,
+               let ball = current.balls[secondChanged], ball.motion == .stationary,
+               ball.position.x < 0 || ball.position.x > current.spec.length ||
+                ball.position.y < 0 || ball.position.y > current.spec.width {
+                let offTable = Candidate(time: time, event: .offTable(secondChanged))
+                apply(offTable, to: &current, geometry: geometry, params: params)
+                events.append(TimedEvent(time: time, event: offTable.event))
+                snapshots.append(Snapshot(time: time, state: current))
+            }
+
+            let changed = firstChanged
+            let alsoChanged = candidate.secondBall
+            candidates.removeAll { $0.involves(changed) || $0.involves(alsoChanged) }
+            appendCandidates(in: current, at: time, ids: ids, geometry: geometry,
+                             changed: changed, alsoChanged: alsoChanged, to: &candidates)
         }
 
         return ShotTrace(events: events, final: current, initial: launched, duration: time,
-                         snapshots: snapshots, params: params)
+                         snapshots: snapshots, params: params, truncated: processedEvents == 4096 && !candidates.isEmpty)
     }
 
-    private func nextEvent(in state: TableState, geometry: TableGeometry) -> Candidate? {
-        let ids = state.balls.keys.sorted()
-        var best: Candidate?
-        var transitionLimit = Double.infinity
-
-        for id in ids {
-            guard let ball = state.balls[id], let transition = transition(for: ball, id: id, params: params) else { continue }
-            transitionLimit = min(transitionLimit, transition.time)
-            best = choose(best, transition)
+    private func appendCandidates(in state: TableState, at time: Double, ids: [BallID],
+                                  geometry: TableGeometry, changed: BallID?, alsoChanged: BallID?,
+                                  to candidates: inout [Candidate]) {
+        let count = ids.count
+        for (index, id) in ids.enumerated() where isChanged(id, changed, alsoChanged) {
+            guard let ball = state.balls[id], let next = transition(for: ball, id: id, params: params) else { continue }
+            candidates.append(Candidate(time: time + next.time, event: next.event, order: index))
         }
 
-        let horizon = transitionLimit.isFinite ? transitionLimit : 30
-        guard horizon > 0 else { return best }
         for i in ids.indices {
             let firstID = ids[i]
             guard let first = state.balls[firstID], first.motion != .pocketed else { continue }
-            for secondID in ids.dropFirst(i + 1) {
+            for j in ids.indices where j > i && (isChanged(firstID, changed, alsoChanged) || isChanged(ids[j], changed, alsoChanged)) {
+                let secondID = ids[j]
                 guard let second = state.balls[secondID], second.motion != .pocketed else { continue }
-                if let dt = ballBallTime(first, second, horizon: horizon, params: params) {
-                    best = choose(best, Candidate(time: dt, event: .ballBall(firstID, secondID)))
+                let firstTransition = transition(for: first, id: firstID, params: params)?.time ?? 30
+                let secondTransition = transition(for: second, id: secondID, params: params)?.time ?? 30
+                let horizon = min(30, min(firstTransition, secondTransition))
+                if horizon > 0,
+                   let dt = ballBallTime(first, second, horizon: horizon, params: params) {
+                    candidates.append(Candidate(time: time + dt, event: .ballBall(firstID, secondID),
+                                                order: count + i * 100 + j))
                 }
             }
-            for segment in geometry.linearCushions {
-                if let hit = linearCushionTime(first, segment: segment, horizon: horizon, spec: state.spec, params: params) {
-                    best = choose(best, Candidate(time: hit.time, event: .cushion(firstID, segment.rail), cushionNormal: hit.outward))
+            guard isChanged(firstID, changed, alsoChanged) else { continue }
+            let transitionHorizon = min(30, transition(for: first, id: firstID, params: params)?.time ?? 30)
+            guard transitionHorizon > 0 else { continue }
+            let base = count + i * 100 + count
+            for (index, segment) in geometry.linearCushions.enumerated() {
+                if let hit = linearCushionTime(first, segment: segment, horizon: transitionHorizon,
+                                               spec: state.spec, params: params) {
+                    candidates.append(Candidate(time: time + hit.time, event: .cushion(firstID, segment.rail),
+                                                cushionNormal: hit.outward, order: base + index))
                 }
             }
-            for segment in geometry.circularCushions {
-                if let hit = circularCushionTime(first, segment: segment, horizon: horizon, params: params) {
-                    best = choose(best, Candidate(time: hit.time, event: .cushion(firstID, segment.rail), cushionNormal: hit.outward))
+            let circleBase = base + geometry.linearCushions.count
+            for (index, segment) in geometry.circularCushions.enumerated() {
+                if let hit = circularCushionTime(first, segment: segment, horizon: transitionHorizon, params: params) {
+                    candidates.append(Candidate(time: time + hit.time, event: .cushion(firstID, segment.rail),
+                                                cushionNormal: hit.outward, order: circleBase + index))
                 }
             }
-            for pocket in geometry.pockets {
-                if let dt = pocketTime(first, pocket: pocket, horizon: horizon, params: params) {
-                    best = choose(best, Candidate(time: dt, event: .pocket(firstID, pocket.pocket)))
+            let pocketBase = circleBase + geometry.circularCushions.count
+            for (index, pocket) in geometry.pockets.enumerated() {
+                if let dt = pocketTime(first, pocket: pocket, horizon: transitionHorizon, params: params) {
+                    candidates.append(Candidate(time: time + dt, event: .pocket(firstID, pocket.pocket),
+                                                order: pocketBase + index))
                 }
+            }
+            if let dt = offTableTime(first, currentTime: time, horizon: transitionHorizon,
+                                      spec: state.spec, params: params) {
+                candidates.append(Candidate(time: time + dt, event: .offTable(firstID),
+                                            order: pocketBase + geometry.pockets.count))
+            }
+        }
+    }
+
+    private func isChanged(_ id: BallID, _ first: BallID?, _ second: BallID?) -> Bool {
+        first == nil || id == first || id == second
+    }
+
+    private func earliestCandidate(in candidates: [Candidate]) -> Int? {
+        guard !candidates.isEmpty else { return nil }
+        var best = 0
+        for index in 1..<candidates.count {
+            let next = candidates[index]
+            let current = candidates[best]
+            if next.time < current.time - 1e-11 ||
+                (abs(next.time - current.time) <= 1e-11 &&
+                 (next.event.priority < current.event.priority ||
+                  (next.event.priority == current.event.priority && next.order < current.order))) {
+                best = index
             }
         }
         return best
@@ -331,10 +445,22 @@ public struct Simulator: Sendable {
             state.balls[id] = ball
         case let .pocket(id, pocket):
             guard var ball = state.balls[id] else { return }
-            ball.position = geometry.pockets.first(where: { $0.pocket == pocket })?.center ?? state.spec.pocketCenter(pocket)
+            ball.position = state.spec.pocketCenter(pocket)
+            for target in geometry.pockets where target.pocket == pocket {
+                ball.position = target.center
+                break
+            }
             ball.velocity = .zero
             ball.angularVelocity = .zero
             ball.motion = .pocketed
+            state.balls[id] = ball
+        case let .offTable(id):
+            guard var ball = state.balls[id] else { return }
+            ball.position.x = min(state.spec.length, max(0, ball.position.x))
+            ball.position.y = min(state.spec.width, max(0, ball.position.y))
+            ball.velocity = .zero
+            ball.angularVelocity = .zero
+            ball.motion = .stationary
             state.balls[id] = ball
         case let .slideToRoll(id):
             guard var ball = state.balls[id] else { return }
@@ -379,24 +505,37 @@ private struct Candidate {
     let time: Double
     let event: PhysicsEvent
     let cushionNormal: Vec2?
+    let order: Int
 
-    init(time: Double, event: PhysicsEvent, cushionNormal: Vec2? = nil) {
+    init(time: Double, event: PhysicsEvent, cushionNormal: Vec2? = nil, order: Int = 0) {
         self.time = time
         self.event = event
         self.cushionNormal = cushionNormal
+        self.order = order
+    }
+
+    var firstBall: BallID {
+        switch event {
+        case let .ballBall(first, _): first
+        case let .cushion(id, _), let .pocket(id, _), let .offTable(id),
+             let .slideToRoll(id), let .spinOff(id), let .rest(id): id
+        }
+    }
+
+    var secondBall: BallID? {
+        guard case let .ballBall(_, second) = event else { return nil }
+        return second
+    }
+
+    func involves(_ id: BallID?) -> Bool {
+        guard let id else { return false }
+        return firstBall == id || secondBall == id
     }
 }
 
 private struct CushionHit {
     let time: Double
     let outward: Vec2
-}
-
-private func choose(_ current: Candidate?, _ next: Candidate) -> Candidate {
-    guard let current else { return next }
-    if next.time < current.time - 1e-11 { return next }
-    if abs(next.time - current.time) <= 1e-11 && next.event.priority < current.event.priority { return next }
-    return current
 }
 
 private func strike(_ ball: BallState, stroke: Stroke, params p: PhysicsParams) -> BallState {
@@ -494,72 +633,186 @@ private func decaySpin(_ spin: Double, by dt: Double, params p: PhysicsParams) -
     return abs(spin) <= amount ? 0 : spin - (spin > 0 ? amount : -amount)
 }
 
+private struct Polynomial {
+    let c0, c1, c2, c3, c4: Double
+    let degree: Int
+
+    init(_ c0: Double, _ c1: Double = 0, _ c2: Double = 0, _ c3: Double = 0, _ c4: Double = 0) {
+        self.c0 = c0
+        self.c1 = c1
+        self.c2 = c2
+        self.c3 = c3
+        self.c4 = c4
+        if abs(c4) >= 1e-15 { degree = 4 }
+        else if abs(c3) >= 1e-15 { degree = 3 }
+        else if abs(c2) >= 1e-15 { degree = 2 }
+        else if abs(c1) >= 1e-15 { degree = 1 }
+        else { degree = 0 }
+    }
+
+    subscript(index: Int) -> Double {
+        switch index {
+        case 0: c0
+        case 1: c1
+        case 2: c2
+        case 3: c3
+        default: c4
+        }
+    }
+
+    var derivative: Polynomial { Polynomial(c1, 2 * c2, 3 * c3, 4 * c4) }
+
+    func value(at x: Double) -> Double {
+        ((((c4 * x + c3) * x + c2) * x + c1) * x + c0)
+    }
+}
+
+private struct RootList {
+    private var r0 = 0.0
+    private var r1 = 0.0
+    private var r2 = 0.0
+    private var r3 = 0.0
+    private var r4 = 0.0
+    private var r5 = 0.0
+    private var r6 = 0.0
+    private var r7 = 0.0
+    private var r8 = 0.0
+    private var r9 = 0.0
+    private var r10 = 0.0
+    private var r11 = 0.0
+    private(set) var count = 0
+
+    subscript(index: Int) -> Double {
+        get {
+            switch index {
+            case 0: r0
+            case 1: r1
+            case 2: r2
+            case 3: r3
+            case 4: r4
+            case 5: r5
+            case 6: r6
+            case 7: r7
+            case 8: r8
+            case 9: r9
+            case 10: r10
+            default: r11
+            }
+        }
+        set {
+            switch index {
+            case 0: r0 = newValue
+            case 1: r1 = newValue
+            case 2: r2 = newValue
+            case 3: r3 = newValue
+            case 4: r4 = newValue
+            case 5: r5 = newValue
+            case 6: r6 = newValue
+            case 7: r7 = newValue
+            case 8: r8 = newValue
+            case 9: r9 = newValue
+            case 10: r10 = newValue
+            default: r11 = newValue
+            }
+        }
+    }
+
+    mutating func append(_ value: Double) {
+        guard count < 12 else { return }
+        self[count] = value
+        count += 1
+    }
+
+    mutating func sort() {
+        guard count > 1 else { return }
+        for index in 1..<count {
+            var cursor = index
+            while cursor > 0 && self[cursor] < self[cursor - 1] {
+                let value = self[cursor]
+                self[cursor] = self[cursor - 1]
+                self[cursor - 1] = value
+                cursor -= 1
+            }
+        }
+    }
+}
+
 private func ballBallTime(_ first: BallState, _ second: BallState, horizon: Double, params p: PhysicsParams) -> Double? {
     let relativePosition = second.position - first.position
     let relativeVelocity = second.velocity - first.velocity
     let relativeAcceleration = acceleration(of: second, params: p) - acceleration(of: first, params: p)
     let halfAcceleration = relativeAcceleration * 0.5
     let diameter = 2 * p.ballRadius
-    let coefficients = [
+    let polynomial = Polynomial(
         relativePosition.lengthSquared - diameter * diameter,
         2 * relativePosition.dot(relativeVelocity),
         relativeVelocity.lengthSquared + relativePosition.dot(relativeAcceleration),
         2 * relativeVelocity.dot(halfAcceleration),
-        halfAcceleration.lengthSquared,
-    ]
-    if coefficients[0] <= 1e-12 {
-        return coefficients[1] < -1e-10 ? 0 : nil
+        halfAcceleration.lengthSquared
+    )
+    if polynomial.c0 <= 1e-12 {
+        if polynomial.c0 < 0 { return 0 }
+        return polynomial.c1 < -1e-10 ? 0 : nil
     }
-    return polynomialRoots(coefficients, through: horizon).first { root in
-        root > 1e-10 && polynomialValue(derivative(of: coefficients), at: root) <= 1e-8
+    let reach = diameter + relativeVelocity.length * horizon + 0.5 * relativeAcceleration.length * horizon * horizon
+    guard relativePosition.lengthSquared <= reach * reach else { return nil }
+    let roots = polynomialRoots(polynomial, through: horizon)
+    let derivative = polynomial.derivative
+    for index in 0..<roots.count {
+        let root = roots[index]
+        if root > 1e-10 && derivative.value(at: root) <= 1e-8 { return root }
     }
+    return nil
 }
 
 /// Isolates real roots by recursively partitioning the polynomial at its derivative roots.
 /// Ball-ball distance squared is quartic because each ball has constant acceleration between events.
-private func polynomialRoots(_ coefficients: [Double], through end: Double) -> [Double] {
-    var c = coefficients
-    while c.count > 1 && abs(c.last!) < 1e-15 { c.removeLast() }
-    if c.count == 2 {
-        let root = -c[0] / c[1]
-        return root >= 0 && root <= end ? [root] : []
+private func polynomialRoots(_ polynomial: Polynomial, through end: Double) -> RootList {
+    if polynomial.degree == 1 {
+        let root = -polynomial.c0 / polynomial.c1
+        var roots = RootList()
+        if root >= 0 && root <= end { roots.append(root) }
+        return roots
     }
-    guard c.count > 2 else { return [] }
-    let critical = polynomialRoots(derivative(of: c), through: end)
-    var points = [0.0] + critical + [end]
+    guard polynomial.degree > 1 else { return RootList() }
+    let critical = polynomialRoots(polynomial.derivative, through: end)
+    var points = RootList()
+    points.append(0)
+    for index in 0..<critical.count { points.append(critical[index]) }
+    points.append(end)
     points.sort()
-    var roots: [Double] = []
-    let scale = max(1, c.enumerated().reduce(0.0) { $0 + abs($1.element) * pow(end, Double($1.offset)) })
+    var scale = 0.0
+    var power = 1.0
+    for index in 0...polynomial.degree {
+        scale += abs(polynomial[index]) * power
+        power *= end
+    }
+    scale = max(1, scale)
     let tolerance = scale * 1e-12
-    for point in points where abs(polynomialValue(c, at: point)) <= tolerance {
-        roots.append(point)
+    var roots = RootList()
+    for index in 0..<points.count where abs(polynomial.value(at: points[index])) <= tolerance {
+        roots.append(points[index])
     }
     for index in 0..<(points.count - 1) {
         var low = points[index]
         var high = points[index + 1]
-        var fLow = polynomialValue(c, at: low)
-        let fHigh = polynomialValue(c, at: high)
+        var fLow = polynomial.value(at: low)
+        let fHigh = polynomial.value(at: high)
         guard fLow * fHigh < 0 else { continue }
         for _ in 0..<64 {
             let middle = (low + high) / 2
-            let fMiddle = polynomialValue(c, at: middle)
+            let fMiddle = polynomial.value(at: middle)
             if fLow * fMiddle <= 0 { high = middle }
             else { low = middle; fLow = fMiddle }
         }
         roots.append((low + high) / 2)
     }
     roots.sort()
-    var unique: [Double] = []
-    for root in roots where unique.last.map({ abs($0 - root) > 1e-8 }) ?? true { unique.append(root) }
+    var unique = RootList()
+    for index in 0..<roots.count where unique.count == 0 || abs(unique[unique.count - 1] - roots[index]) > 1e-8 {
+        unique.append(roots[index])
+    }
     return unique
-}
-
-private func derivative(of coefficients: [Double]) -> [Double] {
-    Array(coefficients.enumerated().dropFirst().map { Double($0.offset) * $0.element })
-}
-
-private func polynomialValue(_ coefficients: [Double], at x: Double) -> Double {
-    coefficients.reversed().reduce(0) { $0 * x + $1 }
 }
 
 private func tableGeometry(_ spec: TableSpec, params p: PhysicsParams) -> TableGeometry {
@@ -650,17 +903,69 @@ private func linearCushionTime(_ ball: BallState, segment: CushionSegment, horiz
     let midpoint = (segment.start + segment.end) * 0.5
     var inward = direction.perpendicular.normalized
     if inward.dot(Vec2(spec.length / 2, spec.width / 2) - midpoint) < 0 { inward = -inward }
-    let startDistance = (ball.position - segment.start).dot(inward) - p.ballRadius
     let acceleration = acceleration(of: ball, params: p)
-    let coefficients = [startDistance, ball.velocity.dot(inward), 0.5 * acceleration.dot(inward)]
-    let distancePerpendicular = polynomialRoots(coefficients, through: horizon)
-    for time in distancePerpendicular where time > 1e-10 && polynomialValue(derivative(of: coefficients), at: time) < -1e-10 {
-        let center = position(ball, after: time, params: p)
-        let contact = center - inward * p.ballRadius
-        let progress = (contact - segment.start).dot(direction) / direction.lengthSquared
-        if progress >= -1e-9 && progress <= 1 + 1e-9 {
-            return CushionHit(time: time, outward: -inward)
+    let signedDistance = (ball.position - segment.start).dot(inward)
+    var best: CushionHit?
+    for sideIndex in 0..<2 {
+        let side = sideIndex == 0 ? 1.0 : -1.0
+        let polynomial = Polynomial(side * signedDistance - p.ballRadius,
+                                    side * ball.velocity.dot(inward),
+                                    0.5 * side * acceleration.dot(inward))
+        let roots = polynomialRoots(polynomial, through: horizon)
+        let derivative = polynomial.derivative
+        for index in 0..<roots.count {
+            let time = roots[index]
+            guard time > 1e-10 && derivative.value(at: time) < -1e-10 else { continue }
+            let center = position(ball, after: time, params: p)
+            let contact = center - inward * (side * p.ballRadius)
+            let progress = (contact - segment.start).dot(direction) / direction.lengthSquared
+            if progress >= -1e-9 && progress <= 1 + 1e-9 && (best == nil || time < best!.time) {
+                best = CushionHit(time: time, outward: -inward * side)
+            }
         }
+    }
+    return best
+}
+
+private func offTableTime(_ ball: BallState, currentTime: Double, horizon: Double,
+                          spec: TableSpec, params p: PhysicsParams) -> Double? {
+    if currentTime == 0 && ball.motion != .pocketed &&
+        (ball.position.x < 0 || ball.position.x > spec.length || ball.position.y < 0 || ball.position.y > spec.width) {
+        return 0
+    }
+    guard ball.motion != .stationary && ball.motion != .spinning && ball.motion != .pocketed else { return nil }
+    let margin = max(p.cornerPocketDepth + p.cornerPocketRadius, p.sidePocketDepth + p.sidePocketRadius) + p.ballRadius
+    var earliest: Double?
+    if let time = edgeCrossingTime(ball, axisX: true, boundary: -margin, outward: -1, margin: margin,
+                                   horizon: horizon, spec: spec, params: p) {
+        earliest = time
+    }
+    if let time = edgeCrossingTime(ball, axisX: true, boundary: spec.length + margin, outward: 1, margin: margin,
+                                   horizon: horizon, spec: spec, params: p),
+       earliest == nil || time < earliest! { earliest = time }
+    if let time = edgeCrossingTime(ball, axisX: false, boundary: -margin, outward: -1, margin: margin,
+                                   horizon: horizon, spec: spec, params: p),
+       earliest == nil || time < earliest! { earliest = time }
+    if let time = edgeCrossingTime(ball, axisX: false, boundary: spec.width + margin, outward: 1, margin: margin,
+                                   horizon: horizon, spec: spec, params: p),
+       earliest == nil || time < earliest! { earliest = time }
+    return earliest
+}
+
+private func edgeCrossingTime(_ ball: BallState, axisX: Bool, boundary: Double, outward: Double,
+                              margin: Double, horizon: Double, spec: TableSpec, params p: PhysicsParams) -> Double? {
+    let a = acceleration(of: ball, params: p)
+    let coordinate = axisX ? ball.position.x : ball.position.y
+    let velocity = axisX ? ball.velocity.x : ball.velocity.y
+    let acceleration = axisX ? a.x : a.y
+    let otherLimit = axisX ? spec.width : spec.length
+    let roots = polynomialRoots(Polynomial(coordinate - boundary, velocity, 0.5 * acceleration), through: horizon)
+    for index in 0..<roots.count {
+        let time = roots[index]
+        guard time > 1e-10 && (velocity + acceleration * time) * outward > 1e-10 else { continue }
+        let point = position(ball, after: time, params: p)
+        let other = axisX ? point.y : point.x
+        if other >= -margin - 1e-9 && other <= otherLimit + margin + 1e-9 { return time }
     }
     return nil
 }
@@ -671,15 +976,19 @@ private func circularCushionTime(_ ball: BallState, segment: CircularCushion, ho
     let r = ball.position - segment.center
     let a = acceleration(of: ball, params: p)
     let target = p.ballRadius + segment.radius
-    let coefficients = [
+    let polynomial = Polynomial(
         r.lengthSquared - target * target,
         2 * r.dot(ball.velocity),
         ball.velocity.lengthSquared + r.dot(a),
         ball.velocity.dot(a),
-        0.25 * a.lengthSquared,
-    ]
-    let root = polynomialRoots(coefficients, through: horizon).first {
-        $0 > 1e-10 && polynomialValue(derivative(of: coefficients), at: $0) < -1e-10
+        0.25 * a.lengthSquared
+    )
+    let roots = polynomialRoots(polynomial, through: horizon)
+    let derivative = polynomial.derivative
+    var root: Double?
+    for index in 0..<roots.count where roots[index] > 1e-10 && derivative.value(at: roots[index]) < -1e-10 {
+        root = roots[index]
+        break
     }
     guard let root else { return nil }
     return CushionHit(time: root, outward: -(position(ball, after: root, params: p) - segment.center).normalized)
@@ -689,21 +998,28 @@ private func pocketTime(_ ball: BallState, pocket: PocketTarget, horizon: Double
     guard ball.motion != .stationary && ball.motion != .spinning && ball.motion != .pocketed else { return nil }
     let r = ball.position - pocket.center
     let a = acceleration(of: ball, params: p)
-    let coefficients = [
+    let polynomial = Polynomial(
         r.lengthSquared - pocket.radius * pocket.radius,
         2 * r.dot(ball.velocity),
         ball.velocity.lengthSquared + r.dot(a),
         ball.velocity.dot(a),
-        0.25 * a.lengthSquared,
-    ]
-    return polynomialRoots(coefficients, through: horizon).first {
-        $0 > 1e-10 && polynomialValue(derivative(of: coefficients), at: $0) < -1e-10
+        0.25 * a.lengthSquared
+    )
+    let roots = polynomialRoots(polynomial, through: horizon)
+    let derivative = polynomial.derivative
+    for index in 0..<roots.count where roots[index] > 1e-10 && derivative.value(at: roots[index]) < -1e-10 {
+        return roots[index]
     }
+    return nil
 }
 
 private func position(_ ball: BallState, after dt: Double, params p: PhysicsParams) -> Vec2 {
     let a = acceleration(of: ball, params: p)
     return ball.position + ball.velocity * dt + a * (0.5 * dt * dt)
+}
+
+private func clamped(_ position: Vec2, to spec: TableSpec) -> Vec2 {
+    Vec2(min(spec.length, max(0, position.x)), min(spec.width, max(0, position.y)))
 }
 
 private func outwardNormal(_ rail: Rail) -> Vec2 {
@@ -718,6 +1034,9 @@ private func outwardNormal(_ rail: Rail) -> Vec2 {
 
 private func collide(_ first: BallState, _ second: BallState, params p: PhysicsParams) -> (BallState, BallState) {
     // pooltool FrictionalInelastic with Alciatore friction; related derivations: Dr. Dave TP A-5/A-6/A-14.
+    var first = first
+    var second = second
+    makeBallBallKiss(&first, &second, radius: p.ballRadius)
     let normal = (second.position - first.position).normalized
     let angle = atan2(normal.y, normal.x)
     let v1 = rotate3(SIMD3(first.velocity.x, first.velocity.y, 0), by: -angle)
@@ -781,7 +1100,73 @@ private func collide(_ first: BallState, _ second: BallState, params p: PhysicsP
     b.angularVelocity = SIMD3Codable(outputW2.x, outputW2.y, outputW2.z)
     a.motion = .sliding
     b.motion = .sliding
+    resolveContinuallyTouching(&a, &b)
     return (a, b)
+}
+
+private func resolveContinuallyTouching(_ first: inout BallState, _ second: inout BallState) {
+    let firstSpeed = first.velocity.length
+    let secondSpeed = second.velocity.length
+    guard firstSpeed > 0, secondSpeed > 0 else { return }
+    let line = (second.position - first.position).normalized
+    let firstRadial = first.velocity.dot(line)
+    let secondRadial = second.velocity.dot(line)
+    guard abs(secondRadial - firstRadial) < 0.01,
+          first.velocity.dot(second.velocity) / (firstSpeed * secondSpeed) > 0.9 else { return }
+
+    // Match pooltool's 10% radial momentum transfer for continually touching pairs.
+    if firstRadial > secondRadial {
+        let transfer = firstRadial * 0.1
+        first.velocity -= line * transfer
+        second.velocity += line * transfer
+    } else {
+        let transfer = secondRadial * 0.1
+        first.velocity += line * transfer
+        second.velocity -= line * transfer
+    }
+}
+
+private func makeBallBallKiss(_ first: inout BallState, _ second: inout BallState, radius: Double) {
+    // Match pooltool's 1 µm make_kiss spacer and nearest-time repositioning.
+    let spacer = 1e-6
+    let target = 2 * radius + spacer
+    let relativePosition = second.position - first.position
+    let relativeVelocity = second.velocity - first.velocity
+    let alpha = relativeVelocity.lengthSquared
+    let beta = 2 * relativePosition.dot(relativeVelocity)
+    let gamma = relativePosition.lengthSquared - target * target
+
+    func fallback() {
+        let direction = relativePosition.normalized
+        let correction = (target - relativePosition.length) / 2
+        first.position -= direction * correction
+        second.position += direction * correction
+    }
+
+    let firstTranslates = first.motion == .sliding || first.motion == .rolling
+    let secondTranslates = second.motion == .sliding || second.motion == .rolling
+    guard firstTranslates || secondTranslates, alpha > 1e-20 else {
+        fallback()
+        return
+    }
+    let discriminant = beta * beta - 4 * alpha * gamma
+    guard discriminant >= 0 else {
+        fallback()
+        return
+    }
+    let root = discriminant.squareRoot()
+    let firstTime = (-beta - root) / (2 * alpha)
+    let secondTime = (-beta + root) / (2 * alpha)
+    let offset = abs(firstTime) <= abs(secondTime) ? firstTime : secondTime
+    let correctedFirst = first.position + first.velocity * offset
+    let correctedSecond = second.position + second.velocity * offset
+    let midpointShift = ((correctedFirst + correctedSecond) - (first.position + second.position)) * 0.5
+    if midpointShift.length > 5 * spacer {
+        fallback()
+    } else {
+        first.position = correctedFirst
+        second.position = correctedSecond
+    }
 }
 
 private func cushion(_ ball: BallState, outward: Vec2, params p: PhysicsParams) -> BallState {

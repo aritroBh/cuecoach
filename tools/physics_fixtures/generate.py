@@ -130,7 +130,7 @@ def make_shot(
         cue_ball_id="cue",
     )
     system = pt.System(cue=cue, table=table, balls=balls)
-    result = pt.simulate(system, engine=ENGINE, max_events=256)
+    result = pt.simulate(system, engine=ENGINE, max_events=4096)
 
     events = []
     event_names = {
@@ -148,7 +148,8 @@ def make_shot(
         if kind not in event_names:
             continue
         ball_ids = []
-        for event_id in event.ids:
+        event_ball_ids = event.ids[:2] if kind == "ball_ball" else event.ids[:1]
+        for event_id in event_ball_ids:
             if event_id == "cue":
                 ball_ids.append(0)
             elif event_id.isdigit():
@@ -189,35 +190,106 @@ def make_shot(
     }
 
 
+REGRESSION_DATA = {
+    193: ("nineFoot", [(0, 0.161942092, 0.500619758), (1, 1.208684328, 0.639143947)],
+          (-0.244206032, -0.969723370), 5.575061323, (-0.027689204, -0.003647292)),
+    304: ("sevenFoot", [(0, 1.431628285, 0.603774879), (1, 0.501122431, 0.729559151)],
+          (0.422231274, -0.906488142), 5.601724, (-0.256742300, 0.234828431)),
+    319: ("sevenFoot", [(0, 1.527667770, 0.378614170), (1, 0.881709946, 0.338370389),
+                         (2, 1.302294834, 0.836128685), (3, 1.018740385, 0.746567662),
+                         (4, 0.205108529, 0.624978949)],
+          (0.830838569, -0.556513497), 4.136170284, (-0.258141780, -0.213549916)),
+    444: ("nineFoot", [(0, 0.646183994, 0.314647111), (1, 0.261546997, 0.477904498)],
+          (-0.059844453, -0.998207715), 5.113370358, (-0.472840557, 0.098151851)),
+}
+
+
+def regression_shots() -> list[dict]:
+    return [
+        make_shot(f"random_{index:03d}", "regression", size, positions, direction, speed, tip)
+        for index, (size, positions, direction, speed, tip) in REGRESSION_DATA.items()
+    ]
+
+
 def random_shots(rng: random.Random) -> list[dict]:
     shots = []
-    for index in range(500):
+
+    def random_tip(low: float, high: float) -> tuple[float, float]:
+        angle = rng.uniform(0, math.tau)
+        radius = rng.uniform(low, high)
+        return radius * math.cos(angle), radius * math.sin(angle)
+
+    def random_position(size: str, existing: list[tuple[int, float, float]], gap: float) -> tuple[float, float]:
+        length, width = TABLES[size]
+        for _ in range(20_000):
+            x = rng.uniform(RADIUS + 0.08, length - RADIUS - 0.08)
+            y = rng.uniform(RADIUS + 0.08, width - RADIUS - 0.08)
+            if all(math.hypot(x - px, y - py) >= gap for _, px, py in existing):
+                return x, y
+        raise RuntimeError("could not place non-overlapping balls")
+
+    for index in range(1, 501):
+        category = "break" if index <= 50 else ("cluster" if index <= 150 else "sparse")
         size = rng.choice(tuple(TABLES))
         length, width = TABLES[size]
-        object_count = rng.randint(1, 4)
+        object_count = rng.randint(7, 14)
         positions: list[tuple[int, float, float]] = []
-        for number in range(object_count + 1):
-            for _ in range(20_000):
-                x = rng.uniform(RADIUS + 0.08, length - RADIUS - 0.08)
-                y = rng.uniform(RADIUS + 0.08, width - RADIUS - 0.08)
-                if all(math.hypot(x - px, y - py) >= 2 * RADIUS + 0.015 for _, px, py in positions):
-                    positions.append((number, x, y))
+        if category == "break":
+            apex_x = length * 0.72
+            center_y = width / 2
+            # Seed small rack spacing errors like a loosely set real rack.
+            diameter = 2 * RADIUS + 1e-6 + rng.uniform(0.00005, 0.0002)
+            for row in range(5):
+                for column in range(row + 1):
+                    positions.append((len(positions) + 1,
+                                      apex_x + row * diameter * math.sqrt(3) / 2,
+                                      center_y + (column - row / 2) * diameter))
+            cue_y = center_y
+            positions.insert(0, (0, length * 0.22, cue_y))
+            angle = 0.0
+            speed = rng.uniform(6.0, 11.0)
+            tip = (0.0, 0.0)
+        elif category == "cluster":
+            diameter = 2 * RADIUS + 1e-6
+            cluster_count = rng.randint(2, min(4, object_count))
+            cluster_x = rng.uniform(length * 0.38, length * 0.66)
+            cluster_y = rng.uniform(width * 0.35, width * 0.65)
+            number = 1
+            for row in range(5):
+                for column in range(row + 1):
+                    if number > cluster_count:
+                        break
+                    positions.append((number, cluster_x + row * diameter * math.sqrt(3) / 2,
+                                      cluster_y + (column - row / 2) * diameter))
+                    number += 1
+                if number > cluster_count:
                     break
-            else:
-                raise RuntimeError("could not place non-overlapping balls")
-
-        angle = rng.uniform(0, math.tau)
-        tip_angle = rng.uniform(0, math.tau)
-        tip_radius = math.sqrt(rng.random()) * 0.5
+            for number in range(cluster_count + 1, object_count + 1):
+                x, y = random_position(size, positions, diameter + 0.04)
+                positions.append((number, x, y))
+            cue_x, cue_y = random_position(size, positions, diameter + 0.04)
+            positions.insert(0, (0, cue_x, cue_y))
+            angle = rng.uniform(0, math.tau)
+            speed = rng.uniform(6.0, 9.0) if rng.random() < 0.02 else rng.uniform(0.5, 4.5)
+            tip = random_tip(0.04, 0.28)
+        else:
+            for number in range(1, object_count + 1):
+                x, y = random_position(size, positions, 2 * RADIUS + 0.04)
+                positions.append((number, x, y))
+            cue_x, cue_y = random_position(size, positions, 2 * RADIUS + 0.04)
+            positions.insert(0, (0, cue_x, cue_y))
+            angle = rng.uniform(0, math.tau)
+            speed = rng.uniform(6.0, 9.0) if rng.random() < 0.02 else rng.uniform(0.5, 4.5)
+            tip = random_tip(0.04, 0.28)
         shots.append(
             make_shot(
-                f"random_{index + 1:03d}",
-                "random",
+                f"stress_{index:03d}",
+                category,
                 size,
                 positions,
                 (math.cos(angle), math.sin(angle)),
-                rng.uniform(0.5, 6.0),
-                (tip_radius * math.cos(tip_angle), tip_radius * math.sin(tip_angle)),
+                speed,
+                tip,
             )
         )
     return shots
@@ -276,7 +348,7 @@ def simple_shots() -> list[dict]:
 def main() -> None:
     if pt.__version__ != "0.6.0":
         raise RuntimeError(f"expected pooltool 0.6.0, found {pt.__version__}")
-    shots = random_shots(random.Random(SEED)) + simple_shots()
+    shots = random_shots(random.Random(SEED)) + regression_shots() + simple_shots()
     fixture = {
         "formatVersion": 1,
         "pooltoolVersion": pt.__version__,
