@@ -47,7 +47,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] Calibration: tap-4-corners + auto cloth detection, homography + ball-plane offset, LiDAR table size (D12)
 - [~] Ball detection v0 (classical, real-time) + tracker v0 — Claude, .worktrees/capture
 - [~] Core ML ball detector: synthetic data + YOLO train + .mlpackage export — Codex, .worktrees/detector
-- [~] Live screen: camera + table outline + ball rings + aim line, no text while aiming
+- [~] Live screen: ARKit 3D — URGENT minimal device build in progress (user at the table): Play → AR plane → tap 4 corners → 3D table + pocket rings → ball rings → aim line
 - [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
 - [ ] Post-shot VLM: Apple Foundation Model + benchmark FastVLM / Qwen-VL (MLX) on 15 Pro Max (D22)
 
