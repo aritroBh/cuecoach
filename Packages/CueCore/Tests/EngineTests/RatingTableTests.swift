@@ -146,3 +146,25 @@ private func record(_ i: RatingInput) -> ShotRatingRecord { ShotRatingRecord(inp
     var w = i; w.wonRack = true
     #expect(Ratings.sotgScore(w) > Ratings.sotgScore(i))
 }
+
+@Test func brilliant_atMostOncePerGame_property() {
+    // 300 seeded random games of 40 shots: never more than one Brilliant, and only on an eligible shot.
+    let rng = EngineRNG(seed: 77)
+    var k = 0
+    func u() -> Double { k += 1; return (rng.normals(state: 1, stream: 9, sample: 2 * k).x / 6 + 0.5).clamped }
+    for _ in 0..<300 {
+        var game: [ShotRatingRecord] = []
+        for _ in 0..<40 {
+            let i = input { $0.isBook = u() < 0.05; $0.wpBefore = u(); $0.wpAfter = u(); $0.difficulty = u()
+                            $0.baselineP = u(); $0.wonRack = u() > 0.95; $0.isSafety = u() > 0.8
+                            $0.opponentBestMake = u(); $0.shooterBestPotBefore = u() }
+            game.append(record(i))
+        }
+        let final = Ratings.finalize(game)
+        let idx = final.indices.filter { final[$0] == .brilliant }
+        #expect(idx.count <= 1)
+        for j in idx { #expect(game[j].rating.brilliantEligible) }
+    }
+}
+
+private extension Double { var clamped: Double { Swift.min(1, Swift.max(0, self)) } }

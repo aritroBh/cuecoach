@@ -60,16 +60,13 @@ enum EngineGeometry {
         }
         guard t > 0, t < 1 else { return nil }
         let p = a + d * t
-        guard p.x > 0.1, p.x < spec.length - 0.1, p.y > 0.1, p.y < spec.width - 0.1 || rail == .left || rail == .right
-        else {
-            // Rail point too close to a pocket corner: reject.
-            if rail == .left || rail == .right { return (p.x > 0.1 && p.x < spec.length - 0.1) ? p : nil }
-            return (p.y > 0.1 && p.y < spec.width - 0.1) ? p : nil
+        switch rail {
+        case .left, .right:
+            // Away from the corners and from the side pocket on this rail.
+            return p.x > 0.1 && p.x < spec.length - 0.1 && abs(p.x - spec.length / 2) > 0.08 ? p : nil
+        default:
+            return p.y > 0.1 && p.y < spec.width - 0.1 ? p : nil
         }
-        if rail == .left || rail == .right {
-            return abs(p.x - spec.length / 2) > 0.08 ? p : nil   // not into the side pocket
-        }
-        return (p.y > 0.1 && p.y < spec.width - 0.1) ? p : nil
     }
 
     static let railsAll: [Rail] = [.foot, .head, .left, .right]

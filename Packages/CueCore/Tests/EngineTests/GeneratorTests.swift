@@ -42,15 +42,28 @@ private func gen(_ s: TableState, _ g: GameState) -> [Candidate] {
 }
 
 @Test func generator_blockedDirectIsDroppedAndBankOffered() {
-    // 9-ball: 1 at mid-table, a blocker sits on the CB → 1 line, so no direct on the 1 into foot-right.
+    // Reference #6: a blocker sits on the 1 → foot-right line, so no direct there; a clean bank remains.
     let o = Vec2(1.3, 0.55)
     let cue = Vec2(0.7, 0.30)
     let p = Fx.footRight
-    let ghost = AimGeometry.ghostBall(object: o, pocket: p)
-    let blocker = cue + (ghost - cue) * 0.5
+    let blocker = o + (p - o) * 0.5
     let s = Fx.table(cue: cue, [1: o, 2: blocker])
     let cs = gen(s, Fx.nineBall([1, 2]))
     #expect(!cs.contains { $0.kind == .direct && $0.pocket == .footRight })
+    #expect(cs.contains { if case .bank = $0.kind { $0.objectBall == Fx.b(1) } else { false } })
+}
+
+@Test func generator_bankGeometryMirrorsThePocket() {
+    // 1 near the left rail; a one-rail bank off the left rail into the right side pocket.
+    let s = Fx.table(cue: Vec2(1.45, 0.75), [1: Vec2(1.3, 0.25)])
+    let cs = gen(s, Fx.nineBall([1]))
+    let bank = cs.first { $0.kind == .bank(.left) && $0.pocket == .sideRight }
+    #expect(bank != nil)
+    if let bank, let ghost = bank.ghost {
+        let mirrored = EngineGeometry.mirror(Fx.spec.pocketCenter(.sideRight), across: .left, spec: Fx.spec)
+        let o = Vec2(1.3, 0.25)
+        #expect(abs(EngineGeometry.angleBetween(o - ghost, mirrored - o)) < 1e-9)
+    }
 }
 
 @Test func generator_snookeredGivesKicks() {
