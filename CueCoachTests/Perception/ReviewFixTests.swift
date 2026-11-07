@@ -20,7 +20,7 @@ struct AssignmentTests {
     }
 
     @Test func trackerKeepsIdentitiesWhenBallsCross() {
-        var tr = SimpleBallTracker()
+        var tr = KalmanBallTracker()
         func det(_ p: Vec2) -> BallDetection {
             BallDetection(imagePoint: .zero, tablePoint: p, radiusPx: 10, confidence: 1, kind: .solid, tentativeNumber: nil)
         }

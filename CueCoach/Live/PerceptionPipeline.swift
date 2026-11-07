@@ -30,7 +30,7 @@ struct PerceptionResult: Sendable {
 /// Detection + tracking + aim off the main actor.
 actor PerceptionPipeline {
     private let detector: any BallDetector
-    private var tracker = SimpleBallTracker()
+    private var tracker = KalmanBallTracker()
     private var table: TableFrame?
     private var legal: Set<BallID>
     private var segmenter: ShotSegmenter?

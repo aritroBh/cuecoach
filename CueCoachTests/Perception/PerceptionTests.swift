@@ -101,7 +101,7 @@ struct TrackerTests {
     }
 
     @Test func stillBallsWithJitterReachRest() {
-        var tr = SimpleBallTracker()
+        var tr = KalmanBallTracker()
         var rng = SplitMix(seed: 1)
         let balls = [Vec2(0.5, 0.5), Vec2(1.2, 0.3), Vec2(1.6, 0.8)]
         var rested = false
@@ -115,7 +115,7 @@ struct TrackerTests {
     }
 
     @Test func movingBallBlocksRestThenSettles() {
-        var tr = SimpleBallTracker()
+        var tr = KalmanBallTracker()
         var t = 0.0
         for _ in 0..<20 { _ = tr.update([det(Vec2(0.5, 0.5)), det(Vec2(1.5, 0.5))], at: t); t += 1 / 30.0 }
         #expect(tr.isAtRest)
@@ -135,7 +135,7 @@ struct TrackerTests {
     }
 
     @Test func identityFollowsAMovingBall() {
-        var tr = SimpleBallTracker()
+        var tr = KalmanBallTracker()
         var t = 0.0, x = 0.4
         var id: Int?
         for _ in 0..<30 {
@@ -150,7 +150,7 @@ struct TrackerTests {
     }
 
     @Test func briefDropoutKeepsTrack() {
-        var tr = SimpleBallTracker()
+        var tr = KalmanBallTracker()
         var t = 0.0
         for _ in 0..<10 { _ = tr.update([det(Vec2(1, 0.5))], at: t); t += 1 / 30.0 }
         let id = tr.update([det(Vec2(1, 0.5))], at: t).first?.id
@@ -160,7 +160,7 @@ struct TrackerTests {
     }
 
     @Test func majorityVoteSmoothsClass() {
-        var tr = SimpleBallTracker()
+        var tr = KalmanBallTracker()
         var out: [TrackedBall] = []
         for f in 0..<10 { out = tr.update([det(Vec2(1, 0.5), f % 4 == 0 ? .stripe : .solid)], at: Double(f) / 30) }
         #expect(out.first?.kind == .solid)
