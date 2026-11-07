@@ -31,6 +31,8 @@ struct PerceptionResult: Sendable {
     var liveAim: LiveAimTrace? = nil
     /// 0…1: live aim vs suggested ghost line; the overlay merges them as this approaches 1.
     var convergence: Double = 0
+    /// Track id of the ball the live cue line hits first (for the illegal-aim warning).
+    var liveTargetID: Int? = nil
     var depthBalls = 0
     /// Whole pipeline time for this frame (detect + depth + track + cue + aim), ms.
     var totalMs: Double = 0
@@ -98,14 +100,17 @@ actor PerceptionPipeline {
         // Live aim from the cue stick (only while the balls are still: that's when the player aims).
         var live: LiveAimTrace?
         var convergence = 0.0
+        var liveTargetID: Int?
         let cueBall = confirmed.first { marks[$0.id] == .cue }
         if let cb = cueBall {
-            let others = confirmed.filter { $0.id != cb.id }.map(\.position)
+            let otherTracks = confirmed.filter { $0.id != cb.id }
+            let others = otherTracks.map(\.position)
             let obs = cb.speed < 0.2 ? cueDetector.detect(in: f.image, geometry: geo, cue: cb.position, others: others,
                                                           wrists: f.wrists) : nil
             _ = cueTracker.update(obs, at: f.timestamp)
             if let d = cueTracker.direction, cueTracker.cueVisible(at: f.timestamp) {
                 live = LiveAimTrace.trace(cue: cb.position, direction: d, balls: others, spec: table.spec)
+                liveTargetID = live?.hitIndex.map { otherTracks[$0].id }
                 if let a = aim { convergence = LiveAimTrace.convergence(live: d, cue: cb.position, suggestedGhost: a.ghost) }
             }
         }
@@ -116,7 +121,7 @@ actor PerceptionPipeline {
         let started = !wasInShot && (segmenter?.inShot ?? false)
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
-                                shotStarted: started, shot: shot, liveAim: live, convergence: convergence,
+                                shotStarted: started, shot: shot, liveAim: live, convergence: convergence, liveTargetID: liveTargetID,
                                 depthBalls: depthBalls.count, totalMs: Date().timeIntervalSince(t0) * 1000)
     }
 }

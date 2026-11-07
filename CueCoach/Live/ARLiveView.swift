@@ -50,7 +50,8 @@ final class ARLiveController: NSObject {
     private var tableFrame: TableFrame?
     private var limitedSince: Date?
     private var revalidating = false
-    private var wasMerged = false
+    private var convergenceLatch = ConvergenceLatch()
+    private var illegalAimLatch = EntryLatch()
     private var resultOrder = FrameOrdering()
     private var lastStatusSeq = -1
     private var estimateOrder = FrameOrdering()
@@ -361,14 +362,21 @@ final class ARLiveController: NSObject {
         guard model.calibrated, s.isResult, model.status.trustsTable, let tap,
               resultOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
         model.noteResult(r)
-        overlay?.update(r)
+        defer { overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
         if let r {
             // Shot events are haptic only (no audio, no text while aiming).
             if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
             if r.shot != nil { UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6) }
-            let merged = r.convergence > 0.8
-            if merged && !wasMerged { UISelectionFeedbackGenerator().selectionChanged() }  // aim locked onto the line
-            wasMerged = merged
+            let now = CACurrentMediaTime()
+            if convergenceLatch.update(r.liveAim == nil ? 0 : r.convergence, at: now) {
+                UISelectionFeedbackGenerator().selectionChanged()   // aim locked onto the suggested line
+            }
+            let style = LiveAimStyle.of(hitTrackID: r.liveAim == nil ? nil : r.liveTargetID, marks: r.marks,
+                                        merged: convergenceLatch.merged)
+            if illegalAimLatch.update(style == .illegal, at: now) {
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)   // once per entry
+            }
+            overlay?.liveStyle = style
         }
     }
 }
@@ -618,6 +626,13 @@ final class TableOverlay {
     private let liveGhost: ModelEntity
     private let R = Float(TableSpec.ballRadius)
     private var dimmed = false
+    private let solidRing: MeshResource
+    private let dashedRing: MeshResource
+    private var ringShape: [RingStyle.Shape] = []
+    private var turnStart = CACurrentMediaTime()
+    private var wasAtRest = false
+    /// Set by the controller from the convergence latch + legality.
+    var liveStyle: LiveAimStyle = .neutral
 
     static let green = UIColor(red: 0.29, green: 0.87, blue: 0.5, alpha: 1)    // #4ADE80
     static let yellow = UIColor(red: 0.98, green: 0.8, blue: 0.08, alpha: 1)   // #FACC15
@@ -639,11 +654,13 @@ final class TableOverlay {
             e.position = [Float(c.x), Float(c.y), 0.003]
             outline.append(e); anchor.addChild(e)
         }
-        let ringMesh = OverlayMesh.ring(inner: R * 1.12, outer: R * 1.34)
+        let solid = OverlayMesh.ring(inner: R * 1.12, outer: R * 1.34)
+        solidRing = solid
+        dashedRing = OverlayMesh.dashedRing(inner: R * 1.12, outer: R * 1.42, dashes: 10)
         for _ in 0..<16 {
-            let e = ModelEntity(mesh: ringMesh, materials: [OverlayMesh.material(.white, 0.45)])
+            let e = ModelEntity(mesh: solid, materials: [OverlayMesh.material(.white, 0.45)])
             e.isEnabled = false
-            anchor.addChild(e); ballRings.append(e)
+            anchor.addChild(e); ballRings.append(e); ringShape.append(.solid)
         }
         cueLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.9))
         objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
@@ -674,25 +691,30 @@ final class TableOverlay {
     func update(_ r: PerceptionResult?) {
         guard !dimmed else { return }
         let tracks = r?.confirmed ?? []
+        let now = CACurrentMediaTime()
+        let atRest = r?.atRest ?? false
+        if atRest && !wasAtRest { turnStart = now }   // a new turn: legal rings pulse once
+        wasAtRest = atRest
+        let targeted = r?.liveAim == nil ? nil : r?.liveTargetID
         for (i, ring) in ballRings.enumerated() {
             guard i < tracks.count else { ring.isEnabled = false; continue }
             let t = tracks[i]
+            let mark = r?.marks[t.id] ?? .unknown
+            let st = RingStyle.of(mark, turnAge: now - turnStart, time: now, targeted: targeted == t.id)
+            if ringShape[i] != st.shape {
+                ring.model?.mesh = st.shape == .dashed ? dashedRing : solidRing
+                ringShape[i] = st.shape
+            }
             ring.isEnabled = true
             ring.position = [Float(t.position.x), Float(t.position.y), 0.004]
-            let (color, alpha): (UIColor, Double) = switch r?.marks[t.id] ?? .unknown {
-            case .cue: (.white, 0.95)
-            case .legal: (Self.green, 0.85)
-            case .illegal: (Self.red, 0.8)
-            case .unknown: (.white, 0.35)
-            }
-            ring.model?.materials = [OverlayMesh.material(color, alpha)]
-            ring.scale = r?.marks[t.id] == .cue ? [1.1, 1.1, 1] : [1, 1, 1]
+            let color: UIColor = switch mark { case .cue, .unknown: .white; case .legal: Self.green; case .illegal: Self.red }
+            ring.model?.materials = [OverlayMesh.material(color, st.alpha)]
+            ring.scale = [Float(st.scale), Float(st.scale), 1]
         }
         // Live aim from the cue stick: bright, turns green as it merges with the suggestion.
         let live = r?.liveAim
         if let live {
-            let merged = (r?.convergence ?? 0) > 0.8
-            let c: UIColor = merged ? Self.green : .white
+            let c: UIColor = switch liveStyle { case .illegal: Self.red; case .merged: Self.green; case .neutral: .white }
             OverlayMesh.place(liveLine, from: live.cue.f, to: live.end.f, z: R)
             liveLine.model?.materials = [OverlayMesh.material(c, 0.95)]
             liveLine.isEnabled = true
@@ -734,9 +756,13 @@ final class TableOverlay {
         // Line 3: dashed cue path after contact (follows cushions when simulated).
         let segs = OverlayPath.dashes(aim.cuePath, dash: 0.04, gap: 0.03, skip: TableSpec.ballRadius, max: dashes.count)
             .map { ($0.0.f, $0.1.f) }
+        let dashMat = OverlayMesh.material(.white, 0.45 * guide)
         for (i, d) in dashes.enumerated() {
-            if i < segs.count { OverlayMesh.place(d, from: segs[i].0, to: segs[i].1, z: R); d.isEnabled = true }
-            else { d.isEnabled = false }
+            if i < segs.count {
+                OverlayMesh.place(d, from: segs[i].0, to: segs[i].1, z: R)
+                d.model?.materials = [dashMat]
+                d.isEnabled = true
+            } else { d.isEnabled = false }
         }
     }
 }
@@ -780,6 +806,31 @@ enum OverlayMesh {
         desc.positions = MeshBuffers.Positions(pos)
         desc.primitives = .triangles(idx)
         return (try? MeshResource.generate(from: [desc])) ?? .generateSphere(radius: outer)
+    }
+
+    /// Segmented annulus (colour-blind-safe shape for illegal targets).
+    static func dashedRing(inner: Float, outer: Float, dashes: Int, fill: Float = 0.55) -> MeshResource {
+        var pos: [SIMD3<Float>] = []
+        var idx: [UInt32] = []
+        let per = 6
+        for d in 0..<dashes {
+            let a0 = Float(d) / Float(dashes) * 2 * .pi
+            let span = 2 * .pi / Float(dashes) * fill
+            let base = UInt32(pos.count)
+            for k in 0...per {
+                let a = a0 + span * Float(k) / Float(per)
+                pos.append([inner * cos(a), inner * sin(a), 0])
+                pos.append([outer * cos(a), outer * sin(a), 0])
+            }
+            for k in 0..<per {
+                let a = base + UInt32(2 * k), b = a + 1, c = a + 2, dd = a + 3
+                idx += [a, b, dd, a, dd, c, a, dd, b, a, c, dd]
+            }
+        }
+        var desc = MeshDescriptor(name: "dashedRing")
+        desc.positions = MeshBuffers.Positions(pos)
+        desc.primitives = .triangles(idx)
+        return (try? MeshResource.generate(from: [desc])) ?? ring(inner: inner, outer: outer)
     }
 
     static func segment(from a: SIMD2<Float>, to b: SIMD2<Float>, z: Float, width: Float, material: UnlitMaterial) -> ModelEntity {

@@ -410,7 +410,9 @@ struct ReplayLiveView: View {
         for t in result?.confirmed ?? [] {
             let mark = result?.marks[t.id] ?? .unknown
             let c: Color = switch mark { case .cue: .white; case .legal: green; case .illegal: red; case .unknown: .white.opacity(0.4) }
-            ctx.stroke(circle(t.position, TableSpec.ballRadius * 1.25, geo.cloth, map), with: .color(c), lineWidth: mark == .cue ? 3 : 2)
+            let st = RingStyle.of(mark, turnAge: 5, time: Date().timeIntervalSinceReferenceDate)
+            ctx.stroke(circle(t.position, TableSpec.ballRadius * 1.25, geo.cloth, map), with: .color(c.opacity(st.alpha)),
+                       style: StrokeStyle(lineWidth: mark == .cue ? 3 : 2, dash: st.shape == .dashed ? [5, 4] : []))
         }
         if let aim = result?.aim, let a = v(aim.cue, ball: true), let g = v(aim.ghost, ball: true),
            let o = v(aim.object, ball: true), let pk = v(aim.pocketPoint, ball: true) {

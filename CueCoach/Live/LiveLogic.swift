@@ -131,3 +131,99 @@ enum OverlayPath {
         return left.dropLast() + right
     }
 }
+
+/// How the live cue line is drawn (SPEC §3: aiming at an illegal ball turns the line red).
+enum LiveAimStyle: Equatable, Sendable {
+    case neutral   // white
+    case merged    // green: on the suggested line
+    case illegal   // red #F87171 + pulsing red ring on the hit ball
+
+    static func of(hitTrackID: Int?, marks: [Int: TargetMark], merged: Bool) -> LiveAimStyle {
+        if let id = hitTrackID, marks[id] == .illegal { return .illegal }
+        return merged ? .merged : .neutral
+    }
+}
+
+/// Schmitt trigger for "live aim is on the suggested line", with a haptic cooldown so tremor near the
+/// threshold doesn't chatter.
+struct ConvergenceLatch: Sendable {
+    var enter = 0.85
+    var exit = 0.70
+    var hapticCooldown = 0.3
+    /// After leaving the line, it must stay off this long before entering can buzz again.
+    var rearm = 1.0
+    /// EMA weight on new samples (tremor smoothing before the thresholds).
+    var smoothing = 0.3
+    private(set) var merged = false
+    private(set) var smoothed: Double?
+    private var lastHaptic = -Double.infinity
+    private var leftAt: Double?
+
+    /// Returns whether a selection haptic should fire now.
+    mutating func update(_ raw: Double, at t: Double) -> Bool {
+        let c = smoothed.map { $0 + smoothing * (raw - $0) } ?? raw
+        smoothed = c
+        if !merged && c > enter {
+            merged = true
+            let armed = leftAt.map { t - $0 >= rearm } ?? true
+            leftAt = nil
+            if armed && t - lastHaptic >= hapticCooldown { lastHaptic = t; return true }
+        } else if merged && c < exit {
+            merged = false
+            leftAt = t
+        }
+        return false
+    }
+}
+
+/// Fires once when a condition becomes true; re-arms only after it has stayed false for `rearm` seconds
+/// (so a flickering detection can't repeat the warning).
+struct EntryLatch: Sendable {
+    var rearm = 0.6
+    private var active = false
+    private var falseSince: Double?
+
+    mutating func update(_ on: Bool, at t: Double) -> Bool {
+        if on {
+            falseSince = nil
+            if !active { active = true; return true }
+            return false
+        }
+        if active {
+            if falseSince == nil { falseSince = t }
+            if let f = falseSince, t - f >= rearm { active = false; falseSince = nil }
+        }
+        return false
+    }
+}
+
+/// Ball-ring look: shape carries meaning too (never colour alone, MASTER.md), animation stays calm.
+struct RingStyle: Equatable, Sendable {
+    enum Shape: Equatable, Sendable { case solid, dashed }
+    var shape: Shape
+    var alpha: Double
+    var scale: Double
+
+    /// - turnAge: seconds since the turn started (table at rest after a shot, or just locked).
+    /// - targeted: the live cue line is pointing at this ball.
+    static func of(_ mark: TargetMark, turnAge: Double, time t: Double, targeted: Bool = false) -> RingStyle {
+        switch mark {
+        case .cue:
+            return RingStyle(shape: .solid, alpha: 0.95, scale: 1.1)
+        case .unknown:
+            return RingStyle(shape: .solid, alpha: 0.35, scale: 1)
+        case .legal:
+            // One pulse at turn start (0…1.2 s), then faint.
+            let faint = 0.35
+            guard turnAge >= 0, turnAge < 1.2 else { return RingStyle(shape: .solid, alpha: faint, scale: 1) }
+            let bump = sin(.pi * turnAge / 1.2)
+            return RingStyle(shape: .solid, alpha: faint + (0.9 - faint) * bump, scale: 1 + 0.12 * bump)
+        case .illegal:
+            // Dashed, slow alpha breathing; faster and larger when the player is aiming at it.
+            let period = targeted ? 0.8 : 1.8
+            let phase = 0.5 + 0.5 * sin(2 * .pi * t / period)
+            return RingStyle(shape: .dashed, alpha: targeted ? 0.6 + 0.4 * phase : 0.4 + 0.3 * phase,
+                             scale: targeted ? 1 + 0.15 * phase : 1)
+        }
+    }
+}
