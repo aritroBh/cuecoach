@@ -8,14 +8,16 @@ import Geometry
 @Model
 final class TrainingProfile {
     @Attribute(.unique) var id: UUID
-    var playerID: UUID
-    var createdAt: Date
+    private var playerIDValue: UUID
+    var playerID: UUID { get { playerIDValue } set { playerIDValue = newValue; updatedAt = .now } }
+    private var createdAtValue: Date
+    var createdAt: Date { get { createdAtValue } set { createdAtValue = newValue; updatedAt = .now } }
     var updatedAt: Date
 
     init(id: UUID = UUID(), playerID: UUID, createdAt: Date = .now, updatedAt: Date? = nil) {
         self.id = id
-        self.playerID = playerID
-        self.createdAt = createdAt
+        self.playerIDValue = playerID
+        self.createdAtValue = createdAt
         self.updatedAt = updatedAt ?? createdAt
     }
 }
@@ -25,12 +27,16 @@ final class DrillProgress {
     static let levels = 1...4
 
     @Attribute(.unique) var id: UUID
-    var playerID: UUID
+    private var playerIDValue: UUID
+    var playerID: UUID { get { playerIDValue } set { playerIDValue = newValue; updatedAt = .now } }
     /// `DrillID` raw value (Training module, Phase 8).
-    var drill: String
-    var level: Int
+    private var drillValue: String
+    var drill: String { get { drillValue } set { drillValue = newValue; updatedAt = .now } }
+    private var levelValue: Int
+    var level: Int { get { levelValue } set { levelValue = newValue; updatedAt = .now } }
     /// Rolling window of recent attempt outcomes.
-    var recentResults: [Bool]
+    private var recentResultsValue: [Bool]
+    var recentResults: [Bool] { get { recentResultsValue } set { recentResultsValue = newValue; updatedAt = .now } }
     private var levelHistoryData: Data
     var updatedAt: Date
     @Relationship(deleteRule: .cascade, inverse: \TrainingAttempt.progress)
@@ -38,16 +44,16 @@ final class DrillProgress {
 
     var levelHistory: [LevelChange] {
         get { Blob.decode([LevelChange].self, levelHistoryData, fallback: []) }
-        set { levelHistoryData = Blob.encode(newValue) }
+        set { levelHistoryData = Blob.encode(newValue); updatedAt = .now }
     }
 
     init(id: UUID = UUID(), playerID: UUID, drill: String, level: Int, recentResults: [Bool] = [],
          levelHistory: [LevelChange] = [], updatedAt: Date = .now) {
         self.id = id
-        self.playerID = playerID
-        self.drill = drill
-        self.level = min(max(level, Self.levels.lowerBound), Self.levels.upperBound)
-        self.recentResults = recentResults
+        self.playerIDValue = playerID
+        self.drillValue = drill
+        self.levelValue = min(max(level, Self.levels.lowerBound), Self.levels.upperBound)
+        self.recentResultsValue = recentResults
         self.levelHistoryData = Blob.encode(levelHistory)
         self.updatedAt = updatedAt
     }
@@ -59,35 +65,37 @@ final class DrillProgress {
 final class TrainingAttempt {
     @Attribute(.unique) var id: UUID
     var progress: DrillProgress?
-    var at: Date
+    private var atValue: Date
+    var at: Date { get { atValue } set { atValue = newValue; updatedAt = .now } }
     private var setupData: Data
     private var resultData: Data
-    var made: Bool
+    private var madeValue: Bool
+    var made: Bool { get { madeValue } set { madeValue = newValue; updatedAt = .now } }
     private var featuresData: Data
     var updatedAt: Date
 
     var setup: TableState {
         get { Blob.decode(TableState.self, setupData, fallback: TableState(spec: TableSpec(size: .sevenFoot))) }
-        set { setupData = Blob.encode(newValue) }
+        set { setupData = Blob.encode(newValue); updatedAt = .now }
     }
     var result: TableState {
         get { Blob.decode(TableState.self, resultData, fallback: TableState(spec: TableSpec(size: .sevenFoot))) }
-        set { resultData = Blob.encode(newValue) }
+        set { resultData = Blob.encode(newValue); updatedAt = .now }
     }
     var features: StoredAttemptFeatures {
         get { Blob.decode(StoredAttemptFeatures.self, featuresData,
                           fallback: StoredAttemptFeatures(signedCutError: 0, signedSpeedError: 0,
                                                           cueLandingError: 0, spinIntended: 0, spinObserved: 0)) }
-        set { featuresData = Blob.encode(newValue) }
+        set { featuresData = Blob.encode(newValue); updatedAt = .now }
     }
 
     init(id: UUID = UUID(), at: Date, setup: TableState, result: TableState, made: Bool,
          features: StoredAttemptFeatures, updatedAt: Date? = nil) {
         self.id = id
-        self.at = at
+        self.atValue = at
         self.setupData = Blob.encode(setup)
         self.resultData = Blob.encode(result)
-        self.made = made
+        self.madeValue = made
         self.featuresData = Blob.encode(features)
         self.updatedAt = updatedAt ?? at
     }
@@ -96,31 +104,37 @@ final class TrainingAttempt {
 @Model
 final class BiasRecord {
     @Attribute(.unique) var id: UUID
-    var playerID: UUID
-    var drill: String
+    private var playerIDValue: UUID
+    var playerID: UUID { get { playerIDValue } set { playerIDValue = newValue; updatedAt = .now } }
+    private var drillValue: String
+    var drill: String { get { drillValue } set { drillValue = newValue; updatedAt = .now } }
     private var axisRaw: String
     /// +1 / −1 (e.g. overcut vs undercut).
-    var sign: Int
-    var attemptsWindow: Int
-    var detectedAt: Date
-    var resolvedAt: Date?
+    private var signValue: Int
+    var sign: Int { get { signValue } set { signValue = newValue; updatedAt = .now } }
+    private var attemptsWindowValue: Int
+    var attemptsWindow: Int { get { attemptsWindowValue } set { attemptsWindowValue = newValue; updatedAt = .now } }
+    private var detectedAtValue: Date
+    var detectedAt: Date { get { detectedAtValue } set { detectedAtValue = newValue; updatedAt = .now } }
+    private var resolvedAtValue: Date?
+    var resolvedAt: Date? { get { resolvedAtValue } set { resolvedAtValue = newValue; updatedAt = .now } }
     var updatedAt: Date
 
     var axis: BiasAxis {
         get { BiasAxis(rawValue: axisRaw) ?? .cut }
-        set { axisRaw = newValue.rawValue }
+        set { axisRaw = newValue.rawValue; updatedAt = .now }
     }
 
     init(id: UUID = UUID(), playerID: UUID, drill: String, axis: BiasAxis, sign: Int, attemptsWindow: Int,
          detectedAt: Date, resolvedAt: Date? = nil, updatedAt: Date? = nil) {
         self.id = id
-        self.playerID = playerID
-        self.drill = drill
+        self.playerIDValue = playerID
+        self.drillValue = drill
         self.axisRaw = axis.rawValue
-        self.sign = sign
-        self.attemptsWindow = attemptsWindow
-        self.detectedAt = detectedAt
-        self.resolvedAt = resolvedAt
+        self.signValue = sign
+        self.attemptsWindowValue = attemptsWindow
+        self.detectedAtValue = detectedAt
+        self.resolvedAtValue = resolvedAt
         self.updatedAt = updatedAt ?? resolvedAt ?? detectedAt
     }
 

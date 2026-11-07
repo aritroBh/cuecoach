@@ -55,7 +55,7 @@ import Testing
         let data = try populated().exportBackup(exportedAt: Fixture.t0)
         let json = try #require(String(data: data, encoding: .utf8))
         #expect(json.contains("\"version\":1"))
-        #expect(json.contains("\"exportedAt\":\"2027-01-15T08:00:00.123Z\""))
+        #expect(json.contains("\"exportedAt\":\"2023-11-14T22:13:20.123Z\""))
         let top = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(Set(top.keys) == ["version", "exportedAt", "competitive", "training", "includesRecognition"])
         // sortedKeys: top-level keys appear alphabetically
@@ -69,7 +69,7 @@ import Testing
         let first = try decode(data)
         for _ in 0..<3 { data = try decode(data).encoded() }
         #expect(try decode(data) == first)
-        #expect(String(decoding: data, as: UTF8.self).contains("\"exportedAt\":\"2027-01-15T08:00:00.123Z\""))
+        #expect(String(decoding: data, as: UTF8.self).contains("\"exportedAt\":\"2023-11-14T22:13:20.123Z\""))
     }
 
     @Test func recognitionExcludedUnlessRequested() throws {
@@ -152,13 +152,15 @@ import Testing
     }
 
     @Test func importNeverCreatesSessionGuests() throws {
-        let stack = try populated()
-        let guest = PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "star", avatarColor: "red",
-                                  isSessionGuest: true)
-        stack.competitiveContext.insert(guest)
-        try stack.competitiveContext.save()
-        let b = try decode(stack.exportBackup())
-        #expect(b.competitive.profiles.map(\.id) == [Fixture.ownerID])
+        let source = try populated()
+        source.competitiveContext.insert(PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "star",
+                                                       avatarColor: "red", isSessionGuest: true))
+        try source.competitiveContext.save()
+        let fresh = try PersistenceStack(inMemory: true)
+        try fresh.importBackup(source.exportBackup(includeRecognition: true))
+        let all = try fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
+        #expect(all.map(\.id) == [Fixture.ownerID])
+        #expect(all.allSatisfy { !$0.isSessionGuest })
     }
 }
 

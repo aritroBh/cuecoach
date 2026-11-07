@@ -172,6 +172,8 @@ struct BackupV1: Codable, Equatable, Sendable {
 
 enum BackupError: Error, Equatable {
     case unsupportedVersion(Int)
+    /// A row references a parent that is neither in the backup nor on this device.
+    case missingParent(child: String, childID: UUID, parentID: UUID)
 }
 
 // MARK: - JSON coding (ISO-8601 with milliseconds, sorted keys)

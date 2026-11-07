@@ -10,7 +10,7 @@ import Engine
 enum Fixture {
     static let ownerID = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
     static let guestID = UUID(uuidString: "00000000-0000-0000-0000-0000000000B2")!
-    static let t0 = Date(timeIntervalSince1970: 1_800_000_000.123)
+    static let t0 = Date(timeIntervalSince1970: 1_700_000_000.123)
 
     static func table() -> TableState {
         var s = TableState(spec: TableSpec(size: .sevenFoot))

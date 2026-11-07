@@ -9,10 +9,18 @@ extension PersistenceStack {
     /// Serialises both stores to `BackupV1` JSON. Recognition embeddings are left out unless
     /// `includeRecognition` is set. Session guests are never exported. Rows are sorted by id.
     func exportBackup(includeRecognition: Bool = false, exportedAt: Date = .now) throws -> Data {
-        let c = competitiveContext, t = trainingContext
-        func all<M: PersistentModel>(_: M.Type, _ ctx: ModelContext) throws -> [M] { try ctx.fetch(FetchDescriptor<M>()) }
-        func sorted<D>(_ xs: [D], _ id: (D) -> UUID) -> [D] { xs.sorted { id($0).uuidString < id($1).uuidString } }
+        try BackupV1(exportedAt: exportedAt, includesRecognition: includeRecognition,
+                     competitive: competitiveSection(includeRecognition: includeRecognition),
+                     training: trainingSection()).encoded()
+    }
 
+    private func all<M: PersistentModel>(_: M.Type, _ ctx: ModelContext) throws -> [M] {
+        try ctx.fetch(FetchDescriptor<M>())
+    }
+    private func sorted<D>(_ xs: [D], _ id: (D) -> UUID) -> [D] { xs.sorted { id($0).uuidString < id($1).uuidString } }
+
+    private func competitiveSection(includeRecognition: Bool) throws -> BackupV1.Competitive {
+        let c = competitiveContext
         var comp = BackupV1.Competitive()
         comp.profiles = sorted(try all(PlayerProfile.self, c).filter { !$0.isSessionGuest }.map {
             .init(id: $0.id, name: $0.name, avatarSymbol: $0.avatarSymbol, avatarColor: $0.avatarColor,
@@ -54,7 +62,11 @@ extension PersistenceStack {
             .init(id: $0.id, gameID: $0.game?.id, shotID: $0.shotID, kind: $0.kind, clipFile: $0.clipFile,
                   label: $0.label, score: $0.score, updatedAt: $0.updatedAt)
         }, \.id)
+        return comp
+    }
 
+    private func trainingSection() throws -> BackupV1.Training {
+        let t = trainingContext
         var train = BackupV1.Training()
         train.profiles = sorted(try all(TrainingProfile.self, t).map {
             .init(id: $0.id, playerID: $0.playerID, createdAt: $0.createdAt, updatedAt: $0.updatedAt)
@@ -72,9 +84,7 @@ extension PersistenceStack {
                   attemptsWindow: $0.attemptsWindow, detectedAt: $0.detectedAt, resolvedAt: $0.resolvedAt,
                   updatedAt: $0.updatedAt)
         }, \.id)
-
-        return try BackupV1(exportedAt: exportedAt, includesRecognition: includeRecognition,
-                            competitive: comp, training: train).encoded()
+        return train
     }
 
     // MARK: Import
@@ -82,37 +92,88 @@ extension PersistenceStack {
     /// Merges a backup into both stores by UUID: unknown rows are inserted, known rows are overwritten
     /// only when the backup's `updatedAt` is strictly newer. Re-importing the same file is a no-op.
     /// Never deletes local rows (a backup without recognition data keeps local embeddings).
-    /// All-or-nothing: on any error both contexts are rolled back.
+    ///
+    /// All-or-nothing across both stores:
+    /// 1. version + parent references are validated before anything is touched (`BackupError`);
+    /// 2. training is saved first; if that fails, both contexts roll back;
+    /// 3. if the competitive save then fails, the training store is restored from a pre-import snapshot.
+    ///
+    /// Device-local fields are never taken from a backup: `isLocalOwner` of existing profiles is kept;
+    /// a new profile becomes the local owner only if this phone has none yet (fresh-phone restore).
+    /// Recognition rows are read only when the manifest's `includesRecognition` is true.
     func importBackup(_ data: Data) throws {
         let backup = try BackupV1.decode(data)
+        try validateParents(backup)
         let c = competitiveContext, t = trainingContext
+        let trainingSnapshot = try trainingSection()
         do {
-            try mergeCompetitive(backup.competitive, into: c)
+            try mergeCompetitive(backup.competitive, includeRecognition: backup.includesRecognition, into: c)
             try mergeTraining(backup.training, into: t)
-            try c.save()
+            try beforeSave?(.training)
             try t.save()
         } catch {
             c.rollback()
             t.rollback()
             throw error
         }
+        do {
+            try beforeSave?(.competitive)
+            try c.save()
+        } catch {
+            c.rollback()
+            try restoreTraining(trainingSnapshot)
+            throw error
+        }
     }
 
-    private func mergeCompetitive(_ b: BackupV1.Competitive, into ctx: ModelContext) throws {
-        let localOwnerID = try ctx.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
-            .first?.id
+    /// Rejects the backup if any child points at a parent that is neither in the backup nor on this device.
+    private func validateParents(_ b: BackupV1) throws {
+        let sessions = Set(b.competitive.sessions.map(\.id)).union(try all(Session.self, competitiveContext).map(\.id))
+        let games = Set(b.competitive.games.map(\.id)).union(try all(Game.self, competitiveContext).map(\.id))
+        let progress = Set(b.training.drillProgress.map(\.id))
+            .union(try all(DrillProgress.self, trainingContext).map(\.id))
+        func check(_ child: String, _ id: UUID, _ parent: UUID?, in known: Set<UUID>) throws {
+            if let parent, !known.contains(parent) {
+                throw BackupError.missingParent(child: child, childID: id, parentID: parent)
+            }
+        }
+        for g in b.competitive.games { try check("Game", g.id, g.sessionID, in: sessions) }
+        for s in b.competitive.shots { try check("Shot", s.id, s.gameID, in: games) }
+        for h in b.competitive.highlights { try check("Highlight", h.id, h.gameID, in: games) }
+        for a in b.training.attempts { try check("TrainingAttempt", a.id, a.progressID, in: progress) }
+    }
 
-        let profiles = try upsert(b.profiles, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
-            make: { PlayerProfile(id: $0.id, name: $0.name, avatarSymbol: $0.avatarSymbol, avatarColor: $0.avatarColor,
-                                  createdAt: $0.createdAt) },
+    /// Compensation: replace the training store with `snapshot` (taken before the import began).
+    private func restoreTraining(_ snapshot: BackupV1.Training) throws {
+        let t = trainingContext
+        for m in try all(TrainingAttempt.self, t) { t.delete(m) }
+        for m in try all(BiasRecord.self, t) { t.delete(m) }
+        for m in try all(DrillProgress.self, t) { t.delete(m) }
+        for m in try all(TrainingProfile.self, t) { t.delete(m) }
+        try t.save()
+        try mergeTraining(snapshot, into: t)
+        try t.save()
+    }
+
+    private func mergeCompetitive(_ b: BackupV1.Competitive, includeRecognition: Bool,
+                                  into ctx: ModelContext) throws {
+        var hasOwner = try ctx.fetchCount(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })) > 0
+
+        let profiles = try upsert(b.profiles, ctx, id: \PlayerProfile.id, dtoID: \BackupV1.Profile.id,
+            newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
+            make: { (d: BackupV1.Profile) -> PlayerProfile in
+                // isLocalOwner is device-local: only a fresh phone (no owner yet) adopts the backup's owner.
+                let owner = d.isLocalOwner && !hasOwner
+                if owner { hasOwner = true }
+                return PlayerProfile(id: d.id, name: d.name, avatarSymbol: d.avatarSymbol, avatarColor: d.avatarColor,
+                                     isLocalOwner: owner, createdAt: d.createdAt)
+            },
             apply: { d, m in
                 m.name = d.name; m.avatarSymbol = d.avatarSymbol; m.avatarColor = d.avatarColor
-                // One local owner per phone: another phone's owner arrives as a plain profile.
-                m.isLocalOwner = d.isLocalOwner && (localOwnerID == nil || localOwnerID == d.id)
-                m.isSessionGuest = false
-                m.createdAt = d.createdAt; m.updatedAt = d.updatedAt; m.skillModel = d.skillModel
+                m.createdAt = d.createdAt; m.skillModel = d.skillModel
+                m.updatedAt = d.updatedAt
             })
-        for d in b.profiles {
+        for d in b.profiles where includeRecognition {
             guard let r = d.recognition, let profile = profiles[d.id] else { continue }
             if let existing = profile.recognition {
                 guard isNewer(r.updatedAt, than: existing.updatedAt) else { continue }

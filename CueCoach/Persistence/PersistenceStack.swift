@@ -14,6 +14,11 @@ final class PersistenceStack {
         TrainingProfile.self, DrillProgress.self, TrainingAttempt.self, BiasRecord.self,
     ]
 
+    enum StoreKind: Sendable { case competitive, training }
+
+    /// Test seam: called right before each store is saved during an import; throwing simulates a save failure.
+    var beforeSave: ((StoreKind) throws -> Void)?
+
     let competitiveContainer: ModelContainer
     let trainingContainer: ModelContainer
     var competitiveContext: ModelContext { competitiveContainer.mainContext }
