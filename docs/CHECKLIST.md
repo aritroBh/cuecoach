@@ -64,4 +64,4 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Screens B: Session lobby (lineups D17, rule vote) + Post-shot card (D18) + Game review (timeline, diagram, win-prob, SotG, MVP) — .worktrees/screens-b (Sim G)
 - [~] Zero-tap automatic table locating (user at table: manual points mismatched) — AutoTableLocator, .worktrees/autocal (Claude; Codex review; workflow wf_ff3aa1d8)
 - [~] Core ML table-keypoint model: pipeline committed (6c16646); orchestrator installing + training YOLO26n-pose on MPS now
-- [~] AR: zero-tap build 5c0f529 INSTALLED (auto-lock ghost table, green/red rings, 3 lines, spin/power, 4K+thermal, LiDAR mesh, 106 tests); Codex review 6 MAJOR → fixing
+- [~] AR 9ad4e32 INSTALLED: zero-tap lock (floor/coffee-table planes rejected), relocalization re-check, shot events, Hungarian tracker, thermal step-down; 117 unit + 2 UI tests green. Codex re-review running; next: cue-stick aim, Kalman, buffer reuse, depth-based ball detection
