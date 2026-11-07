@@ -39,10 +39,22 @@ import Rules
         #expect(!LobbyWire.isAcceptable(.lineup(LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[sam], [sam], [sam]]))))
         let long = ShellPlayer(id: UUID(), name: String(repeating: "x", count: 200), symbol: "s", colorName: "c")
         #expect(!LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[long], [sam]]), sessionTag: 1)))
-        #expect(LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam], [sam]]), sessionTag: 1)))
-        #expect(!LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam], [sam]]), sessionTag: 0)))
+        let kim2 = ShellPlayer(id: UUID(), name: "Kim", symbol: "s", colorName: "c")
+        #expect(LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam], [kim2]]), sessionTag: 1)))
+        #expect(!LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam], [kim2]]), sessionTag: 0)))
         #expect(LobbyWire.isAcceptable(.hello(name: "Kim")))
         #expect(!LobbyWire.isAcceptable(.phones(Array(repeating: NearbyPhone(id: "p", name: nil), count: 20))))
+    }
+
+    @Test func startsMustHaveEqualTeamsAndUniquePlayers() {
+        let kim = ShellPlayer(id: UUID(), name: "Kim", symbol: "s", colorName: "c")
+        let bo = ShellPlayer(id: UUID(), name: "Bo", symbol: "s", colorName: "c")
+        #expect(!LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam, kim], [bo]]), sessionTag: 1)))
+        #expect(!LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam], [sam]]), sessionTag: 1)))
+        #expect(LobbyWire.isAcceptable(.start(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[sam], [kim]]), sessionTag: 1)))
+        #expect(!LobbyWire.isAcceptable(.lineup(LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[sam, nil], [nil]]))))
+        #expect(!LobbyWire.isAcceptable(.lineup(LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[sam], [sam]]))))
+        #expect(LobbyWire.isAcceptable(.lineup(LobbyLineup(ruleSet: .barEight, tableSize: .sevenFoot, seats: [[sam, nil], [nil, kim]]))))
     }
 
     @Test func bigPayloadsAreDroppedBeforeDecoding() {

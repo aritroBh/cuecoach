@@ -3,6 +3,8 @@ import SwiftUI
 /// Shell-wide flags (UI tests force Reduce Motion with `-appshell.reduceMotion`).
 extension EnvironmentValues {
     @Entry var shellForceReduceMotion: Bool = false
+    /// UI tests: no endless loops (sweeps, breathing), which keep XCUITest from ever seeing the app idle.
+    @Entry var shellNoLoops: Bool = false
 }
 
 /// Big calm choice tile: one glyph cluster + one word.

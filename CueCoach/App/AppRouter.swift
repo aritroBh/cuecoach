@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import Training
+import Engine
 
 enum ShellRoute: Hashable { case gameHub, newGame, joinNearby, training }
 
@@ -12,7 +13,8 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
     let mode: ShellLiveMode
     let game: GameSessionModel?
     let drill: DrillID?
-    /// Someone is aiming (Live's aim signal). No text may appear: the menu closes and can't open (SPEC §2).
+    /// From aim start until the balls settle (or the aim is cancelled). No text may appear: the menu
+    /// closes and can't open (SPEC §2).
     private(set) var isAiming = false
     private var menuOpen = false
 
@@ -32,9 +34,22 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
         game?.aimStarted()
     }
 
-    func aimEnded() {
+    /// Stroke taken: balls are moving, the menu stays closed until `ballsSettled`.
+    func aimEnded() { game?.aimEnded() }
+
+    /// Aim abandoned without a stroke.
+    func aimCancelled() {
         isAiming = false
         game?.aimEnded()
+    }
+
+    /// Balls at rest (Training, or a game shot without a rating yet).
+    func ballsSettled() { isAiming = false }
+
+    /// A game shot settled and was rated.
+    func settled(rating: DecisionRating, turnPasses: Bool) {
+        isAiming = false
+        game?.shotSettled(rating: rating, turnPasses: turnPasses)
     }
 }
 

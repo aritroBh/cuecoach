@@ -9,6 +9,7 @@ struct GameSetupView: View {
     @State private var shake = 0
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.shellForceReduceMotion) private var forced
+    @Environment(\.shellNoLoops) private var noLoops
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var columns: [GridItem] {
@@ -105,7 +106,7 @@ struct GameSetupView: View {
                     }
                 }
             }
-            SeatOrderRow(model: model, shake: shake, reduceMotion: reduce || forced) { seatSheet = $0 }
+            SeatOrderRow(model: model, shake: shake, reduceMotion: reduce || forced || noLoops) { seatSheet = $0 }
         }
     }
 

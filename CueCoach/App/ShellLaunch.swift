@@ -35,6 +35,7 @@ enum ShellLaunch {
                                        : fakeMesh(value("fakeMesh", args)),
                                    measurement: StoredTableMeasurement(defaults: defaults), defaults: defaults)
         env.reduceMotion = args.contains("-appshell.reduceMotion")
+        env.noLoops = !args.contains("-appshell.realMesh")
         if !args.contains("-appshell.realMesh") { env.meshFactory = nil }
         if let name = value("name", args) { _ = try? env.owners.createOwner(name: name, symbol: "person.fill", colorName: "blue") }
         return env

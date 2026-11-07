@@ -19,6 +19,7 @@ struct StoredTableMeasurement: TableMeasurementSource {
     let measurement: any TableMeasurementSource
     let defaults: UserDefaults
     var reduceMotion = false
+    var noLoops = false
     var meshFactory: ((UInt16) -> any GameMeshLink)? = { MeshGameLink(sessionTag: $0) }
 
     init(roster: any RosterStore, owners: any OwnerStore, settings: any SettingsStore, mesh: any GameLobbyMesh,

@@ -6,7 +6,9 @@ struct JoinNearbyView: View {
     @State var model: JoinNearbyModel
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.shellForceReduceMotion) private var forced
+    @Environment(\.shellNoLoops) private var noLoops
     private var reduceMotion: Bool { reduce || forced }
+    private var loops: Bool { !reduceMotion && !noLoops }
 
     var body: some View {
         ZStack {
@@ -46,7 +48,7 @@ struct JoinNearbyView: View {
         case .searching:
             if model.games.isEmpty {
                 StatusGlyph(symbol: "dot.radiowaves.left.and.right", tint: SBColor.teamA, title: "Looking",
-                            animate: !reduceMotion, id: "join.searching")
+                            animate: loops, id: "join.searching")
             } else {
                 ForEach(model.games) { g in
                     GameRow(game: g) { model.join(g) }
@@ -60,7 +62,7 @@ struct JoinNearbyView: View {
             GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(SBColor.legal))) {}
                 .disabled(true)
             if let l = model.lineup { LineupStrip(lineup: l) }
-            StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: !reduceMotion, id: "join.waiting")
+            StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
             cancelButton
         case .full:
             StatusGlyph(symbol: "lock.fill", tint: SBColor.caution, title: "Game full", animate: false, id: "join.full")

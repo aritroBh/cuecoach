@@ -26,6 +26,7 @@ struct AppShellRoot: View {
                 .environment(\.saForceReduceMotion, env.reduceMotion)
         }
         .environment(\.shellForceReduceMotion, env.reduceMotion)
+        .environment(\.shellNoLoops, env.noLoops)
         .environment(\.sbForceReduceMotion, env.reduceMotion)
         .preferredColorScheme(.dark)
         .onAppear { router.meshFactory = env.meshFactory }

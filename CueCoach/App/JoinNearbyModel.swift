@@ -19,6 +19,8 @@ final class JoinNearbyModel {
     private(set) var lineup: LobbyLineup?
     @ObservationIgnored private let mesh: any GameLobbyMesh
     @ObservationIgnored var onStart: ((GameConfig) -> Void)?
+    /// A duplicate start message must not open a second Live.
+    @ObservationIgnored private var didStart = false
 
     init(mesh: any GameLobbyMesh) { self.mesh = mesh }
 
@@ -35,6 +37,7 @@ final class JoinNearbyModel {
     }
 
     func join(_ g: NearbyGame) {
+        didStart = false
         state = .joining(g)
         mesh.join(gameID: g.id)
     }
@@ -66,7 +69,9 @@ final class JoinNearbyModel {
             default: break
             }
         case .started(let id, let config):
-            if case .joined(let g) = state, g.id == id { onStart?(config) }
+            guard !didStart, case .joined(let g) = state, g.id == id else { return }
+            didStart = true
+            onStart?(config)
         case .unavailable:
             state = .unavailable
         case .lineupChanged(let id, let l):

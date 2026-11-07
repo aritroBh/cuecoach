@@ -38,9 +38,15 @@ enum LobbyWire {
         case .hello(let name): return name.count <= maxNameLength
         case .welcome, .full: return true
         case .lineup(let l):
-            return l.seats.count == 2 && l.seats.allSatisfy { (1...4).contains($0.count) && $0.allSatisfy(ok) }
+            let ids = l.seats.flatMap { $0 }.compactMap { $0?.id }
+            return l.seats.count == 2 && l.seats[0].count == l.seats[1].count
+                && l.seats.allSatisfy { (1...4).contains($0.count) && $0.allSatisfy(ok) }
+                && Set(ids).count == ids.count
         case .start(let c, let tag):
-            return tag != 0 && c.teams.count == 2 && c.teams.allSatisfy { (1...4).contains($0.count) && $0.allSatisfy(ok) }
+            let ids = c.teams.flatMap { $0 }.map(\.id)
+            return tag != 0 && c.teams.count == 2 && c.teams[0].count == c.teams[1].count
+                && c.teams.allSatisfy { (1...4).contains($0.count) && $0.allSatisfy(ok) }
+                && Set(ids).count == ids.count
         case .phones(let p):
             return p.count <= maxJoiners && p.allSatisfy { ($0.name?.count ?? 0) <= maxNameLength }
         }
@@ -329,7 +335,8 @@ extension MPCGameLobby: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MC
     }
 
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: any Error) {
-        Task { @MainActor in self.failed() }
+        let id = ObjectIdentifier(advertiser)
+        Task { @MainActor in if self.isCurrent(advertiser: id) { self.failed() } }
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID,
@@ -346,6 +353,7 @@ extension MPCGameLobby: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MC
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: any Error) {
-        Task { @MainActor in self.failed() }
+        let id = ObjectIdentifier(browser)
+        Task { @MainActor in if self.isCurrent(browser: id) { self.failed() } }
     }
 }

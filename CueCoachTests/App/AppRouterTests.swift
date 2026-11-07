@@ -156,8 +156,23 @@ import Training
         #expect(!s.isMenuOpen)            // an open menu closes the moment aiming starts (SPEC §2)
         s.isMenuOpen = true
         #expect(!s.isMenuOpen)            // and can't reopen until the shot ends
-        s.aimEnded()
+        s.aimEnded()                      // stroke taken: balls still rolling
+        #expect(!s.menuAvailable)
+        s.ballsSettled()
         #expect(s.menuAvailable)
+        s.aimStarted()
+        s.aimCancelled()                  // no stroke: nothing will settle
+        #expect(s.menuAvailable)
+    }
+
+    @Test func settledRatedShotReopensTheMenuAndRecords() {
+        let r = AppRouter()
+        r.startGame(config)
+        guard case .live(let s)? = r.stage, let g = s.game else { Issue.record("no live"); return }
+        s.aimStarted(); s.aimEnded()
+        s.settled(rating: .best, turnPasses: false)
+        #expect(s.menuAvailable)
+        #expect(g.shots.count == 1)
     }
 
     @Test func aimingAlsoSilencesTheBadge() {

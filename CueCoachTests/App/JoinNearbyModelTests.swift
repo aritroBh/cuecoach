@@ -88,6 +88,18 @@ import Rules
         #expect(started == config)
     }
 
+    @Test func duplicateStartFiresOnce() {
+        let (m, mesh) = make()
+        var starts = 0
+        m.onStart = { _ in starts += 1 }
+        m.appear()
+        m.join(game)
+        mesh.emit(.joined(gameID: "g1"))
+        mesh.emit(.started(gameID: "g1", config))
+        mesh.emit(.started(gameID: "g1", config))
+        #expect(starts == 1)
+    }
+
     @Test func startOfAGameWeDidNotJoinIsIgnored() {
         let (m, mesh) = make()
         var started: GameConfig?
