@@ -121,7 +121,7 @@ extension PersistenceStack {
             try c.save()
         } catch {
             c.rollback()
-            try restoreTraining(trainingSnapshot)
+            try compensateTraining(before: trainingSnapshot, imported: backup.training)
             throw error
         }
     }
@@ -143,16 +143,35 @@ extension PersistenceStack {
         for a in b.training.attempts { try check("TrainingAttempt", a.id, a.progressID, in: progress) }
     }
 
-    /// Compensation: replace the training store with `snapshot` (taken before the import began).
-    private func restoreTraining(_ snapshot: BackupV1.Training) throws {
+    /// Compensation after a failed competitive save, non-destructive and in one save:
+    /// rows the import updated get their pre-import values back (`before` holds them), and only the rows
+    /// the import inserted (ids absent from `before`) are deleted. Pre-existing rows are never deleted;
+    /// if this save fails too, the training store keeps the imported state (nothing lost).
+    private func compensateTraining(before: BackupV1.Training, imported: BackupV1.Training) throws {
         let t = trainingContext
-        for m in try all(TrainingAttempt.self, t) { t.delete(m) }
-        for m in try all(BiasRecord.self, t) { t.delete(m) }
-        for m in try all(DrillProgress.self, t) { t.delete(m) }
-        for m in try all(TrainingProfile.self, t) { t.delete(m) }
-        try t.save()
-        try mergeTraining(snapshot, into: t)
-        try t.save()
+        let importedIDs = Set(imported.profiles.map(\.id)).union(imported.drillProgress.map(\.id))
+            .union(imported.attempts.map(\.id)).union(imported.biases.map(\.id))
+        let beforeIDs = Set(before.profiles.map(\.id)).union(before.drillProgress.map(\.id))
+            .union(before.attempts.map(\.id)).union(before.biases.map(\.id))
+        let inserted = importedIDs.subtracting(beforeIDs)
+        var old = before
+        old.profiles.removeAll { !importedIDs.contains($0.id) }
+        old.drillProgress.removeAll { !importedIDs.contains($0.id) }
+        old.attempts.removeAll { !importedIDs.contains($0.id) }
+        old.biases.removeAll { !importedIDs.contains($0.id) }
+        do {
+            // Restore first (re-parents attempts back), then delete inserted rows so cascades can't reach old rows.
+            try mergeTraining(old, into: t, force: true)
+            for m in try all(TrainingAttempt.self, t) where inserted.contains(m.id) { t.delete(m) }
+            for m in try all(BiasRecord.self, t) where inserted.contains(m.id) { t.delete(m) }
+            for m in try all(DrillProgress.self, t) where inserted.contains(m.id) { t.delete(m) }
+            for m in try all(TrainingProfile.self, t) where inserted.contains(m.id) { t.delete(m) }
+            try beforeSave?(.trainingCompensation)
+            try t.save()
+        } catch {
+            t.rollback()
+            throw error
+        }
     }
 
     private func mergeCompetitive(_ b: BackupV1.Competitive, includeRecognition: Bool,
@@ -175,6 +194,8 @@ extension PersistenceStack {
             })
         for d in b.profiles where includeRecognition {
             guard let r = d.recognition, let profile = profiles[d.id] else { continue }
+            let profileStamp = profile.updatedAt
+            defer { profile.updatedAt = profileStamp }   // linking embeddings isn't a profile edit
             if let existing = profile.recognition {
                 guard isNewer(r.updatedAt, than: existing.updatedAt) else { continue }
                 if existing.id != r.id { profile.recognition = nil; ctx.delete(existing) }
@@ -253,12 +274,12 @@ extension PersistenceStack {
             })
     }
 
-    private func mergeTraining(_ b: BackupV1.Training, into ctx: ModelContext) throws {
-        _ = try upsert(b.profiles, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
+    private func mergeTraining(_ b: BackupV1.Training, into ctx: ModelContext, force: Bool = false) throws {
+        _ = try upsert(b.profiles, ctx, id: \.id, dtoID: \.id, newer: { force || isNewer($0.updatedAt, than: $1.updatedAt) },
             make: { TrainingProfile(id: $0.id, playerID: $0.playerID, createdAt: $0.createdAt) },
             apply: { d, m in m.playerID = d.playerID; m.createdAt = d.createdAt; m.updatedAt = d.updatedAt })
 
-        let progress = try upsert(b.drillProgress, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
+        let progress = try upsert(b.drillProgress, ctx, id: \.id, dtoID: \.id, newer: { force || isNewer($0.updatedAt, than: $1.updatedAt) },
             make: { DrillProgress(id: $0.id, playerID: $0.playerID, drill: $0.drill, level: $0.level) },
             apply: { d, m in
                 m.playerID = d.playerID; m.drill = d.drill
@@ -266,7 +287,7 @@ extension PersistenceStack {
                 m.recentResults = d.recentResults; m.levelHistory = d.levelHistory; m.updatedAt = d.updatedAt
             })
 
-        _ = try upsert(b.attempts, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
+        _ = try upsert(b.attempts, ctx, id: \.id, dtoID: \.id, newer: { force || isNewer($0.updatedAt, than: $1.updatedAt) },
             make: { TrainingAttempt(id: $0.id, at: $0.at, setup: $0.setup, result: $0.result, made: $0.made,
                                     features: $0.features) },
             apply: { d, m in
@@ -275,7 +296,7 @@ extension PersistenceStack {
                 m.updatedAt = d.updatedAt
             })
 
-        _ = try upsert(b.biases, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
+        _ = try upsert(b.biases, ctx, id: \.id, dtoID: \.id, newer: { force || isNewer($0.updatedAt, than: $1.updatedAt) },
             make: { BiasRecord(id: $0.id, playerID: $0.playerID, drill: $0.drill, axis: $0.axis, sign: $0.sign,
                                attemptsWindow: $0.attemptsWindow, detectedAt: $0.detectedAt) },
             apply: { d, m in

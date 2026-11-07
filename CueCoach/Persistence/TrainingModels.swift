@@ -39,8 +39,9 @@ final class DrillProgress {
     var recentResults: [Bool] { get { recentResultsValue } set { recentResultsValue = newValue; updatedAt = .now } }
     private var levelHistoryData: Data
     var updatedAt: Date
-    @Relationship(deleteRule: .cascade, inverse: \TrainingAttempt.progress)
-    var attempts: [TrainingAttempt] = []
+    @Relationship(deleteRule: .cascade, inverse: \TrainingAttempt.progressLink)
+    fileprivate var attemptsLink: [TrainingAttempt] = []
+    var attempts: [TrainingAttempt] { get { attemptsLink } set { attemptsLink = newValue; updatedAt = .now } }
 
     var levelHistory: [LevelChange] {
         get { Blob.decode([LevelChange].self, levelHistoryData, fallback: []) }
@@ -64,7 +65,8 @@ final class DrillProgress {
 @Model
 final class TrainingAttempt {
     @Attribute(.unique) var id: UUID
-    var progress: DrillProgress?
+    fileprivate var progressLink: DrillProgress?
+    var progress: DrillProgress? { get { progressLink } set { progressLink = newValue; updatedAt = .now } }
     private var atValue: Date
     var at: Date { get { atValue } set { atValue = newValue; updatedAt = .now } }
     private var setupData: Data

@@ -24,8 +24,9 @@ final class PlayerProfile {
     var createdAt: Date { get { createdAtValue } set { createdAtValue = newValue; updatedAt = .now } }
     var updatedAt: Date
     private var skillModelData: Data
-    @Relationship(deleteRule: .cascade, inverse: \RecognitionData.profile)
-    var recognition: RecognitionData?
+    @Relationship(deleteRule: .cascade, inverse: \RecognitionData.profileLink)
+    fileprivate var recognitionLink: RecognitionData?
+    var recognition: RecognitionData? { get { recognitionLink } set { recognitionLink = newValue; updatedAt = .now } }
 
     var skillModel: StoredSkillModel {
         get { Blob.decode(StoredSkillModel.self, skillModelData, fallback: .prior) }
@@ -62,7 +63,8 @@ final class RecognitionData {
     private var versionValue: Int
     var version: Int { get { versionValue } set { versionValue = newValue; updatedAt = .now } }
     var updatedAt: Date
-    var profile: PlayerProfile?
+    fileprivate var profileLink: PlayerProfile?
+    var profile: PlayerProfile? { get { profileLink } set { profileLink = newValue; updatedAt = .now } }
 
     init(id: UUID = UUID(), faceEmbedding: Data?, appearanceEmbedding: Data?, optedInAt: Date,
          version: Int, updatedAt: Date? = nil) {
@@ -91,8 +93,9 @@ final class Session {
     var peerDeviceNames: [String] { get { peerDeviceNamesValue } set { peerDeviceNamesValue = newValue; updatedAt = .now } }
     private var voteTallyData: Data
     var updatedAt: Date
-    @Relationship(deleteRule: .cascade, inverse: \Game.session)
-    var games: [Game] = []
+    @Relationship(deleteRule: .cascade, inverse: \Game.sessionLink)
+    fileprivate var gamesLink: [Game] = []
+    var games: [Game] { get { gamesLink } set { gamesLink = newValue; updatedAt = .now } }
 
     var ruleSet: RuleSetID {
         get { RuleSetID(rawValue: ruleSetRaw) ?? .default }
@@ -131,7 +134,8 @@ final class Session {
 @Model
 final class Game {
     @Attribute(.unique) var id: UUID
-    var session: Session?
+    fileprivate var sessionLink: Session?
+    var session: Session? { get { sessionLink } set { sessionLink = newValue; updatedAt = .now } }
     private var indexValue: Int
     var index: Int { get { indexValue } set { indexValue = newValue; updatedAt = .now } }
     private var ruleSetRaw: String
@@ -145,10 +149,12 @@ final class Game {
     private var endedAtValue: Date?
     var endedAt: Date? { get { endedAtValue } set { endedAtValue = newValue; updatedAt = .now } }
     var updatedAt: Date
-    @Relationship(deleteRule: .cascade, inverse: \Shot.game)
-    var shots: [Shot] = []
-    @Relationship(deleteRule: .cascade, inverse: \Highlight.game)
-    var highlights: [Highlight] = []
+    @Relationship(deleteRule: .cascade, inverse: \Shot.gameLink)
+    fileprivate var shotsLink: [Shot] = []
+    var shots: [Shot] { get { shotsLink } set { shotsLink = newValue; updatedAt = .now } }
+    @Relationship(deleteRule: .cascade, inverse: \Highlight.gameLink)
+    fileprivate var highlightsLink: [Highlight] = []
+    var highlights: [Highlight] { get { highlightsLink } set { highlightsLink = newValue; updatedAt = .now } }
 
     var ruleSet: RuleSetID {
         get { RuleSetID(rawValue: ruleSetRaw) ?? .default }
@@ -178,7 +184,8 @@ final class Game {
 @Model
 final class Shot {
     @Attribute(.unique) var id: UUID
-    var game: Game?
+    fileprivate var gameLink: Game?
+    var game: Game? { get { gameLink } set { gameLink = newValue; updatedAt = .now } }
     private var indexValue: Int
     var index: Int { get { indexValue } set { indexValue = newValue; updatedAt = .now } }
     private var shooterIDValue: UUID
@@ -335,7 +342,8 @@ final class ArchetypeSnapshot {
 @Model
 final class Highlight {
     @Attribute(.unique) var id: UUID
-    var game: Game?
+    fileprivate var gameLink: Game?
+    var game: Game? { get { gameLink } set { gameLink = newValue; updatedAt = .now } }
     private var shotIDValue: UUID
     var shotID: UUID { get { shotIDValue } set { shotIDValue = newValue; updatedAt = .now } }
     private var kindRaw: String

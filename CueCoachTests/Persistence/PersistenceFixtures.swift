@@ -45,6 +45,7 @@ enum Fixture {
     static func populateCompetitive(_ ctx: ModelContext) -> Session {
         let owner = owner()
         owner.recognition = recognition()
+        owner.updatedAt = t0   // linking bumps the stamp; keep fixture rows dated t0
         ctx.insert(owner)
         let session = Session(startedAt: t0, ruleSet: .wpaNine, format: .oneVsOne, tableSize: .eightFoot,
                               peerDeviceNames: ["Pixel"], voteTally: [.wpaNine: 2, .barEight: 1])
