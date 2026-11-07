@@ -16,3 +16,4 @@
 | D12 | 2026-11-06 | Table size: use every iPhone sensor (LiDAR depth/ARKit planes, known 57.15 mm ball diameter as a scale reference, pocket spacing) to measure the playing surface; the measured size snaps to a preset or is used directly. | User |
 | D13 | 2026-11-06 | 9-ball: anti-soft-break (3-ball rule) ON by default; a 9 on the break wins even on a soft break, but not with a foul/scratch (9 spotted, BIH anywhere). Combos/caroms on the 9 win. | User |
 | D14 | 2026-11-06 | User approved remaining picks (bar rules, SCHEMA, INTERFACES, physics tolerance D10, debug HUD D9). Table default 7 ft until LiDAR measures. | User ("yeah") |
+| D15 | 2026-11-06 | Bar 8-ball: any foul while pocketing the 8 loses; illegal break + scratch = re-rack, same breaker (B2); both groups made with unknown drop order on an open table = table stays open, shooter continues. | User |

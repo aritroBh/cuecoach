@@ -20,10 +20,11 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 
 ## Phase 1 — Core (branch phase/1-core; worktrees .worktrees/{rules,physics,persistence})
 Workers running: Rules (Claude) · Physics (Codex) · Persistence (Claude). Virtual table starts after Rules + Physics merge.
-- [~] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
-- [ ] Rules: bar 8-ball tests + impl
-- [ ] Rules: WPA 8-ball tests + impl
-- [ ] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
+- [x] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
+- [x] Rules: bar 8-ball tests + impl
+- [x] Rules: WPA 8-ball tests + impl
+- [x] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
+- [~] Rules: Codex supervisor review (182 tests green, 4 commits on wt/rules); interpretations approved (D15)
 - [~] Physics: pooltool fixture generator (500 shots)
 - [ ] Physics: phenomenon unit tests + impl
 - [ ] Physics: fixture suite within tolerance
