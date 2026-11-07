@@ -296,3 +296,119 @@ struct ShotFeaturesCodingTests {
         #expect(try JSONDecoder().decode(ShotTraceSummary.self, from: JSONEncoder().encode(t)) == t)
     }
 }
+
+@Suite("ShotFeatures — missed banks and combos are classified like made ones (supervisor MAJOR 1)")
+struct MissedBankComboTests {
+    private let cue = cuePosition(object: obj, pocket: footRight, degrees: 20, distance: 0.4)
+    /// Ball frozen to the middle of the head cushion with the cue ball straight in front: no pocket is
+    /// reachable directly (every direct cut ≥ 90°), so any attempt on it is a bank.
+    private let frozen = Vec2(R + 0.0005, spec7.width / 2)
+    private let frontCue = Vec2(0.6, spec7.width / 2)
+
+    @Test func precondition_frozenBallHasNoDirectPot() {
+        for p in Pocket.allCases {
+            #expect(ShotFeatures.cutAngleDegrees(cue: frontCue, object: frozen, target: spec7.pocketCenter(p)) >= 90)
+        }
+    }
+
+    @Test func missedCalledBank_isBank() {
+        // Supervisor probe: intended pocket is behind the ball → only reachable off a cushion.
+        let pre = table([0: cue, 1: obj])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1))])
+        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(1), pocket: .headRight))
+        #expect(f.kind == .bank)
+        #expect(f.pocketType == .corner)
+    }
+
+    @Test func madeAndMissedCalledBankGetTheSameFeatures() {
+        let pre = table([0: cue, 1: obj])
+        let intent = ShotIntent(target: b(1), pocket: .headRight)
+        let made = ShotFeatures.extract(pre: pre, post: afterPocketing(pre, [1]),
+                                        trace: ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1)), .pocket(b(1), .headRight)]),
+                                        intent: intent)
+        let missed = ShotFeatures.extract(pre: pre, post: pre,
+                                          trace: ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1))]), intent: intent)
+        #expect(made == missed)
+    }
+
+    @Test func intentFlagMarksBank() {
+        let pre = table([0: cue, 1: obj])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1))])
+        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t,
+                                     intent: ShotIntent(target: b(1), pocket: .footRight, isBank: true))
+        #expect(f.kind == .bank)
+    }
+
+    @Test func missedDirectShotOffTheRail_isNotBank() {
+        // Direct 20° cut that misses and hits a cushion: still a plain attempt.
+        let pre = table([0: cue, 1: obj])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1))])
+        #expect(ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(1), pocket: .footRight)).kind == .plain)
+        #expect(ShotFeatures.extract(pre: pre, post: pre, trace: t).kind == .plain)
+    }
+
+    @Test func missedBankWithoutIntent_isBankWhenNoDirectPotExists() {
+        let pre = table([0: frontCue, 1: frozen])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1))])
+        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t)
+        #expect(f.kind == .bank)
+        // Cut is measured to the mirrored pocket, not the impossible direct line.
+        #expect(f.cutBucket != .c60plus)
+    }
+
+    @Test func bankCutUsesMirroredPocket() {
+        // Straight back off the head cushion into a foot corner: a modest bank cut, not ≥ 60°.
+        let pre = table([0: frontCue, 1: frozen])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .cushion(b(1)), .pocket(b(1), .footLeft)])
+        let f = ShotFeatures.extract(pre: pre, post: afterPocketing(pre, [1]), trace: t)
+        #expect(f.kind == .bank)
+        #expect(f.cutBucket == .c15to30 || f.cutBucket == .c0to15)
+        #expect(f.distanceBucket == .long)
+    }
+
+    @Test func missedComboWithIntent_isCombo() {
+        let o2 = obj + (footRight - obj).normalized * 0.15
+        let pre = table([0: cue, 1: obj, 2: o2])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .ballBall(b(1), b(2))])
+        #expect(ShotFeatures.extract(pre: pre, post: pre, trace: t, intent: ShotIntent(target: b(2))).kind == .combo)
+    }
+
+    @Test func missedComboWithoutIntent_isComboWhenFirstBallHasNoDirectPot() {
+        let pre = table([0: frontCue, 1: frozen, 2: Vec2(0.4, spec7.width / 2 + 0.3)])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .ballBall(b(1), b(2)), .cushion(b(2))])
+        #expect(ShotFeatures.extract(pre: pre, post: pre, trace: t).kind == .combo)
+    }
+
+    @Test func missedKissWithoutIntent_isPlainWhenFirstBallHadADirectPot() {
+        // Indistinguishable from a missed direct shot that kissed: classified as the direct attempt.
+        let o2 = obj + (footRight - obj).normalized * 0.15
+        let pre = table([0: cue, 1: obj, 2: o2])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .ballBall(b(1), b(2))])
+        let f = ShotFeatures.extract(pre: pre, post: pre, trace: t)
+        #expect(f.kind == .plain)
+        #expect(f.cutBucket == .c15to30)
+    }
+
+    @Test func firstContactPocketedWithIncidentalKiss_isPlainDirectPot() {
+        // Supervisor MINOR: ball 1 dropped directly; ball 5 it kissed also fell. Target stays ball 1.
+        let pre = table([0: cue, 1: obj, 5: Vec2(0.4, 0.3)])
+        let t = ShotTraceSummary(events: [.ballBall(.cue, b(1)), .ballBall(b(1), b(5)),
+                                          .pocket(b(1), .footRight), .pocket(b(5), .headLeft)])
+        let f = ShotFeatures.extract(pre: pre, post: afterPocketing(pre, [1, 5]), trace: t)
+        #expect(f.kind == .plain)
+        #expect(f.cutBucket == .c15to30)
+        #expect(f.pocketType == .corner)
+    }
+}
+
+@Suite("ShotIntent — coding")
+struct ShotIntentCodingTests {
+    @Test func decodesWithoutIsBank() throws {
+        let i = try JSONDecoder().decode(ShotIntent.self, from: Data(#"{"pocket":"footRight","isSafety":false}"#.utf8))
+        #expect(i == ShotIntent(pocket: .footRight))
+    }
+    @Test func roundTripsIsBank() throws {
+        let i = ShotIntent(target: b(4), pocket: .sideLeft, isBank: true)
+        #expect(try JSONDecoder().decode(ShotIntent.self, from: JSONEncoder().encode(i)) == i)
+    }
+}

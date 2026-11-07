@@ -88,12 +88,24 @@ public struct ShotIntent: Hashable, Codable, Sendable {
     public var target: BallID?
     public var pocket: Pocket?
     public var isSafety: Bool
-    public init(target: BallID? = nil, pocket: Pocket? = nil, isSafety: Bool = false) {
+    /// The intended shot is a bank (e.g. the engine's chosen candidate banks the target).
+    public var isBank: Bool
+    public init(target: BallID? = nil, pocket: Pocket? = nil, isSafety: Bool = false, isBank: Bool = false) {
         self.target = target
         self.pocket = pocket
         self.isSafety = isSafety
+        self.isBank = isBank
     }
     public static let unknown = ShotIntent()
+
+    private enum CodingKeys: String, CodingKey { case target, pocket, isSafety, isBank }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        target = try c.decodeIfPresent(BallID.self, forKey: .target)
+        pocket = try c.decodeIfPresent(Pocket.self, forKey: .pocket)
+        isSafety = try c.decodeIfPresent(Bool.self, forKey: .isSafety) ?? false
+        isBank = try c.decodeIfPresent(Bool.self, forKey: .isBank) ?? false
+    }
 }
 
 public struct ShotFeatures: Hashable, Codable, Sendable {
@@ -121,11 +133,26 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
         return acos(c) * 180 / .pi
     }
 
+    /// A direct pot needs a cut below this (physical limit: at ≥ 90° the cue ball cannot drive the object ball
+    /// toward the pocket). Not a tunable house threshold.
+    public static let directPotLimitDegrees = 90.0
+
     /// Classifies one competitive shot. Total: never traps; unknowns fall back to `neutral` fields.
+    ///
+    /// Bank and combo are decided from what was *attempted*, so a miss is classified like the same shot made
+    /// (otherwise per-kind pot % only ever sees successes):
+    /// - Combo: intended target ≠ first contact; without intent, a pocketed ball (other than the first-contact
+    ///   ball) that was struck by an object ball, or a first-contact ball with no direct pot whose first
+    ///   post-contact event is hitting another object ball.
+    /// - Bank: `intent.isBank`; or the target hit a cushion after contact and then dropped; or the intended pocket
+    ///   (any pocket, without one) has no direct pot and — for an uncalled miss — the target's first
+    ///   post-contact event was a cushion.
+    /// Without intent, a missed bank/combo where a direct pot also existed is indistinguishable from a missed
+    /// direct shot and is classified as the direct attempt.
     /// - Parameters:
     ///   - pre: table before the stroke; `post`: table at rest after it.
     ///   - trace: ordered events (physics or tracker).
-    ///   - intent: called ball/pocket/safety when known; otherwise inferred from the trace and geometry.
+    ///   - intent: called ball/pocket/safety/bank when known; otherwise inferred from the trace and geometry.
     public static func extract(pre: TableState, post: TableState, trace: ShotTraceSummary,
                                intent: ShotIntent = .unknown, thresholds: FeatureThresholds = .standard) -> ShotFeatures {
         guard let cue = pre.balls[.cue]?.position else { return neutral }
@@ -140,6 +167,7 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
             guard case .ballBall(let a, let b) = events[i] else { return nil }
             return a.isCue ? b : a
         }
+        let afterContact = firstContactIndex.map { events[($0 + 1)...] } ?? events[events.endIndex...]
         let pocketOf: [BallID: Pocket] = events.reduce(into: [:]) { m, e in
             if case .pocket(let ball, let p) = e, m[ball] == nil { m[ball] = p }
         }
@@ -152,14 +180,36 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
                 if case .ballBall(let a, let b) = $0 { !a.isCue && !b.isCue && (a == ball || b == ball) } else { false }
             }
         }
+        /// First thing `ball` did after the cue ball's first contact: a cushion, or the object ball it hit.
+        enum Next { case cushion, ball(BallID) }
+        func next(_ ball: BallID) -> Next? {
+            for e in afterContact {
+                switch e {
+                case .cushion(let x) where x == ball: return .cushion
+                case .ballBall(let a, let b) where !a.isCue && !b.isCue && (a == ball || b == ball): return .ball(a == ball ? b : a)
+                default: continue
+                }
+            }
+            return nil
+        }
+        func directCut(_ pos: Vec2, from: Vec2, _ p: Pocket) -> Double {
+            cutAngleDegrees(cue: from, object: pos, target: spec.pocketCenter(p))
+        }
+        func hasDirectPot(_ pos: Vec2, from: Vec2) -> Bool {
+            spec.pockets.contains { directCut(pos, from: from, $0) < directPotLimitDegrees }
+        }
 
-        // Combo inferred: some pocketed object ball ≠ first contact that was struck by another object ball first.
+        // Combo inferred (no intent).
         var inferredCombo: BallID?
-        if intent.target == nil, let f = firstContact {
+        if intent.target == nil, let f = firstContact, pocketOf[f] == nil {
             let candidates = pocketOf.keys.filter { !$0.isCue && $0 != f }.sorted()
             inferredCombo = candidates.first { ball in
                 guard let hit = objectHitIndex(ball) else { return false }
                 return hit < (pocketEventIndex(ball) ?? Int.max)
+            }
+            if inferredCombo == nil, let fp = pre.balls[f]?.position, !hasDirectPot(fp, from: cue),
+               case .ball(let x) = next(f), !x.isCue {
+                inferredCombo = x
             }
         }
 
@@ -168,20 +218,42 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
         guard let targetPos = pre.balls[target]?.position else { return neutral }
         let isCombo = firstContact.map { $0 != target } ?? false
         let firstPos = firstContact.flatMap { pre.balls[$0]?.position }
+        /// Where the target is struck from: the cue ball, or the first ball for a combo.
+        let striker = isCombo ? (firstPos ?? cue) : cue
 
-        // Pocket: called/intended → observed → easiest by geometry.
+        // Bank attempt (see doc comment).
+        let observedBank = isBank(target, events: events, contact: firstContactIndex, pocketIndex: pocketEventIndex(target))
+        let geometricBank: Bool
+        if let p = intent.pocket {
+            geometricBank = directCut(targetPos, from: striker, p) >= directPotLimitDegrees
+        } else if pocketOf[target] == nil {
+            geometricBank = !hasDirectPot(targetPos, from: striker) && { if case .cushion = next(target) { true } else { false } }()
+        } else {
+            geometricBank = false
+        }
+        let isBankShot = intent.isBank || observedBank || geometricBank
+
+        // Pocket: called/intended → observed → easiest by geometry (banks: easiest mirrored pocket).
         let pocket: Pocket = intent.pocket ?? pocketOf[target] ?? spec.pockets.min { p, q in
-            cutAngleDegrees(cue: isCombo ? (firstPos ?? cue) : cue, object: targetPos, target: spec.pocketCenter(p))
-                < cutAngleDegrees(cue: isCombo ? (firstPos ?? cue) : cue, object: targetPos, target: spec.pocketCenter(q))
+            if isBankShot && !isCombo {
+                return bankCut(cue: striker, object: targetPos, pocket: p, spec).cut
+                    < bankCut(cue: striker, object: targetPos, pocket: q, spec).cut
+            }
+            return directCut(targetPos, from: striker, p) < directCut(targetPos, from: striker, q)
         }!
         let pocketPos = spec.pocketCenter(pocket)
 
-        // Cut and travel: for a combo, the cut is on the first ball toward the target ball.
+        // Cut and travel: for a combo, the cut is on the first ball toward the target ball; for a bank, toward
+        // the pocket's mirror image across the best cushion (unfolded path).
         let cut: Double
         let path: Double
         if isCombo, let fp = firstPos {
             cut = cutAngleDegrees(cue: cue, object: fp, target: targetPos)
             path = ghost(fp, toward: targetPos).distance(to: cue) + fp.distance(to: targetPos) + targetPos.distance(to: pocketPos)
+        } else if isBankShot {
+            let m = bankCut(cue: cue, object: targetPos, pocket: pocket, spec)
+            cut = m.cut
+            path = ghost(targetPos, toward: m.image).distance(to: cue) + targetPos.distance(to: m.image)
         } else {
             cut = cutAngleDegrees(cue: cue, object: targetPos, target: pocketPos)
             path = ghost(targetPos, toward: pocketPos).distance(to: cue) + targetPos.distance(to: pocketPos)
@@ -198,7 +270,7 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
             kind = .kick
         } else if isCombo {
             kind = .combo
-        } else if isBank(target, events: events, contact: firstContactIndex, pocketIndex: pocketEventIndex(target)) {
+        } else if isBankShot {
             kind = .bank
         } else if distanceToNearestCushion(targetPos, spec) <= TableSpec.ballRadius + thresholds.railGap {
             kind = .rail
@@ -209,6 +281,16 @@ public struct ShotFeatures: Hashable, Codable, Sendable {
         return ShotFeatures(cutBucket: CutBucket(degrees: cut),
                             distanceBucket: DistanceBucket(path: path, tableLength: spec.length, thresholds),
                             pocketType: PocketType(pocket), kind: kind)
+    }
+
+    /// One-cushion bank: smallest cut to `pocket`'s mirror image across a cushion line (ball-centre lines).
+    static func bankCut(cue: Vec2, object: Vec2, pocket: Pocket, _ spec: TableSpec) -> (cut: Double, image: Vec2) {
+        let r = TableSpec.ballRadius
+        let p = spec.pocketCenter(pocket)
+        let images = [Vec2(2 * r - p.x, p.y), Vec2(2 * (spec.length - r) - p.x, p.y),
+                      Vec2(p.x, 2 * r - p.y), Vec2(p.x, 2 * (spec.width - r) - p.y)]
+        return images.map { (cutAngleDegrees(cue: cue, object: object, target: $0), $0) }
+            .min { $0.0 < $1.0 }.map { (cut: $0.0, image: $0.1) }!
     }
 
     private static func withKind(_ k: ShotKind) -> ShotFeatures {
