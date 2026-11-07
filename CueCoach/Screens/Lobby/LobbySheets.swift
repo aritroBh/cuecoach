@@ -11,9 +11,12 @@ struct JoinHostSheet: View {
         VStack(spacing: 32) {
             HStack(spacing: 32) {
                 bigButton("antenna.radiowaves.left.and.right", "Host", id: "lobby.sheet.host") { model.host(); done() }
-                bigButton("person.2.wave.2", "Join", id: "lobby.sheet.joinMode") {}
+                // Join = look for nearby hosts; they appear below as avatars, tap one to join.
+                bigButton("person.2.wave.2", "Join", id: "lobby.sheet.joinMode", active: model.meshAvailability == .discovering) {
+                    model.browse()
+                }
             }
-            if model.nearbyHosts.isEmpty {
+            if model.nearbyHosts.isEmpty && model.meshAvailability == .discovering {
                 HStack(spacing: 16) {
                     ForEach(0..<3, id: \.self) { _ in Circle().fill(SBColor.ink.opacity(0.08)).frame(width: 64, height: 64) }
                 }
@@ -24,7 +27,7 @@ struct JoinHostSheet: View {
                         Button { model.join(h.id); done() } label: {
                             VStack(spacing: 8) {
                                 SBAvatar(symbol: h.player?.symbol ?? "iphone", colorName: h.player?.colorName ?? "", size: 64)
-                                Text(h.player?.name ?? h.deviceName).font(.system(size: 13, weight: .semibold))
+                                Text(h.player?.name ?? h.deviceName).font(SBFont.caption)
                                     .foregroundStyle(SBColor.inkMuted).lineLimit(1).frame(maxWidth: 80)
                             }
                         }
@@ -39,17 +42,20 @@ struct JoinHostSheet: View {
         .padding(.horizontal, 16)
     }
 
-    private func bigButton(_ symbol: String, _ word: String, id: String, action: @escaping () -> Void) -> some View {
+    private func bigButton(_ symbol: String, _ word: String, id: String, active: Bool = false,
+                           action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
-                Image(systemName: symbol).font(.system(size: 28, weight: .semibold))
+                Image(systemName: symbol).font(SBFont.glyph(28, .semibold))
                     .foregroundStyle(SBColor.ink)
                     .frame(width: 64, height: 64)
-                    .background(Circle().fill(SBColor.ink.opacity(0.1)))
-                Text(word).font(.system(size: 17, weight: .semibold)).foregroundStyle(SBColor.ink)
+                    .background(Circle().fill(SBColor.ink.opacity(active ? 0.2 : 0.1)))
+                    .overlay { if active { Circle().strokeBorder(SBColor.legal, lineWidth: 3) } }
+                Text(word).font(SBFont.headline).foregroundStyle(SBColor.ink)
             }
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(active ? .isSelected : [])
         .accessibilityIdentifier(id)
     }
 }
@@ -64,6 +70,7 @@ struct IdentitySheet: View {
     @State private var name = ""
     @State private var symbol = "figure.pool.swim"
     @State private var colorName = ""
+    @State private var refusals = 0
 
     static let symbols = ["figure.pool.swim", "hare.fill", "tortoise.fill", "bolt.fill", "flame.fill", "star.fill",
                           "leaf.fill", "moon.fill"]
@@ -75,6 +82,7 @@ struct IdentitySheet: View {
         .padding(.top, 24)
         .accessibilityIdentifier("lobby.sheet.identity")
         .onAppear { colorName = model.nextFreeColorName }
+        .sensoryFeedback(.error, trigger: refusals)
     }
 
     private var picker: some View {
@@ -82,16 +90,21 @@ struct IdentitySheet: View {
             if model.isLoadingProfiles {
                 ForEach(0..<3, id: \.self) { _ in Circle().fill(SBColor.ink.opacity(0.08)).frame(width: 64, height: 64) }
             } else {
-                ForEach(model.pickableProfiles) { p in
-                    cell(name: p.name) {
+                ForEach(model.identityChoices(for: seat)) { p in
+                    cell(name: p.id == model.localPlayer.id && !model.canCreatePlayers ? "You" : p.name) {
                         SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 64)
-                    } action: { model.assign(p, to: seat); done() }
+                    } action: { finish(model.assign(p, to: seat)) }
                 }
             }
-            cell(name: "New") { glyph("person.badge.plus") } action: { registering = true }
-                .accessibilityIdentifier("lobby.identity.new")
-            cell(name: "Guest") { glyph("person.fill.questionmark") } action: { try? model.assignGuest(to: seat); done() }
+            // Only the host can add players; the check happens before anything is created.
+            if model.canCreatePlayers {
+                cell(name: "New") { glyph("person.badge.plus") } action: { registering = true }
+                    .accessibilityIdentifier("lobby.identity.new")
+                cell(name: "Guest") { glyph("person.fill.questionmark") } action: {
+                    finish((try? model.assignGuest(to: seat)) != nil)
+                }
                 .accessibilityIdentifier("lobby.identity.guest")
+            }
         }
         .padding(.horizontal, 16)
     }
@@ -100,7 +113,7 @@ struct IdentitySheet: View {
         VStack(spacing: 24) {
             SBAvatar(symbol: symbol, colorName: colorName, size: 80)
             TextField("Name", text: $name)
-                .font(.system(size: 17))
+                .font(SBFont.body)
                 .textInputAutocapitalization(.words)
                 .padding(.horizontal, 16)
                 .frame(minHeight: 52)
@@ -109,7 +122,7 @@ struct IdentitySheet: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
                 ForEach(Self.symbols, id: \.self) { s in
                     Button { symbol = s } label: {
-                        Image(systemName: s).font(.system(size: 22, weight: .semibold))
+                        Image(systemName: s).font(SBFont.glyph(22, .semibold))
                             .foregroundStyle(SBColor.ink)
                             .frame(width: 52, height: 52)
                             .background(Circle().fill(SBColor.ink.opacity(symbol == s ? 0.2 : 0.06)))
@@ -128,10 +141,10 @@ struct IdentitySheet: View {
                 }
             }
             Button {
-                if (try? model.registerAndAssign(name: name, symbol: symbol, colorName: colorName, to: seat)) != nil { done() }
+                finish((try? model.registerAndAssign(name: name, symbol: symbol, colorName: colorName, to: seat)) != nil)
             } label: {
                 Label("Save", systemImage: "checkmark")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(SBFont.headline)
                     .foregroundStyle(SBColor.bg)
                     .frame(maxWidth: .infinity, minHeight: 56)
                     .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.legal))
@@ -143,8 +156,13 @@ struct IdentitySheet: View {
         .padding(.horizontal, 16)
     }
 
+    /// Close only when the change was accepted; otherwise stay open with an error haptic.
+    private func finish(_ ok: Bool) {
+        if ok { done() } else { refusals += 1 }
+    }
+
     private func glyph(_ s: String) -> some View {
-        Image(systemName: s).font(.system(size: 26, weight: .semibold)).foregroundStyle(SBColor.ink)
+        Image(systemName: s).font(SBFont.glyph(26, .semibold)).foregroundStyle(SBColor.ink)
             .frame(width: 64, height: 64)
             .background(Circle().strokeBorder(SBColor.inkMuted, style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
     }
@@ -153,8 +171,9 @@ struct IdentitySheet: View {
         Button(action: action) {
             VStack(spacing: 8) {
                 icon()
-                Text(name).font(.system(size: 13, weight: .semibold)).foregroundStyle(SBColor.inkMuted)
+                Text(name).font(SBFont.caption).foregroundStyle(SBColor.inkMuted)
                     .lineLimit(1).truncationMode(.tail)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             }
             .frame(minWidth: 64, minHeight: 88)
         }
@@ -168,16 +187,16 @@ struct MeshDeniedSheet: View {
     var done: () -> Void
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 40, weight: .regular))
+            Image(systemName: "exclamationmark.triangle").font(SBFont.glyph(40, .regular))
                 .foregroundStyle(SBColor.caution)
             Text("Allow Local Network to link phones.")
-                .font(.system(size: 17)).foregroundStyle(SBColor.ink).multilineTextAlignment(.center)
+                .font(SBFont.body).foregroundStyle(SBColor.ink).multilineTextAlignment(.center)
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 done()
             } label: {
                 Label("Settings", systemImage: "gear")
-                    .font(.system(size: 17, weight: .semibold)).foregroundStyle(SBColor.bg)
+                    .font(SBFont.headline).foregroundStyle(SBColor.bg)
                     .frame(maxWidth: .infinity, minHeight: 56)
                     .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.ink))
             }
@@ -239,6 +258,8 @@ struct MeshDeniedSheet: View {
     /// Non-host phone: no handles, "Waiting".
     static func peerView() -> LobbyModel {
         let m = make(local: sam, localPeer: "p1", isHost: false, peers: peers(host: 0, local: 1))
+        // The host's lineup as it arrives over the mesh: Ari A1, Sam B1, Ana A2, B2 open.
+        m.applyLineup([[ari.id, ana.id], [sam.id, nil]], roster: [ari, sam, ana], format: .twoVsTwo, tableSize: .eightFoot)
         m.receiveBallot(peerID: "p0", vote: .barEight)
         m.toggleVote(.wpaEight)
         return m

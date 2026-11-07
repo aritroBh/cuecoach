@@ -23,6 +23,10 @@ enum SBColor {
     static let teamB = Color(hex: 0xF59E0B)
 
     static func team(_ i: Int) -> Color { i == 0 ? teamA : teamB }
+    /// Team A solid, Team B dashed: never colour alone.
+    static func teamStroke(_ i: Int, width: CGFloat = 2) -> StrokeStyle {
+        StrokeStyle(lineWidth: width, lineCap: .round, dash: i == 0 ? [] : [4, 3])
+    }
 
     /// Avatar swatches (8, per identity sheet spec). `PlayerProfile.avatarColor` stores the name.
     static let avatarNames = ["blue", "teal", "green", "yellow", "orange", "red", "pink", "purple"]
@@ -113,7 +117,7 @@ struct RatingBadgeCircle: View {
             Circle().fill(style.tone.color.opacity(0.22))
             Circle().strokeBorder(style.tone.color, style: StrokeStyle(lineWidth: 3, dash: style.symbol == "circle.dashed" ? [4, 3] : []))
             Image(systemName: style.symbol)
-                .font(.system(size: symbolSize, weight: .regular))
+                .font(SBFont.glyph(symbolSize))
                 .foregroundStyle(style.tone.color)
         }
         .frame(width: diameter, height: diameter)
@@ -124,14 +128,42 @@ struct RatingBadgeCircle: View {
     }
 }
 
-/// 2-pt arc in the shooting team's colour under a badge.
+/// 2-pt arc in the shooting team's colour. Default sits under a circle (timeline); `pointing(team:)` aims it
+/// at that team's avatar corner (Team A top-left, Team B top-right). Stroke with `SBColor.teamStroke` so B is dashed.
 struct TeamArc: Shape {
+    var start: Angle = .degrees(45)
+    var end: Angle = .degrees(135)
+
+    /// y-down SwiftUI angles: 180–270° is the upper-left quadrant, 270–360° the upper-right.
+    static func angles(team: Int) -> (start: Angle, end: Angle) {
+        team == 0 ? (.degrees(200), .degrees(250)) : (.degrees(290), .degrees(340))
+    }
+
+    static func pointing(team: Int) -> TeamArc {
+        let a = angles(team: team)
+        return TeamArc(start: a.start, end: a.end)
+    }
+
     func path(in rect: CGRect) -> Path {
         var p = Path()
         p.addArc(center: CGPoint(x: rect.midX, y: rect.midY), radius: rect.width / 2,
-                 startAngle: .degrees(45), endAngle: .degrees(135), clockwise: false)
+                 startAngle: start, endAngle: end, clockwise: false)
         return p
     }
+}
+
+/// Type scale (MASTER.md) on Dynamic Type text styles so every label scales.
+enum SBFont {
+    static let largeTitle = Font.largeTitle.bold()                       // 34 bold
+    static let score = Font.system(.largeTitle, design: .rounded).bold() // 34 bold rounded
+    static let title = Font.title2.weight(.semibold)                     // 22 semibold
+    static let headline = Font.headline                                  // 17 semibold
+    static let roundedHeadline = Font.system(.headline, design: .rounded)
+    static let body = Font.body                                          // 17 regular
+    static let caption = Font.footnote.weight(.semibold)                 // 13 semibold
+    /// A symbol drawn inside a fixed-size shape (avatar, disc, 44-pt handle). It does not scale with
+    /// Dynamic Type, because the shape around it does not; the words beside it do.
+    static func glyph(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
 }
 
 /// Circle avatar with optional team ring (A solid, B dashed: colour-blind safe).
@@ -146,7 +178,7 @@ struct SBAvatar: View {
         ZStack {
             Circle().fill(SBColor.avatar(colorName))
             Image(systemName: symbol)
-                .font(.system(size: size * 0.45, weight: .regular))
+                .font(SBFont.glyph(size * 0.45))
                 .foregroundStyle(SBColor.ink)
         }
         .frame(width: size, height: size)

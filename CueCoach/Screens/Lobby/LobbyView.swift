@@ -4,7 +4,7 @@ import Rules
 
 /// Session lobby (pages/screens-b.md §1).
 public struct LobbyView: View {
-    @State private var model: LobbyModel
+    let model: LobbyModel
     @State private var sheet: LobbySheet?
     @State private var pulseSeat: SeatRef?
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -13,11 +13,11 @@ public struct LobbyView: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.verticalSizeClass) private var vSize
 
-    public init(model: LobbyModel) { _model = State(initialValue: model) }
+    public init(model: LobbyModel) { self.model = model }
 
     /// Debug/preview: open with a sheet already presented.
     init(model: LobbyModel, initialSheet: LobbySheet?) {
-        _model = State(initialValue: model)
+        self.model = model
         _sheet = State(initialValue: initialSheet)
     }
 
@@ -50,12 +50,13 @@ public struct LobbyView: View {
         .sheet(item: $sheet) { s in
             Group {
                 switch s {
-                case .join: JoinHostSheet(model: model) { sheet = nil }
-                case .identity(let seat): IdentitySheet(model: model, seat: seat) { sheet = nil }
-                case .meshDenied: MeshDeniedSheet { sheet = nil }
+                case .join: JoinHostSheet(model: model) { sheet = nil }.presentationDetents([.height(sheetHeight(320))])
+                case .identity(let seat):
+                    IdentitySheet(model: model, seat: seat) { sheet = nil }
+                        .presentationDetents([.height(sheetHeight(model.canCreatePlayers ? 380 : 240)), .large])
+                case .meshDenied: MeshDeniedSheet { sheet = nil }.presentationDetents([.height(sheetHeight(280))])
                 }
             }
-            .presentationDetents([.medium, .large])
             .presentationCornerRadius(20)
             .presentationBackground(.ultraThinMaterial)
             .preferredColorScheme(.dark)
@@ -64,11 +65,16 @@ public struct LobbyView: View {
         .sensoryFeedback(.success, trigger: model.startCount)
     }
 
+    /// Content-sized sheet heights, grown for large Dynamic Type so nothing clips.
+    private func sheetHeight(_ base: CGFloat) -> CGFloat {
+        typeSize.isAccessibilitySize ? base * 1.7 : (typeSize >= .xxLarge ? base * 1.2 : base)
+    }
+
     // MARK: Header
 
     private var header: some View {
         HStack {
-            Text("Lobby").font(.system(size: 34, weight: .bold)).foregroundStyle(SBColor.ink)
+            Text("Lobby").font(SBFont.largeTitle).foregroundStyle(SBColor.ink)
                 .accessibilityAddTraits(.isHeader)
             Spacer()
         }
@@ -102,12 +108,13 @@ public struct LobbyView: View {
                 ZStack {
                     Circle().strokeBorder(SBColor.inkMuted, lineWidth: 2)
                     Image(systemName: model.meshAvailability == .unavailable ? "exclamationmark.triangle" : "plus")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(SBFont.glyph(22, .semibold))
                         .foregroundStyle(model.meshAvailability == .unavailable ? SBColor.caution : SBColor.ink)
                 }
                 .frame(width: 56, height: 56)
                 .modifier(PulseEvery2s(active: model.meshAvailability == .discovering && !reduceMotion))
-                Text("Join").font(.system(size: 13, weight: .semibold)).foregroundStyle(SBColor.inkMuted)
+                Text("Join").font(SBFont.caption).foregroundStyle(SBColor.inkMuted)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             }
         }
         .buttonStyle(.plain)
@@ -120,7 +127,7 @@ public struct LobbyView: View {
     private var teamsBlock: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Teams").font(.system(size: 22, weight: .semibold)).foregroundStyle(SBColor.ink)
+                Text("Teams").font(SBFont.title).foregroundStyle(SBColor.ink)
                 Spacer()
             }
             Picker("Format", selection: Binding(get: { model.format }, set: { model.setFormat($0) })) {
@@ -153,7 +160,7 @@ public struct LobbyView: View {
             HStack(spacing: 8) {
                 Circle().strokeBorder(SBColor.team(team), style: StrokeStyle(lineWidth: 3, dash: team == 0 ? [] : [4, 3]))
                     .frame(width: 20, height: 20)
-                Text(LobbyModel.teamName(team)).font(.system(size: 17, weight: .semibold, design: .rounded))
+                Text(LobbyModel.teamName(team)).font(SBFont.roundedHeadline)
                     .foregroundStyle(SBColor.team(team))
             }
             .accessibilityElement(children: .combine)
@@ -170,7 +177,7 @@ public struct LobbyView: View {
 
     private var benchRow: some View {
         HStack(spacing: 8) {
-            Image(systemName: "chair.lounge").font(.system(size: 17, weight: .semibold)).foregroundStyle(SBColor.inkMuted)
+            Image(systemName: "chair.lounge").font(SBFont.headline).foregroundStyle(SBColor.inkMuted)
                 .accessibilityLabel("Bench")
             ForEach(model.bench) { p in
                 SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 36, dimmed: true)
@@ -182,12 +189,12 @@ public struct LobbyView: View {
 
     private var orderStrip: some View {
         HStack(spacing: 4) {
-            Image(systemName: "arrow.triangle.turn.up.right.circle").font(.system(size: 17, weight: .semibold))
+            Image(systemName: "arrow.triangle.turn.up.right.circle").font(SBFont.glyph(17, .semibold))
                 .foregroundStyle(SBColor.inkMuted)
                 .padding(.trailing, 4)
             ForEach(Array(model.seatOrder.enumerated()), id: \.offset) { i, seat in
                 if i > 0 {
-                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(SBColor.inkMuted)
+                    Image(systemName: "chevron.right").font(SBFont.glyph(13, .semibold)).foregroundStyle(SBColor.inkMuted)
                 }
                 if let p = model[seat] {
                     SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 28)
@@ -207,7 +214,7 @@ public struct LobbyView: View {
 
     private var rulesBlock: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rules").font(.system(size: 22, weight: .semibold)).foregroundStyle(SBColor.ink)
+            Text("Rules").font(SBFont.title).foregroundStyle(SBColor.ink)
             HStack(alignment: .top, spacing: 0) {
                 ForEach(RuleSetID.allCases, id: \.self) { r in
                     VoteDisc(rule: r, mine: model.myVote == r, leading: model.voteWinner == r,
@@ -223,7 +230,7 @@ public struct LobbyView: View {
 
     private var tableBlock: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Table").font(.system(size: 22, weight: .semibold)).foregroundStyle(SBColor.ink)
+            Text("Table").font(SBFont.title).foregroundStyle(SBColor.ink)
             HStack(alignment: .bottom, spacing: 0) {
                 ForEach(TableSize.allCases, id: \.self) { s in
                     TableTile(size: s, selected: model.tableSize == s, measured: model.measuredTableSize == s) {
@@ -237,7 +244,25 @@ public struct LobbyView: View {
 
     // MARK: Start
 
-    private var startBar: some View {
+    @ViewBuilder private var startBar: some View {
+        if model.isHost { hostStartBar } else { waitingBar }
+    }
+
+    /// Peers: status, not a disabled action, so it is drawn at full contrast on `surface`.
+    private var waitingBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hourglass").font(SBFont.headline)
+            Text("Waiting").font(SBFont.headline)
+        }
+        .foregroundStyle(SBColor.inkMuted)
+        .frame(maxWidth: .infinity, minHeight: 56)
+        .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.surface))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Waiting for host")
+        .accessibilityIdentifier("lobby.start")
+    }
+
+    private var hostStartBar: some View {
         Button {
             if model.start() == nil, let seat = model.blockingSeat {
                 pulseSeat = seat
@@ -245,17 +270,16 @@ public struct LobbyView: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: model.isHost ? "play.fill" : "hourglass").font(.system(size: 17, weight: .semibold))
-                Text(model.isHost ? "Start" : "Waiting").font(.system(size: 17, weight: .semibold))
+                Image(systemName: "play.fill").font(SBFont.headline)
+                Text("Start").font(SBFont.headline)
             }
             .foregroundStyle(SBColor.bg)
             .frame(maxWidth: .infinity, minHeight: 56)
-            .background(RoundedRectangle(cornerRadius: 14).fill(model.isHost ? SBColor.legal : SBColor.inkMuted))
+            .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.legal))
             .opacity(model.canStart ? 1 : 0.4)
         }
         .buttonStyle(.plain)
-        .disabled(!model.isHost)
-        .accessibilityLabel(model.isHost ? "Start" : "Waiting for host")
+        .accessibilityLabel("Start")
         .accessibilityValue(model.canStart ? "" : "Locked")
         .accessibilityIdentifier("lobby.start")
     }
@@ -304,18 +328,20 @@ private struct PeerAvatar: View {
                             }
                         }
                     if peer.isHost {
-                        Image(systemName: "crown.fill").font(.system(size: 16, weight: .semibold))
+                        Image(systemName: "crown.fill").font(SBFont.glyph(16, .semibold))
                             .foregroundStyle(SBColor.ink).offset(x: -4, y: -6)
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if peer.status == .lost {
-                        Image(systemName: "wifi.slash").font(.system(size: 16, weight: .semibold))
+                        Image(systemName: "wifi.slash").font(SBFont.glyph(16, .semibold))
                             .foregroundStyle(SBColor.caution).offset(x: 4, y: 4)
                     }
                 }
                 Text(peer.isLocal ? "You" : (peer.player?.name ?? peer.deviceName))
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(SBColor.inkMuted).lineLimit(1)
+                    .font(SBFont.caption).foregroundStyle(SBColor.inkMuted).lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // caption under a fixed 56-pt avatar
                     .frame(maxWidth: 72)
             }
         }
@@ -354,33 +380,16 @@ private struct SeatRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: editIdentity) {
-                HStack(spacing: 8) {
-                    if let p = model[seat] {
-                        SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 56, team: seat.team,
-                                 dimmed: model.peer(for: p)?.status == .lost)
-                            .padding(5)
-                    } else {
-                        ZStack {
-                            Circle().strokeBorder(pulse ? SBColor.caution : SBColor.inkMuted,
-                                                  style: StrokeStyle(lineWidth: pulse ? 3 : 2, dash: [5, 4]))
-                            Image(systemName: "plus").font(.system(size: 20, weight: .semibold)).foregroundStyle(SBColor.inkMuted)
-                        }
-                        .frame(width: 56, height: 56)
-                        .padding(5)
-                        .scaleEffect(pulse && !reduceMotion ? 1.08 : 1)
-                        .animation(.snappy, value: pulse)
-                    }
-                    Text("\(seat.slot + 1)").font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .foregroundStyle(SBColor.ink)
-                }
+            // Read-only seats are plain views: a disabled Button would dim them like a lost peer.
+            if model.canOpenIdentity(seat) {
+                Button(action: editIdentity) { seatContent }.buttonStyle(.plain)
+            } else {
+                seatContent
             }
-            .buttonStyle(.plain)
-            .disabled(!model.canEditLineup && model[seat]?.id != model.localPlayer.id && model[seat] != nil)
             Spacer(minLength: 0)
             if model.canEditLineup && model[seat] != nil {
                 Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(SBFont.glyph(17, .semibold))
                     .foregroundStyle(SBColor.inkMuted)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -412,6 +421,31 @@ private struct SeatRow: View {
         }
     }
 
+    private var seatContent: some View {
+        HStack(spacing: 8) {
+            if let p = model[seat] {
+                SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 56, team: seat.team,
+                         dimmed: model.peer(for: p)?.status == .lost)
+                    .padding(5)
+            } else {
+                ZStack {
+                    Circle().strokeBorder(pulse ? SBColor.caution : SBColor.inkMuted,
+                                          style: StrokeStyle(lineWidth: pulse ? 3 : 2, dash: [5, 4]))
+                    if model.canOpenIdentity(seat) {
+                        Image(systemName: "plus").font(SBFont.glyph(20, .semibold)).foregroundStyle(SBColor.inkMuted)
+                    }
+                }
+                .frame(width: 56, height: 56)
+                .padding(5)
+                .scaleEffect(pulse && !reduceMotion ? 1.08 : 1)
+                .animation(.snappy, value: pulse)
+            }
+            Text("\(seat.slot + 1)").font(SBFont.roundedHeadline)
+                .foregroundStyle(SBColor.ink)
+        }
+        .contentShape(Rectangle())
+    }
+
     static func parse(_ s: String) -> SeatRef? {
         let parts = s.split(separator: ":").compactMap { Int($0) }
         return parts.count == 2 ? SeatRef(team: parts[0], slot: parts[1]) : nil
@@ -439,21 +473,21 @@ private struct VoteDisc: View {
         Button(action: tap) {
             VStack(spacing: 8) {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: symbol).font(.system(size: 52, weight: .regular))
+                    Image(systemName: symbol).font(SBFont.glyph(52, .regular))
                         .foregroundStyle(SBColor.ink)
                         .frame(width: 72, height: 72)
                         .overlay { if mine { Circle().strokeBorder(SBColor.legal, lineWidth: 3) } }
                         .shadow(color: leading ? SBColor.legal.opacity(0.65) : .clear, radius: 12)
                     if rule == .wpaEight {
-                        Image(systemName: "checkmark.seal").font(.system(size: 16, weight: .semibold))
+                        Image(systemName: "checkmark.seal").font(SBFont.glyph(16, .semibold))
                             .foregroundStyle(SBColor.inkMuted).offset(x: 2, y: 2)
                     }
                     if mine {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 20, weight: .semibold))
+                        Image(systemName: "checkmark.circle.fill").font(SBFont.glyph(20, .semibold))
                             .foregroundStyle(SBColor.legal, SBColor.bg).offset(x: 4, y: 52)
                     }
                 }
-                Text(label).font(.system(size: 13, weight: .semibold)).foregroundStyle(SBColor.ink).lineLimit(1)
+                Text(label).font(SBFont.caption).foregroundStyle(SBColor.ink).lineLimit(1)
                 HStack(spacing: 4) {
                     ForEach(0..<min(tally, 8), id: \.self) { _ in Circle().fill(SBColor.ink).frame(width: 8, height: 8) }
                 }
@@ -486,12 +520,12 @@ private struct TableTile: View {
                         .frame(width: w, height: w / 2)
                         .overlay { if selected { RoundedRectangle(cornerRadius: 6).strokeBorder(SBColor.legal, lineWidth: 2).padding(-5) } }
                     if measured {
-                        Image(systemName: "ruler").font(.system(size: 16, weight: .semibold))
+                        Image(systemName: "ruler").font(SBFont.glyph(16, .semibold))
                             .foregroundStyle(SBColor.ink).offset(x: 8, y: -12)
                     }
                 }
                 .frame(minHeight: 56)
-                Text("\(feet) ft").font(.system(size: 13, weight: .semibold))
+                Text("\(feet) ft").font(SBFont.caption)
                     .foregroundStyle(selected ? SBColor.ink : SBColor.inkMuted)
             }
             .frame(minWidth: 96, minHeight: 88)

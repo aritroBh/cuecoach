@@ -22,6 +22,8 @@ public final class GameReviewModel {
 
     @ObservationIgnored private let source: (any GameReviewSource)?
     @ObservationIgnored var onDone: (() -> Void)?
+    /// Full-screen clip player hook (Highlights module wires it; no-op until then).
+    @ObservationIgnored var onPlayClip: ((UUID) -> Void)?
 
     init(source: any GameReviewSource) {
         self.source = source
@@ -104,6 +106,17 @@ public final class GameReviewModel {
         guard !isLocked, let id = data?.shotOfGame?.shotID else { return nil }
         return shots.first { $0.id == id }
     }
+
+    /// The SotG play control exists only when there is a clip to play.
+    var canPlayShotOfGameClip: Bool { shotOfGame != nil && data?.shotOfGame?.hasClip == true }
+
+    func playShotOfGameClip() {
+        guard canPlayShotOfGameClip, let id = shotOfGame?.id else { return }
+        onPlayClip?(id)
+    }
+
+    /// "Actual" is only claimed for traced paths; inferred ones are drawn as faint displacement arrows.
+    func showsActualLegend(_ s: ReviewShot) -> Bool { s.pathsAreTraced }
 
     var mvp: ReviewMVP? {
         guard !isLocked, let d = data else { return nil }

@@ -1,16 +1,17 @@
 import SwiftUI
+import UIKit
 import Engine
 
 /// Post-shot badge overlay. Place over the live camera; it lays itself out at 38% height (portrait)
 /// or the centre of the top half (landscape) and is transparent to touches when empty.
 public struct PostShotBadgeView: View {
-    @State private var model: PostShotBadgeModel
+    let model: PostShotBadgeModel
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.sbForceReduceMotion) private var forcedReduceMotion
     private var reduceMotion: Bool { systemReduceMotion || forcedReduceMotion }
     @Environment(\.dynamicTypeSize) private var typeSize
 
-    public init(model: PostShotBadgeModel) { _model = State(initialValue: model) }
+    public init(model: PostShotBadgeModel) { self.model = model }
 
     public var body: some View {
         GeometryReader { geo in
@@ -35,8 +36,17 @@ public struct PostShotBadgeView: View {
             try? await Task.sleep(for: .seconds(PostShotBadgeModel.holdSeconds + 0.25))
             model.holdElapsed(generation: g)
         }
-        .onChange(of: model.announcement) { _, text in
-            if let text { AccessibilityNotification.Announcement(text).post() }
+        // Announce only once the badge has been up ~0.3 s and nobody has started aiming since.
+        .task(id: model.announcement) {
+            guard let text = model.announcement else { return }
+            try? await Task.sleep(for: .seconds(0.3))
+            guard !Task.isCancelled, model.announcement == text else { return }
+            AccessibilityNotification.Announcement(text).post()
+        }
+        // Aim started: interrupt anything VoiceOver is still saying (no audio while aiming).
+        .onChange(of: model.speechInterrupts) { _, _ in
+            UIAccessibility.post(notification: .announcement,
+                                 argument: NSAttributedString(string: " ", attributes: [.accessibilitySpeechQueueAnnouncement: false]))
         }
         .sensoryFeedback(.success, trigger: model.generation) { _, _ in model.wantsSuccessHaptic }
     }
@@ -49,22 +59,25 @@ public struct PostShotBadgeView: View {
         VStack(spacing: 8) {
             ZStack {
                 RatingBadgeCircle(style: style, diameter: 72, symbolSize: 32)
-                TeamArc()
-                    .stroke(SBColor.team(rating.team), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                // Points at the shooting team's avatar corner (A top-left, B top-right); B dashed.
+                TeamArc.pointing(team: rating.team)
+                    .stroke(SBColor.team(rating.team), style: SBColor.teamStroke(rating.team))
                     .frame(width: 84, height: 84)
             }
+            // Footnote scales with Dynamic Type, clamped at xxLarge (13 → 17 pt). A soft dark halo gives contrast
+            // over the camera without a chip shape.
             Text(style.words)
-                .font(.system(size: 13, weight: .semibold))
-                .dynamicTypeSize(...DynamicTypeSize.xxLarge)   // 13 → ~17 pt max
+                .font(SBFont.caption)
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
                 .foregroundStyle(SBColor.ink)
                 .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 8).fill(SBColor.bg.opacity(0.8)))
+                .fixedSize()
+                .shadow(color: .black.opacity(0.85), radius: 3)
+                .shadow(color: .black.opacity(0.85), radius: 6)
         }
         .overlay(alignment: .topTrailing) {
             if model.isPinned {
-                Image(systemName: "pin.fill").font(.system(size: 13, weight: .semibold))
+                Image(systemName: "pin.fill").font(SBFont.glyph(13, .semibold))
                     .foregroundStyle(SBColor.inkMuted).offset(x: 6, y: -2)
             }
         }

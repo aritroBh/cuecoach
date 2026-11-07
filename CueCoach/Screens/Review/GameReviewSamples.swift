@@ -53,7 +53,7 @@ import Engine
         return ReviewShot(id: UUID(), index: i, shooter: p, team: team, rating: r,
                           pre: broken ? nil : pre, post: broken ? nil : post,
                           pocketed: pocketed, fouls: foul ? [.scratch] : [], paths: paths,
-                          alternative: alternative, wpaDelta: wpa)
+                          alternative: alternative, wpaDelta: wpa, pathsAreTraced: true)
     }
 
     static func finished() -> GameReviewData {
@@ -101,10 +101,17 @@ import Engine
                        winProb: [0.5], shots: [shot(0, nil, sam, team: 0, wpa: 0)], shotOfGame: nil, tableSize: .eightFoot)
     }
 
-    /// Fewer than four points: chart hides, eval bars show.
+    /// Fewer than four points: chart hides, eval bars show. No physics trace yet: paths are inferred.
     static func short() -> GameReviewData {
         var d = finished()
-        d.shots = Array(d.shots.prefix(2))
+        d.shots = Array(d.shots.prefix(2)).map { s in
+            var s = s
+            if let pre = s.pre, let post = s.post {
+                s.paths = ReviewPaths.straight(pre: pre, post: post, pocketed: s.pocketed)
+            }
+            s.pathsAreTraced = false
+            return s
+        }
         d.winProb = [0.5, 0.52, 0.48]
         d.teams = [[sam], [kim]]
         d.shotOfGame = ReviewHighlight(shotID: d.shots[1].id, label: "Clean Break", hasClip: false)

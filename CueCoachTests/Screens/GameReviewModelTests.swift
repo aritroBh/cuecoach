@@ -202,4 +202,88 @@ import Engine
         #expect(d.tableSize == .eightFoot)
         #expect(d.isFinished)
     }
+
+    // MARK: Replay layout
+
+    @Test(arguments: [CGSize(width: 218, height: 100), CGSize(width: 361, height: 166), CGSize(width: 300, height: 120),
+                      CGSize(width: 120, height: 300), CGSize(width: 900, height: 200)])
+    func everyPocketMapsInsideTheCanvas(size: CGSize) {
+        for t in TableSize.allCases {
+            let spec = TableSpec(size: t)
+            let l = ReplayLayout(size: size, spec: spec)
+            let canvas = CGRect(origin: .zero, size: size)
+            for p in spec.pockets {
+                let c = l.point(spec.pocketCenter(p))
+                #expect(canvas.insetBy(dx: -0.001, dy: -0.001).contains(c), "\(p) at \(c) outside \(size)")
+                #expect(l.table.insetBy(dx: -0.001, dy: -0.001).contains(c))
+            }
+            // Same scale on both axes: the felt keeps the table's 2:1.
+            #expect(abs(l.felt.width / l.felt.height - spec.length / spec.width) < 0.001)
+            #expect(l.table.width <= size.width + 0.001 && l.table.height <= size.height + 0.001)
+        }
+    }
+
+    @Test func replayAspectFillsTheCanvasExactly() {
+        let spec = TableSpec(size: .eightFoot)
+        let a = ReplayLayout.aspect(spec)
+        let l = ReplayLayout(size: CGSize(width: 300 * a, height: 300), spec: spec)
+        #expect(abs(l.table.width - 300 * a) < 0.01 && abs(l.table.height - 300) < 0.01)
+    }
+
+    // MARK: Inferred vs traced paths
+
+    @Test func pathsWithoutTraceAreMarkedInferred() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let ctx = stack.competitiveContext
+        let id = UUID()
+        ctx.insert(PlayerProfile(id: id, name: "Sam", avatarSymbol: "hare.fill", avatarColor: "orange"))
+        let teams = [StoredTeam(memberIDs: [id], shootingOrder: [id]), StoredTeam(memberIDs: [], shootingOrder: [])]
+        let g = Game(index: 0, ruleSet: .barEight, teams: teams, winnerTeam: 0, startedAt: .now, endedAt: .now)
+        ctx.insert(g)
+        let s = Shot(index: 0, shooterID: id, attributionSource: .auto, preState: table(), postState: table(cue: Vec2(1, 0.2)),
+                     calledPocket: nil, firstContact: .eight, railsAfterContact: 0, pocketed: [:], fouls: [],
+                     features: StoredShotFeatures(cutBucket: .c0to15, distanceBucket: .short, pocketType: .corner, kind: .plain),
+                     made: false, onTarget: false, cueResult: .notApplicable, decisionRating: .good,
+                     executionRating: ExecutionRating(result: .miss, position: .notApplicable), wpaDelta: 0,
+                     isClutch: false, timeOnShot: 4, clipRef: nil)
+        s.game = g
+        ctx.insert(s)
+        try ctx.save()
+        let profiles = try ctx.fetch(FetchDescriptor<PlayerProfile>())
+        let inferred = GameReviewData(game: g, profiles: profiles)
+        #expect(inferred.shots[0].pathsAreTraced == false)
+        let m = GameReviewModel(data: inferred)
+        #expect(!m.showsActualLegend(inferred.shots[0]))
+        let traced = GameReviewData(game: g, profiles: profiles, analysis: FixedAnalysis(path: [Vec2(0.5, 0.5), Vec2(1, 0.2)]))
+        #expect(traced.shots[0].pathsAreTraced)
+        #expect(GameReviewModel(data: traced).showsActualLegend(traced.shots[0]))
+    }
+
+    // MARK: Shot of the Game clip
+
+    @Test func playClipCallsHookOnlyWhenAClipExists() {
+        let shots = [shot(0, .good, by: a1, team: 0), shot(1, .brilliant, by: a1, team: 0)]
+        var d = data(shots: shots, sotg: shots[1].id)
+        d.shotOfGame?.hasClip = true
+        let m = GameReviewModel(data: d)
+        var played: [UUID] = []
+        m.onPlayClip = { played.append($0) }
+        #expect(m.canPlayShotOfGameClip)
+        m.playShotOfGameClip()
+        #expect(played == [shots[1].id])
+
+        d.shotOfGame?.hasClip = false
+        let n = GameReviewModel(data: d)
+        n.onPlayClip = { played.append($0) }
+        #expect(!n.canPlayShotOfGameClip)
+        n.playShotOfGameClip()
+        #expect(played.count == 1)
+    }
+}
+
+@MainActor private final class FixedAnalysis: ReviewShotAnalysis {
+    let path: [Vec2]
+    init(path: [Vec2]) { self.path = path }
+    func actualPaths(shotID: UUID) -> [BallID: [Vec2]]? { [.cue: path] }
+    func alternative(shotID: UUID) -> EngineAlternative? { nil }
 }

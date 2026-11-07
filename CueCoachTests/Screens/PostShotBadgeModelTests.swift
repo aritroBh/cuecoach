@@ -108,4 +108,20 @@ import Engine
         await m.run()
         #expect(m.current?.rating == .mistake)
     }
+
+    @Test func aimStartInterruptsVoiceOverSpeech() {
+        let m = PostShotBadgeModel()
+        m.receive(.rated(rating()))
+        let before = m.speechInterrupts
+        m.receive(.aimStarted)
+        #expect(m.speechInterrupts == before + 1)
+        #expect(m.announcement == nil)
+    }
+
+    @Test func teamArcPointsToTheShootingTeamsCorner() {
+        // SwiftUI angles are y-down: 180–270° is the upper-left quadrant, 270–360° the upper-right.
+        let a = TeamArc.angles(team: 0), b = TeamArc.angles(team: 1)
+        #expect(a.start.degrees >= 180 && a.end.degrees <= 270 && a.start < a.end)
+        #expect(b.start.degrees >= 270 && b.end.degrees <= 360 && b.start < b.end)
+    }
 }
