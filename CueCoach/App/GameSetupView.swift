@@ -172,6 +172,13 @@ struct GameSetupView: View {
                 }
                 .accessibilityLabel("Nearby phones blocked. Open Settings")
                 .accessibilityIdentifier("setup.meshUnavailable")
+            } else if model.syncFailed {
+                Label("Not sent", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(SBColor.caution)
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Last change didn't reach the other phones")
+                    .accessibilityIdentifier("setup.syncFailed")
             }
         }
     }

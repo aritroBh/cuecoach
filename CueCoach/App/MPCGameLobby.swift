@@ -222,11 +222,13 @@ enum LobbyWire {
 
     private func send(_ m: LobbyWire.Message, to keys: [String]) {
         let m = LobbyWire.sanitized(m)
-        guard LobbyWire.isAcceptable(m), let session, let data = try? LobbyWire.encode(m),
-              data.count <= LobbyWire.maxMessageBytes else { return }
+        guard let session else { return }
         let targets = session.connectedPeers.filter { keys.contains($0.displayName) }
         guard !targets.isEmpty else { return }
-        try? session.send(data, toPeers: targets, with: .reliable)
+        guard LobbyWire.isAcceptable(m), let data = try? LobbyWire.encode(m), data.count <= LobbyWire.maxMessageBytes else {
+            onEvent?(.sendFailed); return
+        }
+        do { try session.send(data, toPeers: targets, with: .reliable) } catch { onEvent?(.sendFailed) }
     }
 
     private func emitGames() {

@@ -111,6 +111,7 @@ import Training
 
     @MainActor final class FakeLink: GameMeshLink {
         var peerCount = 1
+        var isStopped = false
         var started = 0, stopped = 0
         func start() { started += 1 }
         func stop() { stopped += 1 }

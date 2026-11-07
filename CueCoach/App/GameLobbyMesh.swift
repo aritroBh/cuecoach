@@ -28,6 +28,8 @@ enum LobbyEvent: Hashable, Sendable {
     case unavailable
     /// Host side: phones that joined this game.
     case phonesChanged([NearbyPhone])
+    /// Host side: a lineup/start message could not be sent (rejected by limits or MPC error).
+    case sendFailed
 }
 
 /// What the app shell needs from the mesh to host or join a game (MultipeerConnectivity only, zero network).

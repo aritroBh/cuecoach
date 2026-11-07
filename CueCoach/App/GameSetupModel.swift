@@ -65,6 +65,8 @@ final class GameSetupModel {
     private(set) var isHosting = false
     /// Local network permission denied / MPC failed: the host can still play on this phone alone.
     private(set) var meshUnavailable = false
+    /// The last lineup/start message didn't reach the joiners.
+    private(set) var syncFailed = false
     /// Start is one-shot: a second tap can't mint another session tag or a second Live.
     private(set) var hasStarted = false
 
@@ -183,6 +185,7 @@ final class GameSetupModel {
             switch e {
             case .phonesChanged(let phones): self?.joinedPhones = phones
             case .unavailable: self?.meshUnavailable = true
+            case .sendFailed: self?.syncFailed = true
             default: break
             }
         }
@@ -209,6 +212,7 @@ final class GameSetupModel {
 
     private func readvertise() {
         guard isHosting, let mesh else { return }
+        syncFailed = false
         mesh.host(advert)
         mesh.publish(lineup: lineup)
     }

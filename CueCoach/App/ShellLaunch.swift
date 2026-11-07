@@ -154,7 +154,9 @@ enum ShellAutopilot {
         log("mesh peers \(peers)")
         try? await Task.sleep(for: .seconds(5))
         router.endGame()   // teardown: the router stops the link
-        log(s.game?.mesh == nil ? "mesh stopped" : "FAIL mesh still attached")
+        for _ in 0..<50 where !link.isStopped { try? await Task.sleep(for: .milliseconds(100)) }
+        guard link.isStopped, s.game?.mesh == nil else { log("FAIL mesh did not stop"); return }
+        log("mesh stopped")
         log("done")
     }
 }

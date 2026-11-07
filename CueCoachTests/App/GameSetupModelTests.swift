@@ -246,6 +246,19 @@ import Rules
         #expect(!m.meshUnavailable)
     }
 
+    @Test func hostSeesWhenAnUpdateFailedToSend() {
+        let mesh = FakeGameLobbyMesh()
+        let (m, _) = make(mesh: mesh)
+        m.beginHosting()
+        #expect(!m.syncFailed)
+        mesh.emit(.sendFailed)
+        #expect(m.syncFailed)
+        mesh.emit(.phonesChanged([NearbyPhone(id: "p1", name: nil)]))
+        #expect(m.syncFailed)                  // stays until the next successful publish
+        m.assign(ari, to: SeatRef(team: 0, slot: 0))
+        #expect(!m.syncFailed)                 // a new publish clears it (fake sends succeed)
+    }
+
     @Test func endHostingStopsAdvertising() {
         let mesh = FakeGameLobbyMesh()
         let (m, _) = make(mesh: mesh)

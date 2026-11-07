@@ -6,12 +6,15 @@ import UIKit
 /// camera angles; Live consumes the session once it is wired (see report: Live owner).
 @MainActor protocol GameMeshLink: AnyObject {
     var peerCount: Int { get }
+    /// True once the session has fully stopped (transport closed).
+    var isStopped: Bool { get }
     func start()
     func stop()
 }
 
 @MainActor @Observable final class MeshGameLink: GameMeshLink {
     private(set) var peerCount = 1
+    private(set) var isStopped = false
     @ObservationIgnored private let session: MultipeerMeshSession
     @ObservationIgnored private var task: Task<Void, Never>?
 
@@ -37,6 +40,9 @@ import UIKit
     func stop() {
         task?.cancel()
         let s = session
-        Task { await s.stop() }
+        Task { [weak self] in
+            await s.stop()
+            self?.isStopped = true
+        }
     }
 }

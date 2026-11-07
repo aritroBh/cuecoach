@@ -76,7 +76,7 @@ final class JoinNearbyModel {
             state = .unavailable
         case .lineupChanged(let id, let l):
             if currentGame?.id == id { lineup = l }
-        case .phonesChanged:
+        case .phonesChanged, .sendFailed:
             break
         }
     }
