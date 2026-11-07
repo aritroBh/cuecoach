@@ -42,6 +42,19 @@ struct EarnedBadge: Equatable, Sendable, Identifiable {
     var earnedAt: Date
 }
 
+/// One shelf disc per badge kind (name + glyph), however many times it was awarded.
+struct BadgeGroup: Equatable, Sendable, Identifiable {
+    var name: String
+    var symbol: String
+    /// Award dates, newest first.
+    var dates: [Date]
+    var id: String { name + "|" + symbol }
+    var count: Int { dates.count }
+    var latest: Date { dates[0] }
+    /// Quiet count line for repeat awards (badges are per game), nil for a single award.
+    var countCaption: String? { count > 1 ? "\(count) games" : nil }
+}
+
 struct ProCompView: Equatable, Sendable {
     var proName: String
     var similarity: Double

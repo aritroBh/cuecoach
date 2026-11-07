@@ -2,9 +2,9 @@ import Rules
 import SwiftUI
 
 /// Player profile (SPEC §6–§8, §10, §11; design-system/cuecoach/pages/screens-a.md §2).
-struct PlayerProfileView: View {
+public struct PlayerProfileView: View {
     @State private var model: PlayerProfileViewModel
-    @State private var badge: EarnedBadge?
+    @State private var badge: BadgeGroup?
     @State private var showingAllBadges = false
     @State private var showingPro = false
     @State private var editing = false
@@ -13,15 +13,16 @@ struct PlayerProfileView: View {
     @Environment(\.saForceReduceMotion) private var forceReduceMotion
     private var reduceMotion: Bool { systemReduceMotion || forceReduceMotion }
     @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .body) private var ringSide: CGFloat = 72
 
-    init(model: PlayerProfileViewModel) { _model = State(initialValue: model) }
+    public init(model: PlayerProfileViewModel) { _model = State(initialValue: model) }
 
     private var accent: Color {
         guard let s = model.content?.summary else { return SA.teamA }
         return s.isTeamA ? SA.teamA : Color(saHex: s.avatarColor)
     }
 
-    var body: some View {
+    public var body: some View {
         ScrollView {
             VStack(spacing: SA.section) {
                 header
@@ -54,7 +55,7 @@ struct PlayerProfileView: View {
         .task { if model.content == nil { await model.load() } }
         .sheet(item: $badge) { BadgeDetail(badge: $0).presentationDetents([.medium]) }
         .sheet(isPresented: $showingAllBadges) {
-            if let c = model.content { AllBadges(badges: c.badges).presentationDetents([.large]) }
+            if let c = model.content { AllBadges(groups: c.badgeGroups).presentationDetents([.large]) }
         }
         .sheet(isPresented: $showingPro) {
             if let c = model.content, let pro = c.proComp {
@@ -78,14 +79,15 @@ struct PlayerProfileView: View {
         VStack(spacing: 8) {
             ZStack {
                 Circle().fill(model.content.map { Color(saHex: $0.summary.avatarColor) } ?? SA.surface)
-                Image(systemName: model.content?.summary.avatarSymbol ?? "person.fill")
-                    .font(.system(size: 44, weight: .semibold)).foregroundStyle(SA.ink)
+                if let symbol = model.content?.summary.avatarSymbol {
+                    Image(systemName: symbol).font(.system(size: 44, weight: .semibold)).foregroundStyle(SA.ink)
+                }
             }
             .frame(width: 96, height: 96)
             .accessibilityHidden(true)
             Text(model.content?.summary.name ?? "Player")
                 .font(.largeTitle.bold()).foregroundStyle(SA.ink)
-                .redacted(reason: model.phase == .loading ? .placeholder : [])
+                .redacted(reason: model.phase == .loaded ? [] : .placeholder)
                 .accessibilityIdentifier("profile.name")
             if let top = model.content?.topArchetype {
                 Label(top.name, systemImage: top.symbol)
@@ -101,6 +103,8 @@ struct PlayerProfileView: View {
 
     @ViewBuilder private var tabContent: some View {
         switch model.phase {
+        case .failed where !model.failureScope(model.tab):
+            TrainingTabView(content: model.training)
         case .failed:
             VStack(spacing: 16) {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(SA.caution)
@@ -185,30 +189,43 @@ struct PlayerProfileView: View {
         }
     }
 
+    /// Ring + "Plays like" + name/caption. Unlocked and locked share one layout; it stacks at AX sizes.
+    private func proLayout<Ring: View, Detail: View>(@ViewBuilder ring: () -> Ring,
+                                                     @ViewBuilder detail: () -> Detail) -> some View {
+        let side = min(ringSide, 132)
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                                                  : AnyLayout(HStackLayout(spacing: 16))
+        return layout {
+            ring().frame(width: side, height: side)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Plays like").font(.headline).foregroundStyle(SA.inkMuted)
+                detail()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: 88)
+    }
+
     @ViewBuilder private func proCard(_ c: ProfileContent) -> some View {
         if let pro = c.proComp {
             Button { showingPro = true } label: {
                 SACard {
-                    HStack(spacing: 16) {
+                    proLayout {
                         ZStack {
                             SARing(progress: pro.similarity, color: accent)
                             Text(PlayerProfileViewModel.percent(pro.similarity))
                                 .font(.system(.body, design: .rounded).weight(.bold)).monospacedDigit()
+                                .lineLimit(1).minimumScaleFactor(0.5)
+                                .padding(10)
                                 .foregroundStyle(SA.ink)
                         }
-                        .frame(width: 72, height: 72)
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(pro.proName).font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
-                            HStack(spacing: 16) {
-                                ForEach(c.proTraits) { t in
-                                    Label(t.word, systemImage: t.symbol)
-                                        .font(.body).foregroundStyle(SA.inkMuted)
-                                }
-                            }
+                    } detail: {
+                        Text(pro.proName).font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 16) { traitLabels(c) }
+                            VStack(alignment: .leading, spacing: 4) { traitLabels(c) }
                         }
-                        Spacer(minLength: 0)
                     }
-                    .frame(minHeight: 88)
                 }
             }
             .buttonStyle(.plain)
@@ -218,25 +235,26 @@ struct PlayerProfileView: View {
             .accessibilityIdentifier("profile.procomp")
         } else if c.unlock != .unlocked {
             SACard {
-                HStack(spacing: 16) {
+                proLayout {
                     ZStack {
                         SARing(progress: c.lockProgress, color: SA.inkMuted)
                         Image(systemName: "lock.fill").font(.title3).foregroundStyle(SA.inkMuted)
                     }
-                    .frame(width: 72, height: 72)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Plays like").font(.title2.weight(.semibold)).foregroundStyle(SA.inkMuted)
-                        if let cap = c.lockedCaption {
-                            Text(cap).font(.body.weight(.semibold)).monospacedDigit().foregroundStyle(SA.ink)
-                        }
+                } detail: {
+                    if let cap = c.lockedCaption {
+                        Text(cap).font(.title2.weight(.semibold)).monospacedDigit().foregroundStyle(SA.ink)
                     }
-                    Spacer(minLength: 0)
                 }
-                .frame(minHeight: 88)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Pro comparison locked, \(c.lockedCaption ?? "") more needed")
+            .accessibilityLabel(c.lockedSpoken)
             .accessibilityIdentifier("profile.procomp.locked")
+        }
+    }
+
+    @ViewBuilder private func traitLabels(_ c: ProfileContent) -> some View {
+        ForEach(c.proTraits) { t in
+            Label(t.word, systemImage: t.symbol).font(.body).foregroundStyle(SA.inkMuted).fixedSize()
         }
     }
 
@@ -274,7 +292,7 @@ struct PlayerProfileView: View {
         SAAdaptiveStack(spacing: 8) {
             ForEach(c.totals) { t in
                 VStack(spacing: 4) {
-                    Text(t.value).font(.system(size: 28, weight: .bold, design: .rounded)).monospacedDigit()
+                    Text(t.value).font(.system(.title, design: .rounded, weight: .bold)).monospacedDigit()
                         .foregroundStyle(SA.ink)
                     Text(t.caption).font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
                 }
@@ -310,7 +328,10 @@ private struct HistoryTab: View {
                                     if i > 0 { Divider().overlay(SA.inkMuted.opacity(0.3)).padding(.leading, 68) }
                                     sessionRow(s)
                                     if expanded.contains(s.id) {
-                                        ForEach(s.games) { game in gameRow(game) }
+                                        ForEach(s.games) { game in
+                                            Divider().overlay(SA.inkMuted.opacity(0.2)).padding(.leading, 68)
+                                            gameRow(game)
+                                        }
                                     }
                                 }
                             }
@@ -332,7 +353,7 @@ private struct HistoryTab: View {
                 }
                 Spacer(minLength: 8)
                 ResultMark(won: s.won)
-                Image(systemName: expanded.contains(s.id) ? "chevron.down" : "chevron.right")
+                Image(systemName: expanded.contains(s.id) ? "chevron.up" : "chevron.down")
                     .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
             }
             .padding(.horizontal, 16)
@@ -342,6 +363,7 @@ private struct HistoryTab: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityRemoveTraits(.isSelected)
+        .accessibilityValue(expanded.contains(s.id) ? "Expanded" : "Collapsed")
         .accessibilityHint(expanded.contains(s.id) ? "Hides games" : "Shows games")
     }
 
@@ -355,7 +377,6 @@ private struct HistoryTab: View {
             }
             .padding(.leading, 68).padding(.trailing, 16)
             .frame(minHeight: 52)
-            .background(SA.bg.opacity(0.3))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -385,40 +406,61 @@ private struct ResultMark: View {
 // MARK: - Sheets
 
 private struct BadgeDetail: View {
-    let badge: EarnedBadge
+    let badge: BadgeGroup
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: badge.symbol).font(.system(size: 72, weight: .semibold)).foregroundStyle(SA.ink)
             Text(badge.name).font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
-            Text(badge.earnedAt, format: .dateTime.day().month(.wide).year())
+            if let count = badge.countCaption {
+                Text(count).font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+            }
+            Text(badge.latest, format: .dateTime.day().month(.wide).year())
                 .font(.body).foregroundStyle(SA.inkMuted)
         }
+        .padding(SA.gutter)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SA.bg)
+        .presentationDragIndicator(.visible)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("profile.badge.detail")
     }
 }
 
 private struct AllBadges: View {
-    let badges: [EarnedBadge]
+    let groups: [BadgeGroup]
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 16)], spacing: 24) {
-                ForEach(badges) { b in
-                    VStack(spacing: 8) {
-                        Image(systemName: b.symbol).font(.system(size: 26, weight: .semibold)).foregroundStyle(SA.ink)
-                            .frame(width: 56, height: 56).background(Circle().fill(SA.surface))
-                        Text(b.name).font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
-                            .multilineTextAlignment(.center)
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 16)], spacing: 24) {
+                    ForEach(groups) { g in
+                        VStack(spacing: 8) {
+                            Image(systemName: g.symbol).font(.system(size: 26, weight: .semibold))
+                                .foregroundStyle(SA.ink)
+                                .frame(width: 56, height: 56).background(Circle().fill(SA.surface))
+                            Text(g.name).font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                                .multilineTextAlignment(.center)
+                            Text(g.countCaption ?? PlayerProfileViewModel.dayMonth(g.latest))
+                                .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(PlayerProfileViewModel.badgeSpoken(g))
                     }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(PlayerProfileViewModel.badgeSpoken(b))
+                }
+                .padding(SA.gutter)
+            }
+            .background(SA.bg)
+            .navigationTitle("Badges")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(SA.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.accessibilityIdentifier("profile.badges.done")
                 }
             }
-            .padding(SA.gutter).padding(.top, 16)
         }
-        .background(SA.bg)
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
         .accessibilityIdentifier("profile.badges.sheet")
     }
 }

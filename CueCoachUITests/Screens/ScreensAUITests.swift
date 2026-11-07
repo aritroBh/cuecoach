@@ -1,7 +1,7 @@
 import XCTest
 
 /// Opens Settings and Player profile through the debug router (`-screen=<name>`), checks the key flows,
-/// and captures a screenshot of every screen/state in three runs: default, Dynamic Type XXL, Reduce Motion.
+/// and captures a screenshot of every screen/state in four runs: default, Dynamic Type XXL, AX5, Reduce Motion.
 final class ScreensAUITests: XCTestCase {
     static let shotsDir = URL(fileURLWithPath:
         "/private/tmp/claude-501/-Users-aritro-Downloads-Pool/fb384a25-d7ca-4434-9fb6-43a4e97094df/scratchpad/shots")
@@ -18,6 +18,8 @@ final class ScreensAUITests: XCTestCase {
         case .standard: break
         case .xxl: app.launchArguments += ["-dynamicType=xxl",
                                            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXL"]
+        case .ax5: app.launchArguments += ["-dynamicType=ax5", "-UIPreferredContentSizeCategoryName",
+                                           "UICTContentSizeCategoryAccessibilityXXXL"]
         case .reduceMotion: app.launchArguments.append("-reduceMotion")
         }
         app.launch()
@@ -26,7 +28,7 @@ final class ScreensAUITests: XCTestCase {
         return app
     }
 
-    enum Mode: String, CaseIterable { case standard = "light", xxl, reduceMotion = "reducemotion" }
+    enum Mode: String, CaseIterable { case standard = "light", xxl, ax5, reduceMotion = "reducemotion" }
 
     @MainActor
     private func shot(_ app: XCUIApplication, _ name: String) {
@@ -109,6 +111,29 @@ final class ScreensAUITests: XCTestCase {
         shot(app, "settings-export-share")
     }
 
+    @MainActor func testImportCancelKeepsBackupUsable() {
+        let app = launch("settings")
+        let importTile = app.buttons["settings.import"]
+        XCTAssertTrue(importTile.waitForExistence(timeout: 5))
+        importTile.tap()
+        let cancel = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "document picker did not appear")
+        shot(app, "settings-import-picker")
+        cancel.tap()
+        XCTAssertTrue(app.buttons["settings.export"].waitForExistence(timeout: 5))
+        let enabled = NSPredicate(format: "isEnabled == true")
+        expectation(for: enabled, evaluatedWith: app.buttons["settings.export"])
+        expectation(for: enabled, evaluatedWith: importTile)
+        waitForExpectations(timeout: 5)
+        shot(app, "settings-import-cancelled")
+    }
+
+    @MainActor func testDeleteRowCopyMatchesDialog() {
+        let app = launch("settings")
+        XCTAssertTrue(app.buttons["settings.delete"].label.contains("Delete recognition data"))
+        XCTAssertFalse(app.staticTexts["Delete my data"].exists)
+    }
+
     @MainActor func testTouchTargets() {
         let app = launch("settings")
         for id in ["settings.delete", "settings.export", "settings.import",
@@ -164,6 +189,11 @@ final class ScreensAUITests: XCTestCase {
         let retry = app.buttons["profile.retry"]
         XCTAssertTrue(retry.exists)
         XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
+        XCTAssertFalse(app.staticTexts["Player"].exists)
+        app.segmentedControls["profile.tabs"].buttons["Training"].tap()
+        XCTAssertTrue(app.staticTexts["Training only"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Couldn't load stats."].exists)
+        shot(app, "profile-error-training")
     }
 
     @MainActor func testBadgeSheet() {
@@ -171,6 +201,8 @@ final class ScreensAUITests: XCTestCase {
         app.swipeUp()
         let badge = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Cut Artist badge'")).firstMatch
         XCTAssertTrue(badge.waitForExistence(timeout: 5))
+        // One disc per kind: MVP was awarded twice but appears once.
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'MVP badge'")).count, 1)
         badge.tap()
         XCTAssertTrue(app.descendants(matching: .any)["profile.badge.detail"].waitForExistence(timeout: 5))
         shot(app, "profile-badge-sheet")
@@ -179,7 +211,10 @@ final class ScreensAUITests: XCTestCase {
         XCTAssertTrue(all.waitForExistence(timeout: 5))
         all.tap()
         XCTAssertTrue(app.descendants(matching: .any)["profile.badges.sheet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Badges"].exists)
         shot(app, "profile-badges-all")
+        app.buttons["profile.badges.done"].tap()
+        XCTAssertFalse(app.descendants(matching: .any)["profile.badges.sheet"].waitForExistence(timeout: 2))
     }
 
     // MARK: Screenshot matrix

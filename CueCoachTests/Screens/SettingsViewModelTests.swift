@@ -13,16 +13,20 @@ final class FakeSettingsStore: SettingsStore {
     var deleteCalls = 0
     var exportedWith: [Bool] = []
     var imported: [Data] = []
+    var onDelete: (() -> Void)?
+    var onExport: (() -> Void)?
 
     init(hasRecognitionData: Bool = true) { self.hasRecognitionData = hasRecognitionData }
 
     func deleteMyRecognitionData() throws {
         deleteCalls += 1
+        onDelete?()
         if let deleteError { throw deleteError }
         hasRecognitionData = false
     }
     func exportBackup(includeRecognition: Bool) throws -> Data {
         exportedWith.append(includeRecognition)
+        onExport?()
         if let exportError { throw exportError }
         return Data("{\"version\":1}".utf8)
     }
@@ -118,6 +122,25 @@ struct Boom: Error {}
         #expect(SettingsViewModel.silhouetteScale(.eightFoot) > w7)
     }
 
+    @Test func silhouettesKeepTwoToOneAndScaleTogether() {
+        let box = CGSize(width: 100, height: 44)
+        let r9 = SettingsViewModel.silhouetteRect(.nineFoot, in: box)
+        for size in TableSize.allCases {
+            let r = SettingsViewModel.silhouetteRect(size, in: box)
+            #expect(abs(r.width / r.height - 2) < 0.0001, "\(size)")
+            #expect(abs(r.width / r9.width - SettingsViewModel.silhouetteScale(size)) < 0.0001)
+            #expect(r.height <= box.height && r.width <= box.width)
+            #expect(abs(r.midX - box.width / 2) < 0.0001 && abs(r.midY - box.height / 2) < 0.0001)
+        }
+        #expect(SettingsViewModel.silhouetteRect(.sevenFoot, in: box).height
+                < SettingsViewModel.silhouetteRect(.eightFoot, in: box).height)
+    }
+
+    @Test func deleteRowCopyMatchesDialog() {
+        #expect(SettingsViewModel.deleteRowTitle == "Delete recognition data")
+        #expect(SettingsViewModel.deleteDialogTitle == "Delete recognition data?")
+    }
+
     @Test func accessibilityLabels() {
         let m = model(measured: .eightFoot)
         #expect(SettingsViewModel.ruleLabel(.barEight) == "8-ball bar rules")
@@ -135,12 +158,12 @@ struct Boom: Error {}
 
     // MARK: privacy
 
-    @Test func deleteClearsDataAndOptIn() {
+    @Test func deleteClearsDataAndOptIn() async {
         let store = FakeSettingsStore(hasRecognitionData: true)
         let m = model(store: store)
         m.recognitionOptIn = true
         #expect(m.canDelete)
-        m.confirmDelete()
+        await m.confirmDelete()
         #expect(store.deleteCalls == 1)
         #expect(m.deleteState == .deleted)
         #expect(m.recognitionOptIn == false)
@@ -148,12 +171,12 @@ struct Boom: Error {}
         #expect(!m.canDelete)
     }
 
-    @Test func deleteFailureKeepsRowEnabled() {
+    @Test func deleteFailureKeepsRowEnabled() async {
         let store = FakeSettingsStore(hasRecognitionData: true)
         store.deleteError = Boom()
         let m = model(store: store)
         m.recognitionOptIn = true
-        m.confirmDelete()
+        await m.confirmDelete()
         #expect(m.deleteState == .failed)
         #expect(m.canDelete)
         #expect(m.recognitionOptIn == true)
@@ -165,9 +188,9 @@ struct Boom: Error {}
         #expect(!m.showsIncludeFaceToggle)
     }
 
-    @Test func deletedStateSettlesBackToIdle() {
+    @Test func deletedStateSettlesBackToIdle() async {
         let m = model()
-        m.confirmDelete()
+        await m.confirmDelete()
         m.settle()
         #expect(m.deleteState == .idle)
     }
@@ -192,32 +215,33 @@ struct Boom: Error {}
 
     // MARK: backup
 
-    @Test func exportWritesDatedFileAndHonoursFaceToggle() throws {
+    @Test func exportWritesDatedFileAndHonoursFaceToggle() async throws {
         let store = FakeSettingsStore(hasRecognitionData: true)
         let m = model(store: store)
         let date = ISO8601DateFormatter().date(from: "2026-11-06T12:00:00Z")!
-        let url = try #require(m.export(now: date))
+        let url = try #require(await m.export(now: date))
         #expect(url.lastPathComponent == "CueCoach-2026-11-06.json")
         #expect(try Data(contentsOf: url) == Data("{\"version\":1}".utf8))
         m.includeFaceInExport = true
-        _ = m.export(now: date)
+        _ = await m.export(now: date)
         #expect(store.exportedWith == [false, true])
         #expect(m.exportState == .idle)
     }
 
-    @Test func faceToggleIgnoredWhenNoRecognitionData() {
+    @Test func faceToggleIgnoredWhenNoRecognitionData() async {
         let store = FakeSettingsStore(hasRecognitionData: false)
         let m = model(store: store)
         m.includeFaceInExport = true
-        _ = m.export(now: .now)
+        _ = await m.export(now: .now)
         #expect(store.exportedWith == [false])
     }
 
-    @Test func exportFailureShowsInlineError() {
+    @Test func exportFailureShowsInlineError() async {
         let store = FakeSettingsStore()
         store.exportError = Boom()
         let m = model(store: store)
-        #expect(m.export(now: .now) == nil)
+        let url = await m.export(now: .now)
+        #expect(url == nil)
         #expect(m.exportState == .failed)
     }
 
@@ -245,6 +269,56 @@ struct Boom: Error {}
         m.importBackup(Data())
         #expect(m.importAlert == .notABackup)
         #expect(m.importState == .idle)
+    }
+
+    @Test func deleteShowsSpinnerStateWhileWorking() async {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let m = model(store: store)
+        var seen: [SettingsViewModel.DeleteState] = []
+        store.onDelete = { seen.append(m.deleteState) }
+        await m.confirmDelete()
+        #expect(seen == [.deleting])
+    }
+
+    @Test func exportShowsSpinnerStateWhileWorking() async {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let m = model(store: store)
+        var seen: [SettingsViewModel.ExportState] = []
+        store.onExport = { seen.append(m.exportState) }
+        _ = await m.export(now: .now)
+        #expect(seen == [.exporting])
+        #expect(m.exportState == .idle)
+    }
+
+    @Test func importStaysIdleUntilAFileIsPicked() {
+        // Opening the picker must not lock Backup: a cancelled picker never reports back.
+        let m = model()
+        #expect(m.importState == .idle)
+        #expect(m.backupEnabled)
+        m.importCancelled()
+        #expect(m.importState == .idle)
+        #expect(m.backupEnabled)
+    }
+
+    @Test func importFileReadsPickedURL() throws {
+        let store = FakeSettingsStore()
+        let m = model(store: store)
+        let url = FileManager.default.temporaryDirectory.appending(path: "cc-import-\(UUID().uuidString).json")
+        try Data("{}".utf8).write(to: url)
+        m.importFile(at: url)
+        #expect(store.imported == [Data("{}".utf8)])
+        #expect(m.importState == .done)
+        #expect(!m.backupEnabled)
+        m.settle()
+        #expect(m.backupEnabled)
+    }
+
+    @Test func importFileUnreadableShowsAlertAndUnlocks() {
+        let m = model()
+        m.importFile(at: URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).json"))
+        #expect(m.importAlert == .notABackup)
+        #expect(m.importState == .idle)
+        #expect(m.backupEnabled)
     }
 
     @Test func importRefreshesRecognitionPresence() {

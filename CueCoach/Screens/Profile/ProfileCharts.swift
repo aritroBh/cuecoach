@@ -9,6 +9,9 @@ struct ArchetypeRadar: View {
     var draft = false
     var showsLabels = true
     @State private var drawn: CGFloat = 0
+    /// Label column + gap grow with Dynamic Type so labels stay inside the card.
+    @ScaledMetric(relativeTo: .footnote) private var labelInset: CGFloat = 36
+    @ScaledMetric(relativeTo: .footnote) private var labelWidth: CGFloat = 72
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.saForceReduceMotion) private var forceReduceMotion
     private var reduceMotion: Bool { systemReduceMotion || forceReduceMotion }
@@ -16,7 +19,9 @@ struct ArchetypeRadar: View {
     var body: some View {
         GeometryReader { geo in
             let side = min(geo.size.width, geo.size.height)
-            let radius = side / 2 - (showsLabels ? 36 : 6)
+            let inset = showsLabels ? min(labelInset, side * 0.22) : 6
+            let radius = side / 2 - inset
+            let lw = min(labelWidth, geo.size.width * 0.32)
             let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
             ZStack {
                 Canvas { ctx, _ in
@@ -45,11 +50,15 @@ struct ArchetypeRadar: View {
                 }
                 if showsLabels {
                     ForEach(Array(axes.enumerated()), id: \.element.id) { i, a in
+                        let p = point(i, axes.count, 1, center, radius + inset * 0.6)
                         Text(a.name)
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(SA.inkMuted)
-                            .fixedSize()
-                            .position(point(i, axes.count, 1, center, radius + 22))
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                            .frame(width: lw)
+                            // Clamp so the label box never crosses the card edge.
+                            .position(x: min(max(p.x, lw / 2), geo.size.width - lw / 2),
+                                      y: min(max(p.y, inset / 2), geo.size.height - inset / 2))
                     }
                 }
             }
@@ -57,6 +66,9 @@ struct ArchetypeRadar: View {
         .onAppear {
             if reduceMotion { drawn = 1 } else { withAnimation(.easeOut(duration: 0.35)) { drawn = 1 } }
         }
+        // Axis labels stop growing at AX1 so they stay outside the shape; the full values are in the
+        // accessibility chart descriptor and VoiceOver summary.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 
     private func point(_ i: Int, _ n: Int, _ v: Double, _ c: CGPoint, _ r: CGFloat) -> CGPoint {
@@ -104,15 +116,17 @@ struct MakeHeatGrid: View {
                     Text(HeatCellView.cutAxisLabel(c))
                         .font(.footnote.weight(.semibold)).monospacedDigit()
                         .foregroundStyle(SA.inkMuted)
+                        .lineLimit(1).minimumScaleFactor(0.5)
                         .frame(width: cell)
                         .accessibilityHidden(true)
                 }
             }
             ForEach(DistanceBucket.allCases, id: \.self) { d in
                 HStack(spacing: 4) {
-                    Text(HeatCellView.distanceName(d))
+                    Text(typeSize.isAccessibilitySize ? HeatCellView.distanceShort(d) : HeatCellView.distanceName(d))
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(SA.inkMuted)
+                        .lineLimit(1).minimumScaleFactor(0.5)
                         .frame(width: rowLabelWidth, alignment: .leading)
                         .accessibilityHidden(true)
                     ForEach(cells.filter { $0.distance == d }) { c in heatCell(c) }
@@ -125,11 +139,12 @@ struct MakeHeatGrid: View {
                 .opacity(pressedCaption == nil ? 0 : 1)
                 .accessibilityHidden(true)
         }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // axis labels must fit the fixed cell columns
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Make percent by cut and distance")
     }
 
-    private var rowLabelWidth: CGFloat { typeSize.isAccessibilitySize ? 72 : 48 }
+    private var rowLabelWidth: CGFloat { typeSize.isAccessibilitySize ? 44 : 48 }
 
     private var pressedCaption: String? {
         cells.first { $0.id == pressed && $0.hasData }?.valueCaption
@@ -141,9 +156,9 @@ struct MakeHeatGrid: View {
                 .fill(c.hasData ? SA.legal.opacity(c.fillOpacity) : SA.bg.opacity(0.5))
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(pressed == c.id ? SA.ink : SA.inkMuted.opacity(0.15), lineWidth: pressed == c.id ? 2 : 1)
-            if let g = c.glyph {
-                Image(systemName: g).font(.callout.weight(.semibold))
-                    .foregroundStyle(c.make >= 0.5 ? SA.bg : SA.ink)
+            if let fill = c.glyphFill {
+                SAPieGlyph(fill: fill, color: c.glyphInkIsDark ? SA.bg : SA.ink)
+                    .frame(width: cell * 0.36, height: cell * 0.36)
             } else {
                 Circle().fill(SA.inkMuted).frame(width: 5, height: 5)
             }
@@ -170,5 +185,31 @@ struct SARing: View {
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
+    }
+}
+
+/// Quarter / half / three-quarter / full pie inside an outline ring: strictly increasing ink with the level.
+struct SAPieGlyph: View {
+    let fill: Double
+    let color: Color
+    var body: some View {
+        ZStack {
+            Circle().stroke(color, lineWidth: 1.5)
+            SAPieSlice(fraction: fill).fill(color)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+struct SAPieSlice: Shape {
+    var fraction: Double
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let c = CGPoint(x: rect.midX, y: rect.midY), r = min(rect.width, rect.height) / 2
+        guard fraction < 1 else { p.addEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)); return p }
+        p.move(to: c)
+        p.addArc(center: c, radius: r, startAngle: .degrees(-90), endAngle: .degrees(-90 + 360 * fraction), clockwise: false)
+        p.closeSubpath()
+        return p
     }
 }

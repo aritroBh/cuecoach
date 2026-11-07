@@ -47,7 +47,7 @@ import Testing
         #expect(c.unlock == .locked(gamesMissing: 1, shotsMissing: 12))
         #expect(c.topArchetype == nil)
         #expect(c.proComp == nil)        // even if a source leaks one
-        #expect(c.lockedCaption == "1 game")
+        #expect(c.lockedCaption == "1 more game")
     }
 
     @Test func errorFixtureFailsThenRetries() async {
@@ -68,11 +68,19 @@ import Testing
     }
 
     @Test func lockedCaptions() {
-        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 3, shotsMissing: 50)) == "3 games")
-        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 1, shotsMissing: 0)) == "1 game")
-        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 0, shotsMissing: 7)) == "7 shots")
-        #expect(PlayerProfileViewModel.lockedCaption(.newPlayer) == "3 games")
+        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 3, shotsMissing: 50)) == "3 more games")
+        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 1, shotsMissing: 0)) == "1 more game")
+        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 0, shotsMissing: 7)) == "7 more shots")
+        #expect(PlayerProfileViewModel.lockedCaption(.locked(gamesMissing: 0, shotsMissing: 1)) == "1 more shot")
+        #expect(PlayerProfileViewModel.lockedCaption(.newPlayer) == "3 more games")
         #expect(PlayerProfileViewModel.lockedCaption(.unlocked) == nil)
+    }
+
+    @Test func lockedSpokenMatchesSpec() {
+        #expect(PlayerProfileViewModel.lockedSpoken(.locked(gamesMissing: 1, shotsMissing: 0))
+                == "Pro comparison locked, 1 more game needed")
+        #expect(PlayerProfileViewModel.lockedSpoken(.locked(gamesMissing: 0, shotsMissing: 12))
+                == "Pro comparison locked, 12 more shots needed")
     }
 
     @Test func lockProgressIsFractionOfBothThresholds() {
@@ -114,16 +122,28 @@ import Testing
     @Test func heatCellLevelsAndOpacity() {
         let thin = HeatCellView(HeatCell(cut: .c0to15, distance: .short, attempts: 4, makes: 4))
         #expect(!thin.hasData)
-        #expect(thin.glyph == nil)
+        #expect(thin.glyphFill == nil)
         let low = HeatCellView(HeatCell(cut: .c0to15, distance: .short, attempts: 10, makes: 1))
-        #expect(low.glyph == "circle")
         let mid = HeatCellView(HeatCell(cut: .c0to15, distance: .short, attempts: 10, makes: 4))
-        #expect(mid.glyph == "circle.lefthalf.filled")
         let good = HeatCellView(HeatCell(cut: .c0to15, distance: .short, attempts: 10, makes: 6))
-        #expect(good.glyph == "circle.fill")
         let best = HeatCellView(HeatCell(cut: .c0to15, distance: .short, attempts: 10, makes: 9))
-        #expect(best.glyph == "smallcircle.filled.circle")
+        // Strictly increasing fill (quarter → full pie) so greyscale still ranks the cells.
+        #expect([low, mid, good, best].map(\.glyphFill) == [0.25, 0.5, 0.75, 1])
         #expect(abs(best.fillOpacity - (0.15 + 0.85 * 0.9)) < 0.0001)
+    }
+
+    @Test func heatGlyphInkPicksTheHigherContrast() {
+        // Faint fill → light ink; bright green fill → dark ink. Never a fixed 50% cutoff.
+        #expect(HeatCellView.glyphInkIsDark(fillOpacity: 0.2) == false)
+        #expect(HeatCellView.glyphInkIsDark(fillOpacity: 1) == true)
+        for o in stride(from: 0.15, through: 1.0, by: 0.05) {
+            let dark = HeatCellView.glyphInkIsDark(fillOpacity: o)
+            let fill = HeatCellView.cellFillLuminance(fillOpacity: o)
+            let cDark = HeatCellView.contrast(fill, HeatCellView.bgLuminance)
+            let cLight = HeatCellView.contrast(fill, HeatCellView.inkLuminance)
+            #expect(dark == (cDark > cLight))
+            #expect(max(cDark, cLight) >= 3, "glyph contrast at \(o)")
+        }
     }
 
     @Test func heatCellAccessibility() {
@@ -156,14 +176,46 @@ import Testing
 
     // MARK: badges
 
-    @Test func badgeShelfCapsAtEight() async throws {
+    @Test func badgeShelfCapsAtEightKinds() async throws {
         let m = await loaded(.veteran)
         let c = try #require(m.content)
-        #expect(c.visibleBadges.count <= 8)
-        #expect(c.badges.count > 8)
+        #expect(c.visibleBadges.count == 8)
+        #expect(c.badgeGroups.count > 8)
         #expect(c.hasMoreBadges)
-        let b = c.badges[0]
+        let b = c.visibleBadges[0]
         #expect(PlayerProfileViewModel.badgeSpoken(b).hasSuffix("badge, earned 6 November"))
+    }
+
+    @Test func duplicateBadgeKindsCollapse() {
+        func d(_ day: Int) -> Date { Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: day))! }
+        let raw = [EarnedBadge(id: "mvp-1", name: "MVP", symbol: "crown.fill", earnedAt: d(18)),
+                   EarnedBadge(id: "ice", name: "Ice Veins", symbol: "snowflake", earnedAt: d(25)),
+                   EarnedBadge(id: "mvp-2", name: "MVP", symbol: "crown.fill", earnedAt: d(30))]
+        let groups = PlayerProfileViewModel.groupBadges(raw)
+        #expect(groups.map(\.name) == ["MVP", "Ice Veins"])          // most recent award first
+        #expect(groups[0].count == 2)
+        #expect(groups[0].latest == d(30))
+        #expect(groups[0].dates == [d(30), d(18)])
+        #expect(groups[0].countCaption == "2 games")
+        #expect(groups[1].countCaption == nil)
+        #expect(PlayerProfileViewModel.badgeSpoken(groups[0]).hasPrefix("MVP badge, 2 games, last earned"))
+    }
+
+    @Test func veteranShelfHasNoDuplicateDiscs() async throws {
+        let m = await loaded(.veteran)
+        let c = try #require(m.content)
+        #expect(Set(c.visibleBadges.map(\.name)).count == c.visibleBadges.count)
+        #expect(Set(c.badgeGroups.map(\.name)).count == c.badgeGroups.count)
+    }
+
+    @Test func trainingStillLoadsWhenStatsFail() async {
+        let f = SamplePlayerData.error
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: f.training)
+        await m.load()
+        #expect(m.phase == .failed)
+        #expect(m.training?.drills.isEmpty == false)
+        #expect(m.failureScope(.stats) && m.failureScope(.history))
+        #expect(!m.failureScope(.training))
     }
 
     // MARK: totals

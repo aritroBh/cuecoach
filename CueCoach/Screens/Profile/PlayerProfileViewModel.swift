@@ -55,14 +55,43 @@ struct HeatCellView: Equatable, Sendable, Identifiable {
     var percent: Int { Int(make * 100) }
     var fillOpacity: Double { hasData ? 0.15 + 0.85 * make : 0 }
 
-    var glyph: String? {
+    /// Pie fill for the colour-independent glyph: strictly increasing quarter → full, so greyscale ranks cells.
+    var glyphFill: Double? {
         guard hasData else { return nil }
         switch make {
-        case ..<0.25: return "circle"
-        case ..<0.5: return "circle.lefthalf.filled"
-        case ..<0.75: return "circle.fill"
-        default: return "smallcircle.filled.circle"
+        case ..<0.25: return 0.25
+        case ..<0.5: return 0.5
+        case ..<0.75: return 0.75
+        default: return 1
         }
+    }
+
+    var glyphInkIsDark: Bool { Self.glyphInkIsDark(fillOpacity: fillOpacity) }
+
+    // Glyph ink = whichever of ink/bg contrasts more with the actual cell fill (legal over the card surface).
+    nonisolated static let inkLuminance = luminance(0xF2, 0xF5, 0xF3)
+    nonisolated static let bgLuminance = luminance(0x0B, 0x0F, 0x0E)
+
+    nonisolated static func glyphInkIsDark(fillOpacity a: Double) -> Bool {
+        let fill = cellFillLuminance(fillOpacity: a)
+        return contrast(fill, bgLuminance) > contrast(fill, inkLuminance)
+    }
+
+    nonisolated static func cellFillLuminance(fillOpacity a: Double) -> Double {
+        func mix(_ f: Double, _ b: Double) -> Double { f * a + b * (1 - a) }
+        return luminance(mix(0x4A, 0x15), mix(0xDE, 0x1B), mix(0x80, 0x19))
+    }
+
+    nonisolated static func luminance(_ r: Double, _ g: Double, _ b: Double) -> Double {
+        func lin(_ c: Double) -> Double {
+            let v = c / 255
+            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    }
+
+    nonisolated static func contrast(_ a: Double, _ b: Double) -> Double {
+        (max(a, b) + 0.05) / (min(a, b) + 0.05)
     }
 
     var valueCaption: String { "\(percent)% · \(cell.attempts) shots" }
@@ -74,6 +103,9 @@ struct HeatCellView: Equatable, Sendable, Identifiable {
 
     nonisolated static func distanceName(_ d: DistanceBucket) -> String {
         switch d { case .short: "Short"; case .mid: "Mid"; case .long: "Long" }
+    }
+    nonisolated static func distanceShort(_ d: DistanceBucket) -> String {
+        switch d { case .short: "S"; case .mid: "M"; case .long: "L" }
     }
     nonisolated static func cutSpoken(_ c: CutBucket) -> String {
         switch c {
@@ -100,10 +132,12 @@ struct ProfileContent: Equatable, Sendable {
     var badges: [EarnedBadge]
     var history: [HistoryGroup]
 
-    var visibleBadges: [EarnedBadge] { Array(badges.prefix(8)) }
-    var hasMoreBadges: Bool { badges.count > 8 }
+    var badgeGroups: [BadgeGroup] { PlayerProfileViewModel.groupBadges(badges) }
+    var visibleBadges: [BadgeGroup] { Array(badgeGroups.prefix(8)) }
+    var hasMoreBadges: Bool { badgeGroups.count > 8 }
     var showsBadgeShelf: Bool { !badges.isEmpty }
     var lockedCaption: String? { PlayerProfileViewModel.lockedCaption(unlock) }
+    var lockedSpoken: String { PlayerProfileViewModel.lockedSpoken(unlock) }
     var lockProgress: Double { PlayerProfileViewModel.lockProgress(games: summary.games, shots: summary.shots) }
     var totals: [TotalItem] { PlayerProfileViewModel.totals(summary) }
     var proTraits: [TraitRow] { proComp.map(PlayerProfileViewModel.traits) ?? [] }
@@ -115,8 +149,10 @@ struct TrainingContent: Equatable, Sendable {
     var bias: BiasHint?
 }
 
+/// Public type so Home can hold one; `init` stays internal because its source protocols carry
+/// Persistence value types (`StoredShotFeatures.CutBucket`, `BiasAxis`) that are internal to the app module.
 @MainActor @Observable
-final class PlayerProfileViewModel {
+public final class PlayerProfileViewModel {
     enum Phase: Equatable { case loading, loaded, failed }
 
     nonisolated static let gamesToUnlock = 3
@@ -170,6 +206,9 @@ final class PlayerProfileViewModel {
         }
     }
 
+    /// Stats and History come from the competitive store; Training loads separately and can still render.
+    func failureScope(_ tab: ProfileTab) -> Bool { phase == .failed && tab != .training }
+
     func openGame(_ id: UUID) { onOpenGame?(id) }
 
     func toggleExpanded(_ session: UUID) {
@@ -211,13 +250,17 @@ final class PlayerProfileViewModel {
     }
 
     nonisolated static func lockedCaption(_ state: UnlockState) -> String? {
+        func more(_ n: Int, _ unit: String) -> String { "\(n) more \(unit)\(n == 1 ? "" : "s")" }
         switch state {
         case .unlocked: return nil
-        case .newPlayer: return "\(gamesToUnlock) games"
-        case let .locked(g, s):
-            if g > 0 { return g == 1 ? "1 game" : "\(g) games" }
-            return s == 1 ? "1 shot" : "\(s) shots"
+        case .newPlayer: return more(gamesToUnlock, "game")
+        case let .locked(g, s): return g > 0 ? more(g, "game") : more(s, "shot")
         }
+    }
+
+    nonisolated static func lockedSpoken(_ state: UnlockState) -> String {
+        guard let cap = lockedCaption(state) else { return "Pro comparison unlocked" }
+        return "Pro comparison locked, \(cap) needed"
     }
 
     nonisolated static func lockProgress(games: Int, shots: Int) -> Double {
@@ -267,11 +310,28 @@ final class PlayerProfileViewModel {
 
     nonisolated static func percent(_ v: Double) -> String { "\(Int(v * 100))%" }
 
-    nonisolated static func badgeSpoken(_ b: EarnedBadge) -> String {
+    /// Collapses repeat awards into one group per kind (name + glyph), newest award first.
+    nonisolated static func groupBadges(_ badges: [EarnedBadge]) -> [BadgeGroup] {
+        var order: [String] = []
+        var byKey: [String: BadgeGroup] = [:]
+        for b in badges.sorted(by: { $0.earnedAt > $1.earnedAt }) {
+            let key = b.name + "|" + b.symbol
+            if byKey[key] == nil { order.append(key); byKey[key] = BadgeGroup(name: b.name, symbol: b.symbol, dates: []) }
+            byKey[key]!.dates.append(b.earnedAt)
+        }
+        return order.map { byKey[$0]! }
+    }
+
+    nonisolated static func dayMonth(_ d: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "d MMMM"
-        return "\(b.name) badge, earned \(f.string(from: b.earnedAt))"
+        return f.string(from: d)
+    }
+
+    nonisolated static func badgeSpoken(_ g: BadgeGroup) -> String {
+        if let count = g.countCaption { return "\(g.name) badge, \(count), last earned \(dayMonth(g.latest))" }
+        return "\(g.name) badge, earned \(dayMonth(g.latest))"
     }
 
     nonisolated static func totals(_ s: ProfileSummary) -> [TotalItem] {

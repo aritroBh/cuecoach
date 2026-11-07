@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Geometry
 import Observation
@@ -6,7 +7,7 @@ import SwiftData
 
 /// What Settings needs from persistence. Backed by `PersistenceStack` in the app (`PersistenceSettingsStore`)
 /// and by in-memory fakes in previews and tests.
-@MainActor protocol SettingsStore: AnyObject {
+@MainActor public protocol SettingsStore: AnyObject {
     var hasRecognitionData: Bool { get }
     func deleteMyRecognitionData() throws
     func exportBackup(includeRecognition: Bool) throws -> Data
@@ -14,9 +15,12 @@ import SwiftData
 }
 
 /// Calibration owns the real one (D7, D12). `nil` until a LiDAR or ball-scale measurement exists.
-protocol TableMeasurementSource { var measured: TableSize? { get } }
+public protocol TableMeasurementSource { var measured: TableSize? { get } }
 
-struct NoTableMeasurement: TableMeasurementSource { var measured: TableSize? { nil } }
+public struct NoTableMeasurement: TableMeasurementSource {
+    public init() {}
+    public var measured: TableSize? { nil }
+}
 
 /// UserDefaults keys for the app-wide defaults set on this screen.
 enum SettingsKeys {
@@ -27,8 +31,9 @@ enum SettingsKeys {
     nonisolated static let recognitionOptIn = "cc.recognition.optIn"
 }
 
+/// Public so the Home owner can construct it; members stay internal (same app module).
 @MainActor @Observable
-final class SettingsViewModel {
+public final class SettingsViewModel {
     enum DeleteState: Equatable { case idle, deleting, deleted, failed }
     enum ExportState: Equatable { case idle, exporting, failed }
     enum ImportState: Equatable { case idle, importing, done }
@@ -70,8 +75,8 @@ final class SettingsViewModel {
         didSet { defaults.set(manualTable?.rawValue, forKey: SettingsKeys.tableSize) }
     }
 
-    init(store: SettingsStore, measurement: TableMeasurementSource = NoTableMeasurement(),
-         defaults: UserDefaults = .standard) {
+    public init(store: SettingsStore, measurement: TableMeasurementSource = NoTableMeasurement(),
+                defaults: UserDefaults = .standard) {
         self.store = store
         self.measurement = measurement
         self.defaults = defaults
@@ -106,6 +111,14 @@ final class SettingsViewModel {
 
     func selectTable(_ size: TableSize) { manualTable = size }
 
+    /// Every table is 2:1. Fit the 9 ft table to `box`, then scale width and height together.
+    nonisolated static func silhouetteRect(_ size: TableSize, in box: CGSize) -> CGRect {
+        let fullW = min(box.width, box.height * 2)
+        let s = silhouetteScale(size)
+        let w = fullW * s, h = fullW / 2 * s
+        return CGRect(x: (box.width - w) / 2, y: (box.height - h) / 2, width: w, height: h)
+    }
+
     /// Width relative to a 9 ft table, from the true playing lengths.
     nonisolated static func silhouetteScale(_ size: TableSize) -> Double {
         size.playingLength / TableSize.nineFoot.playingLength
@@ -120,11 +133,19 @@ final class SettingsViewModel {
 
     // MARK: Privacy
 
+    nonisolated static let deleteRowTitle = "Delete recognition data"
+    nonisolated static let deleteDialogTitle = "Delete recognition data?"
+
     var canDelete: Bool { hasRecognitionData && deleteState != .deleting }
+    /// Export/Import tiles are usable unless a picked file is being read or just finished.
+    var backupEnabled: Bool { importState == .idle && exportState != .exporting }
     var showsIncludeFaceToggle: Bool { hasRecognitionData }
 
-    func confirmDelete() {
+    /// SwiftData contexts are main-actor bound, so the store call stays here; the yield lets the
+    /// spinner render before the (synchronous) delete runs.
+    func confirmDelete() async {
         deleteState = .deleting
+        await Task.yield()
         do {
             try store.deleteMyRecognitionData()
             hasRecognitionData = store.hasRecognitionData
@@ -151,15 +172,20 @@ final class SettingsViewModel {
         return String(format: "CueCoach-%04d-%02d-%02d.json", c.year!, c.month!, c.day!)
     }
 
-    /// Writes the backup to a temp file for the share sheet. Returns nil on failure.
-    func export(now: Date = .now) -> URL? {
+    /// Encodes on the main actor (SwiftData), writes the file off it. Returns nil on failure.
+    func export(now: Date = .now) async -> URL? {
         exportState = .exporting
+        await Task.yield()
         do {
             let data = try store.exportBackup(includeRecognition: includeFaceInExport && hasRecognitionData)
-            let dir = FileManager.default.temporaryDirectory.appending(path: "cc-export-\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let url = dir.appending(path: Self.backupFilename(now))
-            try data.write(to: url, options: .atomic)
+            let name = Self.backupFilename(now)
+            let url = try await Task.detached(priority: .userInitiated) {
+                let dir = FileManager.default.temporaryDirectory.appending(path: "cc-export-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let url = dir.appending(path: name)
+                try data.write(to: url, options: .atomic)
+                return url
+            }.value
             exportState = .idle
             return url
         } catch {
@@ -168,7 +194,14 @@ final class SettingsViewModel {
         }
     }
 
-    func beginImport() { importState = .importing }
+    /// Called only once the picker returns a URL. Opening the picker never changes state, because a
+    /// cancelled `fileImporter` does not call back.
+    func importFile(at url: URL) {
+        importState = .importing
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let data = try? Data(contentsOf: url) { importBackup(data) } else { importFailedToRead() }
+    }
 
     func importBackup(_ data: Data) {
         importState = .importing

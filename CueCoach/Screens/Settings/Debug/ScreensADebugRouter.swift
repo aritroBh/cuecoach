@@ -9,7 +9,7 @@ import UIKit
 ///   -screen=settings|profile
 ///   -fixture=<name>       settings: default|measured|empty|deleteFail   profile: veteran|newPlayer|preUnlock|error|guest
 ///   -tab=stats|history|training
-///   -dynamicType=xxl      -reduceMotion
+///   -dynamicType=xxl|ax5  -reduceMotion   (ax5 = .accessibility5, exercises every AX layout branch)
 ///
 /// Installed by a C constructor (ScreensADebugBoot.m) that swaps the first active window's root view controller.
 enum ScreensADebugRouter {
@@ -17,7 +17,7 @@ enum ScreensADebugRouter {
         var screen: String
         var fixture: String
         var tab: String?
-        var xxl: Bool
+        var typeSize: DynamicTypeSize
         var reduceMotion: Bool
     }
 
@@ -27,7 +27,11 @@ enum ScreensADebugRouter {
         }
         guard let screen = value("screen") else { return nil }
         return Request(screen: screen, fixture: value("fixture") ?? "default", tab: value("tab"),
-                       xxl: value("dynamicType") == "xxl", reduceMotion: args.contains("-reduceMotion"))
+                       typeSize: typeSize(value("dynamicType")), reduceMotion: args.contains("-reduceMotion"))
+    }
+
+    static func typeSize(_ raw: String?) -> DynamicTypeSize {
+        switch raw { case "xxl": .xxLarge; case "ax5": .accessibility5; default: .large }
     }
 
     nonisolated(unsafe) static var observer: NSObjectProtocol?
@@ -53,7 +57,7 @@ struct ScreensADebugRoot: View {
 
     var body: some View {
         NavigationStack { screen }
-            .dynamicTypeSize(request.xxl ? .xxLarge : .large)
+            .dynamicTypeSize(request.typeSize)
             .environment(\.saForceReduceMotion, request.reduceMotion)
             .preferredColorScheme(.dark)
     }

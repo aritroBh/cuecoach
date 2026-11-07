@@ -56,7 +56,8 @@ struct SamplePlayerData: Sendable {
         return .init(playerID: id,
                      stats: .init(summary: .init(id: id, name: "?", avatarSymbol: "person", avatarColor: "#888888",
                                                  games: 0, wins: 0, shots: 0, makes: 0), fails: true),
-                     training: .init(drills: [], bias: nil))
+                     // Training is a separate store: it still loads when competitive stats fail.
+                     training: .init(drills: [.init(drill: "straightIn", name: "Straight-ins", level: 2)], bias: nil))
     }()
 
     static func named(_ name: String) -> SamplePlayerData? {
@@ -102,6 +103,8 @@ struct SamplePlayerData: Sendable {
         .init(id: "longGun", name: "Long Gun", symbol: "arrow.up.right", earnedAt: date(10, 12)),
         .init(id: "sotg-2", name: "Shot of Game", symbol: "sparkles", earnedAt: date(10, 8)),
         .init(id: "cannonBreak", name: "Cannon Break", symbol: "burst.fill", earnedAt: date(10, 3)),
+        .init(id: "sidePocketSniper", name: "Side-Pocket Sniper", symbol: "circle.dotted", earnedAt: date(9, 27)),
+        .init(id: "safetyChess", name: "Safety Chess", symbol: "shield.lefthalf.filled", earnedAt: date(9, 20)),
     ]
 
     private static let sessions: [SessionSummary] = [
