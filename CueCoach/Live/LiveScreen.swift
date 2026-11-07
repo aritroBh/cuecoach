@@ -19,13 +19,12 @@ struct LiveScreen: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            content.ignoresSafeArea()
+            content.ignoresSafeArea().accessibilityIdentifier("live.view")
             HandlesLayer(model: model).ignoresSafeArea()
             controls
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
-        .accessibilityIdentifier("live.view")
         .onAppear { if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true } }
     }
 
