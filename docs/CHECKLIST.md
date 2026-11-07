@@ -31,7 +31,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
 - [x] Persistence: training/competitive isolation test
 - [x] Virtual table: design system (design-system/cuecoach/MASTER.md via ui-ux-pro-max)
-- [~] Virtual table: playable bar8/WPA8/WPA9 + 2v2, 87 tests + 6 XCUITests green; installed on both phones; Antigravity review running
+- [x] Virtual table: playable (dev/test tool only — polish stopped per user; camera is the product)
 - [ ] Cross-vendor review of every module, findings fixed
 - [ ] Device run on iPhone 15 Pro Max, design review
 - [ ] Merge, delete branches/worktrees, clean status
@@ -45,7 +45,8 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 ## Camera track — pulled forward from Phase 3 (user, 2026-11-06), running in parallel
 - [~] Capture: camera + LiDAR frame source, replay source (worktree .worktrees/capture, Claude)
 - [~] Calibration: tap-4-corners + auto cloth detection, homography + ball-plane offset, LiDAR table size (D12)
-- [~] Ball detection v0 (classical, real-time) + tracker v0; Core ML YOLO detector next (docs/research/perception.md)
+- [~] Ball detection v0 (classical, real-time) + tracker v0 — Claude, .worktrees/capture
+- [~] Core ML ball detector: synthetic data + YOLO train + .mlpackage export — Codex, .worktrees/detector
 - [~] Live screen: camera + table outline + ball rings + aim line, no text while aiming
 - [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
 - [ ] On-device VLM (Apple Foundation Models, image input) for post-shot keyframe analysis — non-real-time only (SPEC §6)
