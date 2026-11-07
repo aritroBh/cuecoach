@@ -56,6 +56,18 @@ struct BiasDetectorTests {
             #expect(d.activeBiases().isEmpty)
         }
     }
+    @Test func minimumAttemptsBindsEvenWithALowThreshold() {
+        let cfg = BiasDetector.Config(deadZone: 0, alternativeP: 0.75, threshold: 0.5, cap: 10, minimumAttempts: 8)
+        var d = BiasDetector(config: cfg)
+        for i in 1...8 {
+            d.observe(.cut, error: 1)
+            #expect(d.activeBiases().isEmpty == (i < 8), "attempt \(i)")
+        }
+    }
+    @Test func standardConfigNeedsAtLeastEightStraightAttempts() {
+        let c = BiasDetector.Config.standard
+        #expect(c.threshold / log(c.alternativeP / 0.5) >= 8)
+    }
     @Test func consistentSameSignFiresWithRightAxisAndDirection() {
         var d = BiasDetector()
         var firedAt: Int?
