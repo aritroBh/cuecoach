@@ -36,6 +36,23 @@ import Testing
         #expect(VisionPersonAnalyzer.upperBody(BodyJoints(points: [.neck: .zero])) == nil)
     }
 
+    @Test func facesGoToTheNearestHeadNotTheFirstOverlappingBox() {
+        // Two players stand close: inflated boxes overlap. Each face must land on its own person.
+        let p1 = ObservedPerson(box: CGRect(x: 0.30, y: 0.2, width: 0.20, height: 0.6),
+                                joints: BodyJoints(points: [.neck: CGPoint(x: 0.40, y: 0.72)]))
+        let p2 = ObservedPerson(box: CGRect(x: 0.42, y: 0.2, width: 0.20, height: 0.6),
+                                joints: BodyJoints(points: [.neck: CGPoint(x: 0.52, y: 0.72)]))
+        let f1 = CGRect(x: 0.37, y: 0.74, width: 0.06, height: 0.08)   // centre (0.40, 0.78): inside both boxes
+        let f2 = CGRect(x: 0.49, y: 0.74, width: 0.06, height: 0.08)   // centre (0.52, 0.78): inside both boxes
+        let far = CGRect(x: 0.9, y: 0.9, width: 0.05, height: 0.05)
+        // Order chosen so first-box-wins would give f2 to p1.
+        let m = VisionPersonAnalyzer.assignFaces([f2, f1, far], to: [p1, p2])
+        #expect(m[0] == 1)
+        #expect(m[1] == 0)
+        #expect(m[2] == nil)
+        #expect(Set(m.values).count == m.count)   // one face per person
+    }
+
     @Test(.enabled(if: VisionAdapterTests.featurePrintAvailable, "Vision needs a compute device (real iPhone)"))
     func analyzerFindsNobodyInAnEmptyFrame() async throws {
         let people = try await VisionPersonAnalyzer().people(in: testImage(width: 64, height: 64),

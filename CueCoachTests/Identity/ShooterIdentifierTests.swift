@@ -96,7 +96,8 @@ private func snapshot(clothes: [UUID: Embedding], roster entries: [RosterEntry])
         #expect(out.attribution == Attribution(playerID: Synth.b, source: .turnOrder, confidence: out.attribution.confidence, shooterTrackID: nil))
     }
 
-    @Test func faceMatchUsedOnlyWithFaceConsent() async {
+    @Test func strokeTimeNeverEmbedsFacesEvenWithFaceConsent() async {
+        // Q10 is open (default: no). Stroke-time face embedding would scan every face in view, bystanders included.
         let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, face: Synth.axis(4, model: faceModel))]
         let roster = [RosterEntry(playerID: Synth.a), RosterEntry(playerID: Synth.b, consent: .init(clothes: false, face: true))]
         let snap = IdentitySnapshot(roster: IdentityRoster(entries: roster), appearanceGallery: [:],
@@ -104,8 +105,59 @@ private func snapshot(clothes: [UUID: Embedding], roster entries: [RosterEntry])
         let analyzer = FakeAnalyzer(script: [1: people, 2: people])
         let out = await VisionShooterIdentifier(analyzer: analyzer)
             .identify(window(2), snapshot: snap, expectedShooter: Synth.a, teamInTurn: nil)
-        #expect(analyzer.wants.allSatisfy { $0.face && !$0.appearance })
-        #expect(out.attribution.playerID == Synth.b)
+        #expect(!analyzer.wants.isEmpty)
+        #expect(analyzer.wants.allSatisfy { !$0.face && !$0.appearance })
+        #expect(out.evidence.allSatisfy { $0.faceSimilarity.isEmpty })
+        #expect(out.attribution.playerID == Synth.a && out.attribution.source == .turnOrder)
+    }
+
+    @Test func outOfTurnConsentedShooterSampleIsKeptWhenFallingBackToANonConsentedPlayer() async {
+        // C (no consent) is expected; A (consented) actually shoots with a so-so match → turn order says C,
+        // but the sample resembles A, so a later tap "A" can teach A's template.
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.near(0, cos: 0.68, other: 9, model: bodyModel))]
+        let snap = snapshot(clothes: [Synth.a: Synth.axis(0, model: bodyModel)],
+                            roster: [RosterEntry(playerID: Synth.a, consent: .init(clothes: true, face: false)), RosterEntry(playerID: Synth.c)])
+        let out = await VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people]))
+            .identify(window(1), snapshot: snap, expectedShooter: Synth.c, teamInTurn: nil)
+        #expect(out.attribution.playerID == Synth.c && out.attribution.source == .turnOrder)
+        #expect(out.shooterAppearance != nil)
+    }
+
+    @Test func nonConsentedShooterSampleIsDroppedEvenWhenAttributedToAConsentedPlayer() async {
+        // A (consented) is expected; B (no consent) shoots and looks nothing like A → B's vector is never kept.
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.axis(5, model: bodyModel))]
+        let snap = snapshot(clothes: [Synth.a: Synth.axis(0, model: bodyModel)],
+                            roster: [RosterEntry(playerID: Synth.a, consent: .init(clothes: true, face: false)), RosterEntry(playerID: Synth.b)])
+        let out = await VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people]))
+            .identify(window(1), snapshot: snap, expectedShooter: Synth.a, teamInTurn: nil)
+        #expect(out.attribution.playerID == Synth.a && out.attribution.source == .turnOrder)
+        #expect(out.shooterAppearance == nil)
+    }
+
+    @Test func consentedPlayerWithEmptyGalleryIsBootstrappedOnTheirOwnTurn() async {
+        // Guest G granted clothes consent, no template yet. On G's turn the shooter track's appearance is computed
+        // and returned so the session can seed G (turn-order bind, research §7.2).
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.axis(6, model: bodyModel))]
+        let snap = snapshot(clothes: [:], roster: [RosterEntry(playerID: Synth.d, consent: .init(clothes: true, face: false), isGuest: true),
+                                                   RosterEntry(playerID: Synth.b)])
+        let analyzer = FakeAnalyzer(script: [1: people, 2: people])
+        let out = await VisionShooterIdentifier(analyzer: analyzer)
+            .identify(window(2), snapshot: snap, expectedShooter: Synth.d, teamInTurn: nil)
+        #expect(analyzer.wants.allSatisfy { $0.appearance && !$0.face })
+        #expect(out.attribution.playerID == Synth.d)
+        #expect(out.shooterAppearance == Synth.axis(6, model: bodyModel))
+    }
+
+    @Test func emptyGalleryConsentedPlayerOffTurnRequestsNoEmbeddings() async {
+        // Nothing to match against and nobody to bootstrap → don't compute anyone's appearance.
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.axis(6, model: bodyModel))]
+        let snap = snapshot(clothes: [:], roster: [RosterEntry(playerID: Synth.d, consent: .init(clothes: true, face: false), isGuest: true),
+                                                   RosterEntry(playerID: Synth.b)])
+        let analyzer = FakeAnalyzer(script: [1: people])
+        let out = await VisionShooterIdentifier(analyzer: analyzer)
+            .identify(window(1), snapshot: snap, expectedShooter: Synth.b, teamInTurn: nil)
+        #expect(analyzer.wants.allSatisfy { !$0.appearance && !$0.face })
+        #expect(out.shooterAppearance == nil)
     }
 
     @MainActor @Test func sessionDrivesIdentifierAndRecordsResult() async {
@@ -122,6 +174,16 @@ private func snapshot(clothes: [UUID: Embedding], roster entries: [RosterEntry])
         #expect(att.playerID == Synth.a && att.source == .auto)
         #expect(await session.attribution(for: shot) == att)
         #expect(await session.pendingSampleCount == 1)
+    }
+
+    @MainActor @Test func guestBootstrapsThroughThePipeline() async {
+        let session = IdentitySession(profiles: [], guests: [Synth.d, Synth.b], faceModelID: faceModel, bodyModelID: bodyModel)
+        session.grantGuestClothesConsent(Synth.d)
+        let people = [ObservedPerson(box: shooterBox, joints: shooterJoints, appearance: Synth.axis(6, model: bodyModel))]
+        let att = await session.identifyShot(UUID(), window: window(2), expectedShooter: Synth.d, teamInTurn: nil,
+                                             using: VisionShooterIdentifier(analyzer: FakeAnalyzer(script: [1: people, 2: people])))
+        #expect(att.playerID == Synth.d)
+        #expect(session.snapshot().appearanceGallery[Synth.d] == [Synth.axis(6, model: bodyModel)])
     }
 }
 

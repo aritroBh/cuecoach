@@ -116,6 +116,39 @@ let bodyModel = "fake.body.v1"
         #expect(t.body.count == 4)
     }
 
+    @Test func failedSaveRollsBackAndKeepsTheOldTemplates() async throws {
+        let (stack, owner, face, body) = try setup()
+        try await RecognitionRegistrar(stack: stack, face: face, body: body)
+            .register(owner, decision: ConsentDecision(consent: .init(clothes: true, face: true), agreedAt: Fixture.t0), capture: capture)
+        let oldFace = owner.recognition?.faceEmbedding
+        struct DiskFull: Error {}
+        let failing = RecognitionRegistrar(stack: stack, face: face, body: body, save: { _ in throw DiskFull() })
+        await #expect(throws: DiskFull.self) {
+            try await failing.register(owner, decision: ConsentDecision(consent: .init(clothes: true, face: false), agreedAt: .now),
+                                       capture: capture)
+        }
+        #expect(!stack.competitiveContext.hasChanges)
+        // A later unrelated save must not commit a half-done replacement.
+        try stack.competitiveContext.save()
+        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 1)
+        #expect(owner.recognition?.faceEmbedding == oldFace)
+    }
+
+    @Test func consentRecordStoresTermsVersionAndAsksAgainWhenStale() async throws {
+        let (stack, owner, face, body) = try setup()
+        try await RecognitionRegistrar(stack: stack, face: face, body: body)
+            .register(owner, decision: ConsentDecision(consent: .init(clothes: true, face: false), agreedAt: Fixture.t0), capture: capture)
+        let r = try #require(owner.recognition)
+        #expect(r.version == IdentityConsentTerms.current)
+        #expect(!IdentityConsentTerms.needsReconsent(r, faceModelID: faceModel, bodyModelID: bodyModel))
+        // Model changed → templates unusable → ask again.
+        #expect(IdentityConsentTerms.needsReconsent(r, faceModelID: faceModel, bodyModelID: "fake.body.v2"))
+        // Data-use / consent text changed → ask again.
+        r.version = IdentityConsentTerms.current - 1
+        #expect(IdentityConsentTerms.needsReconsent(r, faceModelID: faceModel, bodyModelID: bodyModel))
+        #expect(!IdentityConsentTerms.needsReconsent(nil, faceModelID: faceModel, bodyModelID: bodyModel))
+    }
+
     @Test func deleteWipesStorageSessionTemplatesAndEmitsRevoke() async throws {
         let (stack, owner, face, body) = try setup()
         try await RecognitionRegistrar(stack: stack, face: face, body: body)
@@ -190,11 +223,11 @@ let bodyModel = "fake.body.v1"
                                 faceModelID: faceModel, bodyModelID: bodyModel)
         let shot1 = UUID(), shot2 = UUID()
         s.record(shot: shot1, ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .auto, confidence: 0.9, shooterTrackID: 1),
-                                                    shooterAppearance: Synth.axis(7, model: bodyModel)))
+                                                    shooterAppearance: Synth.near(2, cos: 0.8, other: 7, model: bodyModel)))
         let fixed = s.correct(shot: shot1, to: Synth.b)
         #expect(fixed == Attribution(playerID: Synth.b, source: .tap, confidence: 1, shooterTrackID: 1))
         #expect(s.attribution(for: shot1)?.source == .tap)
-        #expect(s.snapshot().appearanceGallery[Synth.b]?.contains(Synth.axis(7, model: bodyModel)) == true)
+        #expect(s.snapshot().appearanceGallery[Synth.b]?.contains(Synth.near(2, cos: 0.8, other: 7, model: bodyModel).normalised!) == true)
 
         s.record(shot: shot2, ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .auto, confidence: 0.9, shooterTrackID: 1),
                                                     shooterAppearance: Synth.axis(8, model: bodyModel)))
@@ -223,7 +256,8 @@ let bodyModel = "fake.body.v1"
                                 faceModelID: faceModel, bodyModelID: bodyModel)
         let shot = UUID()
         s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .auto, confidence: 0.9, shooterTrackID: 1),
-                                                   shooterAppearance: Synth.axis(9, model: bodyModel)))
+                                                   shooterAppearance: Synth.near(1, cos: 0.9, other: 9, model: bodyModel)))
+        #expect(s.pendingSampleCount == 1)
         s.revoke(Synth.a)
         #expect(s.snapshot().appearanceGallery[Synth.a] == nil)
         #expect(s.snapshot().faceGallery[Synth.a] == nil)
@@ -232,5 +266,117 @@ let bodyModel = "fake.body.v1"
         s.end()
         #expect(s.snapshot().appearanceGallery.isEmpty && s.snapshot().faceGallery.isEmpty)
         #expect(s.snapshot().roster.ids.isEmpty)
+    }
+
+    // MARK: learning follows the actual shooter, and only consented appearance is ever held
+
+    @Test func correctionLearnsFromTheActualShooterNotTheAttributedOne() {
+        // Turn says C (no consent); A (consented) shot out of turn and fell back to C. Tap "A" must teach A.
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.c)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let shot = UUID()
+        let sample = Synth.near(1, cos: 0.7, other: 6, model: bodyModel)
+        s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                   shooterAppearance: sample), expectedShooter: Synth.c)
+        #expect(s.pendingSampleCount == 1)
+        _ = s.correct(shot: shot, to: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a]?.contains(sample.normalised!) == true)
+    }
+
+    @Test func nonConsentedShootersVectorIsNeverHeldOrBound() {
+        // Turn says A (consented); B (no consent, looks nothing like A) shot. B's vector must not be kept,
+        // and a confirming tap "A" must not poison A's template with it.
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.b)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let shot = UUID()
+        s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                   shooterAppearance: Synth.axis(5, model: bodyModel)), expectedShooter: Synth.a)
+        #expect(s.pendingSampleCount == 0)
+        _ = s.correct(shot: shot, to: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a] == [Synth.axis(1, model: bodyModel)])
+    }
+
+    @Test func revokeDropsSamplesHeldOnlyBecauseOfThatPlayer() {
+        // Sample resembled A, attributed to C. Revoking A must drop it even though A was not the attributed player.
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.c)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                     shooterAppearance: Synth.near(1, cos: 0.7, other: 6, model: bodyModel)), expectedShooter: Synth.c)
+        #expect(s.pendingSampleCount == 1)
+        s.revoke(Synth.a)
+        #expect(s.pendingSampleCount == 0)
+    }
+
+    @Test func guestBootstrapsOnTheirTurnAndACorrectionUndoesIt() {
+        let s = IdentitySession(profiles: [plain(Synth.b)], guests: [Synth.d], faceModelID: faceModel, bodyModelID: bodyModel)
+        s.grantGuestClothesConsent(Synth.d)
+        let shot = UUID()
+        s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.d, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                   shooterAppearance: Synth.axis(6, model: bodyModel)), expectedShooter: Synth.d)
+        #expect(s.snapshot().appearanceGallery[Synth.d] == [Synth.axis(6, model: bodyModel)])
+        _ = s.correct(shot: shot, to: Synth.b)          // it was actually B → the bootstrap was B's vector; undo it
+        #expect((s.snapshot().appearanceGallery[Synth.d] ?? []).isEmpty)
+        #expect(s.snapshot().appearanceGallery[Synth.b] == nil)
+        #expect(s.pendingSampleCount == 0)
+    }
+
+    @Test func emptyGalleryPlayerIsNotBootstrappedOffTurn() {
+        let s = IdentitySession(profiles: [plain(Synth.b)], guests: [Synth.d], faceModelID: faceModel, bodyModelID: bodyModel)
+        s.grantGuestClothesConsent(Synth.d)
+        s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.b, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                     shooterAppearance: Synth.axis(6, model: bodyModel)), expectedShooter: Synth.b)
+        #expect(s.pendingSampleCount == 0)
+        #expect(s.snapshot().appearanceGallery[Synth.d] == nil)
+    }
+
+    // MARK: revoke / end while a stroke is being analysed
+
+    @Test func revokeDuringIdentificationIsHonoured() async {
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.b)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let id = ScriptedIdentifier { call, snap in
+            if call == 0 { await MainActor.run { s.revoke(Synth.a) } }
+            // Uses A's template only if the snapshot still says A consented.
+            let consented = snap.roster.consent(of: Synth.a).clothes && snap.appearanceGallery[Synth.a] != nil
+            return ShooterIdentification(
+                attribution: Attribution(playerID: consented ? Synth.a : Synth.b, source: consented ? .auto : .turnOrder,
+                                         confidence: 0.9, shooterTrackID: 1),
+                shooterAppearance: consented ? Synth.axis(1, model: bodyModel) : nil)
+        }
+        let shot = UUID()
+        let att = await s.identifyShot(shot, window: StrokeWindow(frames: []), expectedShooter: Synth.b, teamInTurn: nil, using: id)
+        #expect(att.playerID == Synth.b && att.source == .turnOrder)
+        #expect(s.attribution(for: shot)?.playerID == Synth.b)
+        #expect(s.pendingSampleCount == 0)
+        #expect(id.calls == 2)
+    }
+
+    @Test func endDuringIdentificationRecordsNothing() async {
+        let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), plain(Synth.b)],
+                                faceModelID: faceModel, bodyModelID: bodyModel)
+        let id = ScriptedIdentifier { _, _ in
+            await MainActor.run { s.end() }
+            return ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .auto, confidence: 0.9, shooterTrackID: 1),
+                                         shooterAppearance: Synth.axis(1, model: bodyModel))
+        }
+        let shot = UUID()
+        let att = await s.identifyShot(shot, window: StrokeWindow(frames: []), expectedShooter: Synth.b, teamInTurn: nil, using: id)
+        #expect(att.playerID == Synth.b && att.source == .turnOrder)
+        #expect(s.attribution(for: shot) == nil)
+        #expect(s.stats.total == 0)
+    }
+}
+
+/// Identifier whose result is scripted per call; can mutate the session mid-await.
+final class ScriptedIdentifier: ShooterIdentifier, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _calls = 0
+    var calls: Int { lock.withLock { _calls } }
+    let body: @Sendable (Int, IdentitySnapshot) async -> ShooterIdentification
+    init(_ body: @escaping @Sendable (Int, IdentitySnapshot) async -> ShooterIdentification) { self.body = body }
+    func identify(_ window: StrokeWindow, snapshot: IdentitySnapshot, expectedShooter: UUID,
+                  teamInTurn: Set<UUID>?) async -> ShooterIdentification {
+        let n = lock.withLock { _calls += 1; return _calls - 1 }
+        return await body(n, snapshot)
     }
 }

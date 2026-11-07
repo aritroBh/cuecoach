@@ -79,30 +79,35 @@ struct TrackEvidence: Hashable, Sendable {
 }
 
 /// Greedy IoU association of person boxes across the frames of one stroke window.
+/// A track survives `maxMissed` frames unseen (cue-arm occlusion, a pose miss) before it is retired.
 struct TrackAssociator: Sendable {
-    var minIoU: Double = 0.3
-    private var last: [Int: CGRect] = [:]
+    static let defaultMaxMissed = 2
+    var minIoU: Double
+    var maxMissed: Int
+    private var live: [Int: (box: CGRect, missed: Int)] = [:]
     private var nextID = 1
 
-    init(minIoU: Double = 0.3) { self.minIoU = minIoU }
+    init(minIoU: Double = 0.3, maxMissed: Int = TrackAssociator.defaultMaxMissed) {
+        self.minIoU = minIoU; self.maxMissed = maxMissed
+    }
 
     mutating func assign(_ boxes: [CGRect]) -> [Int] {
-        var free = last
         var out = [Int](repeating: 0, count: boxes.count)
-        // Best pairs first so two boxes never fight over a track in index order.
-        var pairs: [(Int, Int, Double)] = []
-        for (i, b) in boxes.enumerated() { for (t, r) in free { pairs.append((i, t, Self.iou(b, r))) } }
-        pairs.sort { $0.2 != $1.2 ? $0.2 > $1.2 : ($0.0, $0.1) < ($1.0, $1.1) }
+        // Best pairs first so two boxes never fight over a track in index order; fresher tracks win ties.
+        var pairs: [(Int, Int, Double, Int)] = []
+        for (i, b) in boxes.enumerated() { for (t, r) in live { pairs.append((i, t, Self.iou(b, r.box), r.missed)) } }
+        pairs.sort { $0.2 != $1.2 ? $0.2 > $1.2 : ($0.3, $0.0, $0.1) < ($1.3, $1.0, $1.1) }
         var used = Set<Int>()
-        for (i, t, v) in pairs where v >= minIoU && out[i] == 0 && !used.contains(t) {
-            out[i] = t; used.insert(t); free[t] = nil
+        for (i, t, v, _) in pairs where v >= minIoU && out[i] == 0 && !used.contains(t) {
+            out[i] = t; used.insert(t)
         }
-        var next: [Int: CGRect] = [:]
+        var next: [Int: (box: CGRect, missed: Int)] = [:]
+        for (t, r) in live where !used.contains(t) && r.missed < maxMissed { next[t] = (r.box, r.missed + 1) }
         for (i, b) in boxes.enumerated() {
             if out[i] == 0 { out[i] = nextID; nextID += 1 }
-            next[out[i]] = b
+            next[out[i]] = (b, 0)
         }
-        last = next
+        live = next
         return out
     }
 
@@ -157,6 +162,10 @@ struct Attribution: Hashable, Sendable {
 /// P(p shot) ∝ Prior(p) × Π_views Σ_tracks w(track)·LR_p(track)   (research §7.3)
 /// LR is the calibrated genuine/impostor likelihood ratio for consented players and exactly 1 (no evidence)
 /// for everyone else, so a non-consented player's appearance is never an input.
+///
+/// `.auto` also needs *positive* evidence for the winner (Π L_view > 1). Otherwise a weak match for a consented
+/// player (front/rear domain gap, bad light) would push the posterior onto a player nobody observed, making
+/// consent worse than turn order alone; and a pick nobody's evidence supports is turn order, so it says so.
 struct ShooterAttributor: Sendable {
     struct Parameters: Hashable, Sendable {
         var expectedPrior = 0.80
@@ -231,11 +240,23 @@ struct ShooterAttributor: Sendable {
         let ranked = post.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key.uuidString < $1.key.uuidString }
         let track = shooterTrack(views)
         if let top = ranked.first, top.value >= parameters.decideAt,
-           top.value - (ranked.dropFirst().first?.value ?? 0) >= parameters.margin {
+           top.value - (ranked.dropFirst().first?.value ?? 0) >= parameters.margin,
+           evidence(for: top.key, views: views, roster: ctx.roster) > 1 {
             return Attribution(playerID: top.key, source: .auto, confidence: top.value, shooterTrackID: track)
         }
         return Attribution(playerID: ctx.expectedShooter, source: .turnOrder,
                            confidence: post[ctx.expectedShooter] ?? 0, shooterTrackID: track)
+    }
+
+    /// Π_views L_view(p): > 1 only when the views actually look like p.
+    func evidence(for p: UUID, views: [[TrackEvidence]], roster: IdentityRoster) -> Double {
+        let consent = roster.consent(of: p)
+        var logL = 0.0
+        for view in views where !view.isEmpty {
+            let w = weights(view)
+            logL += log(max(zip(view, w).reduce(0.0) { $0 + $1.1 * likelihoodRatio(p, $1.0, consent) }, 1e-300))
+        }
+        return exp(logL)
     }
 
     /// The most shooter-like track across all views (for template updates on correction).
@@ -244,5 +265,28 @@ struct ShooterAttributor: Sendable {
             ($0.poseScore - parameters.distancePenalty * $0.distanceToCueBall)
                 < ($1.poseScore - parameters.distancePenalty * $1.distanceToCueBall)
         }?.trackID
+    }
+}
+
+/// Which shooter-track appearance vectors may be held in session RAM, and whom they may teach
+/// (research §7.2/§7.4: non-matching and bystander embeddings are never stored).
+enum AppearanceLearning {
+    /// Cosine to a player's session template above which a vector "plausibly is" them. Assumption; tune on replays.
+    static let matchFloor = 0.55
+
+    /// May `sample` extend player `p`'s session template? Clothes consent required. A player with no template yet
+    /// can only be seeded on their own turn (turn-order bind); otherwise the sample must resemble their template.
+    static func canTeach(_ sample: Embedding, _ p: UUID, roster: IdentityRoster,
+                         gallery: [UUID: [Embedding]], expectedShooter: UUID?) -> Bool {
+        guard roster.consent(of: p).clothes else { return false }
+        let g = gallery[p] ?? []
+        if g.isEmpty { return p == expectedShooter }
+        return (g.compactMap { sample.cosine($0) }.max() ?? -1) >= matchFloor
+    }
+
+    /// Keep the vector only if it could teach some clothes-consented player; anything else is dropped at once.
+    static func mayHold(_ sample: Embedding, roster: IdentityRoster, gallery: [UUID: [Embedding]],
+                        expectedShooter: UUID?) -> Bool {
+        roster.clothesConsented.contains { canTeach(sample, $0, roster: roster, gallery: gallery, expectedShooter: expectedShooter) }
     }
 }

@@ -75,6 +75,24 @@ private func person(_ track: Int, pose: Double, dist: Double,
         #expect(!Set(f1).contains(f3[0]))
     }
 
+    @Test func briefOcclusionKeepsTheTrackID() {
+        var assoc = TrackAssociator()
+        let a = CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.5), b = CGRect(x: 0.6, y: 0.1, width: 0.2, height: 0.5)
+        let f1 = assoc.assign([a, b])
+        _ = assoc.assign([b])                      // a occluded by the cue arm for one frame
+        let f3 = assoc.assign([b, a.offsetBy(dx: 0.01, dy: 0)])
+        #expect(f3[1] == f1[0])
+        #expect(f3[0] == f1[1])
+    }
+
+    @Test func longGoneTrackIsRetired() {
+        var assoc = TrackAssociator()
+        let a = CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.5)
+        let f1 = assoc.assign([a])
+        for _ in 0...TrackAssociator.defaultMaxMissed { _ = assoc.assign([]) }
+        #expect(assoc.assign([a])[0] != f1[0])
+    }
+
     @Test func smootherAveragesSimilarityAndKeepsBestPose() {
         var sm = TrackEvidenceSmoother()
         sm.add(person(1, pose: 0.2, dist: 0.5, clothes: [Synth.a: 0.9]))
@@ -191,46 +209,104 @@ private func person(_ track: Int, pose: Double, dist: Double,
         #expect(Set(p.keys) == [Synth.a, Synth.b, Synth.c, Synth.d])
     }
 
+    struct SynthResult {
+        var inTurn: Double, outConsented: Double, overall: Double
+        /// Accuracy of "always the expected shooter" on the same shots.
+        var turnOrderOnly: Double
+        /// `.auto` picks that named the wrong player.
+        var wrongAuto: Int
+    }
+
     /// Synthetic 2v2: A, B consent to clothes, C, D don't. Similarity noise σ = 0.06.
-    /// Returns (in-turn accuracy, out-of-turn-to-consented detection rate, overall accuracy).
-    private func synthSession(outOfTurnRate: Double, n: Int = 800) -> (Double, Double, Double) {
+    /// `genuine` is the mean cosine of the real shooter against their own template (0.92 = same camera;
+    /// ~0.6 = the unmeasured front-enrol / rear-observe domain gap, research §7.1).
+    private func synthSession(outOfTurnRate: Double, genuine: Double = 0.92, n: Int = 800) -> SynthResult {
         var rng = SplitMix(seed: 42)
         let players = [Synth.a, Synth.b, Synth.c, Synth.d]
         let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
                         (Synth.c, .none), (Synth.d, .none)])
-        var inTurn = (0, 0), outConsented = (0, 0), all = 0
+        var inTurn = (0, 0), outConsented = (0, 0), all = 0, baseline = 0, wrongAuto = 0
         for i in 0..<n {
             let expected = players[i % 4]
             let actual = rng.unit() < outOfTurnRate ? players[(i + 1 + Int(rng.unit() * 3)) % 4] : expected
             var sims: [UUID: Double] = [:]
             for p in [Synth.a, Synth.b] {
-                sims[p] = min(1, max(-1, (p == actual ? 0.92 : 0.45) + 0.06 * rng.gaussian()))
+                sims[p] = min(1, max(-1, (p == actual ? genuine : 0.45) + 0.06 * rng.gaussian()))
             }
             let ctx = AttributionContext(roster: r, expectedShooter: expected)
             let out = attributor.attribute(views: [[person(1, pose: 0.9, dist: 0.05, clothes: sims),
                                                    person(2, pose: 0.1, dist: 0.7)]], context: ctx)
             let ok = out.playerID == actual
             if ok { all += 1 }
+            if expected == actual { baseline += 1 }
+            if out.source == .auto, !ok { wrongAuto += 1 }
             if actual == expected { inTurn.1 += 1; if ok { inTurn.0 += 1 } }
             else if r.clothesConsented.contains(actual) { outConsented.1 += 1; if ok { outConsented.0 += 1 } }
         }
-        return (Double(inTurn.0) / Double(max(inTurn.1, 1)), Double(outConsented.0) / Double(max(outConsented.1, 1)),
-                Double(all) / Double(n))
+        return SynthResult(inTurn: Double(inTurn.0) / Double(max(inTurn.1, 1)),
+                           outConsented: Double(outConsented.0) / Double(max(outConsented.1, 1)),
+                           overall: Double(all) / Double(n), turnOrderOnly: Double(baseline) / Double(n), wrongAuto: wrongAuto)
     }
 
     @Test func evidenceNeverBreaksInTurnShots() {
-        #expect(synthSession(outOfTurnRate: 0.15).0 >= 0.99)
+        #expect(synthSession(outOfTurnRate: 0.15).inTurn >= 0.99)
     }
 
     @Test func outOfTurnShotByConsentedPlayerIsCaughtMostOfTheTime() {
         // Prior 0.8 + decide-at 0.85 is deliberately conservative: a wrong auto pick is worse than turn order + tap.
-        #expect(synthSession(outOfTurnRate: 0.3).1 >= 0.5)
+        #expect(synthSession(outOfTurnRate: 0.3).outConsented >= 0.5)
     }
 
     @Test func syntheticSessionHitsNinetyPercentBeforeAnyTap() {
         // Phase 5 metric (research Q16 proposal): ≥90 % correct before any tap, with 10 % of shots out of order.
         // Out-of-turn shots by non-consented players are undetectable by design (Q8: no re-ID without consent).
-        #expect(synthSession(outOfTurnRate: 0.10).2 >= 0.9)
+        let r = synthSession(outOfTurnRate: 0.10)
+        #expect(r.overall >= 0.9)
+        // Not vacuous: identity evidence must beat "always the expected shooter" on the same shots.
+        #expect(r.overall > r.turnOrderOnly + 0.02, "\(r)")
+        #expect(r.wrongAuto == 0)
+    }
+
+    @Test func identityEvidenceBeatsTurnOrderAloneWhenPlayIsLoose() {
+        let r = synthSession(outOfTurnRate: 0.3)
+        #expect(r.overall >= r.turnOrderOnly + 0.08, "\(r)")
+    }
+
+    @Test func domainGapWeakGenuineMatchesAreNeverWorseThanTurnOrder() {
+        // Front-enrolled vs rear-observed: genuine cosine ≈ 0.6, below threshold. Must degrade to turn order,
+        // never to a confident pick of someone with no positive evidence.
+        for rate in [0.0, 0.1, 0.3] {
+            let r = synthSession(outOfTurnRate: rate, genuine: 0.6)
+            #expect(r.wrongAuto == 0, "rate \(rate)")
+            #expect(r.overall >= r.turnOrderOnly - 1e-9, "rate \(rate)")
+        }
+    }
+
+    @Test func weakMatchForConsentedExpectedShooterNeverAutoPicksANonConsentedPlayer() {
+        // Supervisor scenario: 1v1, A clothes-consented and expected, B not. cos 0.60 / 0.62 to A's seeds.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .none)])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        for cos in [0.40, 0.60, 0.62, 0.70] {
+            let out = attributor.attribute(views: [[person(1, pose: 0.9, dist: 0.05, clothes: [Synth.a: cos])]], context: ctx)
+            #expect(out.playerID == Synth.a && out.source == .turnOrder, "cos \(cos)")
+        }
+    }
+
+    @Test func expectedShooterWithoutPositiveEvidenceIsTurnOrderNotAuto() {
+        // C (no consent) expected; A and B consented and clearly not shooting → still C, but labelled turn order.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)), (Synth.c, .none)])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.c)
+        let out = attributor.attribute(views: [[person(1, pose: 0.9, dist: 0.05, clothes: [Synth.a: 0.3, Synth.b: 0.3])]], context: ctx)
+        #expect(out.playerID == Synth.c && out.source == .turnOrder)
+    }
+
+    @Test func autoAwayFromTurnOrderNeedsPositiveEvidenceForThatPlayer() {
+        // 2v2-ish: A expected (consented, weak), B consented with no match either, C/D none → turn order.
+        let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
+                        (Synth.c, .none), (Synth.d, .none)])
+        let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
+        let out = attributor.attribute(views: [[person(1, pose: 0.9, dist: 0.05, clothes: [Synth.a: 0.5, Synth.b: 0.5])]], context: ctx)
+        #expect(out.playerID == Synth.a && out.source == .turnOrder)
     }
 }
 

@@ -13,9 +13,27 @@ protocol EmbeddingExtracting: Sendable {
 }
 
 /// Made only by the consent screen's deliberate "Agree" tap.
+/// Together with the stored row this is the consent record {type, version, date} (research §7.1):
+/// type = which templates exist, version = `RecognitionData.version`, date = `optedInAt`.
 struct ConsentDecision: Hashable, Sendable {
     var consent: RecognitionConsent
     var agreedAt: Date
+    /// Version of the consent text / data-use terms the player agreed to.
+    var termsVersion: Int = IdentityConsentTerms.current
+}
+
+/// `RecognitionData.version` is the consent-terms version (the codec format lives inside the blob).
+enum IdentityConsentTerms {
+    /// Bump when the consent text or how recognition data is used changes.
+    static let current = 1
+
+    /// Ask again when the player agreed to older terms, or a model change made a consented template unusable.
+    static func needsReconsent(_ r: RecognitionData?, faceModelID: String, bodyModelID: String) -> Bool {
+        guard let r else { return false }
+        if r.version < current { return true }
+        let t = IdentityTemplates(r, faceModelID: faceModelID, bodyModelID: bodyModelID)
+        return (r.faceEmbedding != nil && t.face.isEmpty) || (r.appearanceEmbedding != nil && t.body.isEmpty)
+    }
 }
 
 struct RegistrationCapture: @unchecked Sendable {
@@ -37,6 +55,8 @@ struct RecognitionRegistrar {
     let stack: PersistenceStack
     let face: any EmbeddingExtracting
     let body: any EmbeddingExtracting
+    /// Seam for tests (a failing save). Production always uses `ModelContext.save`.
+    var save: @MainActor (ModelContext) throws -> Void = { try $0.save() }
 
     /// Gate: no consent → throws before any image is processed or any row is written.
     func register(_ owner: PlayerProfile, decision: ConsentDecision, capture: RegistrationCapture) async throws {
@@ -51,14 +71,20 @@ struct RecognitionRegistrar {
         if let faces, faces.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
         if let bodies, bodies.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
 
+        // Encode before touching the store, so a codec error leaves nothing dirty.
+        let faceData = try faces.map(EmbeddingCodec.encode)
+        let bodyData = try bodies.map(EmbeddingCodec.encode)
         let ctx = stack.competitiveContext
         if let old = owner.recognition { owner.recognition = nil; ctx.delete(old) }
-        let row = RecognitionData(faceEmbedding: try faces.map(EmbeddingCodec.encode),
-                                  appearanceEmbedding: try bodies.map(EmbeddingCodec.encode),
-                                  optedInAt: decision.agreedAt, version: EmbeddingCodec.formatVersion)
+        let row = RecognitionData(faceEmbedding: faceData, appearanceEmbedding: bodyData,
+                                  optedInAt: decision.agreedAt, version: decision.termsVersion)
         ctx.insert(row)
         owner.recognition = row
-        try ctx.save()
+        do { try save(ctx) } catch {
+            // Never leave "old row deleted, new row inserted" pending for some later save to commit.
+            ctx.rollback()
+            throw error
+        }
     }
 
     private func embed(_ images: [CGImage], with x: any EmbeddingExtracting) async throws -> [Embedding] {

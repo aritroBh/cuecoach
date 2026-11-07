@@ -44,15 +44,32 @@ struct VisionPersonAnalyzer: PersonAnalyzing {
             }
             out.append(p)
         }
+        // Only in a consented face check-in window (Q10); stroke-time identification never asks for faces.
         if wants.face, !out.isEmpty {
-            let faces = (try? await DetectFaceRectanglesRequest().perform(on: image)) ?? []
-            for f in faces {
-                let r = f.boundingBox.cgRect
-                let c = CGPoint(x: r.midX, y: r.midY)
-                guard let i = out.indices.filter({ out[$0].box.insetBy(dx: -0.05, dy: -0.05).contains(c) }).first,
-                      out[i].face == nil, let crop = Self.crop(image, r) else { continue }
-                out[i].face = try? await face.embedding(of: crop)
+            let faces = ((try? await DetectFaceRectanglesRequest().perform(on: image)) ?? []).map { $0.boundingBox.cgRect }
+            for (fi, pi) in Self.assignFaces(faces, to: out) {
+                guard let crop = Self.crop(image, faces[fi]) else { continue }
+                out[pi].face = try? await face.embedding(of: crop)
             }
+        }
+        return out
+    }
+
+    /// Face index → person index, one-to-one. A face is a candidate for every person whose (inflated) box holds
+    /// its centre; pairs are taken nearest-head-first, so overlapping players never swap or lose faces.
+    static func assignFaces(_ faces: [CGRect], to people: [ObservedPerson]) -> [Int: Int] {
+        var pairs: [(face: Int, person: Int, d: Double)] = []
+        for (fi, r) in faces.enumerated() {
+            let c = CGPoint(x: r.midX, y: r.midY)
+            for (pi, p) in people.enumerated() where p.box.insetBy(dx: -0.05, dy: -0.05).contains(c) {
+                let head = p.joints.points[.neck] ?? CGPoint(x: p.box.midX, y: p.box.maxY)
+                pairs.append((fi, pi, ShootingPose.distance(c, head)))
+            }
+        }
+        pairs.sort { $0.d != $1.d ? $0.d < $1.d : ($0.face, $0.person) < ($1.face, $1.person) }
+        var out: [Int: Int] = [:], taken = Set<Int>()
+        for p in pairs where out[p.face] == nil && !taken.contains(p.person) {
+            out[p.face] = p.person; taken.insert(p.person)
         }
         return out
     }

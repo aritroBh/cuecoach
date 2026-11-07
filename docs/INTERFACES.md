@@ -58,6 +58,29 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
 `ShotFeatures.extract(pre:post:trace:) -> ShotFeatures`, `Aggregates`, `Archetypes`, `ProComp`;
 `DrillID`, `AssistLevel`, `LevelPolicy`, `BiasDetector`.
 
+## Identity (Phase 5, app target `CueCoach/Identity`)
+```swift
+protocol ShooterIdentifier: Sendable {
+  func identify(_ window: StrokeWindow, snapshot: IdentitySnapshot, expectedShooter: UUID,
+                teamInTurn: Set<UUID>?) async -> ShooterIdentification }
+struct StrokeWindow { frames: [IdentityFrame] }                 // ±0.5 s around stroke start
+struct IdentityFrame { image: CGImage; cueBall: CGPoint }       // Vision normalised, origin lower-left
+struct IdentitySnapshot { roster: IdentityRoster; appearanceGallery, faceGallery: [UUID: [Embedding]] }
+struct ShooterIdentification { attribution: Attribution; shooterAppearance: Embedding?; evidence: [TrackEvidence] }
+struct Attribution { playerID: UUID; source: AttributionSource /* auto | turnOrder | tap */; confidence: Double; shooterTrackID: Int? }
+protocol PersonAnalyzing: Sendable { func people(in: CGImage, wants: AnalysisWants) async throws -> [ObservedPerson] }
+@MainActor final class IdentitySession {                        // RAM only; owns roster + session templates
+  func snapshot() -> IdentitySnapshot
+  func identifyShot(_ shot: UUID, window:, expectedShooter:, teamInTurn:, using:) async -> Attribution
+  func correct(shot: UUID, to: UUID) -> Attribution?            // one-tap fix (ShooterCorrection)
+  func bind(_ player: UUID, appearance: Embedding) -> Bool      // AppearanceBind (clothes consent only)
+  func grantGuestClothesConsent(_ guest: UUID); func revoke(_ player: UUID); func end() }
+```
+Rules: `.auto` only with positive identity evidence for the picked player (else `.turnOrder`). No stroke-time face
+embedding (Q10 open; face only in a consented ≤ 10 s check-in window, not built). `shooterAppearance` is non-nil
+only when it could teach a clothes-consented player; non-consented and bystander vectors are dropped in `identify`.
+A revoke/end during `identifyShot` discards the in-flight result. `RecognitionData.version` = consent-terms version.
+
 ## App-side protocols (later phases; declared now so wiring compiles)
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`
