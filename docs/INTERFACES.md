@@ -70,6 +70,6 @@ is dropped). `AutoTableEstimate.state` is `.locked` after ≥ 6 agreeing frames 
 spread, or 15 at ≤ 2 cm; `generation` bumps on every new lock and on an adopted size change (size changes
 need 10 consistent frames plus a ±15 % vote-share band). `frame.rejection` strings start with one of:
 "tracking", "duplicate frame", "no plane", "no cloth colour", "cloth too small", "cloth touches frame",
-"no quad", "edge refine", "reprojection", "reset". Keypoint plug-in: `TableKeypointProvider` returns
+"no quad", "edge refine", "reprojection", "view too shallow", "reset" (a failed partial fit appends "(partial: …)"). Keypoint plug-in: `TableKeypointProvider` returns
 `AutoTableKeypoint`s of kind `.cornerMouth` / `.sideMouth` / `.noseCorner`, the tablekp model's three
 groups; `AutoTableKeypointModel` adapts its 10 rows (model-input pixels, Ultralytics letterbox).
