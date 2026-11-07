@@ -73,8 +73,11 @@ extension RulesEngine {
         let pocketedObjects = objectsPocketed(o)
         let mine = g.groups?[g.shooter]
         // Shooting the 8: group cleared (WPA 4.6), or open table with a cleared group and the 8 played (WPA 4.4).
+        // An unobserved first contact / call is resolved in the shooter's favour (Reg 25); an explicit call of
+        // another ball means the shooter was not playing the 8.
+        let calledOther = o.calledBall.map { $0 != .eight } ?? false
         let onEight = mine != nil ? legal == [.eight]
-                                  : legal.contains(.eight) && o.firstContact == .eight
+                                  : legal.contains(.eight) && (o.firstContact ?? .eight) == .eight && !calledOther
         let winnerIfLoss = next(g.shooter)
 
         if o.offTable.contains(.eight) {                                   // WPA 4.8(d)
@@ -90,6 +93,9 @@ extension RulesEngine {
                 let reason: GameEndReason = !ownLeft.isEmpty && ownLeft.isSubset(of: pocketedObjects)
                     ? .eightWithLastGroupBall : .eightEarly
                 return over(g, winner: winnerIfLoss, reason, fouls: fouls)
+            }
+            if calledOther {                                               // WPA 4.6: "then the 8-ball is the called ball";
+                return over(g, winner: winnerIfLoss, .eightNotCalled, fouls: fouls) // its pocket was not called, 4.8(c)
             }
             if let called = o.calledPocket, called != eightPocket {      // WPA 4.8(c); unobserved call → legal (Reg 25)
                 return over(g, winner: winnerIfLoss, .eightWrongPocket, fouls: fouls)

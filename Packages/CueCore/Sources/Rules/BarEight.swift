@@ -43,6 +43,7 @@ extension RulesEngine {
         return RuleResult(fouls: fouls, nextState: n, turnPasses: n.shooter != g.shooter, spot: spots)
     }
 
+    /// RULES.md B1: only the 8's pocket is called, so `calledBall` is never read in bar play.
     func barShot(_ o: ShotOutcome, _ g: GameState) -> RuleResult {
         let legal = legalTargets(g)
         let shootingEight = legal == [.eight]

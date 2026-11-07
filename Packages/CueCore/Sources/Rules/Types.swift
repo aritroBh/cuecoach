@@ -128,6 +128,7 @@ public enum GameEndReason: String, Hashable, Codable, Sendable {
     case eightWrongPocket        // WPA 4.8(c), RULES.md B12 (loss)
     case eightWithFoul           // WPA 4.8(a), RULES.md B9 (loss)
     case eightOffTable           // WPA 4.8(d), RULES.md B15 (loss)
+    case eightNotCalled          // WPA 4.6 + 4.8(c): another ball was called when the 8 dropped (loss)
     case scratchOnEight          // RULES.md B9 (loss, 8 not pocketed)
     case ninePocketed            // WPA 5.5 (win)
     case threeFouls              // WPA 5.8 / 3.13 (loss)
