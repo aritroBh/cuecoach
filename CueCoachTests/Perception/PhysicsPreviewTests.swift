@@ -25,10 +25,22 @@ struct PhysicsPreviewTests {
                                                             tipOffset: p.spin.tip))
         let path = tr.path(of: BallID(3)!, sampleDT: 0.02)
         #expect(path == p.objectPath)
-        #expect(tr.events.contains { if case .pocket(BallID(3)!, _) = $0.event { return true }; return false })
-        #expect(PhysicsShotPreview.nearestPocket(tr.final.balls[BallID(3)!]?.position, spec: spec) == .footLeft)
+        #expect(tr.events.contains { if case .pocket(BallID(3)!, .footLeft) = $0.event { return true }; return false })
         let cueEnd = tr.final.balls[.cue]?.position
         #expect(p.cuePath.last == cueEnd)
+    }
+
+    /// Physics pocket labels follow Geometry (foot end at x = length): a shot into (L, 0) is footLeft.
+    @Test func previewTowardFootLeftReportsFootLeft() throws {
+        let s = straightShot()
+        #expect(spec.pocketCenter(.footLeft) == Vec2(spec.length, 0))
+        let p = try #require(preview.preview(cue: s.cue, object: BallID(3)!, pocket: .footLeft, balls: s.balls, spec: spec))
+        #expect(p.outcome == .make)
+        // And asking for the wrong pocket must not count as a make.
+        let state = TableState(spec: spec, balls: s.balls.mapValues { BallState(position: $0) })
+        let wrong = preview.run(state: state, object: BallID(3)!, pocket: .headLeft, direction: p.direction,
+                                speed: PhysicsShotPreview.speeds[p.power - 1], spin: p.spin, power: p.power)
+        #expect(wrong.outcome != .make)
     }
 
     @Test func straightInChoosesNoScratch() throws {

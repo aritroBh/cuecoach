@@ -91,10 +91,8 @@ struct PhysicsShotPreview: ShotPreviewing {
             switch e.event {
             case let .ballBall(a, b) where firstHit == nil && (a == .cue || b == .cue):
                 firstHit = (e.time, a == .cue ? b : a)
-            case let .pocket(id, _):
-                // Identify the pocket by where the ball ended up, not the event's label: CueCore Physics'
-                // pocket labels currently disagree with Geometry's TableSpec (head/foot swapped).
-                if id == object { objectPocket = Self.nearestPocket(tr.final.balls[id]?.position, spec: state.spec) }
+            case let .pocket(id, p):
+                if id == object { objectPocket = p }
                 if id == .cue { scratch = true }
             case .offTable(.cue):
                 scratch = true
@@ -116,13 +114,6 @@ struct PhysicsShotPreview: ShotPreviewing {
         return ShotPreview(direction: direction, spin: spin, power: power,
                            objectPath: tr.path(of: object, sampleDT: sampleDT), cuePath: after, contact: contact,
                            outcome: outcome)
-    }
-}
-
-extension PhysicsShotPreview {
-    static func nearestPocket(_ p: Vec2?, spec: TableSpec) -> Pocket? {
-        guard let p else { return nil }
-        return spec.pockets.min { p.distance(to: spec.pocketCenter($0)) < p.distance(to: spec.pocketCenter($1)) }
     }
 }
 
