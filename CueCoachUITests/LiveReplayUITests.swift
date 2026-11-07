@@ -5,10 +5,15 @@ import XCTest
 final class LiveReplayUITests: XCTestCase {
     @MainActor func testPlayLocksTableWithoutTapsAndShowsBallsAndAim() {
         let app = XCUIApplication()
+        app.launchArguments = ["-appshell.uitest"]
         app.launch()
-        let play = app.buttons["home.play"]
+        // App shell: Home → Training → Start opens Live (was a single Play button).
+        let training = app.buttons["home.training"]
+        XCTAssertTrue(training.waitForExistence(timeout: 5))
+        training.tap()
+        let play = app.buttons["training.start"]
         XCTAssertTrue(play.waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(play.frame.width, 64)
+        XCTAssertGreaterThanOrEqual(play.frame.height, 56)
         play.tap()
 
         let overlay = app.descendants(matching: .any)["live.overlay"].firstMatch
@@ -35,6 +40,6 @@ final class LiveReplayUITests: XCTestCase {
         waitForExpectations(timeout: 15)
 
         app.buttons["live.close"].tap()
-        XCTAssertTrue(app.images["home.logo"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["training.start"].waitForExistence(timeout: 5))
     }
 }
