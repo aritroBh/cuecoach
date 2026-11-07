@@ -65,3 +65,5 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) Â
 - [~] Zero-tap automatic table locating (user at table: manual points mismatched) â€” AutoTableLocator, .worktrees/autocal (Claude; Codex review; workflow wf_ff3aa1d8)
 - [~] Core ML table-keypoint model: pipeline committed (6c16646); orchestrator installing + training YOLO26n-pose on MPS now
 - [~] AR 9ad4e32 INSTALLED: zero-tap lock (floor/coffee-table planes rejected), relocalization re-check, shot events, Hungarian tracker, thermal step-down; 117 unit + 2 UI tests green. Codex re-review running; next: cue-stick aim, Kalman, buffer reuse, depth-based ball detection
+- [~] On-device test runs: CueCoach unit suite via xcodebuild test on 17 Pro Max + 15 Pro Max
+- [~] VLM A/B on BOTH phones (17 Pro Max: OpenSound + OpenCane uninstalled with user OK to free the 3-app slot): Apple FM vs Qwen3.5-2B vs Gemma-4-E2B
