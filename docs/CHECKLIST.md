@@ -30,8 +30,8 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [ ] Physics: fixture suite within tolerance
 - [x] Persistence: SwiftData models + export/import round-trip (45 tests; Codex review 2 rounds; merged 1bcd9f6)
 - [x] Persistence: training/competitive isolation test
-- [x] Virtual table: design system (design-system/cuecoach/MASTER.md via ui-ux-pro-max)
-- [x] Virtual table: playable (dev/test tool only — polish stopped per user; camera is the product)
+- [x] Design system (design-system/cuecoach/MASTER.md via ui-ux-pro-max)
+- [x] Virtual table REMOVED from the app (D20); code archived locally (archive/vtable-devtool), not shipped
 - [ ] Cross-vendor review of every module, findings fixed
 - [ ] Device run on iPhone 15 Pro Max, design review
 - [ ] Merge, delete branches/worktrees, clean status
