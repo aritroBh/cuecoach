@@ -24,7 +24,7 @@ Parallel now: Physics fix (Codex) · Rules re-review (Codex) · Virtual table bu
 - [x] Rules: bar 8-ball tests + impl
 - [x] Rules: WPA 8-ball tests + impl
 - [x] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
-- [~] Rules: Codex REJECTED round 1 (3 MAJOR) → fixed (207 tests) → Codex re-review running
+- [x] Rules: Codex review 2 rounds (round-2 scotch-rotation findings overruled by user D17); 207 tests; merged
 - [x] Physics: pooltool fixture generator (500 shots) — Codex
 - [~] Physics: supervisor (Claude) REJECTED a9fc236 — jaw cushions one-sided, weak fixtures, 16-ball break 13 ms; Codex fixing
 - [ ] Physics: fixture suite within tolerance

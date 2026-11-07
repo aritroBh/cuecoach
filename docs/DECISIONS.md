@@ -18,3 +18,4 @@
 | D14 | 2026-11-06 | User approved remaining picks (bar rules, SCHEMA, INTERFACES, physics tolerance D10, debug HUD D9). Table default 7 ft until LiDAR measures. | User ("yeah") |
 | D15 | 2026-11-06 | Bar 8-ball: any foul while pocketing the 8 loses; illegal break + scratch = re-rack, same breaker (B2); both groups made with unknown drop order on an open table = table stays open, shooter continues. | User |
 | D16 | 2026-11-06 | Physics cushion restitution stays constant (e_c = 0.85) to match pooltool 0.6.0 (per the approved "mirror pooltool model choices" default, D10); speed-dependent e(v) deferred until real-table calibration. | Head orchestrator (per D10) |
+| D17 | 2026-11-06 | Team play: whole turn per player, teams alternate, players rotate in set order (A1, B1, A2, B2, …); a player keeps shooting while they pocket legally. Applies to all rule sets (not WPA Reg 27 scotch alternation). Consecutive fouls counted per team. | User |
