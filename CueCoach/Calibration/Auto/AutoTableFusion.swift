@@ -18,10 +18,14 @@ struct AutoTableMeasurement: Sendable {
 
 struct AutoFusionConfig: Sendable {
     var window = 30
-    /// Frames that must agree before locking.
+    /// Adaptive lock: this few frames suffice when their robust corner spread is ≤ `lockCornerSpread`…
+    var fastLockFrames = 6
+    /// …otherwise this many frames with spread ≤ `slowLockCornerSpread`. Never above that.
     var lockFrames = 15
-    /// Robust spread of per-frame corners that allows a lock (m).
+    /// Robust spread of per-frame corners that allows a fast lock (m).
     var lockCornerSpread = 0.01
+    /// Robust spread that allows a lock after `lockFrames` frames (m).
+    var slowLockCornerSpread = 0.02
     /// A frame whose corners are this far from the fused ones disagrees (m).
     var disagreeDistance = 0.04
     /// This many consecutive disagreeing frames = the table (or tracking) changed → re-lock.
@@ -106,7 +110,7 @@ struct AutoTableFusion: Sendable {
 
     var progress: Double {
         guard fused != nil else { return 0 }
-        let n = min(1, Double(window.count) / Double(config.lockFrames))
+        let n = min(1, Double(window.count) / Double(config.fastLockFrames))
         let s = spread.isFinite ? min(1, config.lockCornerSpread / max(spread, 1e-6)) : 0
         return min(0.99, 0.6 * n + 0.4 * s)
     }
@@ -190,8 +194,13 @@ struct AutoTableFusion: Sendable {
         let recent = window.suffix(config.lockFrames)
         let devs = recent.map { Self.deviation($0, from: pose) }
         spread = recent.count >= 3 ? autoMedian(devs) : .infinity
-        if !locked, window.count >= config.lockFrames, spread < config.lockCornerSpread,
-           Double(devs.filter { $0 < 1.5 * config.lockCornerSpread }.count) >= 0.8 * Double(devs.count) {
+        func agrees(frames: Int, spread limit: Double) -> Bool {
+            guard window.count >= frames else { return false }
+            let d = window.suffix(frames).map { Self.deviation($0, from: pose) }
+            return autoMedian(d) <= limit && Double(d.filter { $0 < 1.5 * limit }.count) >= 0.8 * Double(d.count)
+        }
+        if !locked, agrees(frames: config.fastLockFrames, spread: config.lockCornerSpread)
+            || agrees(frames: config.lockFrames, spread: config.slowLockCornerSpread) {
             locked = true
             generation += 1
             heldSize = (spec, snapped)
