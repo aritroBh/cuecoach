@@ -50,3 +50,13 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] Live screen: camera + table outline + ball rings + aim line, no text while aiming
 - [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
 - [ ] Post-shot VLM: Apple Foundation Model + benchmark FastVLM / Qwen-VL (MLX) on 15 Pro Max (D22)
+
+## All-modules push (workflow wf_4253a676, user: "use all agents", 2026-11-06)
+Each module: TDD worker → Codex review + Claude adversarial verification → fix → re-verify.
+- [~] Engine (Phase 2): candidates, Monte Carlo, win prob, ratings D18 — .worktrees/engine
+- [~] Stats + archetypes + pro comps (Phase 6) — .worktrees/stats
+- [~] Training logic (Phase 8): drills, assist levels, level policy, bias detector — .worktrees/training
+- [~] Mesh (Phase 5): MPC, protocol, host election/migration, clock sync — .worktrees/mesh (Sim C)
+- [~] Identity (Phase 5): opt-in embeddings, re-ID, shooter attribution + fallback — .worktrees/identity (Sim D)
+- [~] Adversarial QA audit of merged code: rules, persistence, privacy, geometry — .worktrees/audit (Sim E)
+Also running: Camera + 3D AR (Claude) · YOLO detector (Codex) · Physics fixes (Codex) · VLM benchmark (Claude)
