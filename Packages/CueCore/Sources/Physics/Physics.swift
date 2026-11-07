@@ -819,7 +819,8 @@ private func tableGeometry(_ spec: TableSpec, params p: PhysicsParams) -> TableG
     let cornerDiagonal = cornerWidth * cos(Double.pi / 4)
     let cushionWidth = p.cushionWidth
 
-    // pooltool's pocket-table convention is width-first with +y toward the foot rail;
+    // pooltool is width-first with +y toward its foot rail; this maps pooltool y = 0 to x = length,
+    // so CueCoach head (x = 0, Geometry.TableSpec) is pooltool's far end. Labels follow Geometry.
     // this proper rotation maps its (x, y) into CueCoach's (lengthwise x, widthwise y).
     func point(_ poolX: Double, _ poolY: Double) -> Vec2 { Vec2(length - poolY, poolX) }
     func segment(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, _ rail: Rail) -> CushionSegment {
@@ -830,8 +831,8 @@ private func tableGeometry(_ spec: TableSpec, params p: PhysicsParams) -> TableG
         segment(0, (length + sideWidth) / 2 + sideJawOffset, 0, -cornerDiagonal + length - cornerJawOffset, .left),
         segment(width, cornerDiagonal + cornerJawOffset, width, (length - sideWidth) / 2 - sideJawOffset, .right),
         segment(width, (length + sideWidth) / 2 + sideJawOffset, width, -cornerDiagonal + length - cornerJawOffset, .right),
-        segment(cornerDiagonal + cornerJawOffset, 0, -cornerDiagonal + width - cornerJawOffset, 0, .head),
-        segment(cornerDiagonal + cornerJawOffset, length, -cornerDiagonal + width - cornerJawOffset, length, .foot),
+        segment(cornerDiagonal + cornerJawOffset, 0, -cornerDiagonal + width - cornerJawOffset, 0, .foot),
+        segment(cornerDiagonal + cornerJawOffset, length, -cornerDiagonal + width - cornerJawOffset, length, .head),
         segment(-cushionWidth, (length + sideWidth) / 2 - cushionWidth * sin(sideAngle),
                 -sideJawOffset * cos(sideAngle), (length + sideWidth) / 2 - sideJawOffset * sin(sideAngle), .sideJaw),
         segment(-cushionWidth, (length - sideWidth) / 2 + cushionWidth * sin(sideAngle),
@@ -878,12 +879,12 @@ private func tableGeometry(_ spec: TableSpec, params p: PhysicsParams) -> TableG
 
     let cornerDepth = p.cornerPocketDepth / sqrt(2)
     let pockets = [
-        PocketTarget(pocket: .headLeft, center: point(-cornerDepth, -cornerDepth), radius: p.cornerPocketRadius),
-        PocketTarget(pocket: .headRight, center: point(width + cornerDepth, -cornerDepth), radius: p.cornerPocketRadius),
+        PocketTarget(pocket: .footLeft, center: point(-cornerDepth, -cornerDepth), radius: p.cornerPocketRadius),
+        PocketTarget(pocket: .footRight, center: point(width + cornerDepth, -cornerDepth), radius: p.cornerPocketRadius),
         PocketTarget(pocket: .sideLeft, center: point(-p.sidePocketDepth, length / 2), radius: p.sidePocketRadius),
         PocketTarget(pocket: .sideRight, center: point(width + p.sidePocketDepth, length / 2), radius: p.sidePocketRadius),
-        PocketTarget(pocket: .footLeft, center: point(-cornerDepth, length + cornerDepth), radius: p.cornerPocketRadius),
-        PocketTarget(pocket: .footRight, center: point(width + cornerDepth, length + cornerDepth), radius: p.cornerPocketRadius),
+        PocketTarget(pocket: .headLeft, center: point(-cornerDepth, length + cornerDepth), radius: p.cornerPocketRadius),
+        PocketTarget(pocket: .headRight, center: point(width + cornerDepth, length + cornerDepth), radius: p.cornerPocketRadius),
     ]
     return TableGeometry(linearCushions: linear, circularCushions: circles, pockets: pockets)
 }
@@ -1036,8 +1037,8 @@ private func position(_ ball: BallState, after dt: Double, params p: PhysicsPara
 
 private func outwardNormal(_ rail: Rail) -> Vec2 {
     switch rail {
-    case .foot: Vec2(-1, 0)
-    case .head: Vec2(1, 0)
+    case .foot: Vec2(1, 0)
+    case .head: Vec2(-1, 0)
     case .left: Vec2(0, -1)
     case .right: Vec2(0, 1)
     case .cornerJaw, .sideJaw: .zero
