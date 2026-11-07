@@ -49,4 +49,4 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] Core ML ball detector: synthetic data + YOLO train + .mlpackage export — Codex, .worktrees/detector
 - [~] Live screen: camera + table outline + ball rings + aim line, no text while aiming
 - [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
-- [ ] On-device VLM (Apple Foundation Models, image input) for post-shot keyframe analysis — non-real-time only (SPEC §6)
+- [ ] Post-shot VLM: Apple Foundation Model + benchmark FastVLM / Qwen-VL (MLX) on 15 Pro Max (D22)
