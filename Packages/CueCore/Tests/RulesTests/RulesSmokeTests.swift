@@ -1,4 +1,7 @@
 import Testing
 @testable import Rules
 
-@Test func moduleLinks() {}
+@Test func defaultRuleSetIsBarEight() {
+    #expect(RuleSetID.default == .barEight)
+    #expect(GameFormat.fourVsFour.playersPerTeam == 4)
+}
