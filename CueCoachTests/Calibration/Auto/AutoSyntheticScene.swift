@@ -29,7 +29,7 @@ struct AutoTestRNG {
 ///
 /// Honesty note: these scenes are simulation regression targets, not evidence of field accuracy. The camera
 /// is an ideal pinhole (no distortion, blur, rolling shutter or ISP), depth is pixel-aligned at full
-/// confidence, and tracking noise is mostly independent per frame. Tests that break the detector's own
+/// confidence unless `realisticDepth` is set, and tracking noise is mostly independent per frame. Tests that break the detector's own
 /// assumptions on purpose: `railProfileMismatchStaysWithinOneCentimetre` (rail profile ≠ `AutoTableProfile`),
 /// `depthOnlyPlaneWithoutARKitHint` (no plane hint) and `correlatedTrackingDriftIsFollowed` (correlated drift).
 /// Field accuracy must be measured on device against a tape-measured table.
@@ -59,7 +59,16 @@ struct AutoSyntheticScene {
     var feltColor: (Double, Double, Double) = (28, 112, 64)
     var floorColor: (Double, Double, Double) = (96, 84, 72)
 
-    var spec: TableSpec { TableSpec(size: size) }
+    /// Global illumination multiplier (dim rooms), applied before sensor noise.
+    var lightScale: Double = 1
+    /// Off-preset playing length (m, 2:1); nil = the preset's.
+    var lengthOverride: Double?
+
+    var spec: TableSpec {
+        var s = TableSpec(size: size)
+        if let l = lengthOverride { s.length = l; s.width = l / 2 }
+        return s
+    }
 
     /// True table → world (head-left nose corner origin, TableFrame convention).
     var tableToWorld: simd_double4x4 {
@@ -172,7 +181,7 @@ struct AutoSyntheticScene {
                 for i in 0..<(w * h) {
                     for c in 0..<3 {
                         k = (k &+ jump) & 8191
-                        let v = Int(src[i * 4 + c]) + Int(table[k])
+                        let v = Int((Double(src[i * 4 + c]) * lightScale).rounded()) + Int(table[k])
                         dst[i * 3 + c] = UInt8(max(0, min(255, v)))
                     }
                 }
@@ -333,56 +342,141 @@ struct AutoSyntheticScene {
 
     // MARK: LiDAR
 
+    /// Device-like LiDAR: ARKit's 256×192 `sceneDepth` is upsampled from a sparser dToF grid and smoothed,
+    /// each sample averages a ~1.5 cm footprint at 2–3 m, confidence drops at depth edges, and the rails
+    /// (narrow, dark, glossy, at an edge) drop out in patches.
+    struct RealisticDepth: Sendable {
+        /// Native grid before bilinear upsampling to 256×192.
+        var nativeWidth = 128
+        var nativeHeight = 96
+        /// Diameter of the surface footprint each native sample averages (m).
+        var footprint = 0.015
+        /// Fraction of rail-cap samples with no confidence (holes).
+        var railHoleFraction = 0.35
+        /// Fraction of otherwise high-confidence samples reported as medium.
+        var mediumFraction = 0.15
+    }
+
+    /// nil = ideal pixel-aligned depth at full confidence.
+    var realisticDepth: RealisticDepth?
+
+    enum DepthSurface { case bed, rail, occluder, floor }
+
+    /// Ray parameter (= depth along the view axis for a z = −1 camera direction) and the surface hit.
+    func castDepthRay(eye: SIMD3<Double>, dir: SIMD3<Double>, occludersInDepth: Bool) -> (t: Double, surface: DepthSurface) {
+        let inv = tableToWorld.inverse
+        let o = profile.cushionWidth + railWoodWidth, L = spec.length, W = spec.width
+        var best = Double.infinity, kind = DepthSurface.floor
+        for (z, surf) in [(0.0, DepthSurface.bed), (profile.railTopHeight, .rail)] {
+            let pw = world(0, 0, z)
+            let t = (pw.y - eye.y) / dir.y
+            guard t > 0 else { continue }
+            let tc = inv * SIMD4(eye + dir * t, 1)
+            let x = tc.x, y = tc.y
+            let inside = surf == .bed ? (x >= 0 && x <= L && y >= 0 && y <= W)
+                : (x >= -o && x <= L + o && y >= -o && y <= W + o && !(x > 0 && x < L && y > 0 && y < W))
+            if inside, t < best { best = t; kind = surf }
+        }
+        if occludersInDepth {
+            for b in occluders + depthOccluders {
+                // Coarse: hit the box's top face only.
+                let pw = world(0, 0, b.5)
+                let t = (pw.y - eye.y) / dir.y
+                if t > 0 {
+                    let tc = inv * SIMD4(eye + dir * t, 1)
+                    if tc.x >= b.0 && tc.x <= b.1 && tc.y >= b.2 && tc.y <= b.3 && t < best { best = t; kind = .occluder }
+                }
+            }
+        }
+        if !best.isFinite {
+            let t = (0 - eye.y) / dir.y  // floor at world y = 0
+            best = t > 0 ? t : 10; kind = .floor
+        }
+        return (best, kind)
+    }
+
+    /// World ray through a colour-image pixel (integer-centre convention).
+    private func ray(_ m: simd_double4x4, imageX iu: Double, imageY iv: Double) -> SIMD3<Double> {
+        let ik = intrinsics
+        let dwv = m * SIMD4((iu - ik.cx) / ik.fx, -(iv - ik.cy) / ik.fy, -1, 0)
+        return SIMD3(dwv.x, dwv.y, dwv.z)
+    }
+
     /// 256×192 depth, noisy, ray-cast against the table top (bed/rails at their heights) and the floor.
     func depth(cameraToWorld m: simd_double4x4, seed: UInt64 = 7, sigma: Double = 0.005, occludersInDepth: Bool = true) -> AutoDepthMap {
         let dw = 256, dh = 192
-        let inv = tableToWorld.inverse
         let eye = SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
         var rng = AutoTestRNG(seed: seed)
+        if let r = realisticDepth { return realistic(r, m, eye: eye, rng: &rng, sigma: sigma, occludersInDepth: occludersInDepth) }
         var out = [Float](repeating: 0, count: dw * dh)
-        let o = profile.cushionWidth + railWoodWidth, L = spec.length, W = spec.width
         for v in 0..<dh {
             for u in 0..<dw {
                 // Depth pixel centre → colour-image pixel (integer-centre convention), colour intrinsics.
-                let ik = intrinsics
                 let iu = (Double(u) + 0.5) * Double(width) / Double(dw) - 0.5
                 let iv = (Double(v) + 0.5) * Double(height) / Double(dh) - 0.5
-                let dc = SIMD4((iu - ik.cx) / ik.fx, -(iv - ik.cy) / ik.fy, -1, 0)
-                let dwv = m * dc
-                let dir = SIMD3(dwv.x, dwv.y, dwv.z)
-                var best = Double.infinity
-                // Table top planes in table coords.
-                for (z, inside) in [(0.0, { (x: Double, y: Double) in x >= 0 && x <= L && y >= 0 && y <= W }),
-                                    (profile.railTopHeight, { (x: Double, y: Double) in
-                                        x >= -o && x <= L + o && y >= -o && y <= W + o && !(x > 0 && x < L && y > 0 && y < W) })] {
-                    let pw = world(0, 0, z)
-                    let t = (pw.y - eye.y) / dir.y
-                    if t > 0 {
-                        let hit = eye + dir * t
-                        let tc = inv * SIMD4(hit, 1)
-                        if inside(tc.x, tc.y) { best = min(best, t) }
-                    }
-                }
-                if occludersInDepth {
-                    for b in occluders + depthOccluders {
-                        // Coarse: hit the box's top face only.
-                        let pw = world(0, 0, b.5)
-                        let t = (pw.y - eye.y) / dir.y
-                        if t > 0 {
-                            let tc = inv * SIMD4(eye + dir * t, 1)
-                            if tc.x >= b.0 && tc.x <= b.1 && tc.y >= b.2 && tc.y <= b.3 { best = min(best, t) }
-                        }
-                    }
-                }
-                if !best.isFinite {
-                    let t = (0 - eye.y) / dir.y  // floor at world y = 0
-                    best = t > 0 ? t : 10
-                }
+                let t = castDepthRay(eye: eye, dir: ray(m, imageX: iu, imageY: iv), occludersInDepth: occludersInDepth).t
                 // Depth along the view axis: t · (dir · forward), dc has z = −1 → depth = t.
-                out[v * dw + u] = Float(best + rng.gauss() * sigma)
+                out[v * dw + u] = Float(t + rng.gauss() * sigma)
             }
         }
         return AutoDepthMap(width: dw, height: dh, depth: out, confidence: [UInt8](repeating: 2, count: dw * dh))
+    }
+
+    private func realistic(_ r: RealisticDepth, _ m: simd_double4x4, eye: SIMD3<Double>, rng: inout AutoTestRNG,
+                           sigma: Double, occludersInDepth: Bool) -> AutoDepthMap {
+        let dw = 256, dh = 192, nw = r.nativeWidth, nh = r.nativeHeight
+        let fxImg = intrinsics.fx
+        // 1. Native grid: each sample averages a 3×3 ray bundle spread over the footprint at its depth.
+        var native = [Double](repeating: 0, count: nw * nh)
+        for v in 0..<nh {
+            for u in 0..<nw {
+                let iu = (Double(u) + 0.5) * Double(width) / Double(nw) - 0.5
+                let iv = (Double(v) + 0.5) * Double(height) / Double(nh) - 0.5
+                let t0 = castDepthRay(eye: eye, dir: ray(m, imageX: iu, imageY: iv), occludersInDepth: occludersInDepth).t
+                let rpx = r.footprint / 2 * fxImg / max(t0, 0.1)  // footprint radius in colour pixels
+                var sum = 0.0
+                for dy in -1...1 {
+                    for dx in -1...1 {
+                        sum += castDepthRay(eye: eye, dir: ray(m, imageX: iu + Double(dx) * rpx, imageY: iv + Double(dy) * rpx),
+                                            occludersInDepth: occludersInDepth).t
+                    }
+                }
+                native[v * nw + u] = sum / 9
+            }
+        }
+        // 2. Bilinear upsample to 256×192 (pixel-centre aligned) + sensor noise.
+        var out = [Float](repeating: 0, count: dw * dh)
+        for v in 0..<dh {
+            let y = max(0, min(Double(nh - 1), (Double(v) + 0.5) * Double(nh) / Double(dh) - 0.5))
+            let y0 = Int(y), y1 = min(nh - 1, y0 + 1), fy = y - Double(y0)
+            for u in 0..<dw {
+                let x = max(0, min(Double(nw - 1), (Double(u) + 0.5) * Double(nw) / Double(dw) - 0.5))
+                let x0 = Int(x), x1 = min(nw - 1, x0 + 1), fx = x - Double(x0)
+                let a = native[y0 * nw + x0] * (1 - fx) + native[y0 * nw + x1] * fx
+                let b = native[y1 * nw + x0] * (1 - fx) + native[y1 * nw + x1] * fx
+                out[v * dw + u] = Float(a * (1 - fy) + b * fy + rng.gauss() * sigma)
+            }
+        }
+        // 3. Confidence: low at depth edges, medium patches, holes on the rails.
+        var conf = [UInt8](repeating: 2, count: dw * dh)
+        for v in 0..<dh {
+            for u in 0..<dw {
+                let i = v * dw + u, z = out[i]
+                var g: Float = 0
+                if u > 0 { g = max(g, abs(z - out[i - 1])) }
+                if u < dw - 1 { g = max(g, abs(z - out[i + 1])) }
+                if v > 0 { g = max(g, abs(z - out[i - dw])) }
+                if v < dh - 1 { g = max(g, abs(z - out[i + dw])) }
+                var c: UInt8 = g > 0.06 ? 0 : g > 0.025 ? 1 : 2
+                let iu = (Double(u) + 0.5) * Double(width) / Double(dw) - 0.5
+                let iv = (Double(v) + 0.5) * Double(height) / Double(dh) - 0.5
+                if castDepthRay(eye: eye, dir: ray(m, imageX: iu, imageY: iv), occludersInDepth: occludersInDepth).surface == .rail,
+                   rng.uniform() < r.railHoleFraction { c = 0 }
+                if c == 2, rng.uniform() < r.mediumFraction { c = 1 }
+                conf[i] = c
+            }
+        }
+        return AutoDepthMap(width: dw, height: dh, depth: out, confidence: conf)
     }
 
     /// `timestamp` defaults to seed / 30 s so loops over seeds give distinct frames.

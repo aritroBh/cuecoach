@@ -223,7 +223,7 @@ struct AutoTableLocatorTests {
         func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
             scene.trueCorners.compactMap { p in
                 let q = scene.project(p + SIMD3(0, scene.profile.noseHeight, 0), cameraToWorld: camera)
-                return q.map { AutoTableKeypoint(kind: .cornerPocket, pixel: $0, confidence: 0.9) }
+                return q.map { AutoTableKeypoint(kind: .noseCorner, pixel: $0, confidence: 0.9) }
             }
         }
     }
@@ -235,7 +235,7 @@ struct AutoTableLocatorTests {
         let cam = scene.camera(elevationDeg: 45)
         let locator = ClassicalAutoTableLocator(keypoints: OracleKeypoints(scene: scene, camera: cam))
         var last: AutoTableEstimate?
-        for i in 0..<20 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i))) }
+        for i in 0..<20 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i), withDepth: false, planeBias: 0)) }
         let e = try #require(last)
         let pose = try #require(e.pose)
         #expect(e.frame.keypointsUsed >= 4)

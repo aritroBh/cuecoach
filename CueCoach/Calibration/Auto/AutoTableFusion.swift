@@ -30,6 +30,13 @@ struct AutoFusionConfig: Sendable {
     /// While locked the table size is held; only a size change larger than this is adopted, and it
     /// bumps `generation` (m, playing length).
     var sizeChangeTolerance = 0.015
+    /// Preset vote share that snaps the size (D12 majority).
+    var snapVoteShare = 0.6
+    /// Hysteresis band around `snapVoteShare` while locked: a held preset is dropped only below
+    /// share − band, a held measured size switches to a preset only above share + band.
+    var snapVoteBand = 0.15
+    /// While locked, a different size must be the candidate this many consecutive frames before adoption.
+    var sizeAdoptFrames = 10
 }
 
 /// Multi-frame fusion in world coordinates: robust (median → Huber) pose over a sliding window,
@@ -48,6 +55,8 @@ struct AutoTableFusion: Sendable {
     private var deviations: [Double] = []
     /// Size held since lock (spec, snapped preset).
     private var heldSize: (spec: TableSpec, snapped: TableSize?)?
+    /// Candidate size that differs from the held one, and for how many consecutive frames.
+    private var pendingSize: (spec: TableSpec, snapped: TableSize?, frames: Int)?
 
     mutating func reset() { self = AutoTableFusion(config: config) }
 
@@ -76,6 +85,7 @@ struct AutoTableFusion: Sendable {
                         locked = false
                         deviations = []
                         heldSize = nil
+                        pendingSize = nil
                         recompute(camera: m.cameraPosition)
                     } else {
                         // Scattered glitches, not a moved table: keep the lock, age out the oldest.
@@ -125,13 +135,18 @@ struct AutoTableFusion: Sendable {
             }
             cx = sx / sw; cy = sy / sw; cz = sz / sw; th = st / swt
         }
-        // Size: majority preset, else the median measurement at 2:1.
+        // Size: majority preset, else the median measurement at 2:1. While locked the vote threshold has
+        // a hysteresis band around the held choice, so a table near the 6 % snap edge does not flap.
         var votes: [TableSize: Int] = [:]
         for m in window { if let s = m.snapped { votes[s, default: 0] += 1 } }
         var spec: TableSpec
         var snapped: TableSize?
         let mL = autoMedian(window.map(\.measuredLength)), mW = autoMedian(window.map(\.measuredWidth))
-        if let (s, n) = votes.max(by: { $0.value < $1.value }), Double(n) >= 0.6 * Double(window.count) {
+        var share = config.snapVoteShare
+        if locked, let held = heldSize {
+            share += held.snapped != nil ? -config.snapVoteBand : config.snapVoteBand
+        }
+        if let (s, n) = votes.max(by: { $0.value < $1.value }), Double(n) >= share * Double(window.count) {
             spec = TableSpec(size: s); snapped = s
         } else {
             let (s, _) = AutoRectFitter.snap(length: mL, width: mW)
@@ -139,12 +154,25 @@ struct AutoTableFusion: Sendable {
             let len = (mL + 2 * mW) / 2
             spec.length = len; spec.width = len / 2
         }
-        // Locked: hold the size so corners never move without a new generation.
+        // Locked: hold the size so corners never move without a new generation. A different size is
+        // adopted only after it has been the (self-consistent) candidate for `sizeAdoptFrames` frames.
         if locked, let held = heldSize {
             if abs(spec.length - held.spec.length) > config.sizeChangeTolerance {
-                heldSize = (spec, snapped)
-                generation += 1
+                if let p = pendingSize, p.snapped == snapped,
+                   abs(p.spec.length - spec.length) <= config.sizeChangeTolerance {
+                    pendingSize = (spec, snapped, p.frames + 1)
+                } else {
+                    pendingSize = (spec, snapped, 1)
+                }
+                if let p = pendingSize, p.frames >= config.sizeAdoptFrames {
+                    heldSize = (spec, snapped)
+                    pendingSize = nil
+                    generation += 1
+                } else {
+                    spec = held.spec; snapped = held.snapped
+                }
             } else {
+                pendingSize = nil
                 spec = held.spec; snapped = held.snapped
             }
         }

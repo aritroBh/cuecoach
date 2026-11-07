@@ -118,14 +118,14 @@ struct AutoTableLocatorReviewTests {
         func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
             scene.trueCorners.enumerated().compactMap { i, p in
                 let q = scene.project(p + SIMD3(0, scene.profile.noseHeight, 0), cameraToWorld: camera)
-                return q.map { AutoTableKeypoint(kind: .cornerPocket, pixel: $0 + offsets[i], confidence: 0.9) }
+                return q.map { AutoTableKeypoint(kind: .noseCorner, pixel: $0 + offsets[i], confidence: 0.9) }
             }
         }
     }
 
     static func greyScene() -> AutoSyntheticScene {
         var scene = AutoSyntheticScene()
-        scene.feltColor = (120, 120, 120)
+        scene.feltColor = (120, 120, 120)  // with no LiDAR (frames below) a grey cloth gives segmentation nothing
         scene.floorColor = (120, 120, 120)
         return scene
     }
@@ -136,7 +136,7 @@ struct AutoTableLocatorReviewTests {
         let off = [SIMD2(7.0, 0), SIMD2(0, -7.0), SIMD2(7.0, 5), SIMD2(-6.0, 6)]
         let locator = ClassicalAutoTableLocator(keypoints: OffsetKeypoints(scene: scene, camera: cam, offsets: off))
         var last: AutoTableEstimate?
-        for i in 0..<20 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i))) }
+        for i in 0..<20 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i), withDepth: false, planeBias: 0)) }
         let e = try #require(last)
         #expect(e.frame.path == .keypointsOnly)
         print("[autocal] keypoint-only, offset keypoints: frame rms \(e.frame.reprojectionRMS) px, conf \(e.confidence)")
@@ -152,7 +152,7 @@ struct AutoTableLocatorReviewTests {
         let locator = ClassicalAutoTableLocator(keypoints: OffsetKeypoints(scene: scene, camera: cam,
                                                                            offsets: Array(repeating: .zero, count: 4)))
         var last: AutoTableEstimate?
-        for i in 0..<20 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i))) }
+        for i in 0..<20 { last = locator.process(scene.frame(cameraToWorld: cam, seed: UInt64(i), withDepth: false, planeBias: 0)) }
         let e = try #require(last)
         #expect(e.frame.path == .keypointsOnly)
         #expect(e.frame.reprojectionRMS < 0.5)

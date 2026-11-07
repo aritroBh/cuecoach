@@ -19,11 +19,15 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var keypointWeight = 15.0
         /// A LiDAR cloth level further than this from the ARKit/depth plane is not believed (m).
         var maxClothOffset = 0.03
-        /// Plausible LiDAR rail-cap heights above the cloth (m); outside → keep the profile's value.
-        var railTopHeightRange: ClosedRange<Double> = 0.025...0.07
+        /// Measure the rail-cap height above the cloth with LiDAR (else the profile value is used as is).
+        var measureRailTopHeight = true
+        /// A LiDAR rail-cap height is believed only within this distance of the profile default (m).
+        /// Kept tight until device evidence exists: smoothed real depth biases the band toward the cloth.
+        var maxRailHeightDeviation = 0.008
     }
 
-    /// Per-frame detector state. Copied out of the lock, worked on without it, written back.
+    /// Per-frame detector state. Owned by the `processing` lock, which serialises `process()` calls, so
+    /// concurrent callers queue instead of overwriting each other's cloth levels, rail heights and model.
     private struct Work {
         var fused: AutoTablePose?
         var model: AutoClothModel?
@@ -32,18 +36,24 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         /// Recent LiDAR rail-cap heights above the cloth.
         var railHeights: [Double] = []
         var rng = AutoRandom()
+        /// `State.epoch` this work belongs to; a reset since then discards it.
+        var epoch = 0
     }
 
     private struct State {
         var fusion: AutoTableFusion
-        var work = Work()
         var latest: AutoTableEstimate?
         var lastTimestamp: Double?
+        /// Bumped by `reset()`. A detection that started before a reset is dropped, not fused.
+        var epoch = 0
     }
 
     let config: Config
     private let keypointProvider: (any TableKeypointProvider)?
+    /// Short critical sections only: readers, flips and resets never wait for a detection.
     private let state: Mutex<State>
+    /// Held for a whole `process()` call (lock order: processing → state).
+    private let processing = Mutex(Work())
 
     init(config: Config = Config(), keypoints: (any TableKeypointProvider)? = nil) {
         self.config = config
@@ -53,6 +63,12 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
 
     var latest: AutoTableEstimate? { state.withLock { $0.latest } }
 
+    /// Detector state counters (tests).
+    var debugWorkCounts: (clothLevels: Int, railHeights: Int) {
+        let epoch = state.withLock { $0.epoch }
+        return processing.withLock { $0.epoch == epoch ? ($0.clothLevels.count, $0.railHeights.count) : (0, 0) }
+    }
+
     func flipHeadFoot() {
         state.withLock { s in
             s.fusion.flip()
@@ -61,13 +77,17 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
     }
 
     func reset() {
-        state.withLock { s in s = State(fusion: AutoTableFusion(config: config.fusion)) }
+        state.withLock { s in s = State(fusion: AutoTableFusion(config: config.fusion), epoch: s.epoch &+ 1) }
     }
 
     func process(_ frame: AutoTableFrame) -> AutoTableEstimate {
+        processing.withLock { stored in process(frame, stored: &stored) }
+    }
+
+    private func process(_ frame: AutoTableFrame, stored: inout Work) -> AutoTableEstimate {
         let t0 = Date()
-        // 1. Under the lock: skip unusable frames, snapshot the detector state.
-        enum Gate { case skip(AutoTableEstimate), run(Work) }
+        // 1. Under the state lock: skip unusable frames, note the epoch and the fused pose.
+        enum Gate { case skip(AutoTableEstimate), run(epoch: Int, fused: AutoTablePose?) }
         let gate: Gate = state.withLock { s in
             var reason: String?
             if frame.tracking != .normal { reason = "tracking" }
@@ -82,25 +102,28 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                 return .skip(est)
             }
             s.lastTimestamp = frame.timestamp
-            var w = s.work
-            w.fused = s.fusion.fused
-            return .run(w)
+            return .run(epoch: s.epoch, fused: s.fusion.fused)
         }
-        var work: Work
+        let epoch: Int
         switch gate {
         case .skip(let e): return e
-        case .run(let w): work = w
+        case .run(let e, let fused):
+            epoch = e
+            if stored.epoch != e { stored = Work(); stored.epoch = e }  // reset() since the last frame
+            stored.fused = fused
         }
+        var work = stored
 
-        // 2. Detection (and the keypoint model) without the lock: readers and flips never wait for it.
+        // 2. Detection (and the keypoint model) without the state lock: readers and flips never wait for it.
         var diag = AutoFrameDiagnostics()
         let camera = AutoCamera(intrinsics: frame.intrinsics, cameraToWorld: frame.cameraToWorld)
         let det = detect(frame, camera: camera, state: &work, diag: &diag)
+        work.fused = nil
 
-        // 3. Under the lock: write back, fuse, validate against the fused pose.
-        return state.withLock { s in
-            s.work = work
-            s.work.fused = nil
+        // 3. Under the state lock: fuse and validate, unless a reset happened meanwhile (then this frame
+        //    belongs to the forgotten table and is dropped, and so is its detector state).
+        let result: AutoTableEstimate? = state.withLock { s in
+            guard s.epoch == epoch else { return nil }
             s.fusion.add(det?.measurement)
             let fused = s.fusion.fused
             var fusedRMS: Double?
@@ -124,6 +147,14 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             s.latest = est
             return est
         }
+        guard let result else {
+            var d = AutoFrameDiagnostics()
+            d.rejection = "reset"
+            return AutoTableEstimate(state: .searching, pose: nil, confidence: 0, cornerSpread: .infinity,
+                                     fusedReprojectionRMS: nil, generation: 0, frame: d)
+        }
+        stored = work
+        return result
     }
 
     // MARK: - Per-frame detection
@@ -176,7 +207,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
 
         if edges == nil {
             // Keypoint-only fallback (LiDAR level from the keypoint quad).
-            let kq = keypoints.filter { $0.kind == .cornerPocket && $0.confidence >= 0.3 }.map(\.pixel)
+            let kq = keypoints.filter { $0.kind == .noseCorner && $0.confidence >= 0.3 }.map(\.pixel)
             if kq.count == 4 {
                 let cen = kq.reduce(AutoP2.zero, +) / 4
                 let ordered = kq.sorted { atan2($0.y - cen.y, $0.x - cen.x) < atan2($1.y - cen.y, $1.x - cen.x) }
@@ -198,16 +229,18 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
 
         // 3. LiDAR cloth level from the bed interior, then the rail-cap height above it.
         refineLevel(f, camera: camera, quad: imgCorners, plane: &plane, hintLevel: hintLevel, state: &s, diag: &diag)
-        if let d = f.depth {
+        if config.measureRailTopHeight, let d = f.depth {
             let Q = imgCorners.compactMap { plane.lift($0, camera: camera, height: prof.railTopHeight) }
             if Q.count == 4, let r = AutoPlaneRefiner.railTopHeight(depth: d, camera: camera, imageWidth: img.width,
                                                                      imageHeight: img.height, plane: plane, feltCorners: Q),
-               config.railTopHeightRange.contains(r.height) {
+               abs(r.height - config.profile.railTopHeight) <= config.maxRailHeightDeviation {
                 s.railHeights.append(r.height)
                 if s.railHeights.count > 15 { s.railHeights.removeFirst() }
                 prof = effectiveProfile(s)
             }
         }
+
+        diag.railTopHeight = prof.railTopHeight
 
         // 4. Lift to the plane and fit the rectangle.
         guard let fit = fitRectangle(rails: rails, corners: imgCorners, keypoints: keypoints, camera: camera,
@@ -379,10 +412,10 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                                  plane: AutoTablePlane, profile prof: AutoTableProfile) -> [AutoRectFitter.PointSample] {
         var out: [AutoRectFitter.PointSample] = []
         for k in kps where k.confidence >= 0.3 {
-            let h = k.kind == .cushionCorner ? prof.railTopHeight : prof.noseHeight
-            let grow = k.kind == .cushionCorner ? prof.cushionWidth : 0
+            let h = prof.noseHeight
+            let grow = k.kind == .cornerMouth ? -prof.cornerMouthInset : 0
             guard let p = plane.lift(k.pixel, camera: camera, height: h) else { continue }
-            let cands: [(Double, Double)] = k.kind == .sidePocket ? [(0, 1), (0, -1)] : [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+            let cands: [(Double, Double)] = k.kind == .sideMouth ? [(0, 1), (0, -1)] : [(1, 1), (1, -1), (-1, 1), (-1, -1)]
             var best: (Double, Double)?, bd = Double.infinity
             for (sx, sy) in cands {
                 let m = rect.center + rect.u * (sx * (rect.a + grow)) + rect.v * (sy * (rect.b + grow))
@@ -397,7 +430,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
 
     private func keypointOnly(_ kps: [AutoTableKeypoint], camera: AutoCamera, plane: AutoTablePlane,
                               profile prof: AutoTableProfile, diag: inout AutoFrameDiagnostics) -> Detection? {
-        let corners = kps.filter { $0.kind == .cornerPocket && $0.confidence >= 0.3 }
+        let corners = kps.filter { $0.kind == .noseCorner && $0.confidence >= 0.3 }
             .compactMap { plane.lift($0.pixel, camera: camera, height: prof.noseHeight) }
         guard corners.count == 4 else { return nil }
         let c = corners.reduce(AutoP2.zero, +) / 4
@@ -433,14 +466,14 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
     /// RMS pixel distance of keypoints to the nearest re-projected model point of their kind on `pose`.
     static func keypointRMS(_ kps: [AutoTableKeypoint], pose: AutoTablePose, camera: AutoCamera,
                             profile: AutoTableProfile) -> Double {
-        let L = pose.spec.length, W = pose.spec.width, c = profile.cushionWidth
+        let L = pose.spec.length, W = pose.spec.width, m = profile.cornerMouthInset
         var s = 0.0, n = 0
         for k in kps {
-            let model: [Vec2], h: Double
+            let model: [Vec2], h = profile.noseHeight
             switch k.kind {
-            case .cornerPocket: model = [Vec2(0, 0), Vec2(0, W), Vec2(L, W), Vec2(L, 0)]; h = profile.noseHeight
-            case .sidePocket: model = [Vec2(L / 2, 0), Vec2(L / 2, W)]; h = profile.noseHeight
-            case .cushionCorner: model = [Vec2(-c, -c), Vec2(-c, W + c), Vec2(L + c, W + c), Vec2(L + c, -c)]; h = profile.railTopHeight
+            case .noseCorner: model = [Vec2(0, 0), Vec2(0, W), Vec2(L, W), Vec2(L, 0)]
+            case .sideMouth: model = [Vec2(L / 2, 0), Vec2(L / 2, W)]
+            case .cornerMouth: model = [Vec2(m, m), Vec2(m, W - m), Vec2(L - m, W - m), Vec2(L - m, m)]
             }
             let d = model.compactMap { camera.project(pose.world($0, height: h)) }.map { simd_distance($0, k.pixel) }.min()
             if let d { s += d * d; n += 1 }
