@@ -112,6 +112,20 @@ public struct BiasDetector: Equatable, Sendable, Codable {
         self.configs = configs
     }
 
+    private enum CodingKeys: String, CodingKey { case configs, runs }
+
+    /// Decoding validates like `init(configs:)`: stored data missing an axis is rejected, never crashes later.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let configs = try c.decode([BiasAxis: Config].self, forKey: .configs)
+        guard Set(configs.keys) == Set(BiasAxis.allCases) else {
+            throw DecodingError.dataCorruptedError(forKey: .configs, in: c,
+                                                   debugDescription: "configs must cover every BiasAxis")
+        }
+        self.configs = configs
+        self.runs = try c.decode([BiasKey: Run].self, forKey: .runs)
+    }
+
     public func config(for axis: BiasAxis) -> Config { configs[axis]! }
 
     public mutating func observe(_ axis: BiasAxis, error e: Double) {

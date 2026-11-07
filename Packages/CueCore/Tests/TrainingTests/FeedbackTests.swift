@@ -182,7 +182,7 @@ struct TrainingIsolationTests {
             }
         }
     }
-    @Test func packageTrainingTargetDependsOnlyOnGeometryAndPhysics() throws {
+    @Test func packageTrainingTargetHasNoCompetitiveDependencies() throws {
         let pkg = try String(contentsOf: Self.root.appending(path: "Package.swift"), encoding: .utf8)
         let line = try #require(pkg.split(separator: "\n").first { $0.contains(".target(name: \"Training\"") })
         #expect(!line.contains("Stats") && !line.contains("Rules") && !line.contains("Engine"))

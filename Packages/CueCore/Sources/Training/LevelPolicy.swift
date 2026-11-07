@@ -35,12 +35,16 @@ public struct LevelPolicy: Equatable, Sendable, Codable {
     public let promoteAt: Double
     public let demoteAt: Double
 
+    /// Comparison slack so 8/10 counts as exactly 0.8 despite floating point.
+    public static let epsilon = 1e-9
+
     public static let standard = try! LevelPolicy(window: 10, promoteAt: 0.8, demoteAt: 0.4)
 
     public init(window: Int, promoteAt: Double, demoteAt: Double) throws(LevelPolicyError) {
         guard window >= 1 else { throw .windowTooSmall }
         guard (0...1).contains(promoteAt), (0...1).contains(demoteAt) else { throw .thresholdOutOfRange }
-        guard demoteAt < promoteAt else { throw .noHysteresis }
+        // The gap must exceed both comparison slacks, or a rate on `demoteAt` could also promote.
+        guard promoteAt - demoteAt > 2 * Self.epsilon else { throw .noHysteresis }
         self.window = window; self.promoteAt = promoteAt; self.demoteAt = demoteAt
     }
 
@@ -62,8 +66,7 @@ public struct LevelPolicy: Equatable, Sendable, Codable {
     public func record(success: Bool, into p: inout LevelProgress) -> LevelChange? {
         p.append(success, window: window)
         guard p.recent.count == window, let rate = p.successRate else { return nil }
-        // Small epsilon so 8/10 counts as exactly 0.8 despite floating point.
-        let eps = 1e-9
+        let eps = Self.epsilon
         if rate + eps >= promoteAt, let up = p.level.harder {
             p.move(to: up); return .promoted(to: up)
         }

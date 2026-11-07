@@ -68,7 +68,7 @@ public enum AssistLevel: Int { case full = 1, objectLineOnly, ghostOnly, none   
                                func visibleWhileAiming(in: DrillID) -> Set<OverlayElement>
                                func visibleAfterShot(in: DrillID) -> Set<OverlayElement> }
 public struct LevelPolicy { init(window:promoteAt:demoteAt:) throws(LevelPolicyError)   // decoding validates too
-                            static let standard                                      // 10 attempts, ≥0.8 up, ≤0.4 down
+                            static let standard                                      // 10 attempts, ≥0.8 up, ≤0.4 down; gap > 2·epsilon
                             func record(success:into: inout LevelProgress) -> LevelChange? }
 public struct LevelProgress { var level: AssistLevel; var recent: [Bool]; var successRate: Double? }
 public struct TrainingProgress { func level(for: DrillID) -> AssistLevel
