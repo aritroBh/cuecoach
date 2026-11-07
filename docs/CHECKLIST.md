@@ -46,7 +46,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] Capture: camera + LiDAR frame source, replay source (worktree .worktrees/capture, Claude)
 - [~] Calibration: tap-4-corners + auto cloth detection, homography + ball-plane offset, LiDAR table size (D12)
 - [~] Ball detection v0 (classical, real-time) + tracker v0 — Claude, .worktrees/capture
-- [~] Core ML ball detector: synthetic data + YOLO train + .mlpackage export — Codex, .worktrees/detector
+- [~] Core ML ball detector: pipeline committed (2efd72d, 3,200 synthetic imgs); Codex sandbox had no network → orchestrator training YOLO26n 30 epochs on MPS now
 - [~] Live screen: AR v0 INSTALLED on both phones (5b5558a): plane → tap 4 corners → 3D table + pockets → ball rings → aim line; debug HUD. Next: auto corners, 4K, thermal, tests, Codex+Antigravity review
 - [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
 - [ ] Post-shot VLM: Apple Foundation Model + benchmark FastVLM / Qwen-VL (MLX) on 15 Pro Max (D22)
@@ -63,5 +63,5 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Screens A: Settings (privacy delete, backup, rule defaults, table size) + Player profile (stats, radar, pro comp, history, Training tab) — .worktrees/screens-a (Sim F)
 - [~] Screens B: Session lobby (lineups D17, rule vote) + Post-shot card (D18) + Game review (timeline, diagram, win-prob, SotG, MVP) — .worktrees/screens-b (Sim G)
 - [~] Zero-tap automatic table locating (user at table: manual points mismatched) — AutoTableLocator, .worktrees/autocal (Claude; Codex review; workflow wf_ff3aa1d8)
-- [~] Core ML table-keypoint model (6 pockets + 4 cushion corners, YOLO-pose, synthetic data) — .worktrees/tablekp (Codex)
+- [~] Core ML table-keypoint model: pipeline committed (6c16646); orchestrator installing + training YOLO26n-pose on MPS now
 - [~] AR: zero-tap build 5c0f529 INSTALLED (auto-lock ghost table, green/red rings, 3 lines, spin/power, 4K+thermal, LiDAR mesh, 106 tests); Codex review 6 MAJOR → fixing
