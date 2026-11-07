@@ -50,7 +50,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] Core ML ball detector: pipeline committed (2efd72d, 3,200 synthetic imgs); Codex sandbox had no network → orchestrator training YOLO26n 30 epochs on MPS (slow network: package download in progress)
 - [~] Live screen: AR v0 INSTALLED on both phones (5b5558a): plane → tap 4 corners → 3D table + pockets → ball rings → aim line; debug HUD. Next: auto corners, 4K, thermal, tests, Codex+Antigravity review
 - [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
-- [ ] Post-shot VLM: Apple Foundation Model + benchmark FastVLM / Qwen-VL (MLX) on 15 Pro Max (D22)
+- [x] Post-shot VLM benchmark (D22→D23): Apple FM 26–28% / Qwen3.5-2B 39% / Gemma-4-E2B 31–33%, all at chance on vision; Apple FM text-only labels + rule fallback; merged
 
 ## All-modules push (workflow wf_4253a676, user: "use all agents", 2026-11-06)
 Each module: TDD worker → Codex review + Claude adversarial verification → fix → re-verify.
@@ -68,4 +68,4 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] AR 9d67bbe INSTALLED on both phones: Codex r3 fixes (relock w/o stale timeout, frame seq/epoch, vanished-ball shot end, LiDAR-verified marks), Kalman tracker, cue-stick live aim + convergence haptic, LiDAR depth balls, buffer reuse, Physics-driven Lines 2/3; 148 unit + 2 UI green. Reviews running: Codex r4 (code) + Antigravity r2 (UX)
 - [x] AR 9ad4e32 INSTALLED: zero-tap lock (floor/coffee-table planes rejected), relocalization re-check, shot events, Hungarian tracker, thermal step-down; 117 unit + 2 UI tests green. Codex re-review running; next: cue-stick aim, Kalman, buffer reuse, depth-based ball detection
 - [~] On-device test runs: CueCoach unit suite via xcodebuild test on 17 Pro Max + 15 Pro Max
-- [~] VLM A/B on BOTH phones (17 Pro Max: OpenSound + OpenCane uninstalled with user OK to free the 3-app slot): Apple FM vs Qwen3.5-2B vs Gemma-4-E2B
+- [x] VLM A/B on BOTH phones (17 Pro Max: OpenSound + OpenCane uninstalled with user OK to free the 3-app slot): Apple FM vs Qwen3.5-2B vs Gemma-4-E2B
