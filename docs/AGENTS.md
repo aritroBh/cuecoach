@@ -15,8 +15,10 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 |---|---|---|---|
 | Rules | Claude | Codex | OmniRoute |
 | Physics + pooltool fixtures | Codex | Claude | Cursor |
-| Persistence (SwiftData, backup JSON) | Cursor | Claude | Codex |
+| Persistence (SwiftData, backup JSON) | Claude ✱ | Cursor (review-only) | Codex |
 | Virtual table UI | Claude | Antigravity (design + code) | Codex |
+
+✱ Cursor was the planned worker, but auto mode blocks `cursor-agent --force` (unattended command execution). Cursor reviews instead until the user allows it.
 
 ## Ledger
 | Date | Module | Wrote | Reviewed | Result |

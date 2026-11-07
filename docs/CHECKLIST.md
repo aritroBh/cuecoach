@@ -18,15 +18,16 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 - [x] docs/RULES.md bar-rule conventions draft (+ docs/research/rules-notes.md, WPA 2026-10-21)
 - [x] User approves schema, interfaces, bar conventions (D11–D14)
 
-## Phase 1 — Core
-- [ ] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
+## Phase 1 — Core (branch phase/1-core; worktrees .worktrees/{rules,physics,persistence})
+Workers running: Rules (Claude) · Physics (Codex) · Persistence (Claude). Virtual table starts after Rules + Physics merge.
+- [~] Rules: WPA PDFs + Dr. Dave read, rule numbers cited
 - [ ] Rules: bar 8-ball tests + impl
 - [ ] Rules: WPA 8-ball tests + impl
 - [ ] Rules: WPA 9-ball tests + impl (push-out, 3-foul)
-- [ ] Physics: pooltool fixture generator (500 shots)
+- [~] Physics: pooltool fixture generator (500 shots)
 - [ ] Physics: phenomenon unit tests + impl
 - [ ] Physics: fixture suite within tolerance
-- [ ] Persistence: SwiftData models + export/import round-trip
+- [~] Persistence: SwiftData models + export/import round-trip
 - [ ] Persistence: training/competitive isolation test
 - [ ] Virtual table: design mock (open-pencil / ui-ux-pro-max)
 - [ ] Virtual table: playable 8-ball + 9-ball, XCUITests
