@@ -13,7 +13,7 @@ Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = foot-left cus
 public struct Stroke { var direction: Vec2; var speed: Double         // cue-ball launch speed, m/s
                        var tipOffset: Vec2 }                          // (side, top/draw) in ball radii, |·| ≤ 0.5
 public struct PhysicsParams { /* μ slide, μ roll, μ spin, ball-ball μ, cushion e(v), squirt factor … */ }
-public enum PhysicsEvent { case ballBall(BallID, BallID), cushion(BallID, Rail), pocket(BallID, Pocket),
+public enum PhysicsEvent { case ballBall(BallID, BallID), cushion(BallID, Rail), pocket(BallID, Pocket), offTable(BallID),
                            slideToRoll(BallID), spinOff(BallID), rest(BallID) }   // each with time t
 public struct ShotTrace { var events: [TimedEvent]; var final: TableState
                           func state(at t: Double) -> TableState
