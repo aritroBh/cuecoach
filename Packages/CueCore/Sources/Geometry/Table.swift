@@ -21,8 +21,8 @@ public enum Pocket: String, CaseIterable, Codable, Sendable {
     public var isSide: Bool { self == .sideLeft || self == .sideRight }
 }
 
-/// Fixed table geometry. Coordinates in metres, origin at the foot-left cushion-nose corner.
-/// "Left" = y = 0 rail, "right" = y = width rail.
+/// Fixed table geometry. Coordinates in metres, origin at the head-left cushion-nose corner,
+/// +x along the long axis toward the foot rail. "Left" = y = 0 rail, "right" = y = width rail.
 public struct TableSpec: Hashable, Codable, Sendable {
     /// Standard ball, 2 1/4" (57.15 mm).
     public static let ballRadius: Double = 0.057150 / 2
@@ -60,4 +60,34 @@ public struct TableSpec: Hashable, Codable, Sendable {
     public var headSpot: Vec2 { Vec2(length * 0.25, width / 2) }
     /// Head string: line through the head spot, parallel to the head rail (kitchen = x < headStringX, the head end at x = 0).
     public var headStringX: Double { length * 0.25 }
+}
+
+extension TableSpec {
+    /// Accepted length:width range. Tables are 2:1 nominal; LiDAR-measured specs may be a little off.
+    public static let aspectRange: ClosedRange<Double> = 1.8...2.2
+
+    /// Positive, finite dimensions, roughly 2:1, with pocket mouths a ball fits through and narrower than the table.
+    public var isValid: Bool {
+        let dims = [length, width, cornerMouth, sideMouth]
+        guard dims.allSatisfy({ $0.isFinite && $0 > 0 }) else { return false }
+        guard Self.aspectRange.contains(length / width) else { return false }
+        let ball = 2 * Self.ballRadius
+        return cornerMouth > ball && sideMouth > ball && cornerMouth < width && sideMouth < width
+    }
+
+    private enum CodingKeys: String, CodingKey { case size, length, width, cornerMouth, sideMouth }
+
+    /// Decoding validates the spec (peer / persisted payloads are untrusted). All five keys are required.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(size: try c.decode(TableSize.self, forKey: .size))
+        length = try c.decode(Double.self, forKey: .length)
+        width = try c.decode(Double.self, forKey: .width)
+        cornerMouth = try c.decode(Double.self, forKey: .cornerMouth)
+        sideMouth = try c.decode(Double.self, forKey: .sideMouth)
+        guard isValid else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Invalid TableSpec dimensions: \(self)"))
+        }
+    }
 }

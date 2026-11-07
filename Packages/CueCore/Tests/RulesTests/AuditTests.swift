@@ -3,8 +3,8 @@ import Testing
 @testable import Rules
 
 /// Adversarial QA audit of the rules engine against docs/RULES.md, DECISIONS D11/D13/D15/D17 and the
-/// WPA Rules of Play / Playing Regulations eff. 2026-10-21. Passing tests are kept as regressions;
-/// tests that expose a defect are marked `.disabled("AUDIT-FINDING: ...")`.
+/// WPA Rules of Play / Playing Regulations eff. 2026-10-21. Passing tests are kept as regressions
+/// (findings R1-R3 are fixed).
 @Suite("Audit: adversarial rules scenarios")
 struct AuditTests {
     let bar = RulesEngine(ruleSet: .barEight)
@@ -200,7 +200,7 @@ struct AuditTests {
         #expect(p.reason == .threeBallRule && !r.nextState.onTable.contains(b(5)) && r.spot.isEmpty)
     }
 
-    @Test(.disabled("AUDIT-FINDING: pastOrPocketed below the pocketed count is trusted; 3 balls pocketed still flagged by the three-ball rule"))
+    @Test
     func nine_reg16_threePocketed_alwaysSatisfiesRule_evenIfCountUnderReported() {
         // Reg 16(1): three pocketed balls satisfy the rule on their own. A tracker that reports only head-string
         // crossings (0) must not turn a three-ball make into an illegal break.
@@ -266,7 +266,7 @@ struct AuditTests {
         #expect(rb.reRack && rb.nextState.shooter == 1 && rb.nextState.activePlayer == 0)
     }
 
-    @Test(.disabled("AUDIT-FINDING: after a WPA 4.3(d)(2) re-break by the other team, breaker (team) and breakingPlayer (slot) disagree; stalemate re-break goes to the wrong athlete"))
+    @Test
     func wpa8_2v2_reBreakByIncomingTeam_thenStalemate_consistentBreaker() {
         let e = RulesEngine(ruleSet: .wpaEight, format: .twoVsTwo)
         // Rack 1: A1 breaks. Rack 2: B1 breaks. B1's break is illegal; team A chooses to re-break → A2 breaks.
@@ -412,10 +412,10 @@ struct AuditTests {
 
     // MARK: - Safety and the 8 (WPA 1.7 / 2.16 / 4.6 / 4.8(c))
 
-    @Test(.disabled("AUDIT-FINDING: WPA 8 — 8 pocketed on a called safety is scored as a win; a safety calls no pocket, so 4.8(c) loss applies"))
+    @Test
     func wpa8_4_8c_eightDropsOnCalledSafety_loses() {
         let r = wpa8.apply(shot(first: 8, pocket: [8: .footLeft], safety: true), to: onEight(wpa8))
-        #expect(r.winner == 1)
+        #expect(r.winner == 1 && r.endReason == .eightNotCalled)
     }
 
     @Test func wpa8_openTableSafety_pocketedBallStaysDown_tableOpen_turnPasses() {

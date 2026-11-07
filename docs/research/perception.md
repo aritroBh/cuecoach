@@ -469,7 +469,7 @@ protocol BallDetector { func detect(_ f: CameraFrame, _ c: TableCalibration) asy
 protocol CueLineDetector { func detect(_ f: CameraFrame, pose: VNHumanBodyPoseObservation?, cueBall: Vec2) -> CueLine? } // dir + confidence
 ```
 
-**Cross-track note (Geometry).** `Table.swift` puts the head end at x = 0 (`headStringX = 0.25 L`, `footSpot = 0.75 L`). INTERFACES says "origin = foot-left cushion nose, +x toward the head". One of the two is inverted. Perception's orientation bit (§3.5) maps into whichever is chosen, so settle it before Phase 3.
+**Cross-track note (Geometry).** Settled (audit G1): the frame is head-left origin, +x toward the foot (`headStringX = 0.25 L`, `footSpot = 0.75 L`), and INTERFACES now says so. Perception's orientation bit (§3.5) maps into this frame.
 
 ## 13. Open questions for the user
 

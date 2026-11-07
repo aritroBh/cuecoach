@@ -27,6 +27,18 @@ public struct BallID: Hashable, Comparable, Codable, Sendable, CustomStringConve
         }
     }
 
+    private enum CodingKeys: String, CodingKey { case number }
+
+    /// Decoding enforces the same 0...15 range as `init?(_:)` (peer / persisted payloads are untrusted).
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let n = try c.decode(Int.self, forKey: .number)
+        guard (0...15).contains(n) else {
+            throw DecodingError.dataCorruptedError(forKey: .number, in: c, debugDescription: "BallID \(n) out of 0...15")
+        }
+        number = n
+    }
+
     public static func < (a: BallID, b: BallID) -> Bool { a.number < b.number }
     public var description: String { isCue ? "cue" : "\(number)" }
 }
@@ -69,4 +81,36 @@ public struct TableState: Hashable, Codable, Sendable {
     }
 
     public var onTable: [BallID: BallState] { balls.filter { $0.value.motion != .pocketed } }
+
+    private enum CodingKeys: String, CodingKey { case spec, balls }
+
+    /// Same wire shape as the synthesized form (`balls` = flat [key, value, key, value] array), but
+    /// encoded in BallID order (byte-stable) and decoded strictly: a duplicate BallID is an error.
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(spec, forKey: .spec)
+        var arr = c.nestedUnkeyedContainer(forKey: .balls)
+        for (id, state) in balls.sorted(by: { $0.key < $1.key }) {
+            try arr.encode(id)
+            try arr.encode(state)
+        }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        spec = try c.decode(TableSpec.self, forKey: .spec)
+        var arr = try c.nestedUnkeyedContainer(forKey: .balls)
+        var balls: [BallID: BallState] = [:]
+        while !arr.isAtEnd {
+            let id = try arr.decode(BallID.self)
+            guard !arr.isAtEnd else {
+                throw DecodingError.dataCorruptedError(in: arr, debugDescription: "balls: key \(id) has no value")
+            }
+            let state = try arr.decode(BallState.self)
+            guard balls.updateValue(state, forKey: id) == nil else {
+                throw DecodingError.dataCorruptedError(in: arr, debugDescription: "balls: duplicate BallID \(id)")
+            }
+        }
+        self.balls = balls
+    }
 }

@@ -2,8 +2,7 @@ import Testing
 import Foundation
 @testable import Geometry
 
-// Adversarial QA audit of Geometry (phase/1-core). Tests that expose defects are
-// marked .disabled("AUDIT-FINDING: ...") so the suite stays green; remove the trait once fixed.
+// Adversarial QA audit of Geometry (phase/1-core). Findings G1-G6 and A2 are fixed; these are regressions.
 
 private let inch = 0.0254
 
@@ -107,20 +106,53 @@ struct AuditLayoutTests {
         #expect(s.pocketCenter(.footRight) == Vec2(1.98, 0.99))
     }
 
-    // Doc comments in Table.swift / Vec2.swift and docs/INTERFACES.md say
-    // "origin = foot-left corner, +x toward the head", but the code puts the HEAD at the origin.
-    // This test encodes the documented contract and fails against the code.
-    @Test(.disabled("AUDIT-FINDING G1: documented frame (origin foot-left, +x toward head) contradicts code (head at x = 0)"))
-    func documentedFrameOriginIsFootLeft() {
+    // G1: the documented frame must match the code (head-left corner at the origin, +x toward the foot).
+    @Test func documentedFrameMatchesCode() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()   // Tests/GeometryTests
+            .deletingLastPathComponent().deletingLastPathComponent()              // Packages/CueCore
+        let repo = root.deletingLastPathComponent().deletingLastPathComponent()
+        let interfaces = try String(contentsOf: repo.appending(path: "docs/INTERFACES.md"), encoding: .utf8)
+        #expect(interfaces.contains("origin = head-left cushion nose, +x toward the foot"))
+        for f in ["Table.swift", "Vec2.swift"] {
+            let src = try String(contentsOf: root.appending(path: "Sources/Geometry/\(f)"), encoding: .utf8)
+            #expect(!src.contains("foot-left"), "\(f) still documents a foot-left origin")
+            #expect(!src.contains("toward the head"), "\(f) still documents +x toward the head")
+        }
         let s = TableSpec(size: .nineFoot)
-        #expect(s.pocketCenter(.footLeft) == Vec2(0, 0))
+        #expect(s.pocketCenter(.headLeft) == .zero && s.footSpot.x > s.headSpot.x)
     }
 
-    // Nothing stops a nonsensical spec from being built (or decoded from a peer).
-    @Test(.disabled("AUDIT-FINDING G4: TableSpec accepts non-positive / non-finite / non-2:1 dimensions with no validation"))
-    func rejectsDegenerateDimensions() throws {
-        let json = #"{"size":"nineFoot","length":-1,"width":0,"cornerMouth":0.1143,"sideMouth":0.127}"#
+    // G4: a decoded (peer / persisted) spec must have positive, finite, roughly 2:1 dimensions and
+    // pocket mouths a ball fits through.
+    @Test(arguments: [
+        #"{"size":"nineFoot","length":-1,"width":0,"cornerMouth":0.1143,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":0,"width":0,"cornerMouth":0.1143,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":2.54,"width":-1.27,"cornerMouth":0.1143,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":1e400,"width":1.27,"cornerMouth":0.1143,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":2.54,"width":2.54,"cornerMouth":0.1143,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":2.54,"width":0.5,"cornerMouth":0.1143,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":2.54,"width":1.27,"cornerMouth":0.01,"sideMouth":0.127}"#,
+        #"{"size":"nineFoot","length":2.54,"width":1.27,"cornerMouth":0.1143,"sideMouth":-0.127}"#,
+    ])
+    func rejectsDegenerateDimensions(json: String) throws {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(TableSpec.self, from: Data(json.utf8)) }
+    }
+
+    @Test func nonFiniteDimensionsAreInvalid() {
+        var s = TableSpec(size: .nineFoot)
+        #expect(s.isValid)
+        s.length = .nan
+        #expect(!s.isValid)
+        s = TableSpec(size: .nineFoot); s.width = .infinity
+        #expect(!s.isValid)
+    }
+
+    @Test(arguments: TableSize.allCases)
+    func validSpecsRoundTrip(size: TableSize) throws {
+        var s = TableSpec(size: size)
+        s.length *= 0.99                                   // LiDAR-measured, slightly off 2:1
+        let back = try JSONDecoder().decode(TableSpec.self, from: JSONEncoder().encode(s))
+        #expect(back == s)
     }
 }
 
@@ -145,9 +177,10 @@ struct AuditBallIDTests {
         #expect(BallID.allObjectBalls == BallID.allObjectBalls.sorted())
     }
 
-    // Synthesized Decodable bypasses the failable init's 0...15 guard.
-    @Test(.disabled("AUDIT-FINDING G2: BallID decodes out-of-range numbers (e.g. 99, -3) via synthesized Codable"))
-    func decodeRejectsOutOfRange() {
+    // G2: decoding enforces the failable init's 0...15 guard.
+    @Test
+    func decodeRejectsOutOfRange() throws {
+        #expect(try JSONDecoder().decode(BallID.self, from: Data(#"{"number":15}"#.utf8)) == BallID(15))
         for n in [16, 99, -3] {
             #expect(throws: (any Error).self) {
                 try JSONDecoder().decode(BallID.self, from: Data(#"{"number":\#(n)}"#.utf8))
@@ -200,16 +233,15 @@ struct AuditCodableTests {
         #expect(obj["balls"] is [Any])
     }
 
-    // Older/hand-written payloads without mouth widths should fall back to the WPA default.
-    @Test(.disabled("AUDIT-FINDING G3: TableSpec decode fails when cornerMouth/sideMouth are absent (defaults not used by synthesized Decodable)"))
-    func decodeWithoutMouthsUsesDefaults() throws {
+    // G3: no backward-compatibility contract exists for payloads without mouth widths, so they are
+    // rejected rather than silently defaulted.
+    @Test func decodeWithoutMouthsIsRejected() throws {
         let json = #"{"size":"nineFoot","length":2.54,"width":1.27}"#
-        let s = try JSONDecoder().decode(TableSpec.self, from: Data(json.utf8))
-        #expect(s.cornerMouth == 4.5 * inch)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(TableSpec.self, from: Data(json.utf8)) }
     }
 
-    // Duplicate keys in a peer-sent balls array are silently accepted (last wins).
-    @Test(.disabled("AUDIT-FINDING G5: TableState decode silently accepts duplicate BallID keys"))
+    // G5: duplicate keys in a peer-sent balls array are rejected.
+    @Test
     func duplicateBallKeysRejected() throws {
         let ball = #"{"position":{"x":0,"y":0},"velocity":{"x":0,"y":0},"angularVelocity":{"x":0,"y":0,"z":0},"motion":"stationary"}"#
         let spec = #"{"size":"nineFoot","length":2.54,"width":1.27,"cornerMouth":0.1143,"sideMouth":0.127}"#
@@ -234,12 +266,15 @@ struct AuditVec2Tests {
     }
 
     @Test func tinyAndHugeNormalize() {
-        #expect(abs(Vec2(1e-200, 1e-200).normalized.length - 1) < 1e-9 || Vec2(1e-200, 1e-200).normalized == .zero)
+        // A2: a nonzero vector must never normalize to zero.
+        #expect(abs(Vec2(1e-200, 1e-200).normalized.length - 1) < 1e-9)
+        #expect(abs(Vec2(5e-324, 0).normalized.length - 1) < 1e-9)
+        #expect(Vec2(1e-170, 0).length == 1e-170)
         #expect(Vec2(-0.0, 0).normalized == .zero)
     }
 
-    // Plain sqrt(x*x+y*y) overflows for large components (hypot would not).
-    @Test(.disabled("AUDIT-FINDING G6: Vec2.length overflows to inf for |x| > ~1e154; normalized then returns (0,0)"))
+    // G6: length must not overflow for large finite components.
+    @Test
     func lengthDoesNotOverflow() {
         #expect(Vec2(1e200, 0).length == 1e200)
         #expect(abs(Vec2(1e200, 1e200).normalized.length - 1) < 1e-9)

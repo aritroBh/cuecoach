@@ -1,7 +1,7 @@
 # Module interfaces (proposal — awaiting user review)
 
 All `CueCore` types are value types, `Sendable`, `Codable` where they cross the mesh or disk.
-Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = foot-left cushion nose, +x toward the head.
+Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = head-left cushion nose, +x toward the foot (head spot at 0.25 L, foot spot at 0.75 L).
 
 ## Geometry (merged)
 `Vec2`, `TableSize` (7/8/9 ft), `TableSpec` (dims, pocket centres + mouths, spots, head string),
