@@ -152,6 +152,28 @@ struct AimStressTests {
         #expect(out.last?.aim == nil)
     }
 
+    /// Codex review F1: a ball read only as "solid" (no number, the 8 not seen anywhere) could be a misread 8.
+    /// With solids legal it is still not a target; once the 8 is identified elsewhere it is.
+    @Test func numberlessGroupBallIsNotATargetWhileTheEightIsUnaccounted() async throws {
+        let d = ScriptedDetector()
+        let p = PerceptionPipeline(detector: d)
+        await p.setTable(Self.scene.frame)
+        await p.setLegal(Self.solids)
+        let target = Vec2(1.5, 0.5)
+        var out: [PerceptionResult] = []
+        for i in 0..<30 {
+            d.push([Stress.det(Vec2(0.8, 0.5), .cue, 0), Stress.det(target, .solid, nil)])
+            if let r = await p.process(Self.frame(i)) { out.append(r) }
+        }
+        #expect(out.last?.atRest == true)
+        #expect(out.last?.aim == nil)
+        for i in 30..<60 {
+            d.push([Stress.det(Vec2(0.8, 0.5), .cue, 0), Stress.det(target, .solid, nil), Stress.det(Vec2(1.7, 0.15), .eight, 8)])
+            if let r = await p.process(Self.frame(i)) { out.append(r) }
+        }
+        #expect(out.last?.aim.map { $0.object.distance(to: target) < 0.01 } == true)
+    }
+
     @Test func liveLineTurnsRedOnTheEight() async throws {
         var s = Self.scene
         let W = s.frame.spec.width
@@ -202,12 +224,16 @@ struct AimStressTests {
         let cue = Vec2(0.5, 0.5), white = Vec2(1.9, 0.08)
         let objs: [BallDetection] = [Stress.det(Vec2(1.2, 0.45), .solid, 3), Stress.det(Vec2(1.5, 0.7), .solid, 1)]
         var last: PerceptionResult?
+        var aimFromWhiteDuringHide = 0
         for i in 0..<120 {
             var f = objs + [Stress.det(white, .cue, 0)]
             if i < 20 || i >= 60 { f.insert(Stress.det(cue, .cue, 0), at: 0) }   // hidden 20..<60
             d.push(f)
             last = await p.process(Self.frame(i))
+            if let a = last?.aim, a.cue.distance(to: white) < 0.02 { aimFromWhiteDuringHide += 1 }
         }
+        // While the real cue ball is hidden there is no suggestion rather than one from the stand-in.
+        #expect(aimFromWhiteDuringHide == 0)
         let r = try #require(last)
         let cueMarked = r.confirmed.filter { r.marks[$0.id] == .cue }
         Stress.metric("cueSteal.cueMarkedTracks", cueMarked.count)

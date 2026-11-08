@@ -63,6 +63,11 @@ struct ShotSegmenter: ShotSegmenting {
     var pocketConfirm = 0.4
     /// s: a shot during which the tracker never left rest may still end after this long.
     var minRestedShot = 1.0
+    /// s: without the cue stick in view, the cue ball must get from 1R to 2R off its anchor this fast (a stroke
+    /// leaves rest impulsively; a hand pushing or placing it does not).
+    var maxDepartTime = 0.15
+    /// m: a confirmed-pocketed id seen again farther than this from its pocket is another object, not the ball.
+    var pocketReturnRadius = 0.15
     static let maxRails = 64
     /// Per-shot bookkeeping for balls that are neither pre-shot nor still around is dropped after this.
     var forgetAfter = 2.0
@@ -71,6 +76,7 @@ struct ShotSegmenter: ShotSegmenting {
     private var fastFrames = 0
     private var farFrames = 0
     private var leftAt: Double?
+    private var farAt: Double?
     private var lastRest: [Int: Vec2] = [:]
     private var lastRestT = -Double.infinity
     private var record: ShotRecord?
@@ -99,17 +105,18 @@ struct ShotSegmenter: ShotSegmenting {
             }
             guard let cueID, let cue = confirmed.first(where: { $0.id == cueID }), cue.measured,
                   let anchor = lastRest[cueID], cue.measuredSince <= lastRestT, strokeRecent != false
-            else { fastFrames = 0; farFrames = 0; leftAt = nil; return nil }
+            else { fastFrames = 0; farFrames = 0; leftAt = nil; farAt = nil; return nil }
             // Kinematic stroke: displacement from the rest anchor, with hysteresis.
             let disp = cue.measuredPosition.distance(to: anchor)
-            if disp > resetDisplacement { if leftAt == nil { leftAt = t } } else { leftAt = nil }
-            if disp > startDisplacement { farFrames += 1 } else if disp <= resetDisplacement { farFrames = 0 }
+            if disp > resetDisplacement { if leftAt == nil { leftAt = t } } else { leftAt = nil; farAt = nil }
+            if disp > startDisplacement { farFrames += 1; if farAt == nil { farAt = t } } else if disp <= resetDisplacement { farFrames = 0 }
+            let impulsive = strokeRecent == true || (farAt.map { $0 - (leftAt ?? $0) <= maxDepartTime } ?? false)
             // Detected stroke: speed right after it (SPEC §5.3).
             fastFrames = strokeRecent == true && cue.speed > startSpeed ? fastFrames + 1 : 0
-            guard farFrames >= startFrames || fastFrames >= startFrames else { return nil }
+            guard (farFrames >= startFrames && impulsive) || fastFrames >= startFrames else { return nil }
             inShot = true
             let start = min(t, leftAt ?? t)
-            fastFrames = 0; farFrames = 0; leftAt = nil
+            fastFrames = 0; farFrames = 0; leftAt = nil; farAt = nil
             record = ShotRecord(start: start, end: start, preState: lastRest, finalState: [:], cueID: cueID, firstContact: nil,
                                 rails: [], pocketed: [:])
             lastSeen = [:]; lastVel = [:]; moved = []; vanishedAt = [:]; pendingPocket = [:]
@@ -119,7 +126,13 @@ struct ShotSegmenter: ShotSegmenting {
         if !atRest { sawUnrest = true }
         let R = TableSpec.ballRadius
         // Visible = confirmed and measured this frame; coasting predictions are never evidence.
-        let visible = confirmed.filter(\.measured)
+        // A confirmed-pocketed id that turns up far from its pocket is an impostor (another ball or a false
+        // positive that inherited the id): ignored for this shot. Near the pocket it was in the jaws: un-pocket.
+        let visible = confirmed.filter { b in
+            guard b.measured else { return false }
+            if let pk = rec.pocketed[b.id] { return b.measuredPosition.distance(to: spec.pocketCenter(pk)) <= pocketReturnRadius }
+            return true
+        }
         let byID = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // First contact: an object ball near the cue ball starts moving.
         if rec.firstContact == nil, let cue = byID[rec.cueID] {

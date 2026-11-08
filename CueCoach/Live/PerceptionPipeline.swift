@@ -60,6 +60,11 @@ actor PerceptionPipeline {
     private var cueLostAt: Double?
     /// s a lost cue-ball id is waited for before another white track can take over for good.
     private let cueHoldSeconds = 10.0
+    /// A target's class votes must agree at least this much.
+    static let minTargetShare = 0.8
+    /// Cloth colour samples from the first frames after lock; the reference is their per-channel median.
+    private var feltSamples: [(UInt8, UInt8, UInt8)] = []
+    private let feltSampleCount = 10
 
     init(detector: any BallDetector = ClassicalBallDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
         self.detector = detector
@@ -76,6 +81,7 @@ actor PerceptionPipeline {
         previewCache = PreviewCache()   // previews belong to one table
         previewInFlight = nil
         feltReference = nil
+        feltSamples = []
         cueID = nil
         cueLostAt = nil
     }
@@ -86,7 +92,13 @@ actor PerceptionPipeline {
         guard let table else { return nil }
         let t0 = Date()
         let geo = FrameGeometry(frame: table, camera: f.camera)
-        if feltReference == nil { feltReference = detector.feltColor(in: f.image, geometry: geo) }
+        if feltSamples.count < feltSampleCount, let c = detector.feltColor(in: f.image, geometry: geo) {
+            // Median over the first frames after lock, so one odd frame (a hand, auto white balance settling)
+            // does not bias the whole session.
+            feltSamples.append(c)
+            func med(_ k: ((UInt8, UInt8, UInt8)) -> UInt8) -> UInt8 { feltSamples.map(k).sorted()[feltSamples.count / 2] }
+            feltReference = (med { $0.0 }, med { $0.1 }, med { $0.2 })
+        }
         var dets = detector.detect(in: f.image, geometry: geo, feltReference: feltReference)
         var depthBalls: [Vec2] = []
         if let d = f.depth {
@@ -117,14 +129,17 @@ actor PerceptionPipeline {
             let others = confirmed.filter { $0.id != cue.id }
             // Only known-legal balls are targets. An unidentified ball could be the 8: with no ball known to be
             // legal there is no suggestion at all.
-            let targets = others.filter { marks[$0.id] == .legal }
+            // A ball known only by group (no number) could be a misread 8 unless the 8 is seen elsewhere.
+            let eightSeen = legal.contains(.eight) || others.contains { $0.kind == .eight && $0.kindShare >= Self.minTargetShare }
+            let targets = others.filter { t in
+                marks[t.id] == .legal && t.kindShare >= Self.minTargetShare && (t.tentativeNumber != nil || eightSeen)
+            }
             // Blockers: every other track, tentative ones included (a real ball not yet confirmed still blocks).
             let blockers = tracks.filter { t in t.id != cue.id && !targets.contains { $0.id == t.id } }.map(\.position)
             if !targets.isEmpty {
                 let cands = AimPlanner.candidates(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
                                                   spec: table.spec, limit: 3)
-                aim = refineWithPhysics(cands, cue: cue, tracks: tracks.filter { $0.id == cue.id || $0.confirmed || $0.measured },
-                                        spec: table.spec) ?? cands.first
+                aim = refineWithPhysics(cands, cue: cue, tracks: tracks, spec: table.spec) ?? cands.first
             }
         }
         // Live aim from the cue stick (only while the balls are still: that's when the player aims).
@@ -203,7 +218,8 @@ extension PerceptionPipeline {
         if let id = cueID, let c = cands.first(where: { $0.id == id }) { cueLostAt = nil; return c }
         if cueID != nil {
             if cueLostAt == nil { cueLostAt = t }
-            if let l = cueLostAt, t - l > cueHoldSeconds { cueID = nil; cueLostAt = nil }
+            // While the cue ball is briefly gone (behind the shooter) there is no cue ball rather than a stand-in.
+            if let l = cueLostAt, t - l > cueHoldSeconds { cueID = nil; cueLostAt = nil } else { return nil }
         }
         let best = cands.max { a, b in
             let sa = a.kindShare * (a.measured ? 1 : 0.5), sb = b.kindShare * (b.measured ? 1 : 0.5)

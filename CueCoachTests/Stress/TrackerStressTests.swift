@@ -98,6 +98,7 @@ struct TrackerStressTests {
             if firstBroken == nil && (ids != 1 || r.starts != 1) { firstBroken = v }
         }
         Stress.metric("sweep.firstBrokenSpeed", firstBroken.map { "\($0)" } ?? "none")
+        #expect(firstBroken == nil, "launch from rest breaks at \(firstBroken ?? 0) m/s")
     }
 
     /// Full 16-ball break from the physics engine: ID-swap rate and the shot record.
@@ -175,7 +176,9 @@ struct TrackerStressTests {
             let (r, trace) = Self.run([.cue: cue, BallID(2)!: obj], stroke: Stroke(direction: toPocket, speed: v))
             let truth = Self.pocketed(trace)[.cue] != nil
             let rec = r.records.first
-            Stress.metric("pocketSweep.v\(v)", "truthPocketed=\(truth) recorded=\(rec.map { $0.pocketed[$0.cueID] != nil } ?? false) records=\(r.records.count)")
+            let recorded = rec.map { $0.pocketed[$0.cueID] != nil } ?? false
+            Stress.metric("pocketSweep.v\(v)", "truthPocketed=\(truth) recorded=\(recorded) records=\(r.records.count)")
+            if v >= 1.0 && truth { #expect(recorded, "scratch at \(v) m/s not recorded") }
         }
     }
 
@@ -398,6 +401,53 @@ struct TrackerStressTests {
         Stress.metric("reloc0.5m.falseShots", starts)
         Stress.metric("reloc0.5m.phantomRecords", phantoms)
         #expect(starts == 0)
+    }
+
+    /// Codex review F2: a relocalization shift small enough to look like a launch (6-18 cm) is still not a shot.
+    @Test(arguments: [0.06, 0.1, 0.18])
+    func smallRelocalizationJumpIsNotAShot(shift: Double) {
+        var rng = SplitMix(seed: 8)
+        var tracker = KalmanBallTracker()
+        var seg = ShotSegmenter(spec: Stress.spec)
+        let balls: [BallID: Vec2] = [.cue: Vec2(0.5, 0.5), BallID(1)!: Vec2(1.2, 0.4), BallID(8)!: Vec2(1.5, 0.7)]
+        var starts = 0
+        for f in 0..<180 {
+            let t = Double(f) / 30
+            let off = t >= 2 ? Vec2(shift, 0.3 * shift) : .zero
+            let tracks = tracker.update(Stress.detections(balls.mapValues { $0 + off }, noise: 0.002, rng: &rng), at: t)
+            let c = tracks.filter(\.confirmed).first { $0.kind == .cue }
+            let was = seg.inShot
+            _ = seg.update(tracks: tracks, cueID: c?.id, atRest: tracker.isAtRest, at: t, strokeRecent: nil)
+            if !was && seg.inShot { starts += 1 }
+        }
+        Stress.metric("relocSmall\(shift).falseShots", starts)
+        #expect(starts == 0)
+    }
+
+    /// Codex review A2: two balls of the same class (solids) colliding head-on keep their ids.
+    @Test func sameClassCollisionKeepsIdentity() {
+        var swaps = 0, frames = 0
+        for seed in UInt64(1)...20 {
+            let a = Vec2(0.6, 0.5), b = Vec2(1.0, 0.5 + Double(seed % 5) * 0.004)
+            // Ball 3 struck into ball 5 (both solid): replay the cue-ball physics but label the cue ball as a solid.
+            let (_, frames0) = Stress.simulate([.cue: a, BallID(5)!: b], stroke: Stroke(direction: (b - a).normalized, speed: 1.5), tail: 2)
+            var rng = SplitMix(seed: seed)
+            var tracker = KalmanBallTracker()
+            var ledger = Stress.IDLedger()
+            func dets(_ m: [BallID: Vec2]) -> [BallDetection] {
+                m.keys.sorted().compactMap { id in
+                    let p = m[id]!
+                    if Stress.spec.pockets.contains(where: { p.distance(to: Stress.spec.pocketCenter($0)) < 0.06 }) { return nil }
+                    let q = p + Vec2(rng.gauss(), rng.gauss()) * 0.003
+                    return id == .cue ? Stress.det(q, .solid, 3) : Stress.det(q, .solid, 5)
+                }
+            }
+            for i in 0..<30 { _ = tracker.update(dets([.cue: a, BallID(5)!: b]), at: -1 + Double(i) / 30) }
+            for f in frames0 { ledger.observe(truth: f.balls, tracks: tracker.update(dets(f.balls), at: f.t)) }
+            swaps += ledger.swaps; frames += ledger.ballFrames
+        }
+        Stress.metric("collisionSameClass.swapsPer1000BallFrames", String(format: "%.2f", 1000 * Double(swaps) / Double(frames)))
+        #expect(swaps == 0)
     }
 
     // MARK: Ordering, NaN, empty

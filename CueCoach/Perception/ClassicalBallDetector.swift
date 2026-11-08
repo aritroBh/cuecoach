@@ -173,7 +173,9 @@ struct ClassicalBallDetector: BallDetector {
         }
         guard vs.count >= 6 else { return false }   // too small to judge: fail closed (no LiDAR to vouch for it)
         vs.sort()
-        return Double(vs[vs.count * 9 / 10] - vs[vs.count / 4]) >= minSpread
+        // Spread relative to brightness (18 levels at a full-brightness white ball): a dimmer scales shading down.
+        let hi = Double(vs[vs.count * 9 / 10])
+        return hi - Double(vs[vs.count / 4]) >= max(6, minSpread * hi / 240)
     }
 
     // MARK: - Helpers

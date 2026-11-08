@@ -104,6 +104,8 @@ struct KalmanBallTracker: BallTracker {
         var graveyardSeconds = 10.0
         var graveyardSpeed = 2.5
         var graveyardCap = 32
+        /// m: never inherit an id from farther away than this (a far birth is another ball or a false positive).
+        var graveyardMaxReach = 1.0
         /// Misses that break the measurement run (`measuredSince` restarts after a longer gap).
         var continuityMisses = 3
         /// Added to the squared Mahalanobis cost when a detection's class disagrees with the track's.
@@ -269,9 +271,27 @@ struct KalmanBallTracker: BallTracker {
             }
         }
 
+        // Frame shift (relocalization, a small AR pose jump): several still balls jump by the same vector in
+        // one frame. That is the table frame moving, not balls: re-anchor them and break their measurement run
+        // so nothing reads it as a launch or a shot.
+        let shifted = isFrameShift(pairs, detections)
         for (ti, di) in pairs {
             let det = detections[di]
             let z = det.tablePoint
+            if shifted && tracks[ti].still && tracks[ti].hits >= params.confirmHits {
+                tracks[ti].x.reseed(p: z.x, v: 0, positionVar: r, velocityVar: 1e-3)
+                tracks[ti].y.reseed(p: z.y, v: 0, positionVar: r, velocityVar: 1e-3)
+                tracks[ti].recent = []
+                tracks[ti].measuredSince = t
+                launched.remove(ti)
+                tracks[ti].hits += 1; tracks[ti].misses = 0
+                tracks[ti].lastMeasured = z
+                tracks[ti].hitBits = (tracks[ti].hitBits << 1) | 1
+                tracks[ti].recent.append((z, t))
+                tracks[ti].votes[det.kind, default: 0] += det.confidence
+                if let n = det.tentativeNumber { tracks[ti].numberVotes[n, default: 0] += det.confidence }
+                continue
+            }
             // A still ball whose measurement jumped (inside the min gate) is launching too: follow it at once.
             if tracks[ti].still && tracks[ti].centre.distance(to: z) > max(params.onsetJump, 5 * tracks[ti].sigma) { launched.insert(ti) }
             if launched.contains(ti) {
@@ -329,7 +349,7 @@ struct KalmanBallTracker: BallTracker {
                 return graveyard.map { g in
                     guard det.kind != .unknown, g.kind == det.kind else { return 1e6 }
                     if let n = det.tentativeNumber, let gn = g.numberVotes.max(by: { $0.value < $1.value })?.key, n != gn { return 1e6 }
-                    let reach = 0.04 + params.graveyardSpeed * max(0, t - g.t)
+                    let reach = min(params.graveyardMaxReach, 0.04 + params.graveyardSpeed * max(0, t - g.t))
                     let d = g.pos.distance(to: det.tablePoint)
                     return d <= reach ? d : 1e6
                 }
@@ -381,6 +401,20 @@ struct KalmanBallTracker: BallTracker {
             stillFrames = 0
         }
         return out
+    }
+
+    /// ≥ 2 still confirmed balls (and ≥ 60 % of those matched) jumped this frame by one common vector (±1.5 cm).
+    private func isFrameShift(_ pairs: [(Int, Int)], _ detections: [BallDetection]) -> Bool {
+        let still = pairs.filter { tracks[$0.0].still && tracks[$0.0].hits >= params.confirmHits }
+        let jumps: [Vec2] = still.compactMap { ti, di in
+            let tr = tracks[ti]
+            let d = detections[di].tablePoint - tr.centre
+            return d.length > max(params.onsetJump, 5 * tr.sigma) ? d : nil
+        }
+        guard jumps.count >= 2, Double(jumps.count) >= 0.6 * Double(still.count) else { return false }
+        func med(_ xs: [Double]) -> Double { let s = xs.sorted(); return s[s.count / 2] }
+        let m = Vec2(med(jumps.map(\.x)), med(jumps.map(\.y)))
+        return jumps.allSatisfy { ($0 - m).length < 0.015 }
     }
 
     static func compatible(_ a: BallKind, _ b: BallKind) -> Bool { a == b || a == .unknown || b == .unknown }

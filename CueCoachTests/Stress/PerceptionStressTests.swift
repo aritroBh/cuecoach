@@ -85,6 +85,9 @@ struct PerceptionStressTests {
         Stress.metric("dim60.cueKind", cueDet?.kind.rawValue ?? "none")
         #expect(sc.found >= Self.base.balls.count - 1)
         #expect(cueDet?.kind == .cue)
+        // Without LiDAR the pipeline also requires sphere shading; a dimmer must not flatten it away.
+        let c = try #require(cueDet)
+        #expect(ClassicalBallDetector.hasBallShading(img, sourcePoint: c.imagePoint, radiusPx: c.radiusPx))
     }
 
     @Test(arguments: [("magenta", 1.0, 0.45, 1.1), ("blue", 0.5, 0.7, 1.35), ("red", 1.3, 0.6, 0.5)])
