@@ -121,6 +121,61 @@ enum FaceBenchmark {
         return (genuine, impostor)
     }
 
+    /// SplitMix64, seeded: every bootstrap is reproducible.
+    struct SeededRNG { var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9; z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// Volunteers in a canonical, content-defined order (lexicographic on their first embedding), so a bootstrap
+    /// with a fixed seed does not depend on the order volunteers were captured in.
+    static func canonical(_ sets: [[Embedding]]) -> [[Embedding]] {
+        sets.sorted { a, b in
+            let x = a.first?.vector ?? [], y = b.first?.vector ?? []
+            return x.lexicographicallyPrecedes(y)
+        }
+    }
+
+    /// Volunteer-level FAR bootstrap (r6): per volunteer pair (i ≠ j) the false accepts / comparisons at `threshold`;
+    /// each round resamples volunteers with replacement and recomputes the pooled FAR over every pair of *distinct*
+    /// drawn volunteers (k copies of i and l copies of j contribute k·l times their pair; copies of one volunteer
+    /// never form impostor pairs). Returns the 97.5th percentile (upper 95 % two-sided bound).
+    static func farUpperBootstrap(matrix m: [[(fa: Int, n: Int)]], rounds: Int = 400, seed: UInt64 = 0xFA12) -> Double {
+        let v = m.count
+        guard v >= 2 else { return 0 }
+        var rng = SeededRNG(state: seed)
+        var rates: [Double] = []
+        for _ in 0..<rounds {
+            var copies = [Int](repeating: 0, count: v)
+            for _ in 0..<v { copies[Int(rng.next() % UInt64(v))] += 1 }
+            var fa = 0.0, n = 0.0
+            for i in 0..<v where copies[i] > 0 {
+                for j in (i + 1)..<v where copies[j] > 0 {
+                    let w = Double(copies[i] * copies[j])
+                    fa += w * Double(m[i][j].fa); n += w * Double(m[i][j].n)
+                }
+            }
+            rates.append(n == 0 ? 0 : fa / n)
+        }
+        rates.sort()
+        return rates[min(rounds - 1, Int(0.975 * Double(rounds)))]
+    }
+
+    static func farUpperBootstrap(_ sets: [[Embedding]], threshold: Double, rounds: Int = 400, seed: UInt64 = 0xFA12) -> Double {
+        let c = canonical(sets)
+        var m = [[(fa: Int, n: Int)]](repeating: [(fa: Int, n: Int)](repeating: (0, 0), count: c.count), count: c.count)
+        for i in c.indices { for j in c.indices where j > i {
+            var fa = 0, n = 0
+            for x in c[i] { for y in c[j] { if let s = x.cosine(y) { n += 1; if s > threshold { fa += 1 } } } }
+            m[i][j] = (fa, n); m[j][i] = (fa, n)
+        } }
+        return farUpperBootstrap(matrix: m, rounds: rounds, seed: seed)
+    }
+
     static func pairs(_ sets: [[Embedding]]) -> (genuine: [Double], impostor: [Double]) {
         var genuine: [Double] = [], impostor: [Double] = []
         for (i, s) in sets.enumerated() {
@@ -182,12 +237,12 @@ enum FaceBenchmark {
         let tarB = bootstrapRate(r.genuine.map { g in (g.filter { $0 > threshold }.count, g.count) })
         let fpirB = bootstrapRate(groups(unknownProbes) { ($0.best?.score ?? -1) > threshold })
         let misB = bootstrapRate(groups(enrolled, wrong))
-        let farB = bootstrapRate(r.impostor.map { m in (m.filter { $0 > threshold }.count, m.count) })
+        let farBoot = farUpperBootstrap(rep, threshold: threshold)
         return .pass(FaceShipGateRecord(
             modelID: modelID, threshold: threshold, tar: tar,
             tarLower95: min(tarB.0, wilsonLower(successes: tarHits, n: gen.count)),
             far: far, farObserved: farObserved,
-            farUpper95: max(farB.1, wilsonUpper(successes: fa, n: imp.count)), fpir: fpir,
+            farUpper95: max(farBoot, wilsonUpper(successes: fa, n: imp.count)), fpir: fpir,
             fpirUpper95: max(fpirB.1, wilsonUpper(successes: fp, n: unknownProbes.count)),
             misidentifications: misID,
             misidentificationUpper95: max(misB.1, wilsonUpper(successes: misID, n: enrolled.count)),
