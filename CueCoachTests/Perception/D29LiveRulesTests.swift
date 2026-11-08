@@ -74,6 +74,34 @@ struct D29PipelineTests {
         #expect(!r.marks.values.contains(.illegal), "\(r.marks)")
     }
 
+    /// Codex integ-wiring BLOCKER: a ball flickering between two numbers of the same kind (3 vs 4) has a settled
+    /// kind but not a settled identity: with only the 8 legal it must not turn red.
+    @Test func flickeringNumberWithinOneKindIsNotAWarning() async throws {
+        let W = scene.frame.spec.width, L = scene.frame.spec.length
+        let cue = Vec2(0.5, W / 2), obj = Vec2(L * 0.6, W / 2)
+        let me = self
+        let p = PerceptionPipeline(detector: ScriptedBallDetector { t in
+            let i = Int((t * 30).rounded())
+            return [me.det(cue, .cue, 0), me.det(obj, .solid, i % 2 == 0 ? 3 : 4)]
+        })
+        await p.setTable(scene.frame)
+        let (engine, base) = TargetLegality.defaultGame()
+        var g = base; g.groups = [0: .solids, 1: .stripes]; g.phase = .inPlay; g.onTable = [.cue, .eight]
+        await p.setLegal(engine.legalTargets(g))
+        var last: PerceptionResult?
+        for i in 0..<30 { last = await p.process(PerceptionFrame(image: blank, camera: scene.camera, timestamp: Double(i) / 30)) }
+        let r = try #require(last)
+        #expect(r.confirmed.count == 2)
+        #expect(!r.marks.values.contains(.illegal), "\(r.marks)")
+        // A steady number does warn.
+        let q = PerceptionPipeline(detector: ScriptedBallDetector { _ in [me.det(cue, .cue, 0), me.det(obj, .solid, 3)] })
+        await q.setTable(scene.frame)
+        await q.setLegal(engine.legalTargets(g))
+        var r2: PerceptionResult?
+        for i in 0..<30 { r2 = await q.process(PerceptionFrame(image: blank, camera: scene.camera, timestamp: Double(i) / 30)) }
+        #expect(r2?.marks.values.contains(.illegal) == true)
+    }
+
     /// No cue stick anywhere: the cue ball leaves rest impulsively → the pipeline starts a shot and Live emits
     /// a balanced aimStarted + aimEnded to the shell.
     @MainActor @Test func impulsiveLaunchWithoutAStickStartsAShotInLive() async throws {

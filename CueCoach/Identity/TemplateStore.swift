@@ -59,8 +59,14 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore {
     var deletionGeneration: Int { RecognitionDeletionLog.generation }
 
     /// Saved; tells every registered gallery (the stack bumps the deletion generation first).
+    /// Also fences each profile (persisted revocation tombstone), so a registration started with an earlier
+    /// consent can never write templates back, even after a relaunch.
     func deleteTemplates(for profileIDs: Set<UUID>) throws {
         RecognitionDeletionLog.recordDeletion()
+        let ctx = stack.competitiveContext
+        let now = Date.now
+        for p in try ctx.fetch(FetchDescriptor<PlayerProfile>()) where profileIDs.contains(p.id) { PersistenceStack.fence(p, at: now) }
+        if ctx.hasChanges { try ctx.save() }
         try stack.dropRecognition(of: profileIDs)
     }
 }

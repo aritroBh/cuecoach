@@ -17,9 +17,16 @@ enum RecognitionDeletionLog {
 extension PersistenceStack {
     // MARK: Read / write (D26: face and appearance templates persist with the profile, no expiry)
 
+    /// The profile's templates, unless they were opted in at or before its revocation tombstone (a restored
+    /// backup's later revocation, a promotion fence, an Undo racing a fence): such a row is never read.
     func recognition(for profileID: UUID) throws -> RecognitionData? {
-        try recognitionContext.fetch(FetchDescriptor<RecognitionData>(predicate: #Predicate { $0.profileID == profileID }))
-            .first
+        guard let row = try recognitionContext.fetch(FetchDescriptor<RecognitionData>(predicate: #Predicate { $0.profileID == profileID }))
+            .first else { return nil }
+        let profiles = try competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.id == profileID }))
+        if let revoked = profiles.first?.recognitionRevokedAt, BackupV1.millis(row.optedInAt) <= BackupV1.millis(revoked) {
+            return nil
+        }
+        return row
     }
 
     var hasRecognitionData: Bool {

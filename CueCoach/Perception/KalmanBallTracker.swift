@@ -19,6 +19,8 @@ struct TrackedBall: Sendable, Equatable, Identifiable {
     var measuredSince: Double = -.infinity
     /// Share of the class votes held by `kind` (1 = every detection agreed).
     var kindShare: Double = 1
+    /// Share of the number votes held by `tentativeNumber` (1 = every numbered detection agreed; 0 = no number).
+    var numberShare: Double = 1
     var speed: Double { velocity.length }
     var measuredPosition: Vec2 { lastMeasured ?? position }
 }
@@ -460,7 +462,8 @@ struct KalmanBallTracker: BallTracker {
                                tentativeNumber: num, confirmed: tr.hits >= params.confirmHits,
                                measured: tr.misses == 0, lastMeasured: tr.lastMeasured,
                                measuredSince: tr.measuredSince,
-                               kindShare: total > 0 ? (tr.votes[kind] ?? 0) / total : 0)
+                               kindShare: total > 0 ? (tr.votes[kind] ?? 0) / total : 0,
+                               numberShare: num.map { n in (tr.numberVotes[n] ?? 0) / max(1e-9, tr.numberVotes.values.reduce(0, +)) } ?? 0)
         }
     }
 }

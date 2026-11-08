@@ -368,6 +368,7 @@ final class ARLiveController: NSObject {
         overlay = o
         tableFrame = frame
         tap?.setMode(.idle)
+        model.perceptionReset()   // the segmenter starts over: close any open aim/shot for the shell
         let pipeline = pipeline
         Task { @MainActor [weak self] in
             await pipeline.setTable(frame)
@@ -389,6 +390,7 @@ final class ARLiveController: NSObject {
         overlay = nil
         tableFrame = nil
         revalidating = false
+        model.perceptionReset()
         model.clearCalibration()
         planeFoundAt = model.planeFound ? Date() : nil
         locatingSince = Date()
@@ -406,6 +408,7 @@ final class ARLiveController: NSObject {
     private func revalidate() {
         revalidating = true
         model.relocking = true
+        model.perceptionReset()   // no shot can settle while perception is stopped
         model.noteResult(nil)
         tap?.setMode(.idle)
         let locator = locator

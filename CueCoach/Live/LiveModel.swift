@@ -54,6 +54,13 @@ final class LiveModel {
         }
     }
 
+    /// Perception was reset (revalidation, recalibration, a new table): no shot can settle any more, so an open
+    /// aim or shot is closed for the shell (its menu would otherwise stay locked).
+    func perceptionReset() {
+        if aimEvents.phase != .idle { hooks.aimCancelled() }
+        aimEvents = AimEvents()
+    }
+
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
 
     /// Ring legality before the first shot: the shell's active game if injected, else the local default.
@@ -66,7 +73,8 @@ final class LiveModel {
     /// local copy, tell the shell. The shell owns the real game state; it applies its own result.
     func shotSettled(_ record: ShotRecord, ids: [Int: BallID]) {
         let (eng, state) = hooks.currentGame() ?? (engine, game)
-        let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state)
+        let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state,
+                                               pocketTimes: record.pocketTimes.isEmpty ? nil : record.pocketTimes)
         game = result.nextState
         lastRating = rating
         hooks.gameAdvanced(result.nextState)
@@ -86,7 +94,8 @@ final class LiveModel {
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
         if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
-        for e in aimEvents.update(cueVisible: r.liveAim != nil, atRest: r.atRest, shotStarted: r.shotStarted,
+        // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
+        for e in aimEvents.update(cueVisible: r.liveAim != nil || r.shooterAddressing, atRest: r.atRest, shotStarted: r.shotStarted,
                                   shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
             case .aimStarted: hooks.aimStarted()

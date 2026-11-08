@@ -68,6 +68,8 @@ actor PerceptionPipeline {
     static let minTargetShare = 0.8
     /// Cloth colour samples from the first frames after lock; the reference is their per-channel median.
     private var feltSamples: [(UInt8, UInt8, UInt8)] = []
+    /// Rule ids seen before and during the current shot (a pocketed ball's track is gone at settlement).
+    private var shotIDs = ShotIdentities()
     private let feltSampleCount = 10
 
     /// The shipped detector (the app's call sites pass it; the init default stays classical for logic tests on
@@ -94,6 +96,7 @@ actor PerceptionPipeline {
         feltSamples = []
         cueID = nil
         cueLostAt = nil
+        shotIDs = ShotIdentities()
     }
 
     func setLegal(_ l: Set<BallID>) { legal = l }
@@ -134,7 +137,7 @@ actor PerceptionPipeline {
             // A second "cue" (a reflection, chalk, a glass) is not the cue ball and is never a target.
             if m == .cue && t.id != cueBall?.id { m = .unknown }
             // D29: a warning needs a settled identity; class votes that still disagree are not one.
-            if m == .illegal && t.kindShare < Self.minTargetShare { m = .unknown }
+            if m == .illegal && (t.kindShare < Self.minTargetShare || t.numberShare < Self.minTargetShare) { m = .unknown }
             marks[t.id] = m
         }
         var aim: AimSuggestion?
@@ -183,10 +186,12 @@ actor PerceptionPipeline {
         let strokeGate: Bool? = cueTracker.cueVisible(at: f.timestamp) ? cueTracker.strokeRecent(at: f.timestamp) : nil
         let shot = segmenter?.update(tracks: tracks, cueID: cueID, atRest: rest, at: f.timestamp, strokeRecent: strokeGate)
         let started = !wasInShot && (segmenter?.inShot ?? false)
+        let ballIDs = shotIDs.update(known: BallIdentity.known(confirmed, cueID: cueID),
+                                     inShot: wasInShot || (segmenter?.inShot ?? false), ended: shot != nil)
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence, liveTargetID: liveTargetID,
-                                depthBalls: depthBalls.count, ballIDs: BallIdentity.known(confirmed, cueID: cueID),
+                                depthBalls: depthBalls.count, ballIDs: ballIDs,
                                 shooterAddressing: addressing,
                                 totalMs: Date().timeIntervalSince(t0) * 1000)
     }
@@ -315,5 +320,19 @@ enum BallScale {
         }.sorted()
         guard r.count >= 3 else { return nil }
         return r[r.count / 2]
+    }
+}
+
+/// Track id → rule id over a shot: before a shot it is the live map; during one, ids already known are kept
+/// (a pocketed ball's track is dropped before the shot settles) and new tracks only add balls not yet mapped.
+struct ShotIdentities: Sendable {
+    private var held: [Int: BallID] = [:]
+
+    mutating func update(known: [Int: BallID], inShot: Bool, ended: Bool = false) -> [Int: BallID] {
+        guard inShot || ended else { held = known; return known }
+        for (k, v) in known where held[k] == nil && !held.values.contains(v) { held[k] = v }
+        let out = held
+        if ended { held = known }
+        return out
     }
 }

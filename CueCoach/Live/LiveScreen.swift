@@ -493,6 +493,7 @@ struct ReplayLiveView: View {
         model.calibrated = true
         refreshHandles()
         let pipeline = pipeline
+        model.perceptionReset()
         Task { await pipeline.setTable(f) }
     }
 
@@ -504,6 +505,7 @@ struct ReplayLiveView: View {
         model.calibrated = true
         refreshHandles()
         let pipeline = pipeline, frame = fit.frame
+        model.perceptionReset()
         Task { await pipeline.setTable(frame) }
     }
 
@@ -512,6 +514,7 @@ struct ReplayLiveView: View {
         model.clearCalibration()
         model.planeFound = true
         let pipeline = pipeline, locator = locator
+        model.perceptionReset()
         Task { await pipeline.setTable(nil); await locator.reset() }
     }
 

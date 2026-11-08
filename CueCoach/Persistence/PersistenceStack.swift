@@ -47,6 +47,10 @@ final class PersistenceStack {
             // Open once just to run any pending migration, then let it close. The V1 → V2 stage deletes the
             // embeddings, but SQLite keeps their bytes in free pages and the WAL until a VACUUM.
             let url = dir.appendingPathComponent("Competitive.store")
+            // An existing store may be V1 (templates inside): keep it out of device backups from before the
+            // migration opens it until we know no template bytes remain (Codex privacy-r3).
+            let existed = FileManager.default.fileExists(atPath: url.path)
+            if existed { try RecognitionMigration.setCompetitiveExcluded(true, storeURL: url) }
             do { _ = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,
                                         plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: false) }
             // Retried on every open until it succeeds; a failure (e.g. a blocked checkpoint) keeps the marker and
@@ -57,6 +61,9 @@ final class PersistenceStack {
                 if !skipScrubForTesting, (try? RecognitionMigration.scrub(url)) != nil {
                     try RecognitionMigration.setCompetitiveExcluded(false, storeURL: url)   // stats back up again
                 }
+            } else if existed {
+                // No scrub pending: nothing left to hide. Also repairs a crash between the scrub and re-inclusion.
+                try RecognitionMigration.setCompetitiveExcluded(false, storeURL: url)
             }
         }
         competitiveContainer = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,

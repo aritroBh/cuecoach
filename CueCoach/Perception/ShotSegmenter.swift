@@ -16,6 +16,8 @@ struct ShotRecord: Sendable, Equatable {
     var pocketed: [Int: Pocket]
     /// Balls that vanished away from any pocket and never came back before the hard cap.
     var missing: Set<Int> = []
+    /// When each pocketed ball was last seen heading in (for the Rules pocket order; ties = unknown).
+    var pocketTimes: [Int: Double] = [:]
 
     static func == (a: ShotRecord, b: ShotRecord) -> Bool {
         a.start == b.start && a.end == b.end && a.preState == b.preState && a.finalState == b.finalState
@@ -165,6 +167,7 @@ struct ShotSegmenter: ShotSegmenting {
             // Came back: it was not pocketed after all (a hand over the corner, one missed frame).
             pendingPocket[b.id] = nil
             rec.pocketed[b.id] = nil
+            rec.pocketTimes[b.id] = nil
         }
         // Gone: a ball whose last measured path runs into a pocket mouth is a pocket candidate, confirmed once
         // it stays gone; any other absence (pre-shot balls never seen this shot included) is a vanish.
@@ -173,12 +176,14 @@ struct ShotSegmenter: ShotSegmenting {
         for id in watched where byID[id] == nil {
             if rec.pocketed[id] != nil { continue }
             if let pend = pendingPocket[id] {
-                if t - pend.t >= pocketConfirm || !alive.contains(id) { rec.pocketed[id] = pend.pocket; pendingPocket[id] = nil }
+                if t - pend.t >= pocketConfirm || !alive.contains(id) {
+                    rec.pocketed[id] = pend.pocket; rec.pocketTimes[id] = pend.t; pendingPocket[id] = nil
+                }
                 continue
             }
             if vanishedAt[id] == nil {
                 if let seen = lastSeen[id], let pk = pocketEntered(from: seen.pos, velocity: lastVel[id] ?? .zero) {
-                    if alive.contains(id) { pendingPocket[id] = (pk, t) } else { rec.pocketed[id] = pk }
+                    if alive.contains(id) { pendingPocket[id] = (pk, t) } else { rec.pocketed[id] = pk; rec.pocketTimes[id] = t }
                 } else {
                     vanishedAt[id] = lastSeen[id] == nil ? rec.start : t
                 }
