@@ -35,10 +35,10 @@ struct RuleRatingTests {
         #expect(r.rating == .mistake || r.rating == .blunder)
     }
 
-    @Test func noContactIsAFoul() {
+    /// Codex r6: no contact *seen* is unknown, so it is not rated as a no-contact foul.
+    @Test func unseenContactIsNotAFoul() {
         let r = RuleRating.rate(record(first: nil, pocketed: [:], rails: false), ids: ids, engine: engine, game: game)
-        #expect(!r.result.fouls.isEmpty && r.rating == .mistake)
-        #expect(r.result.turnPasses)
+        #expect(!r.result.fouls.contains(.noContact))
     }
 }
 

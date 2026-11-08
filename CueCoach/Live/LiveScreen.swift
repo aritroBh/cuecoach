@@ -516,6 +516,7 @@ struct ReplayLiveView: View {
 
     private func confirm() {
         guard table == nil, let fit = model.editor.confirm(viewer: scene.camera.position) else { return }
+        TableHealth.rememberMeasured(fit.frame.spec.size)
         table = fit.frame
         model.tableSize = fit.frame.spec.size
         model.calibrated = true

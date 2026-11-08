@@ -348,6 +348,7 @@ final class ARLiveController: NSObject {
             if model.manualCorrection || model.tapMode { UINotificationFeedbackGenerator().notificationOccurred(.error) }
             return
         }
+        TableHealth.rememberMeasured(fit.frame.spec.size)   // manual confirm too (Codex r6)
         model.tableSize = fit.frame.spec.size
         model.calibrated = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -423,6 +424,8 @@ final class ARLiveController: NSObject {
         // Status ticks are ordered too: an older "tracking normal" must not overwrite a newer "limited".
         let fresh = s.seq > lastStatusSeq
         if fresh { lastStatusSeq = s.seq }
+        // A limited spell seen on any frame since the last tick (even one shorter than the tick): re-validate.
+        if s.limitedSeen, s.trackingOK, model.calibrated, limitedSince == nil, !revalidating { revalidate() }
         if fresh, model.trackingOK != s.trackingOK {
             model.trackingOK = s.trackingOK
             if !s.trackingOK {
@@ -474,6 +477,8 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var planeFound: Bool; var trackingOK: Bool; var depthConfidence: Double?; var isResult = false
         var seq = 0; var epoch = 0
         var convertMs: Double?
+        /// Some frame since the last delivered status had non-normal tracking (latched per frame).
+        var limitedSeen = false
     }
     enum Mode: Sendable { case idle, locating, detecting }
 
@@ -485,7 +490,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
     private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
                                locateGate: LocatingGate(),
                                interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [[Vec2]](),
-                               seq: 0, epoch: 0, lastTracking: true))
+                               seq: 0, epoch: 0, lastTracking: true, limited: LimitedLatch()))
 
     /// Current epoch: results stamped with an older one are stale.
     var epoch: Int { state.withLock { $0.epoch } }
@@ -523,6 +528,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         let (mode, sendStatus, plane, width, seq, epoch): (Mode, Bool, Bool, Int, Int, Int) = state.withLock { s in
             let now = frame.timestamp
             if trackingNow != s.lastTracking { s.lastTracking = trackingNow; s.epoch += 1 }
+            s.limited.note(trackingNormal: trackingNow)
             s.seq += 1
             let seq = s.seq, epoch = s.epoch
             let status = now - s.lastStatus > 0.25
@@ -540,8 +546,10 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
             return (s.mode, status, s.planeFound, s.width, seq, epoch)
         }
         let tracking = trackingNow
-        let status = Status(planeFound: plane, trackingOK: tracking,
+        var status = Status(planeFound: plane, trackingOK: tracking,
                             depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil, seq: seq, epoch: epoch)
+        // Hand the latch to whatever this frame delivers (a status tick or a result).
+        if sendStatus || mode != .idle { status.limitedSeen = state.withLock { $0.limited.take() } }
         let onResult = onResult, onEstimate = onEstimate
         // World-anchored work is meaningless while ARKit is relocalizing: pause it.
         guard mode != .idle, tracking else {

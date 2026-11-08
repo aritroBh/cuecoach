@@ -56,12 +56,14 @@ final class LiveModel {
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
 
-    /// A shot ended: rate it through the Rules engine, advance the game, tell the shell.
+    /// A shot ended: rate it through the Rules engine against the shell's game (or the local default), advance the
+    /// local copy, tell the shell. The shell owns the real game state; it applies its own result.
     func shotSettled(_ record: ShotRecord, ids: [Int: BallID]) {
-        let (rating, result) = RuleRating.rate(record, ids: ids, engine: engine, game: game)
+        let (eng, state) = hooks.currentGame() ?? (engine, game)
+        let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state)
         game = result.nextState
         lastRating = rating
-        legalChanged(engine.legalTargets(game))
+        legalChanged(eng.legalTargets(result.nextState))
         if mode == .game {
             hooks.settled(rating, result.turnPasses)
             showBadge(BadgeStyle.of(rating))
@@ -73,7 +75,9 @@ final class LiveModel {
     /// Drives the aim lifecycle from each perception result (and hides the badge on aim/motion).
     func drive(_ r: PerceptionResult) {
         let moving = r.confirmed.contains { $0.speed > 0.1 }
-        if r.liveAim != nil || moving || r.shotStarted { hideBadge() }
+        let cueCreeping = r.confirmed.contains { r.marks[$0.id] == .cue && $0.speed > 0.04 }
+        // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
+        if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
         for e in aimEvents.update(cueVisible: r.liveAim != nil, atRest: r.atRest, shotStarted: r.shotStarted,
                                   shotEnded: r.shot != nil, at: r.timestamp) {

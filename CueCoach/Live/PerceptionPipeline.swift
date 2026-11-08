@@ -34,8 +34,10 @@ struct PerceptionResult: Sendable {
     /// Track id of the ball the live cue line hits first (for the illegal-aim warning).
     var liveTargetID: Int? = nil
     var depthBalls = 0
-    /// Tracker id → rule ball id (cue = 0) for ratings and the shell.
+    /// Tracker id → rule ball id (cue = 0) for ratings and the shell; unidentified balls are absent.
     var ballIDs: [Int: BallID] = [:]
+    /// The shooter's wrist is near the cue ball (stepping up to shoot) — hides post-shot text.
+    var shooterAddressing = false
     /// Whole pipeline time for this frame (detect + depth + track + cue + aim), ms.
     var totalMs: Double = 0
 
@@ -128,6 +130,11 @@ actor PerceptionPipeline {
                 if let a = aim { convergence = LiveAimTrace.convergence(live: d, cue: cb.position, suggestedGhost: a.ghost) }
             }
         }
+        var addressing = false
+        if let cb = cueBall {
+            let w = ShooterPicker.wrists(of: f.wristsByPerson, nearestTo: cb.position, geometry: geo, maxDistance: 0.5)
+            addressing = !w.isEmpty
+        }
         let wasInShot = segmenter?.inShot ?? false
         let cueID = cueBall?.id
         let strokeGate: Bool? = cueTracker.cueVisible(at: f.timestamp) ? cueTracker.strokeRecent(at: f.timestamp) : nil
@@ -136,7 +143,8 @@ actor PerceptionPipeline {
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence, liveTargetID: liveTargetID,
-                                depthBalls: depthBalls.count, ballIDs: BallIdentity.assign(confirmed, cueID: cueID),
+                                depthBalls: depthBalls.count, ballIDs: BallIdentity.known(confirmed, cueID: cueID),
+                                shooterAddressing: addressing,
                                 totalMs: Date().timeIntervalSince(t0) * 1000)
     }
 }
@@ -203,8 +211,20 @@ enum ShooterPicker {
     }
 }
 
-/// Maps tracks to rule-level ball ids: cue = 0; tentative numbers when unambiguous; the rest get unused numbers.
+/// Maps tracks to rule-level ball ids.
+/// - `known`: for rules — cue = 0 and unambiguous tentative numbers only; unidentified balls stay unknown.
+/// - `assign`: for physics — every ball gets some number (identity doesn't matter to the simulation).
 enum BallIdentity {
+    static func known(_ tracks: [TrackedBall], cueID: Int?) -> [Int: BallID] {
+        var out: [Int: BallID] = [:]
+        if let c = cueID { out[c] = .cue }
+        let counts = Dictionary(grouping: tracks.compactMap(\.tentativeNumber), by: { $0 }).mapValues(\.count)
+        for t in tracks where out[t.id] == nil {
+            if let n = t.tentativeNumber, n > 0, counts[n] == 1, let id = BallID(n) { out[t.id] = id }
+        }
+        return out
+    }
+
     static func assign(_ tracks: [TrackedBall], cueID: Int?) -> [Int: BallID] {
         var out: [Int: BallID] = [:]
         var used: Set<Int> = []

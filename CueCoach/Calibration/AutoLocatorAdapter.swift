@@ -31,10 +31,14 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
 
     /// - keypoints: nil = the bundled tablekp model (`TableKeypointModel.provider()`); pass `NoKeypoints()` to
     ///   run classical-only.
+    /// Counts mouth keypoints per call (pocket evidence must be mouths, not nose corners — Codex r6).
+    private let mouthCounter: MouthCountingProvider?
+
     init(keypoints: (any TableKeypointProvider)? = nil) {
         let kp = keypoints ?? TableKeypointModel.provider()
         self.keypoints = kp is NoKeypoints ? nil : kp
-        auto = ClassicalAutoTableLocator(keypoints: self.keypoints)
+        mouthCounter = self.keypoints.map { MouthCountingProvider(wrapping: $0) }
+        auto = ClassicalAutoTableLocator(keypoints: mouthCounter)
     }
 
     func reset() async {
@@ -76,15 +80,15 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             tracking: f.trackingNormal ? .normal : .limited)
         let e = auto.process(frame)
         state.withLock { s in
-            if Self.hasPocketEvidence(e.frame) { s.pocketEvidence += 1 }
+            if Self.hasPocketEvidence(e.frame, mouthKeypoints: mouthCounter?.lastMouths ?? 0) { s.pocketEvidence += 1 }
             s.lastVisibleFraction = e.frame.visibleLengthFraction
         }
         return map(e, frame: f, plane: hint)
     }
 
     /// Pockets are what make a table a table: ≥ 2 keypoint mouths, or ≥ 4 fitted pocket positions that look dark.
-    static func hasPocketEvidence(_ d: AutoFrameDiagnostics) -> Bool {
-        if d.keypointsUsed >= 2 { return true }
+    static func hasPocketEvidence(_ d: AutoFrameDiagnostics, mouthKeypoints: Int) -> Bool {
+        if mouthKeypoints >= 2 { return true }
         return d.pocketScores.values.filter { $0 >= 0.5 }.count >= 4
     }
 
@@ -116,7 +120,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
                 s.lastFailure = why
                 return s.consecutiveFailures >= expireAfterFailures
             }
-            if expire { auto.reset(); state.withLock { $0.consecutiveFailures = 0 } }
+            if expire { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0 } }
             return failing(why, seed: ghost(f, plane: plane))
         }
     }
@@ -159,4 +163,23 @@ struct NoKeypoints: TableKeypointProvider {
 /// The table-keypoint Core ML model (tablekp YOLO26n-pose, `TableKeypoints.mlpackage`), shared by every locator.
 enum TableKeypointModel {
     static func provider() -> (any TableKeypointProvider)? { CoreMLTableKeypointProvider.shared }
+}
+
+/// Wraps the keypoint model and remembers how many *mouth* keypoints (corner/side pocket mouths) it returned last.
+final class MouthCountingProvider: TableKeypointProvider, @unchecked Sendable {
+    private let inner: any TableKeypointProvider
+    private let count = Mutex(0)
+    init(wrapping inner: any TableKeypointProvider) { self.inner = inner }
+
+    var lastMouths: Int { count.withLock { $0 } }
+
+    func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+        let k = inner.keypoints(in: image, intrinsics: intrinsics)
+        count.withLock { $0 = Self.mouths(in: k) }
+        return k
+    }
+
+    static func mouths(in k: [AutoTableKeypoint], minConfidence: Double = 0.5) -> Int {
+        k.filter { ($0.kind == .cornerMouth || $0.kind == .sideMouth) && $0.confidence >= minConfidence }.count
+    }
 }

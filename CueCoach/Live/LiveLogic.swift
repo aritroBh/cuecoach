@@ -267,19 +267,26 @@ struct OverlayVisibility: Equatable, Sendable {
 /// Uses the D18 classes (Engine.DecisionRating). When a live ShotEngine evaluation is wired, `Ratings.rate`
 /// replaces the no-foul branch; fouls stay capped at Mistake/Blunder.
 enum RuleRating {
-    /// ShotOutcome for the Rules engine. `ids` maps tracker ids → rule ball ids (cue = 0).
-    static func outcome(_ r: ShotRecord, ids: [Int: BallID]) -> ShotOutcome {
+    /// ShotOutcome for the Rules engine, following its contract (Codex r6): `ids` maps tracker ids → rule ball ids
+    /// (cue = 0; unknown balls are absent). No contact *seen* is unknown (`noContact` stays false); rail-after-
+    /// contact is `nil` because the camera record has no contact-vs-rail ordering; `pocketOrder` comes from observed
+    /// drop times when known, else empty (= unknown) — never ball-number order.
+    static func outcome(_ r: ShotRecord, ids: [Int: BallID], pocketTimes: [Int: Double]? = nil) -> ShotOutcome {
         var pocketed: [BallID: Pocket] = [:]
         for (tid, p) in r.pocketed { if let id = ids[tid] { pocketed[id] = p } }
         let first = r.firstContact.flatMap { ids[$0] }
-        return ShotOutcome(firstContact: first, noContact: r.firstContact == nil, pocketed: pocketed,
-                           pocketOrder: Array(pocketed.keys).sorted(),
-                           anyRailAfterContact: r.rails.isEmpty && pocketed.isEmpty ? false : true)
+        var order: [BallID] = []
+        if let times = pocketTimes {
+            order = r.pocketed.keys.filter { times[$0] != nil && ids[$0] != nil }
+                .sorted { times[$0]! < times[$1]! }.compactMap { ids[$0] }
+        }
+        return ShotOutcome(firstContact: first, noContact: false, pocketed: pocketed, pocketOrder: order,
+                           anyRailAfterContact: nil)
     }
 
-    static func rate(_ r: ShotRecord, ids: [Int: BallID], engine: RulesEngine, game: GameState)
-        -> (rating: DecisionRating, result: RuleResult) {
-        let result = engine.apply(outcome(r, ids: ids), to: game)
+    static func rate(_ r: ShotRecord, ids: [Int: BallID], engine: RulesEngine, game: GameState,
+                     pocketTimes: [Int: Double]? = nil) -> (rating: DecisionRating, result: RuleResult) {
+        let result = engine.apply(outcome(r, ids: ids, pocketTimes: pocketTimes), to: game)
         let shooter = game.shooter
         let rating: DecisionRating
         if !result.fouls.isEmpty {
@@ -377,8 +384,10 @@ struct AimEvents: Sendable {
             return [.settled]
         }
         if shotStarted, phase != .moving {
+            let wasAiming = phase == .aiming
             phase = .moving; cueLostAt = nil
-            return [.aimEnded]
+            // Balanced for the shell: an aim the cue detector missed still gets its aimStarted first.
+            return wasAiming ? [.aimEnded] : [.aimStarted, .aimEnded]
         }
         switch phase {
         case .idle:
@@ -428,6 +437,8 @@ struct LiveHooks {
     var settled: @MainActor (DecisionRating, Bool) -> Void = { _, _ in }
     /// The shell shows the post-shot badge itself; Live then doesn't.
     var shellShowsBadge = false
+    /// The shell's active game (rules + state) for ratings and ring legality; nil = bar-8 open table.
+    var currentGame: @MainActor () -> (RulesEngine, GameState)? = { nil }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,
@@ -475,4 +486,13 @@ enum SizeAmbiguity {
         guard let n = neighbour else { return false }
         return abs(m - snapped.playingLength) > fraction * abs(n - snapped.playingLength)
     }
+}
+
+/// Latches any non-normal ARKit tracking seen on any frame until the next status tick takes it (Codex r6: a
+/// relocalization shorter than the 250 ms tick must still re-validate the table).
+struct LimitedLatch: Sendable {
+    private var seen = false
+    mutating func note(trackingNormal: Bool) { if !trackingNormal { seen = true } }
+    /// Returns whether a non-normal state was seen since the last call, and clears it.
+    mutating func take() -> Bool { defer { seen = false }; return seen }
 }
