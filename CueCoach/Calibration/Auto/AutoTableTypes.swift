@@ -179,6 +179,10 @@ struct AutoFrameDiagnostics: Sendable {
     var railTopHeight: Double?
     /// Partial-view fit: fraction of the playing length seen (nil = whole table in view).
     var visibleLengthFraction: Double?
+    /// This frame's measurement (free-fit nose-to-nose size and the preset it snapped to), if any.
+    var measuredLength: Double?
+    var measuredWidth: Double?
+    var snappedSize: TableSize?
     var processingSeconds: Double = 0
     var rejection: String?
 }

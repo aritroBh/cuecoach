@@ -22,7 +22,11 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         /// Pocket evidence seen since the last reset (keypoint mouths, or dark mouths at the fitted pockets).
         var pocketEvidence = 0
         var lastVisibleFraction: Double?
+        var lastAuto: AutoTableEstimate?
     }
+
+    /// Auto's raw estimate for the last ingested frame (dev HUD / tests).
+    var lastAutoEstimate: AutoTableEstimate? { state.withLock { $0.lastAuto } }
 
     /// A lock needs this many frames with pocket evidence (Codex r5: a table-sized green rug must not lock).
     var minPocketEvidenceFrames = 3
@@ -76,10 +80,18 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             tracking: f.trackingNormal ? .normal : .limited)
         let e = auto.process(frame)
         state.withLock { s in
+            s.lastAuto = e
             if Self.hasPocketEvidence(e.frame) { s.pocketEvidence += 1 }
             s.lastVisibleFraction = e.frame.visibleLengthFraction
         }
         return map(e, frame: f, plane: hint)
+    }
+
+    /// The fused size is trusted unless its D12 estimate, (L + 2W)/2 of the free fits, sits well between the
+    /// snapped preset and its neighbour (`SizeAmbiguity`, Codex r6).
+    static func sizeIsTrusted(_ p: AutoTablePose) -> Bool {
+        let est = (p.measuredLength + 2 * p.measuredWidth) / 2
+        return !SizeAmbiguity.isAmbiguous(measuredLength: est, snapped: p.snappedSize)
     }
 
     /// Pockets are what make a table a table: ≥ 2 keypoint mouths, or ≥ 4 fitted pocket positions that look dark.
@@ -97,6 +109,11 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             guard evidence >= minPocketEvidenceFrames else {
                 return TableEstimate(corners: p.corners, confidence: 0.9, locked: false, size: p.snappedSize,
                                      failure: .badShape, frame: nil, generation: e.generation)
+            }
+            // Size between two presets (a shadow or occluder edge stood in for a rail): wait for a second look.
+            guard Self.sizeIsTrusted(p) else {
+                return TableEstimate(corners: p.corners, confidence: 0.9, locked: false, size: nil,
+                                     failure: .partialTable, frame: nil, generation: e.generation)
             }
             state.withLock { $0.consecutiveFailures = 0; $0.lastFailure = nil }
             let frame = TableFrame(tableToWorld: p.tableToWorld, spec: p.spec)
@@ -143,6 +160,8 @@ extension LockFailure {
         guard let r else { return .unstable }
         // Partial view / too shallow: wait for a second look — hint "step back / pan" (user decision).
         if r.hasPrefix("cloth touches frame") || r.hasPrefix("view too shallow") || r.contains("(partial") { return .partialTable }
+        // A rail edge that breaks 2:1 or a size midway between presets: wait for a second look.
+        if r.hasPrefix("not 2:1") || r.hasPrefix("size ambiguous") { return .partialTable }
         if r.hasPrefix("cloth too small") || r.hasPrefix("too small") { return .tooFar }
         if r.hasPrefix("no plane") { return .noPlane }
         if r.hasPrefix("no cloth colour") { return .noFelt }

@@ -123,6 +123,24 @@ enum AutoRectFitter {
         return (r, rms)
     }
 
+    enum SizeVerdict: Equatable { case preset(TableSize), measured, ambiguous, notTwoToOne }
+
+    /// Size evidence of one free fit. Pool tables are 2:1 nose to nose, so a fit far off 2:1 has a false rail
+    /// (a shadow or occluder edge standing in for one) and gives no size. The tolerance is loose on purpose: at
+    /// 12–15° elevation the length runs along the view rays and free fits are ±5 % on it (virtual matrix).
+    /// Within 6 % of a preset it snaps, unless another preset is also within 6 % and nearly as close
+    /// (`ambiguityMargin`): then the size is ambiguous and the frame must not vote (wait for a second look).
+    static func sizeVerdict(length L: Double, width W: Double, aspectTolerance: Double = 0.12,
+                            ambiguityMargin: Double = 0.02) -> SizeVerdict {
+        guard W > 0, abs(L / W - 2) / 2 <= aspectTolerance else { return .notTwoToOne }
+        let est = (L + 2 * W) / 2
+        let e = TableSize.allCases.map { (size: $0, err: abs($0.playingLength - est) / $0.playingLength) }
+            .sorted { $0.err < $1.err }
+        guard e[0].err <= 0.06 else { return .measured }
+        if e.count > 1, e[1].err <= 0.06, e[1].err - e[0].err < ambiguityMargin { return .ambiguous }
+        return .preset(e[0].size)
+    }
+
     /// D12 sizing: nearest preset by (L + 2W)/2; relative error ≤ 6 % snaps, else the measurement is used.
     static func snap(length: Double, width: Double) -> (size: TableSize, relativeError: Double) {
         let est = (length + 2 * width) / 2

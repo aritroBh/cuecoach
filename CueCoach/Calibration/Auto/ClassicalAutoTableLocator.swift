@@ -54,6 +54,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var epoch = 0
     }
 
+    /// Test/debug hook: the raw cloth mask and its largest component for each full search.
+    nonisolated(unsafe) static var debugMaskSink: ((AutoMask, AutoMask) -> Void)?
+
     let config: Config
     private let keypointProvider: (any TableKeypointProvider)?
     /// Short critical sections only: readers, flips and resets never wait for a detection.
@@ -124,6 +127,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var diag = AutoFrameDiagnostics()
         let camera = AutoCamera(intrinsics: frame.intrinsics, cameraToWorld: frame.cameraToWorld)
         let det = detect(frame, camera: camera, state: &work, diag: &diag)
+        if let m = det?.measurement {
+            diag.measuredLength = m.measuredLength; diag.measuredWidth = m.measuredWidth; diag.snappedSize = m.snapped
+        }
         work.fused = nil
 
         // 3. Under the state lock: fuse and validate, unless a reset happened meanwhile (then this frame
@@ -370,6 +376,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         }
         let raw = AutoClothSegmenter.mask(img, model: model, stride: stride, gate: gate, gateWidth: dw, gateHeight: dh)
         let (comp, size) = AutoClothSegmenter.largestComponent(AutoClothSegmenter.open(raw))
+        Self.debugMaskSink?(raw, comp)
         let expected = expectedTableArea(f, camera: camera, plane: plane)
         let minArea = min(Double(img.width * img.height) / 40, 0.3 * (expected ?? .infinity))
         let gridCell = Double(stride * stride)
@@ -464,13 +471,21 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         diag.keypointsUsed = kp.count
         if !kp.isEmpty, let f2 = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .free) { rect = f2.rect }
         let L = 2 * rect.a, W = 2 * rect.b
-        let snap = AutoRectFitter.snap(length: L, width: W)
-        var spec = TableSpec(size: snap.size)
+        diag.measuredLength = L; diag.measuredWidth = W
+        let verdict = AutoRectFitter.sizeVerdict(length: L, width: W)
+        switch verdict {
+        case .notTwoToOne: diag.rejection = "not 2:1"; return nil
+        case .ambiguous: diag.rejection = "size ambiguous"; return nil
+        case .preset, .measured: break
+        }
+        var spec = TableSpec(size: AutoRectFitter.snap(length: L, width: W).size)
         var snapped: TableSize?
         let final: AutoRect
-        if snap.relativeError <= 0.06,
-           let f = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2)) {
-            final = f.rect; snapped = snap.size
+        if case .preset(let size) = verdict {
+            spec = TableSpec(size: size)
+            guard let f = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
+            else { diag.rejection = "fit"; return nil }
+            final = f.rect; snapped = size
         } else if let f = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .aspect) {
             final = f.rect
             spec.length = 2 * f.rect.a; spec.width = 2 * f.rect.b
@@ -525,10 +540,16 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         let kp = keypointSamples(kps, rect: rect, camera: camera, plane: plane, profile: prof)
         guard kp.count >= 4, let free = AutoRectFitter.fit(rect, edges: [], points: kp, mode: .free) else { return nil }
         diag.keypointsUsed = kp.count
+        diag.measuredLength = 2 * free.rect.a; diag.measuredWidth = 2 * free.rect.b
         let snap = AutoRectFitter.snap(length: 2 * free.rect.a, width: 2 * free.rect.b)
+        switch AutoRectFitter.sizeVerdict(length: 2 * free.rect.a, width: 2 * free.rect.b) {
+        case .notTwoToOne: diag.rejection = "not 2:1"; return nil
+        case .ambiguous: diag.rejection = "size ambiguous"; return nil
+        case .measured: return nil
+        case .preset: break
+        }
         let spec = TableSpec(size: snap.size)
-        guard snap.relativeError <= 0.06,
-              let fixed = AutoRectFitter.fit(free.rect, edges: [], points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
+        guard let fixed = AutoRectFitter.fit(free.rect, edges: [], points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
         else { return nil }
         let axis = plane.e1 * fixed.rect.u.x + plane.e2 * fixed.rect.u.y
         let m = AutoTableMeasurement(center: plane.to3D(fixed.rect.center), axis: axis, up: plane.normal,

@@ -206,6 +206,16 @@ enum VTHarness {
                                       depth: DepthMap(width: d.width, height: d.height, depth: d.depth, confidence: d.confidence))
                 let e = await app.ingest(lf)
                 res.newSamples += 1
+                if ProcessInfo.processInfo.environment["VQA_TRACE"] == "\(s.condition.name):\(s.seed)", let a = app.lastAutoEstimate {
+                    let d = a.frame
+                    let err = a.pose.map { cornerError($0.corners, s.truth.corners) * 100 }
+                    print(String(format: "[trace] t %.2f %@/%@ path %@ L %.3f W %.3f snap %@ kp %d vis %@ rej %@ | fused %@ err %@ cm",
+                                 t, "\(a.state)", e.map { $0.locked ? "LOCK" : ($0.failure?.rawValue ?? "conv") } ?? "nil", "\(d.path)",
+                                 d.measuredLength ?? 0, d.measuredWidth ?? 0, "\(d.snappedSize.map { "\($0)" } ?? "-")",
+                                 d.keypointsUsed, d.visibleLengthFraction.map { String(format: "%.2f", $0) } ?? "-", d.rejection ?? "-",
+                                 a.pose.map { "\($0.snappedSize.map { "\($0)" } ?? "m") \(String(format: "%.3f", $0.spec.length))" } ?? "-",
+                                 err.map { String(format: "%.1f", $0) } ?? "-"))
+                }
                 if let e {
                     res.lastConfidence = e.confidence
                     if let f = e.failure { reasons[f.rawValue, default: 0] += 1; res.reason = f.rawValue } else { res.reason = "converging" }
