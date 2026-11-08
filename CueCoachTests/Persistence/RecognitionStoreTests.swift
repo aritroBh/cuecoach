@@ -157,8 +157,13 @@ import Testing
         try makeV1Store(at: dir)
         do { _ = try PersistenceStack(directory: dir, skipScrubForTesting: true) }   // "crash" before the scrub
         #expect(FileManager.default.fileExists(atPath: RecognitionMigration.pendingScrubURL(in: dir).path))
+        // Codex r2: while residue may remain, Competitive.store and its sidecars stay out of device backups.
+        let competitive = dir.appendingPathComponent("Competitive.store")
+        #expect(try competitive.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
         let stack = try PersistenceStack(directory: dir)
         #expect(!FileManager.default.fileExists(atPath: RecognitionMigration.pendingScrubURL(in: dir).path))
+        let fresh = dir.appendingPathComponent("Competitive.store")   // URL caches resource values; read anew
+        #expect(try fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == false)
         let rec = PersistenceStack.recognitionDirectory(in: dir)
         #expect(!RawScan.contains(Self.marker, under: dir, excluding: rec))
         #expect(!RawScan.contains(Self.bigMarker.prefix(4096), under: dir, excluding: rec))
@@ -257,6 +262,22 @@ import Testing
         }
         let next = try PersistenceStack(directory: dir)
         #expect(try next.recognition(for: Fixture.ownerID)?.faceEmbedding == Self.marker)
+    }
+
+    /// Codex r2: the one tap clears every profile's rows, so every profile is fenced, not just the owner.
+    @Test func deleteFencesEveryProfileItCleared() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        try populated(stack)
+        stack.competitiveContext.insert(PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "s",
+                                                      avatarColor: "c", isSessionGuest: true))
+        try stack.competitiveContext.save()
+        try stack.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([7]), appearanceEmbedding: nil,
+                                   optedInAt: Fixture.t0, version: 1)
+        try stack.deleteMyRecognitionData()
+        #expect(throws: RecognitionError.revoked) {
+            try stack.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([7]), appearanceEmbedding: nil,
+                                       optedInAt: Fixture.t0, version: 1)
+        }
     }
 
     @Test func revokedOwnerCannotStoreAnOlderOptIn() throws {

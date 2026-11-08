@@ -83,23 +83,24 @@ extension PersistenceStack {
     }
 
     /// The commit (and the direct one-call delete): empties the whole recognition store, destroying its files so
-    /// no page, WAL frame or external blob keeps a template, stamps a revocation tombstone on the local owner,
-    /// and clears every gallery. Profiles, games and stats are untouched. Safe to call twice.
+    /// no page, WAL frame or external blob keeps a template, fences every profile (the store held rows for any of
+    /// them) so a stale capture can't be stored again, and clears every gallery. Profiles, games and stats are
+    /// otherwise untouched. The pending-delete marker goes only once the fence is saved, so a crash in between
+    /// retries the whole commit on the next launch. Safe to call twice.
     func deleteMyRecognitionData(now: Date = .now) throws {
         let ctx = recognitionContext
         try ctx.delete(model: RecognitionData.self)
         try ctx.save()
         try recognitionContainer.deleteAllData()
         recognitionContainer = try RecognitionStoreFiles.container(in: directory, inMemory: directory == nil)
+        let c = competitiveContext
+        for p in try c.fetch(FetchDescriptor<PlayerProfile>()) { Self.fence(p, at: now) }
+        if c.hasChanges { try c.save() }
         if let directory {
-            try? FileManager.default.removeItem(at: RecognitionStoreFiles.pendingDeleteURL(in: directory))
+            let marker = RecognitionStoreFiles.pendingDeleteURL(in: directory)
+            if FileManager.default.fileExists(atPath: marker.path) { try FileManager.default.removeItem(at: marker) }
             try RecognitionStoreFiles.protect(in: directory)
         }
-        let c = competitiveContext
-        for owner in try c.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })) {
-            owner.recognitionRevokedAt = now   // merged max-wins on import, so no updatedAt bump is needed
-        }
-        if c.hasChanges { try c.save() }
         notifyGalleries(.purgedAll)
     }
 

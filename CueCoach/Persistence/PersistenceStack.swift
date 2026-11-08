@@ -51,8 +51,12 @@ final class PersistenceStack {
                                         plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: false) }
             // Retried on every open until it succeeds; a failure (e.g. a blocked checkpoint) keeps the marker and
             // the app usable rather than locking the user out of their stats.
-            if RecognitionMigration.isScrubPending(in: dir), !skipScrubForTesting {
-                try? RecognitionMigration.scrub(url)
+            if RecognitionMigration.isScrubPending(in: dir) {
+                // Until the scrub succeeds the file may hold V1 template bytes: keep it out of device backups.
+                try RecognitionMigration.setCompetitiveExcluded(true, storeURL: url)
+                if !skipScrubForTesting, (try? RecognitionMigration.scrub(url)) != nil {
+                    try RecognitionMigration.setCompetitiveExcluded(false, storeURL: url)   // stats back up again
+                }
             }
         }
         competitiveContainer = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,

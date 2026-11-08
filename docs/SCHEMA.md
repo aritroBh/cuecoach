@@ -14,7 +14,8 @@ Competitive.store (backed up)        Training.store (backed up)          Recogni
 Schema versions: Competitive V1 (RecognitionData inside) → **V2** (custom stage moves every RecognitionData row
 to Recognition.store, writes `.Competitive.scrub-pending`, deletes the rows here; every open then retries the
 scrub (remove the old external-blob folder, VACUUM, WAL checkpoint(TRUNCATE) checked for busy) until it succeeds
-and clears the marker, so no template bytes stay in a device backup even after a crash). Training V1. Recognition V1.
+and clears the marker; while it is pending Competitive.store and its sidecars are excluded from backup, so no
+template bytes reach a device backup even after a crash or a failed scrub). Training V1. Recognition V1.
 
 ## Competitive store
 
@@ -42,7 +43,8 @@ protection `.complete`. D26: face and appearance templates persist with the prof
 "Delete recognition data" (one tap): `beginRecognitionDeletion()` snapshots the rows in memory, removes them
 from the context unsaved, writes an empty `.pending-delete` marker, and tells every `RecognitionGallery`
 `.purgedAll`. Undo → `undoRecognitionDeletion(_:)`. Window closes / app backgrounds → `deleteMyRecognitionData()`:
-deletes every row, destroys the store files (`deleteAllData`), stamps the owner's `recognitionRevokedAt`. A
+deletes every row, destroys the store files (`deleteAllData`), stamps every profile's `recognitionRevokedAt`
+(the store held rows for any of them), then removes the marker. A
 marker found at launch means the app died in the window: the stack commits the delete.
 
 ## Training store

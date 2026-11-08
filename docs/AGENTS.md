@@ -24,5 +24,6 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 | Date | Module | Wrote | Reviewed | Result |
 |---|---|---|---|---|
 | 2026-11-06 | Geometry contracts | Claude (head) | — (contract, reviewed with Phase 1) | merged to bootstrap |
+| 2026-11-08 | Privacy round: recognition store split + migration, one-tap delete/Undo (wt/audit, wt/screens-a) | Claude (privacy worker) | Codex r1 REJECT (3 fixed, 3 rebutted and accepted in r2) · Codex r2 REJECT (3 fixed, not re-reviewed) | awaiting head merge |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.

@@ -163,6 +163,20 @@ enum RecognitionMigration {
         }
     }
 
+    /// Excludes (or re-includes) Competitive.store, its WAL/SHM and its support folder from device backups.
+    static func setCompetitiveExcluded(_ excluded: Bool, storeURL: URL) throws {
+        let base = storeURL.deletingLastPathComponent()
+        let name = storeURL.lastPathComponent
+        let stem = storeURL.deletingPathExtension().lastPathComponent
+        for item in [name, name + "-wal", name + "-shm", ".\(stem)_SUPPORT"] {
+            var url = base.appendingPathComponent(item)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = excluded
+            try url.setResourceValues(values)
+        }
+    }
+
     static func isScrubPending(in base: URL) -> Bool {
         FileManager.default.fileExists(atPath: pendingScrubURL(in: base).path)
     }
