@@ -34,6 +34,8 @@ struct PerceptionResult: Sendable {
     /// Track id of the ball the live cue line hits first (for the illegal-aim warning).
     var liveTargetID: Int? = nil
     var depthBalls = 0
+    /// Tracker id → rule ball id (cue = 0) for ratings and the shell.
+    var ballIDs: [Int: BallID] = [:]
     /// Whole pipeline time for this frame (detect + depth + track + cue + aim), ms.
     var totalMs: Double = 0
 
@@ -105,7 +107,8 @@ actor PerceptionPipeline {
             let blockers = tracks.filter { t in t.id != cue.id && !targets.contains { $0.id == t.id } }.map(\.position)
             let cands = AimPlanner.candidates(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
                                               spec: table.spec, limit: 3)
-            aim = refineWithPhysics(cands, cue: cue, tracks: confirmed, spec: table.spec) ?? cands.first
+            // Physics sees every track (tentative ones too), so a not-yet-confirmed ball still blocks the path.
+            aim = refineWithPhysics(cands, cue: cue, tracks: tracks, spec: table.spec) ?? cands.first
         }
         // Live aim from the cue stick (only while the balls are still: that's when the player aims).
         var live: LiveAimTrace?
@@ -133,7 +136,8 @@ actor PerceptionPipeline {
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
                                 aim: aim, detectMs: ms, ballScale: BallScale.median(dets, geometry: geo),
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence, liveTargetID: liveTargetID,
-                                depthBalls: depthBalls.count, totalMs: Date().timeIntervalSince(t0) * 1000)
+                                depthBalls: depthBalls.count, ballIDs: BallIdentity.assign(confirmed, cueID: cueID),
+                                totalMs: Date().timeIntervalSince(t0) * 1000)
     }
 }
 

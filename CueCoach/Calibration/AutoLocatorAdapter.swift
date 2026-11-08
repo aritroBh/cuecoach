@@ -19,16 +19,31 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         var lastT: Double?
         var consecutiveFailures = 0
         var lastFailure: LockFailure?
+        /// Pocket evidence seen since the last reset (keypoint mouths, or dark mouths at the fitted pockets).
+        var pocketEvidence = 0
+        var lastVisibleFraction: Double?
     }
 
+    /// A lock needs this many frames with pocket evidence (Codex r5: a table-sized green rug must not lock).
+    var minPocketEvidenceFrames = 3
+
+    private let keypoints: (any TableKeypointProvider)?
+
+    /// - keypoints: nil = the bundled tablekp model (`TableKeypointModel.provider()`); pass `NoKeypoints()` to
+    ///   run classical-only.
     init(keypoints: (any TableKeypointProvider)? = nil) {
-        auto = ClassicalAutoTableLocator(keypoints: keypoints ?? TableKeypointModel.provider())
+        let kp = keypoints ?? TableKeypointModel.provider()
+        self.keypoints = kp is NoKeypoints ? nil : kp
+        auto = ClassicalAutoTableLocator(keypoints: self.keypoints)
     }
 
     func reset() async {
         auto.reset()
         state.withLock { $0 = State() }
     }
+
+    /// Keypoint model inference time for the dev HUD (nil without the model).
+    var keypointInferenceMs: Double? { (keypoints as? CoreMLTableKeypointProvider)?.lastInferenceMs }
 
     /// Head/foot swap is Auto's (default head = short rail nearer the camera at lock).
     func flipHeadFoot() { auto.flipHeadFoot() }
@@ -40,7 +55,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             guard let t = s.lastT else { return false }
             return f.timestamp - t > expireAfterGap
         }
-        if gap { auto.reset(); state.withLock { $0.consecutiveFailures = 0 } }
+        if gap { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0 } }
 
         // Plane hint: an ARKit anchor (infinite plane at its height) or nothing — Auto then takes a provisional
         // plane from LiDAR. Either way the floor (> 1.4 m under the camera) is never the table.
@@ -60,13 +75,29 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             timestamp: f.timestamp,
             tracking: f.trackingNormal ? .normal : .limited)
         let e = auto.process(frame)
+        state.withLock { s in
+            if Self.hasPocketEvidence(e.frame) { s.pocketEvidence += 1 }
+            s.lastVisibleFraction = e.frame.visibleLengthFraction
+        }
         return map(e, frame: f, plane: hint)
+    }
+
+    /// Pockets are what make a table a table: ≥ 2 keypoint mouths, or ≥ 4 fitted pocket positions that look dark.
+    static func hasPocketEvidence(_ d: AutoFrameDiagnostics) -> Bool {
+        if d.keypointsUsed >= 2 { return true }
+        return d.pocketScores.values.filter { $0 >= 0.5 }.count >= 4
     }
 
     private func map(_ e: AutoTableEstimate, frame f: LocatorFrame, plane: Plane3?) -> TableEstimate? {
         switch e.state {
         case .locked:
             guard let p = e.pose else { return nil }
+            // No pocket evidence yet: hold the lock back (show the ghost, keep looking).
+            let evidence = state.withLock { $0.pocketEvidence }
+            guard evidence >= minPocketEvidenceFrames else {
+                return TableEstimate(corners: p.corners, confidence: 0.9, locked: false, size: p.snappedSize,
+                                     failure: .badShape, frame: nil, generation: e.generation)
+            }
             state.withLock { $0.consecutiveFailures = 0; $0.lastFailure = nil }
             let frame = TableFrame(tableToWorld: p.tableToWorld, spec: p.spec)
             return TableEstimate(corners: p.corners, confidence: 1, locked: true, size: p.snappedSize ?? p.spec.size,
@@ -106,21 +137,26 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
 }
 
 extension LockFailure {
-    /// Auto's per-frame rejection strings → the user-facing reason (icon only) and the HUD.
+    /// Auto's per-frame rejection strings (they *start with* the reason; a partial fit appends "(partial: …)")
+    /// → the user-facing reason (icon only) and the HUD.
     static func from(autoRejection r: String?) -> LockFailure {
-        switch r {
-        case "cloth touches frame": .partialTable
-        case "cloth too small", "too small": .tooFar
-        case "no plane": .noPlane
-        case "no cloth colour": .noFelt
-        case nil: .unstable
-        default: .badShape   // no rails / parallel rails / reprojection / no quad / edge refine / fit / …
-        }
+        guard let r else { return .unstable }
+        // Partial view / too shallow: wait for a second look — hint "step back / pan" (user decision).
+        if r.hasPrefix("cloth touches frame") || r.hasPrefix("view too shallow") || r.contains("(partial") { return .partialTable }
+        if r.hasPrefix("cloth too small") || r.hasPrefix("too small") { return .tooFar }
+        if r.hasPrefix("no plane") { return .noPlane }
+        if r.hasPrefix("no cloth colour") { return .noFelt }
+        if r.hasPrefix("tracking") || r.hasPrefix("duplicate frame") || r.hasPrefix("reset") { return .unstable }
+        return .badShape   // no quad / edge refine / reprojection / fit / …
     }
 }
 
-/// Seam for the table-keypoint Core ML model (tablekp YOLO-pose). Returns nil until the .mlpackage is bundled;
-/// then a provider is created here and every AutoTableLocating gets it.
+/// Explicit "no keypoint model" (classical-only locator).
+struct NoKeypoints: TableKeypointProvider {
+    func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] { [] }
+}
+
+/// The table-keypoint Core ML model (tablekp YOLO26n-pose, `TableKeypoints.mlpackage`), shared by every locator.
 enum TableKeypointModel {
-    static func provider() -> (any TableKeypointProvider)? { nil }
+    static func provider() -> (any TableKeypointProvider)? { CoreMLTableKeypointProvider.shared }
 }

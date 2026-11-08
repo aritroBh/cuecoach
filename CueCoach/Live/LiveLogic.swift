@@ -2,6 +2,8 @@ import CoreGraphics
 import Foundation
 import Geometry
 import Rules
+import Engine
+import simd
 
 /// Screen state, shown with icon + colour only.
 enum LiveStatus: Equatable, Sendable {
@@ -261,19 +263,36 @@ struct OverlayVisibility: Equatable, Sendable {
     }
 }
 
-/// Placeholder post-shot rating until the Engine (D18) is wired: derived from what the camera saw.
-enum PlaceholderRating {
-    static func rate(_ r: ShotRecord) -> DecisionRatingLite {
-        if r.pocketed[r.cueID] != nil { return .mistake }                 // scratch
-        if r.pocketed.keys.contains(where: { $0 != r.cueID }) { return .good }
-        if r.firstContact != nil { return .okay }
-        return .inaccuracy                                              // no contact
+/// Post-shot rating from what the camera saw, run through the Rules engine (Codex r5: a foul is never "Good").
+/// Uses the D18 classes (Engine.DecisionRating). When a live ShotEngine evaluation is wired, `Ratings.rate`
+/// replaces the no-foul branch; fouls stay capped at Mistake/Blunder.
+enum RuleRating {
+    /// ShotOutcome for the Rules engine. `ids` maps tracker ids → rule ball ids (cue = 0).
+    static func outcome(_ r: ShotRecord, ids: [Int: BallID]) -> ShotOutcome {
+        var pocketed: [BallID: Pocket] = [:]
+        for (tid, p) in r.pocketed { if let id = ids[tid] { pocketed[id] = p } }
+        let first = r.firstContact.flatMap { ids[$0] }
+        return ShotOutcome(firstContact: first, noContact: r.firstContact == nil, pocketed: pocketed,
+                           pocketOrder: Array(pocketed.keys).sorted(),
+                           anyRailAfterContact: r.rails.isEmpty && pocketed.isEmpty ? false : true)
     }
-}
 
-/// D18 classes (mirrors Engine.DecisionRating; kept local so Live doesn't depend on Engine yet).
-enum DecisionRatingLite: String, CaseIterable, Sendable {
-    case brilliant, great, best, good, okay, book, inaccuracy, miss, mistake, blunder
+    static func rate(_ r: ShotRecord, ids: [Int: BallID], engine: RulesEngine, game: GameState)
+        -> (rating: DecisionRating, result: RuleResult) {
+        let result = engine.apply(outcome(r, ids: ids), to: game)
+        let shooter = game.shooter
+        let rating: DecisionRating
+        if !result.fouls.isEmpty {
+            rating = (result.winner != nil && result.winner != shooter) ? .blunder : .mistake
+        } else if result.winner == shooter {
+            rating = .best
+        } else if !result.turnPasses && r.pocketed.keys.contains(where: { $0 != r.cueID }) {
+            rating = .good
+        } else {
+            rating = .okay
+        }
+        return (rating, result)
+    }
 }
 
 /// Badge look (MASTER.md post-shot badge): SF Symbol + colour + ≤2 words.
@@ -282,7 +301,7 @@ struct BadgeStyle: Equatable, Sendable {
     var color: UInt32   // 0xRRGGBB
     var word: String
 
-    static func of(_ r: DecisionRatingLite) -> BadgeStyle {
+    static func of(_ r: DecisionRating) -> BadgeStyle {
         switch r {
         case .brilliant: BadgeStyle(symbol: "sparkles", color: 0x22D3EE, word: "Brilliant")
         case .great: BadgeStyle(symbol: "star.fill", color: 0x4ADE80, word: "Great")
@@ -340,5 +359,120 @@ enum DragSnap {
         let best = targets.min { hypot($0.x - p.x, $0.y - p.y) < hypot($1.x - p.x, $1.y - p.y) }
         guard let b = best, hypot(b.x - p.x, b.y - p.y) <= radius else { return nil }
         return b
+    }
+}
+
+/// Turns perception into the app shell's aim lifecycle (LiveSession.aimStarted / aimEnded / aimCancelled /
+/// ballsSettled / settled). Pure, so the order is testable.
+struct AimEvents: Sendable {
+    enum Event: Equatable, Sendable { case aimStarted, aimEnded, aimCancelled, settled }
+    enum Phase: Equatable, Sendable { case idle, aiming, moving }
+    var cancelAfter = 1.0
+    private(set) var phase: Phase = .idle
+    private var cueLostAt: Double?
+
+    mutating func update(cueVisible: Bool, atRest: Bool, shotStarted: Bool, shotEnded: Bool, at t: Double) -> [Event] {
+        if shotEnded, phase == .moving || phase == .aiming {
+            phase = .idle; cueLostAt = nil
+            return [.settled]
+        }
+        if shotStarted, phase != .moving {
+            phase = .moving; cueLostAt = nil
+            return [.aimEnded]
+        }
+        switch phase {
+        case .idle:
+            if atRest && cueVisible { phase = .aiming; return [.aimStarted] }
+        case .aiming:
+            if cueVisible { cueLostAt = nil }
+            else if let l = cueLostAt { if t - l > cancelAfter { phase = .idle; cueLostAt = nil; return [.aimCancelled] } }
+            else { cueLostAt = t }
+        case .moving:
+            break
+        }
+        return []
+    }
+}
+
+/// Manual fallback (user decision): tap the two corner pockets nearest you (any order); the table plane and the
+/// size preset fill in the rest; then drag any corner (loupe + snap) and confirm.
+enum TwoTapTable {
+    /// - a, b: the two tapped near corner pockets (world, on the table plane). - viewer: camera position.
+    /// - size: preset; nil = snap from the tapped width (width = length / 2).
+    static func corners(_ a: SIMD3<Double>, _ b: SIMD3<Double>, viewer: SIMD3<Double>, size: TableSize?,
+                        up: SIMD3<Double> = SIMD3(0, 1, 0)) -> [SIMD3<Double>]? {
+        let n = simd_normalize(up)
+        var ab = b - a; ab -= n * simd_dot(ab, n)
+        let w = simd_length(ab)
+        guard w > 0.4 else { return nil }
+        let preset = size ?? TableSizing.snap(length: 2 * w, width: w).size
+        let spec = TableSpec(size: preset)
+        let mid = (a + b) / 2
+        var dir = simd_normalize(simd_cross(n, ab / w))
+        var toViewer = viewer - mid; toViewer -= n * simd_dot(toViewer, n)
+        if simd_dot(dir, toViewer) > 0 { dir = -dir }   // the far end is away from the user
+        let u = ab / w
+        let halfW = spec.width / 2
+        let a2 = mid - u * halfW, b2 = mid + u * halfW   // keep the tapped mid-line, preset width
+        return [a2, b2, b2 + dir * spec.length, a2 + dir * spec.length]
+    }
+}
+
+/// What Live tells the app shell (wired by `LiveScreenAdapter` to `LiveSession`). Defaults do nothing, so Live
+/// runs standalone (then it draws its own post-shot badge).
+struct LiveHooks {
+    var aimStarted: @MainActor () -> Void = {}
+    var aimEnded: @MainActor () -> Void = {}
+    var aimCancelled: @MainActor () -> Void = {}
+    var ballsSettled: @MainActor () -> Void = {}
+    var settled: @MainActor (DecisionRating, Bool) -> Void = { _, _ in }
+    /// The shell shows the post-shot badge itself; Live then doesn't.
+    var shellShowsBadge = false
+
+    init() {}
+    init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,
+         aimCancelled: @escaping @MainActor () -> Void, ballsSettled: @escaping @MainActor () -> Void,
+         settled: @escaping @MainActor (DecisionRating, Bool) -> Void) {
+        self.aimStarted = aimStarted; self.aimEnded = aimEnded; self.aimCancelled = aimCancelled
+        self.ballsSettled = ballsSettled; self.settled = settled; shellShowsBadge = true
+    }
+}
+
+/// Table-frame health and the remembered size.
+enum TableHealth {
+    /// Detected balls' apparent size vs 57.15 mm at the current pose: > 25 % off with a few balls = stale frame.
+    static func isStale(ballScale: Double?, detections: Int) -> Bool {
+        guard let s = ballScale, detections >= 3 else { return false }
+        return abs(s - 1) > 0.25
+    }
+
+    static let measuredKey = "cc.table.measured"
+    /// The app shell preselects this in setup (TableSize raw value).
+    static func rememberMeasured(_ size: TableSize, defaults: UserDefaults = .standard) {
+        defaults.set(size.rawValue, forKey: measuredKey)
+    }
+    static func measuredSize(defaults: UserDefaults = .standard) -> TableSize? {
+        defaults.string(forKey: measuredKey).flatMap(TableSize.init(rawValue:))
+    }
+}
+
+/// The coaching glyph's symbol (Codex r5: never a check before a real lock, however stable the ghost looks).
+enum CoachingSymbol {
+    static func of(failure: LockFailure?, locked: Bool) -> String {
+        if locked { return "checkmark" }
+        return failure?.symbol ?? "viewfinder"
+    }
+}
+
+/// Preset ambiguity (matrix false lock: a 9 ft table locked as 8 ft). A measured length that sits well between two
+/// presets isn't trusted yet — keep looking instead of locking the wrong size.
+enum SizeAmbiguity {
+    static func isAmbiguous(measuredLength m: Double, snapped: TableSize?, fraction: Double = 0.35) -> Bool {
+        guard let snapped else { return false }   // measured size used directly (D12): nothing to confuse
+        let presets = TableSize.allCases.map(\.playingLength).sorted()
+        guard let i = presets.firstIndex(of: snapped.playingLength) else { return false }
+        let neighbour = m >= snapped.playingLength ? (i + 1 < presets.count ? presets[i + 1] : nil) : (i > 0 ? presets[i - 1] : nil)
+        guard let n = neighbour else { return false }
+        return abs(m - snapped.playingLength) > fraction * abs(n - snapped.playingLength)
     }
 }

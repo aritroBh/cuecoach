@@ -1,5 +1,6 @@
 import Geometry
 import SwiftUI
+import Training
 
 /// Live camera screen. Device: ARKit + RealityKit. Simulator / `-cuecoach.replay`: synthetic replay.
 /// No text anywhere except the dev HUD (D9, 3-finger long-press).
@@ -8,9 +9,18 @@ struct LiveScreen: View {
     @State private var model: LiveModel
     @AppStorage("dev.hud") private var showHUD = false
 
-    /// D24 contract for the app shell: `.game` (rules helpers + rating) or `.training(level:)` (aim lines).
-    init(mode: LiveMode = .training(level: 3)) {
-        _model = State(initialValue: LiveModel(mode: mode))
+    private let drill: DrillID?
+    private let onClose: (() -> Void)?
+
+    /// App-shell contract: `.game` (rules helpers + rating) or `.training(level:)` (aim lines, D24); the drill being
+    /// trained (nil in a game); lifecycle hooks into LiveSession; `onClose` replaces the default dismiss.
+    init(mode: LiveMode = .training(level: 3), drill: DrillID? = nil, hooks: LiveHooks = LiveHooks(),
+         onClose: (() -> Void)? = nil) {
+        let m = LiveModel(mode: mode)
+        m.hooks = hooks
+        _model = State(initialValue: m)
+        self.drill = drill
+        self.onClose = onClose
     }
 
     /// Replay exists only in simulator builds (D20): device builds always run the AR pipeline.
@@ -32,7 +42,11 @@ struct LiveScreen: View {
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
-        .onAppear { if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true } }
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true }
+            UIApplication.shared.isIdleTimerDisabled = true      // no auto-lock while Live is up
+        }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
     }
 
     @ViewBuilder private var content: some View {
@@ -47,8 +61,11 @@ struct LiveScreen: View {
         let st = model.status
         return VStack(spacing: 12) {
             HStack(alignment: .top) {
-                CircleButton(symbol: "xmark", id: "live.close") { dismiss() }
+                CircleButton(symbol: "xmark", id: "live.close") { if let onClose { onClose() } else { dismiss() } }
                 Spacer()
+                if model.calibrated && model.showAimHint && model.status == .calibrated {
+                    AimHintGlyph().accessibilityIdentifier("live.aimHint")
+                }
                 if !model.calibrated {
                     CoachingGlyph(status: st, confidence: model.ghostConfidence, placed: model.editor.corners.count,
                                   tapMode: model.tapMode, shake: model.notReadyTick, failure: model.lockFailure)
@@ -127,8 +144,9 @@ struct CoachingGlyph: View {
                     .rotationEffect(.degrees(-20))
                     .offset(x: sweep ? 40 : -40)
             } else if tapMode {
-                ForEach(0..<4, id: \.self) { i in
-                    let pos = [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: w, y: h), CGPoint(x: 0, y: h)][i]
+                // Two-tap fallback: the two near corner pockets (bottom of the glyph = nearest the user).
+                ForEach(0..<2, id: \.self) { i in
+                    let pos = [CGPoint(x: 0, y: h), CGPoint(x: w, y: h)][i]
                     Circle().fill(i < placed ? green : Color.white.opacity(0.2))
                         .frame(width: 16, height: 16)
                         .position(x: pos.x + 8, y: pos.y + 8)
@@ -138,7 +156,7 @@ struct CoachingGlyph: View {
                 RoundedRectangle(cornerRadius: 6).fill(green.opacity(0.35 * confidence)).frame(width: w, height: h)
                 // What's missing, as a glyph: step back, move closer, hold steady, point at the cloth…
                 // Never a check before the lock: the glyph only says what's missing (or that it's converging).
-                let symbol = failure?.symbol ?? "viewfinder"
+                let symbol = CoachingSymbol.of(failure: failure, locked: false)
                 Image(systemName: symbol)
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(failure == nil ? green : Color.white)
@@ -275,6 +293,19 @@ struct LoupeView: View {
     }
 }
 
+/// After the lock: a pulsing cue ball says "now aim" (no text). Hidden at the first aim.
+struct AimHintGlyph: View {
+    @State private var on = false
+    var body: some View {
+        Circle().fill(.white)
+            .frame(width: 30, height: 30)
+            .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 2).scaleEffect(on ? 1.9 : 1).opacity(on ? 0 : 1))
+            .frame(width: 64, height: 64)
+            .background(.ultraThinMaterial.opacity(0.5), in: Circle())
+            .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { on = true } }
+    }
+}
+
 struct SmallButton: View {
     var symbol: String
     var id: String
@@ -399,6 +430,8 @@ struct ReplayLiveView: View {
         .onDisappear { loop?.cancel() }
         .onChange(of: model.editor.revision) { refreshHandles() }
         .task {
+            let pl = pipeline
+            model.legalChanged = { legal in Task { await pl.setLegal(legal) } }
             model.undo = { model.editor.undo() }
             model.recalibrate = { reset() }
             model.confirm = { confirm() }
@@ -460,10 +493,19 @@ struct ReplayLiveView: View {
         guard table == nil, model.tapMode || model.editor.outlier != nil,
               let w = scene.camera.intersect(pixel: px, with: scene.plane) else { return }
         model.editor.add(w)
+        if model.tapMode, model.editor.corners.count == 2,
+           let four = TwoTapTable.corners(model.editor.corners[0], model.editor.corners[1], viewer: scene.camera.position,
+                                          size: TableHealth.measuredSize()) {
+            model.editor.setProposal(four)
+            model.tapMode = false
+            model.manualCorrection = true
+        }
     }
 
     private func lock(_ f: TableFrame) {
         guard table == nil else { return }
+        TableHealth.rememberMeasured(f.spec.size)
+        model.showAimHint = true
         table = f
         model.tableSize = f.spec.size
         model.calibrated = true

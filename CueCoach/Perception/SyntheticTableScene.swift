@@ -33,6 +33,8 @@ struct SyntheticTableScene: Sendable {
     var lampGain: Double = 1
     /// Rail colour.
     var railColor: (UInt8, UInt8, UInt8) = (78, 48, 30)
+    /// false = a flat table-sized cloth with no rails, cushions or pockets (a rug) — must never lock.
+    var hasRailsAndPockets = true
 
     var plane: Plane3 { frame.plane }
 
@@ -82,7 +84,15 @@ struct SyntheticTableScene: Sendable {
         for y in 0..<height {
             for x in 0..<width {
                 let ray = cam.ray(through: Vec2(Double(x) + 0.5, Double(y) + 0.5))
+                // The table top exists only inside the outer rail; elsewhere the ray reaches the floor (world y = 0).
                 var best = plane.intersect(origin: ray.origin, direction: ray.direction)
+                if let h = best {
+                    let t = frame.table(h).point
+                    let m = hasRailsAndPockets ? 0.16 : Self.cushionWidth
+                    if t.x < -m || t.y < -m || t.x > frame.spec.length + m || t.y > frame.spec.width + m {
+                        best = Plane3(point: .zero, normal: SIMD3(0, 1, 0)).intersect(origin: ray.origin, direction: ray.direction)
+                    }
+                }
                 var bestT = best.map { simd_distance($0, ray.origin) } ?? .infinity
                 for c in centres {
                     let f = ray.origin - c
@@ -128,6 +138,10 @@ struct SyntheticTableScene: Sendable {
         }
         func darker(_ c: (UInt8, UInt8, UInt8), _ f: Double) -> (UInt8, UInt8, UInt8) {
             (UInt8(Double(c.0) * f), UInt8(Double(c.1) * f), UInt8(Double(c.2) * f))
+        }
+        guard hasRailsAndPockets else {
+            fill(poly(rect(Self.cushionWidth)), feltColor)   // a green rug: flat, no rails, no pockets
+            return ctx.makeImage()
         }
         fill(poly(rect(0.16), height: Self.railTopHeight), railColor)   // wooden rail cap
         fill(poly(rect(0)), feltColor)                                   // playing surface (bed cloth)

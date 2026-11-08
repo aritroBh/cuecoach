@@ -72,6 +72,8 @@ final class ARLiveController: NSObject {
 
     func attach(_ v: ARView) {
         view = v
+        let pipeline = pipeline
+        model.legalChanged = { legal in Task { await pipeline.setLegal(legal) } }
         let tap = FrameTap(pipeline: pipeline, locator: locator,
                            onResult: { [weak self] r, s in self?.handle(r, s) },
                            onEstimate: { [weak self] e, s in self?.handleEstimate(e, s) })
@@ -259,6 +261,19 @@ final class ARLiveController: NSObject {
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             return
         }
+        if model.tapMode {
+            // Two-tap fallback: the two corner pockets nearest the user, any order; plane + preset fill the rest.
+            guard model.editor.add(w) else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            if model.editor.corners.count == 2, let viewer = viewerPosition(),
+               let four = TwoTapTable.corners(model.editor.corners[0], model.editor.corners[1], viewer: viewer,
+                                              size: TableHealth.measuredSize()) {
+                model.editor.setProposal(four)
+                model.tapMode = false          // now drag any corner (loupe + snap), then ✓
+                model.manualCorrection = true
+            }
+            return
+        }
         if model.editor.add(w) { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
     }
 
@@ -318,6 +333,8 @@ final class ARLiveController: NSObject {
     /// Auto locked: install its exact pose (no re-fit of the corners).
     private func lockAuto(_ frame: TableFrame) {
         guard !model.calibrated else { return }
+        TableHealth.rememberMeasured(frame.spec.size)
+        model.showAimHint = true
         model.tableSize = frame.spec.size
         model.calibrated = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -410,7 +427,9 @@ final class ARLiveController: NSObject {
             model.trackingOK = s.trackingOK
             if !s.trackingOK {
                 limitedSince = Date()
-            } else if let since = limitedSince, model.calibrated, Date().timeIntervalSince(since) > 1 {
+            } else if limitedSince != nil, model.calibrated {
+                // Any limited/relocalizing spell invalidates the table frame (stress B3: a stale frame produced
+                // 24 phantom balls) — re-validate however short it was.
                 limitedSince = nil
                 revalidate()
             } else {
@@ -421,6 +440,11 @@ final class ARLiveController: NSObject {
         if let c = s.convertMs { model.convertMs = model.convertMs * 0.8 + c * 0.2 }
         guard model.calibrated, s.isResult, model.status.trustsTable, let tap,
               resultOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
+        // Balls whose image size doesn't match 57.15 mm at the table's pose: the frame is stale — drop and relock.
+        if let r, TableHealth.isStale(ballScale: r.ballScale, detections: r.detections.count) {
+            revalidate()
+            return
+        }
         model.noteResult(r)
         defer { overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
         if let r {

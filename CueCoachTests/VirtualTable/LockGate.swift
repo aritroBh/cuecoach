@@ -18,24 +18,24 @@ enum LockGate {
         "path-endPan", "hold-portrait", "hold-landscape", "fps-30", "fps-60",
     ]
 
-    /// Ratchet: raise these as steps land (never lower). Step 1/2/3 run (Results/step123.md), measured − 10 pts
-    /// for timing jitter (the busy flag uses measured CPU), p50 TTL + 0.6 s.
+    /// Ratchet: raise these as steps land (never lower). r5 run (Results/r5-app-and-auto.md: Auto 44fd4ed + tablekp + pocket evidence), measured − 10 pts
+    /// for timing jitter (the busy flag uses measured CPU), p50 TTL + 0.4 s.
     static let floors: [String: Floor] = [
-        "baseline": Floor(accuratePct: 30, ttlP50: 2.5),
-        "felt-blue": Floor(accuratePct: 35, ttlP50: 2.5),
-        "felt-red": Floor(accuratePct: 20, ttlP50: 2.4),
-        "felt-tan": Floor(accuratePct: 20, ttlP50: 4.0),
-        "light-lamp": Floor(accuratePct: 35, ttlP50: 2.5),
-        "light-neon": Floor(accuratePct: 20, ttlP50: 4.1),
-        "clutter-secondTable": Floor(accuratePct: 40, ttlP50: 2.5),
-        "clutter-coffeeTable": Floor(accuratePct: 30, ttlP50: 2.5),
-        "clutter-railObjects": Floor(accuratePct: 30, ttlP50: 2.4),
-        "dist-1.0m": Floor(accuratePct: 40, ttlP50: 2.5),
-        "path-endPan": Floor(accuratePct: 45, ttlP50: 2.3),
-        "hold-portrait": Floor(accuratePct: 25, ttlP50: 2.5),
-        "hold-landscape": Floor(accuratePct: 40, ttlP50: 2.5),
-        "fps-30": Floor(accuratePct: 30, ttlP50: 2.5),
-        "fps-60": Floor(accuratePct: 30, ttlP50: 2.5),
+        "baseline": Floor(accuratePct: 85, ttlP50: 1.7),
+        "felt-blue": Floor(accuratePct: 85, ttlP50: 1.7),
+        "felt-red": Floor(accuratePct: 70, ttlP50: 1.7),
+        "felt-tan": Floor(accuratePct: 45, ttlP50: 1.7),
+        "light-lamp": Floor(accuratePct: 35, ttlP50: 1.5),
+        "light-neon": Floor(accuratePct: 80, ttlP50: 1.8),
+        "clutter-secondTable": Floor(accuratePct: 85, ttlP50: 1.7),
+        "clutter-coffeeTable": Floor(accuratePct: 85, ttlP50: 1.6),
+        "clutter-railObjects": Floor(accuratePct: 80, ttlP50: 1.6),
+        "dist-1.0m": Floor(accuratePct: 80, ttlP50: 1.8),
+        "path-endPan": Floor(accuratePct: 80, ttlP50: 1.6),
+        "hold-portrait": Floor(accuratePct: 85, ttlP50: 1.7),
+        "hold-landscape": Floor(accuratePct: 85, ttlP50: 1.7),
+        "fps-30": Floor(accuratePct: 85, ttlP50: 1.7),
+        "fps-60": Floor(accuratePct: 80, ttlP50: 1.7),
     ]
     static let defaultFloor = Floor(accuratePct: 0, ttlP50: nil)
 

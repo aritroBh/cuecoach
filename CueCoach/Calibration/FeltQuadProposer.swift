@@ -110,9 +110,13 @@ enum FeltQuadProposer {
         }
         let edgeLen = [h, h, w, w]
         let cut = (0..<4).filter { Double(touch[$0]) > 0.08 * Double(edgeLen[$0]) }.count
-        // Touching every edge: that's the room (floor/wall), not a table seen from too close.
-        if cut == 4 { return FeltAnalysis(quad: nil, failure: .noFelt) }
-        if cut >= 3 { return FeltAnalysis(quad: nil, failure: .tooClose) }
+        // Cloth on three or four edges: too close — step back (Codex r5: not "no felt"). Exception: a dark,
+        // colourless region filling the frame is the room (floor/wall), not cloth.
+        if cut >= 3 {
+            let refHSV = ColorMath.hsv(UInt8(rr), UInt8(rg), UInt8(rb))
+            if cut == 4 && rsum < 150 && refHSV.s < 0.2 { return FeltAnalysis(quad: nil, failure: .noFelt) }
+            return FeltAnalysis(quad: nil, failure: .tooClose)
+        }
         if cut >= 1 { return FeltAnalysis(quad: nil, failure: .partialTable) }
 
         let hull = convexHull(boundary)

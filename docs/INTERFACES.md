@@ -185,8 +185,19 @@ enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShap
   provisional LiDAR plane. A level > 1.4 m below the camera is the floor, never the table.
 - **History** expires after a > 1 s timestamp gap or 5 consecutive rejections.
 - **Keypoints**: `TableKeypointModel.provider()` → `TableKeypointProvider` (nil until the tablekp .mlpackage ships).
-- **Live screen mode (D24)**: `LiveScreen(mode: LiveMode)` with `.game` | `.training(level: Int)`;
-  visibility per `OverlayVisibility.of(mode)`.
+- **Live screen (D24)**: `LiveScreen(mode: LiveMode, drill: DrillID?, hooks: LiveHooks, onClose: (() -> Void)?)`
+  with `.game` | `.training(level: Int)`; visibility per `OverlayVisibility.of(mode)`.
+  `LiveHooks` (closures, all `@MainActor`) is how Live drives the shell's `LiveSession`:
+  `aimStarted / aimEnded / aimCancelled / ballsSettled / settled(DecisionRating, turnPasses)`, emitted by the pure
+  `AimEvents` state machine. With hooks set, the shell draws the post-shot badge; standalone, Live does (hidden
+  the moment the next aim starts or any ball moves). Ratings: `RuleRating` (RulesEngine; any foul ≤ Mistake,
+  a game-losing foul = Blunder) until a live ShotEngine evaluation is wired.
+- **Measured size**: on lock Live writes `UserDefaults "cc.table.measured"` (TableSize raw value).
+- **Lock safety**: a lock needs pocket evidence (≥ 2 keypoint mouths or ≥ 4 dark fitted mouths, 3 frames) and a
+  measured length that isn't ambiguous between two presets; keypoints come from `CoreMLTableKeypointProvider`
+  (tablekp YOLO26n-pose, ANE, ≤ 10 Hz).
+- **Manual fallback**: tap the 2 nearest corner pockets (any order) → `TwoTapTable` fills the table from the plane +
+  preset → drag any corner (loupe + snap) → ✓.
 - **Acceptance**: `CueCoachTests/VirtualTable` matrix + `LockGate` (0 false locks always; accurate-lock / TTL floors
   ratcheted per step). Baselines in `CueCoachTests/VirtualTable/Results/`.
 

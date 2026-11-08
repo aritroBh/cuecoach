@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Geometry
+import Engine
 import Testing
 @testable import CueCoach
 
@@ -23,14 +24,8 @@ struct LiveModeTests {
         #expect(v.line1 && v.line2 && v.line3 && v.shotDock)
     }
 
-    @Test func placeholderRatingsAndBadges() {
-        var r = ShotRecord(start: 0, end: 1, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [2: .footLeft])
-        #expect(PlaceholderRating.rate(r) == .good)
-        r.pocketed = [1: .footLeft]
-        #expect(PlaceholderRating.rate(r) == .mistake)
-        r.pocketed = [:]; r.firstContact = nil
-        #expect(PlaceholderRating.rate(r) == .inaccuracy)
-        for c in DecisionRatingLite.allCases {
+    @Test func badgesAreIconColourAndAWord() {
+        for c in DecisionRating.allCases {
             let b = BadgeStyle.of(c)
             #expect(b.word.split(separator: " ").count <= 2 && !b.symbol.isEmpty)
         }

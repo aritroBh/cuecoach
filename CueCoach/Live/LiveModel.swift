@@ -3,6 +3,8 @@ import Foundation
 import Geometry
 import Observation
 import UIKit
+import Rules
+import Engine
 
 /// UI state for the live screen (AR on device, replay in the simulator).
 @MainActor @Observable
@@ -18,21 +20,71 @@ final class LiveModel {
     /// Loupe while dragging a corner.
     var loupeImage: UIImage?
     var loupeCenter: CGPoint?
-    /// Post-shot rating badge (game mode), auto-dismissed.
+    /// Post-shot rating badge (game mode, standalone only — the app shell draws its own), auto-dismissed and
+    /// hidden the moment the next aim starts or any ball moves (no text while aiming).
     var badge: BadgeStyle?
     private var badgeToken = 0
+    /// App-shell lifecycle hooks (LiveSession).
+    var hooks = LiveHooks()
+    private var aimEvents = AimEvents()
+    /// Rules state for ratings and ring legality (bar-8 open table until the shell supplies a game).
+    let engine: RulesEngine
+    private(set) var game: GameState
+    /// Legal targets after the latest shot (the view pushes this to the perception pipeline).
+    var legalTargets: Set<BallID> { engine.legalTargets(game) }
+    var legalChanged: (Set<BallID>) -> Void = { _ in }
+    /// Post-lock "what next": pulse the cue-ball glyph until the first aim.
+    var showAimHint = false
+    var lastRating: DecisionRating?
 
-    init(mode: LiveMode = .training(level: 3)) { self.mode = mode }
+    init(mode: LiveMode = .training(level: 3)) {
+        self.mode = mode
+        let (e, g) = TargetLegality.defaultGame()
+        engine = e; game = g
+    }
 
-    func showBadge(for record: ShotRecord) {
-        guard visibility.ratingBadge else { return }
-        badge = BadgeStyle.of(PlaceholderRating.rate(record))
+    func showBadge(_ style: BadgeStyle) {
+        guard visibility.ratingBadge, !hooks.shellShowsBadge else { return }
+        badge = style
         badgeToken += 1
         let token = badgeToken
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(1800))
             if self?.badgeToken == token { self?.badge = nil }
         }
+    }
+
+    func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
+
+    /// A shot ended: rate it through the Rules engine, advance the game, tell the shell.
+    func shotSettled(_ record: ShotRecord, ids: [Int: BallID]) {
+        let (rating, result) = RuleRating.rate(record, ids: ids, engine: engine, game: game)
+        game = result.nextState
+        lastRating = rating
+        legalChanged(engine.legalTargets(game))
+        if mode == .game {
+            hooks.settled(rating, result.turnPasses)
+            showBadge(BadgeStyle.of(rating))
+        } else {
+            hooks.ballsSettled()
+        }
+    }
+
+    /// Drives the aim lifecycle from each perception result (and hides the badge on aim/motion).
+    func drive(_ r: PerceptionResult) {
+        let moving = r.confirmed.contains { $0.speed > 0.1 }
+        if r.liveAim != nil || moving || r.shotStarted { hideBadge() }
+        if r.liveAim != nil { showAimHint = false }
+        for e in aimEvents.update(cueVisible: r.liveAim != nil, atRest: r.atRest, shotStarted: r.shotStarted,
+                                  shotEnded: r.shot != nil, at: r.timestamp) {
+            switch e {
+            case .aimStarted: hooks.aimStarted()
+            case .aimEnded: hooks.aimEnded()
+            case .aimCancelled: hooks.aimCancelled()
+            case .settled: break   // reported by shotSettled with the rating
+            }
+        }
+        if let shot = r.shot { shotSettled(shot, ids: r.ballIDs) }
     }
 
     var calibrated = false
@@ -94,7 +146,7 @@ final class LiveModel {
         ballCount = r.confirmed.count
         atRest = r.atRest
         aim = r.aim
-        if let shot = r.shot { showBadge(for: shot) }
+        drive(r)
         detectMs = detectMs * 0.8 + r.detectMs * 0.2
         if let s = r.ballScale { ballScale = s }
         totalMs = totalMs * 0.8 + r.totalMs * 0.2
