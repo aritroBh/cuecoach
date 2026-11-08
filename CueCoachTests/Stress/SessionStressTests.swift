@@ -178,7 +178,7 @@ struct SessionStressTests {
                 let ids = BallIdentity.assign(confirmed, cueID: c.id)
                 var balls: [BallID: Vec2] = [:]
                 for tr in confirmed { if let id = ids[tr.id] { balls[id] = tr.position } }
-                let k = PreviewCache.key(cue: c.position, object: BallID(1)!, pocket: .footLeft, balls: balls)
+                let k = PreviewCache.key(cue: c.position, object: BallID(1)!, pocket: .footLeft, balls: balls, spec: Stress.spec)
                 if cache.get(k) == nil { cache.put(k, nil) }
             }
             _ = order.accept(seq: i, epoch: i / 9000, currentEpoch: i / 9000)
@@ -246,27 +246,33 @@ struct SessionStressTests {
     }
 
     /// Segmenter internals over a long shot that never ends (balls keep moving): bounded?
-    @Test(.disabled("STRESS-FINDING E1: while a shot stays open, ShotSegmenter lastSeen/lastVel/moved/vanishedAt and record.rails grow without bound"))
+    @Test
     func neverEndingShotKeepsSegmenterBounded() {
         var rng = SplitMix(seed: 6)
         var tracker = KalmanBallTracker()
         var seg = ShotSegmenter(spec: Stress.spec)
-        let cue0 = Vec2(0.5, 0.5)
+        let cue0 = Vec2(1.8, 0.5)   // where the circling path below starts, so a shot really opens
         for i in 0..<30 { let tr = tracker.update([Stress.det(cue0, .cue, 0)], at: -1 + Double(i) / 30)
             _ = seg.update(tracks: tr, cueID: tr.first?.id, atRest: tracker.isAtRest, at: -1 + Double(i) / 30, strokeRecent: nil) }
         var peak: [String: Int] = [:]
+        var fps: [Vec2] = []
+        var opened = false
         for f in 0..<(30 * 600) {
             let t = Double(f) / 30
             // The cue ball rolls around; a stream of short-lived false positives comes and goes.
             let cue = Vec2(1.0 + 0.8 * cos(t), 0.5 + 0.4 * sin(t))
             var dets = [Stress.det(cue, .cue, 0)]
-            for _ in 0..<3 { dets.append(Stress.det(Vec2(rng.uniform() * 2, rng.uniform()), .unknown)) }
+            // Each lives 15 frames in one spot: long enough to be confirmed, so the segmenter sees it.
+            if f % 15 == 0 { fps = (0..<3).map { _ in Vec2(0.1 + rng.uniform() * 1.8, 0.1 + rng.uniform() * 0.8) } }
+            for p in fps { dets.append(Stress.det(p, .unknown)) }
             let tr = tracker.update(dets, at: t)
             _ = seg.update(tracks: tr, cueID: tr.first { $0.kind == .cue && $0.confirmed }?.id, atRest: tracker.isAtRest, at: t, strokeRecent: nil)
+            if seg.inShot { opened = true }
             if f % 1800 == 0 { for (k, v) in Stress.collectionSizes(seg) { peak[k] = max(peak[k] ?? 0, v) } }
         }
         for (k, v) in Stress.collectionSizes(seg) { peak[k] = max(peak[k] ?? 0, v) }
         Stress.metric("openShot10min.segmenterSizes", peak.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" })
+        #expect(opened, "the circling cue ball never opened a shot")
         for (k, v) in peak { #expect(v < 500, "\(k) = \(v)") }
     }
 }

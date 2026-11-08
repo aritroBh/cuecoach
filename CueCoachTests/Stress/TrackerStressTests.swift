@@ -69,7 +69,7 @@ struct TrackerStressTests {
     }
 
     /// Break speed: the cue ball leaves rest at 3.8 m/s (12.7 cm per 30 Hz frame).
-    @Test(.disabled("STRESS-FINDING A1: a ball launched from rest at >= 3 m/s leaves the Kalman gate; the cue track is replaced and the shot starts 0.3 s late"))
+    @Test
     func breakSpeedFromRestKeepsTheCueTrack() throws {
         let cue = Vec2(0.5, 0.48), obj = Vec2(1.6, 0.5)
         let balls: [BallID: Vec2] = [.cue: cue, BallID(3)!: obj]
@@ -142,7 +142,7 @@ struct TrackerStressTests {
     }
 
     /// Two balls exchanging motion in a head-on collision at 1.5 m/s, many noise seeds: swap rate.
-    @Test(.disabled("STRESS-FINDING A2: head-on collision from rest at 1.5 m/s: the coasting cue track captures the departing object ball (ID swap)")) func collisionSwapRate() {
+    @Test func collisionSwapRate() {
         var swaps = 0, frames = 0
         for seed in UInt64(1)...40 {
             let cue = Vec2(0.6, 0.5), obj = Vec2(1.0, 0.5 + Double(seed % 5) * 0.004)
@@ -157,7 +157,7 @@ struct TrackerStressTests {
     // MARK: Pocketing
 
     /// The cue ball rolls into a corner at 2 m/s: the record must say the cue ball was pocketed (a scratch).
-    @Test(.disabled("STRESS-FINDING A3: pocketed balls are never recorded: the tracker coasts a vanished track past the pocket, so last-seen is outside the 7 cm capture zone"))
+    @Test
     func fastPocketedCueBallIsRecorded() throws {
         let cue = Vec2(1.2, 0.6), obj = Vec2(0.4, 0.75)
         let toPocket = (Stress.spec.pocketCenter(.footLeft) - cue).normalized
@@ -182,7 +182,7 @@ struct TrackerStressTests {
     // MARK: Occlusion
 
     /// A person walks in front, hiding 40 % of the table (the head end) for 2 s while 16 balls are at rest.
-    @Test(.disabled("STRESS-FINDING A4: a person hiding 40% of the table for 2 s at rest: the cue ball comes back as a new track and a real (non-zero-length) false shot starts")) func personHidingFortyPercentAtRestNoFalseShot() {
+    @Test func personHidingFortyPercentAtRestNoFalseShot() {
         var balls: [BallID: Vec2] = [.cue: Vec2(0.4, 0.5)]
         for (i, p) in Stress.rack().enumerated() { balls[BallID(Stress.rackNumbers[i])!] = p }
         balls[BallID(3)!] = Vec2(0.6, 0.3)   // a couple of balls in the hidden zone
@@ -216,7 +216,7 @@ struct TrackerStressTests {
 
     /// Same occlusion while balls are still rolling after a 1.5 m/s shot: the shot must not end while hidden
     /// balls are still moving, and the record's final state must cover every ball still on the table.
-    @Test(.disabled("STRESS-FINDING A5: 2 s occlusion mid-shot ends the shot while hidden balls still roll; finalState carries new ids not in preState"))
+    @Test
     func personHidingFortyPercentMidShot() throws {
         let cue = Vec2(0.5, 0.5), obj = Vec2(1.2, 0.52)
         let L = Stress.spec.length
@@ -236,7 +236,7 @@ struct TrackerStressTests {
     // MARK: Hand / still cue / false shots
 
     /// Jittered static balls with no cue visible (strokeRecent nil), 10 minutes per noise level: false starts.
-    @Test(.disabled("STRESS-FINDING A0: with 2-4 mm detector jitter at rest the segmenter emits ~20k zero-length shot records per hour (Kalman speed noise > startSpeed, then atRest still true in the same update)")) func falseShotRateFromJitter() {
+    @Test func falseShotRateFromJitter() {
         for sigma in [0.002, 0.004, 0.006, 0.008, 0.012] {
             var rng = SplitMix(seed: 77)
             var tracker = KalmanBallTracker()
@@ -264,12 +264,14 @@ struct TrackerStressTests {
             Stress.metric("falseShot.sigma\(sigma * 1000)mm.atRestFraction", String(format: "%.3f", Double(restFrames) / Double(n)))
             Stress.metric("falseShot.sigma\(sigma * 1000)mm.cueSpeedP99", String(format: "%.3f", Stress.percentile(speeds, 0.99)))
             if sigma <= 0.004 { #expect(starts == 0, "σ \(sigma): \(starts) false shots in 10 min") }
+            // Rest must still be seen through 6 mm jitter (shots have to end; the aim needs rest).
+            if sigma <= 0.006 { #expect(Double(restFrames) / Double(n) > 0.9, "σ \(sigma): at rest \(restFrames)/\(n)") }
         }
     }
 
     /// End to end: still balls with 2 mm detector jitter for 3 min through PerceptionPipeline. Every
     /// `r.shot` fires a haptic in ARLiveController.handle and is a shot record downstream.
-    @Test(.disabled("STRESS-FINDING A0: PerceptionPipeline returns r.shot (haptic + record) for phantom zero-length shots while balls are at rest"))
+    @Test
     func phantomShotsAtRestThroughPipeline() async {
         let d = ScriptedDetector()
         let p = PerceptionPipeline(detector: d)
@@ -294,7 +296,7 @@ struct TrackerStressTests {
 
     /// A hand carries the cue ball (ball in hand): lifted for 1 s, set down 0.4 m away and rolled into place at
     /// 0.4 m/s for 0.4 s. No cue stick is in view. This must not be a shot.
-    @Test(.disabled("STRESS-FINDING A7: hand-placing the cue ball with no cue stick in view starts a real shot (strokeRecent nil passes the gate; the re-born cue track has noisy velocity)"))
+    @Test
     func handPlacingTheCueBallIsNotAShot() {
         let r = Self.handPlacement()
         Stress.metric("handPlacement.falseShots", r.starts)
@@ -378,7 +380,7 @@ struct TrackerStressTests {
 
     /// Relocalization lands the old table frame 0.5 m off: every detection shifts by 0.5 m at once. Tracks
     /// must not be read as balls moving at 15 m/s (a false shot) — they should be dropped and rebuilt.
-    @Test(.disabled("STRESS-FINDING A8: a 0.5 m relocalization jump re-creates every track and the new cue track starts a false shot")) func relocalizationJumpIsNotAShot() {
+    @Test func relocalizationJumpIsNotAShot() {
         var rng = SplitMix(seed: 8)
         var tracker = KalmanBallTracker()
         var seg = ShotSegmenter(spec: Stress.spec)
@@ -496,7 +498,7 @@ struct TrackerStressTests {
     // MARK: Segmenter end condition
 
     /// One confirmed spurious track that keeps jittering (a reflection, a hand on the rail) after the shot.
-    @Test(.disabled("STRESS-FINDING A6: one jittery confirmed false positive keeps tracker.isAtRest false forever: the shot never ends, no aim, record.rails grows"))
+    @Test
     func jitteryFalsePositiveBlocksShotEnd() {
         let r = Self.jitteryRun()
         Stress.metric("jitteryFP.recordsIn60s", r.records)
