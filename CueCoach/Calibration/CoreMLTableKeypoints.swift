@@ -56,16 +56,16 @@ final class CoreMLTableKeypointProvider: TableKeypointProvider, @unchecked Senda
 
     /// The highest-confidence detection's 10 keypoint rows (NMS-free head), or nil.
     static func bestRows(_ a: MLMultiArray, minConfidence: Double) -> [SIMD3<Double>]? {
-        let shape = a.shape.map(\.intValue)
-        guard shape.count == 3, shape[2] >= 36 else { return nil }
-        let n = shape[1], w = shape[2]
-        let s1 = a.strides[1].intValue, s2 = a.strides[2].intValue
-        func v(_ i: Int, _ j: Int) -> Double { a[i * s1 + j * s2].doubleValue }
-        var best = -1, bestConf = minConfidence
-        for i in 0..<n where v(i, 4) > bestConf { bestConf = v(i, 4); best = i }
-        guard best >= 0 else { return nil }
-        _ = w
-        return (0..<10).map { k in SIMD3(v(best, 6 + 3 * k), v(best, 7 + 3 * k), v(best, 8 + 3 * k)) }
+        StridedMultiArray.with(a) { m -> [SIMD3<Double>]? in
+            guard m.shape.count == 3, m.shape[0] >= 1, m.shape[2] >= 36 else { return nil }
+            var best = -1, bestConf = minConfidence
+            for i in 0..<m.shape[1] {
+                let c = m[0, i, 4]
+                if c > bestConf { bestConf = c; best = i }
+            }
+            guard best >= 0 else { return nil }
+            return (0..<10).map { k in SIMD3(m[0, best, 6 + 3 * k], m[0, best, 7 + 3 * k], m[0, best, 8 + 3 * k]) }
+        } ?? nil
     }
 
     /// Ultralytics letterbox into a 640×640 BGRA buffer (grey 114 padding), nearest-neighbour.
