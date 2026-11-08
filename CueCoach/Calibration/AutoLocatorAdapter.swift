@@ -136,8 +136,10 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         if mouthKeypoints >= 2 { return true }
         let scores = d.pocketScores.values   // only pockets in frame get a score
         if scores.filter({ $0 >= 0.5 }).count >= 4 { return true }
-        // A steep close view sees only some pockets (both side pockets on a "sidePockets" fit): every one in frame
-        // dark, and at least two of them.
+        // A steep close view fitted from both long rails + the side pockets ("sidePockets") sees only some
+        // pockets: every one in frame dark, and at least two of them. Any other fit still needs 4 dark (a 7 ft
+        // fit inside a 9 ft table found two dark spots and locked 56 cm off in the matrix).
+        guard d.partialAnchor == "sidePockets" else { return false }
         return scores.count >= 2 && scores.allSatisfy { $0 >= 0.5 }
     }
 

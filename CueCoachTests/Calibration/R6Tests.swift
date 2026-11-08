@@ -23,8 +23,19 @@ struct R6EvidenceTests {
     /// Every in-frame fitted pocket dark, and at least two of them, is pocket evidence too.
     @Test func sidePocketOnlyDarkEvidenceCounts() {
         var side = AutoFrameDiagnostics()
+        side.partialAnchor = "sidePockets"
         side.pocketScores = [.sideLeft: 0.8, .sideRight: 0.7]
         #expect(AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 0))
+    }
+
+    /// Matrix bar-rive-combo seed 5: a 7 ft fit inside a 9 ft table with two dark in-frame "pockets" locked
+    /// 56 cm off. The relaxed rule is for the steep side-pocket fit only; any other fit still needs 4 dark.
+    @Test func relaxedRuleIsOnlyForTheSidePocketFit() {
+        var full = AutoFrameDiagnostics()
+        full.pocketScores = [.footLeft: 0.8, .footRight: 0.7]
+        #expect(!AutoTableLocating.hasPocketEvidence(full, mouthKeypoints: 0))
+        full.partialAnchor = "corner"
+        #expect(!AutoTableLocating.hasPocketEvidence(full, mouthKeypoints: 0))
     }
 
     @Test func rugOrNoDarkMouthsStillRejects() {
@@ -33,12 +44,14 @@ struct R6EvidenceTests {
         #expect(!AutoTableLocating.hasPocketEvidence(rug, mouthKeypoints: 0))
         #expect(!AutoTableLocating.hasPocketEvidence(AutoFrameDiagnostics(), mouthKeypoints: 0))
         var one = AutoFrameDiagnostics()
+        one.partialAnchor = "sidePockets"
         one.pocketScores = [.sideLeft: 0.9]
         #expect(!AutoTableLocating.hasPocketEvidence(one, mouthKeypoints: 0))
     }
 
     @Test func oneDarkOneLightInFramePocketRejects() {
         var mixed = AutoFrameDiagnostics()
+        mixed.partialAnchor = "sidePockets"
         mixed.pocketScores = [.sideLeft: 0.9, .sideRight: 0.2]
         #expect(!AutoTableLocating.hasPocketEvidence(mixed, mouthKeypoints: 0))
     }
