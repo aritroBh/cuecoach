@@ -57,6 +57,8 @@ struct VisionShooterIdentifier: ShooterIdentifier {
     var attributor = ShooterAttributor()
     var faceMatching = StrokeFaceMatching.off
     var calibrations = IdentityCalibrationTable.standard
+    /// F6: the on-device benchmark result. `.shooterOnly` is honoured only when it passed for the gallery's face model.
+    var faceGate: FaceShipGateRecord? = FaceShipGateStore().load()
     /// Faces below this capture quality never vote (research §7.1 assumption, face-embedding.md F4).
     var minFaceQuality = 0.5
 
@@ -69,21 +71,27 @@ struct VisionShooterIdentifier: ShooterIdentifier {
         let faceGallery = snapshot.faceGallery.filter { roster.faceConsented.contains($0.key) && !$0.value.isEmpty }
         var attributor = attributor
         attributor.parameters.clothes = calibrations.clothes(clothesGallery.values.first?.first?.modelID)
-        attributor.parameters.face = calibrations.face(faceGallery.values.first?.first?.modelID)
+        let faceModelID = faceGallery.values.first?.first?.modelID
+        let gateOpen = faceModelID != nil && faceGate?.modelID == faceModelID
+        var calibrations = calibrations
+        if gateOpen, let id = faceModelID, calibrations.face[id] == nil, let g = faceGate { calibrations.face[id] = g.cueModel }
+        attributor.parameters.face = calibrations.face(faceModelID)
         let gate = attributor.parameters.gate
-        // Appearance is computed only if a plausible shooter could be matched or seeded on their own turn.
-        let plausible = ctx.plausibleShooters
-        let bootstrap = roster.consent(of: expectedShooter).clothes && clothesGallery[expectedShooter] == nil
-        let wantsAppearance = bootstrap || clothesGallery.keys.contains { plausible.contains($0) }
-        let wantsFace = faceMatching == .shooterOnly && faceGallery.keys.contains { plausible.contains($0) }
+        // r2 BLOCKER 1: appearance is computed only to compare against an existing consented template. There is no
+        // bootstrap from a turn-order guess: an empty gallery means nobody at the cue ball is embedded at all.
+        let wantsAppearance = !clothesGallery.isEmpty
+        let wantsFace = faceMatching == .shooterOnly && gateOpen
         let scorer = IdentityMatcher(threshold: 1, margin: 0)   // scores only; decisions happen in the attributor
 
         var assoc = TrackAssociator()
         var smoother = TrackEvidenceSmoother()
         var lastAppearance: [Int: Embedding] = [:]
         for frame in window.frames {
+            // Revoke / session end cancels the task: stop before computing anything more (r2 MAJOR).
+            if Task.isCancelled { return Self.cancelled(expectedShooter) }
             let wants = AnalysisWants(appearance: wantsAppearance, face: wantsFace, cueBall: frame.cueBall, gate: gate)
             guard let people = try? await analyzer.people(in: frame.image, wants: wants) else { continue }
+            if Task.isCancelled { return Self.cancelled(expectedShooter) }
             let ids = assoc.assign(people.map(\.box))
             for (person, track) in zip(people, ids) {
                 var e = TrackEvidence(trackID: track, poseScore: ShootingPose.score(person.joints, cueBall: frame.cueBall),
@@ -92,11 +100,13 @@ struct VisionShooterIdentifier: ShooterIdentifier {
                 // A non-shooter's vectors are never compared or kept, whatever the analyzer returned.
                 if gate.admits(e) {
                     if wants.appearance, let a = person.appearance {
-                        if !clothesGallery.isEmpty { e.appearanceSimilarity = scorer.match(a, against: clothesGallery).similarities }
+                        e.appearanceSimilarity = Self.belowCeiling(scorer.match(a, against: clothesGallery).similarities,
+                                                                   snapshot.appearanceClaimCeiling)
                         lastAppearance[track] = a
                     }
                     if wants.face, let f = person.face, (person.faceQuality ?? 0) >= minFaceQuality {
-                        e.faceSimilarity = scorer.match(f, against: faceGallery).similarities
+                        e.faceSimilarity = Self.belowCeiling(scorer.match(f, against: faceGallery).similarities,
+                                                             snapshot.faceClaimCeiling)
                     }
                 }
                 smoother.add(e)
@@ -104,11 +114,22 @@ struct VisionShooterIdentifier: ShooterIdentifier {
         }
         let evidence = smoother.evidence()
         let att = attributor.attribute(views: evidence.isEmpty ? [] : [evidence], context: ctx)
-        // Keep the gated shooter track's vector only if it could teach some consented player; else drop it here.
+        // Keep the gated shooter track's vector only if a tap could teach some consented player with it (see
+        // `AppearanceLearning.mayHold`); it is never learned without a tap. Anything else is dropped here.
         let sample = att.shooterTrackID.flatMap { lastAppearance[$0] }.flatMap {
-            AppearanceLearning.mayHold($0, roster: roster, gallery: clothesGallery, expectedShooter: expectedShooter,
-                                       plausible: plausible) ? $0 : nil
+            AppearanceLearning.mayHold($0, roster: roster, gallery: clothesGallery, expectedShooter: expectedShooter) ? $0 : nil
         }
         return ShooterIdentification(attribution: att, shooterAppearance: sample, evidence: evidence)
+    }
+
+    static func cancelled(_ expected: UUID) -> ShooterIdentification {
+        ShooterIdentification(attribution: .unknown(suggested: expected, confidence: 0, shooterTrackID: nil), shooterAppearance: nil)
+    }
+
+    /// S9 negative signal: a template corrected away from a look may not claim a look that is no more like it than
+    /// the corrected one was (+ `claimMargin`). Its similarity is dropped, so that player is unmodelled on this track.
+    static let claimMargin = 0.02
+    static func belowCeiling(_ sims: [UUID: Double], _ ceiling: [UUID: Double]) -> [UUID: Double] {
+        sims.filter { p, s in ceiling[p].map { s > $0 + claimMargin } ?? true }
     }
 }

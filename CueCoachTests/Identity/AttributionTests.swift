@@ -148,8 +148,9 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
         let views = [[person(1, pose: 0.9, dist: 0.05, clothes: [Synth.a: 0.78, Synth.b: 0.80])]]
         let out = attributor.attribute(views: views, context: ctx)
-        #expect(out.playerID == Synth.a)
-        #expect(out.source == .turnOrder)
+        // Round 3: a tie between two recognisable players asks instead of crediting A silently.
+        #expect(out.playerID == nil)
+        #expect(out.source == .unknown && out.suggestedPlayerID == Synth.a)
     }
 
     @Test func nonConsentedPlayersNeverGetASimilarityInput() {
@@ -179,7 +180,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let r = roster([(Synth.a, .none), (Synth.b, .init(clothes: false, face: true))])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
         let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, face: [Synth.b: 0.99])]], context: ctx)
-        #expect(out.playerID == Synth.a && out.source == .turnOrder)
+        #expect(out.playerID != Synth.b && out.source != .auto)   // never B; a tie asks (round 3)
     }
 
     @Test func genericFaceCanStillConfirmAmongModelledPlayers() {
@@ -200,7 +201,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         // CX-2: caller error (stale turn state) → never a silent pick; the card asks with one tap.
         let ctx = AttributionContext(roster: roster([]), expectedShooter: Synth.c)
         #expect(attributor.attribute(views: [], context: ctx)
-                == Attribution(playerID: Synth.c, source: .turnOrder, confidence: 0, shooterTrackID: nil, needsConfirmation: true))
+                == .unknown(suggested: Synth.c, confidence: 0, shooterTrackID: nil))
     }
 
     @Test func teamPriorNarrowsToTeamInTurn() {
@@ -210,7 +211,8 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a, teamInTurn: [Synth.a, Synth.c])
         let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05,
                                                        clothes: [Synth.a: 0.1, Synth.b: 0.99, Synth.c: 0.99])]], context: ctx)
-        #expect(out.playerID == Synth.c)
+        // Round 3 (r2 BLOCKER 2): off-team B competes too; C and B tie on evidence, so the card asks.
+        #expect(out.playerID != Synth.b && out.source != .auto)
     }
 
     @Test func consentedLookalikeNeverStealsFromANonConsentedExpectedShooter() {
@@ -218,7 +220,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .none), (Synth.c, .none), (Synth.d, .none)])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.b, teamInTurn: [Synth.a, Synth.b])
         let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.98])]], context: ctx)
-        #expect(out.playerID == Synth.b && out.source == .turnOrder)
+        #expect(out.playerID != Synth.a && out.source != .auto)   // never A; the real tie asks (round 3)
     }
 
     @Test func guestLookalikeIsNeverMergedOnTheirOwnTurn() {
@@ -227,7 +229,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.d)
         for cos in [0.80, 0.90, 0.95, 0.99] {
             let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: cos])]], context: ctx)
-            #expect(out.playerID == Synth.d && out.source == .turnOrder, "cos \(cos)")
+            #expect(out.playerID != Synth.a && out.source != .auto, "cos \(cos)")
         }
     }
 
@@ -246,7 +248,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let r = roster([(Synth.a, .init(clothes: true, face: false))], guests: [Synth.d])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
         let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.05])]], context: ctx)
-        #expect(out.source == .turnOrder && out.needsConfirmation)
+        #expect(out.source == .unknown && out.needsConfirmation && out.playerID == nil)
     }
 
     @Test func lookalikeGuestShootingOutOfTurnIsNotConfirmedAsTheExpectedPlayer() {
@@ -256,7 +258,8 @@ private func person(_ track: Int, pose: Double, dist: Double,
                         (Synth.c, .init(clothes: true, face: false))], guests: [Synth.d])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
         let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.9, Synth.b: 0.2, Synth.c: 0.2])]], context: ctx)
-        #expect(out.playerID == Synth.a && out.source == .turnOrder)
+        // Round 3: not even a silent turn-order credit to A: the guest may be the one shooting.
+        #expect(out.playerID == nil && out.source == .unknown)
     }
 
     @Test func unmodelledExpectedShooterIsNeverAuto() {
@@ -265,7 +268,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
                         (Synth.c, .none), (Synth.d, .none)])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.d)
         let out = attributor.attribute(views: [[person(1, pose: 0.95, dist: 0.05, clothes: [Synth.a: 0.93, Synth.b: 0.48])]], context: ctx)
-        #expect(out.playerID == Synth.d && out.source == .turnOrder)
+        #expect(out.playerID != Synth.a && out.source != .auto)
     }
 
     @Test func staleTeamInTurnIsIgnored() {
@@ -302,6 +305,8 @@ private func person(_ track: Int, pose: Double, dist: Double,
         var turnOrderOnly: Double
         /// `.auto` picks that named the wrong player.
         var wrongAuto: Int
+        /// Shots credited to the wrong player (any source). `.unknown` credits nobody.
+        var wrongCredited: Double = 0
     }
 
     /// Synthetic 2v2: A, B consent to clothes, C, D don't. Similarity noise σ = 0.06.
@@ -316,7 +321,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
                         (Synth.c, cd), (Synth.d, cd)])
         let modelled = allConsented ? players : [Synth.a, Synth.b]
-        var inTurn = (0, 0), outConsented = (0, 0), all = 0, baseline = 0, wrongAuto = 0
+        var inTurn = (0, 0), outConsented = (0, 0), all = 0, baseline = 0, wrongAuto = 0, wrongCredit = 0
         for i in 0..<n {
             let expected = players[i % 4]
             let actual = rng.unit() < outOfTurnRate ? players[(i + 1 + Int(rng.unit() * 3)) % 4] : expected
@@ -331,12 +336,14 @@ private func person(_ track: Int, pose: Double, dist: Double,
             if ok { all += 1 }
             if expected == actual { baseline += 1 }
             if out.source == .auto, !ok { wrongAuto += 1 }
+            if out.playerID != nil, !ok { wrongCredit += 1 }
             if actual == expected { inTurn.1 += 1; if ok { inTurn.0 += 1 } }
             else if r.clothesConsented.contains(actual) { outConsented.1 += 1; if ok { outConsented.0 += 1 } }
         }
         return SynthResult(inTurn: Double(inTurn.0) / Double(max(inTurn.1, 1)),
                            outConsented: Double(outConsented.0) / Double(max(outConsented.1, 1)),
-                           overall: Double(all) / Double(n), turnOrderOnly: Double(baseline) / Double(n), wrongAuto: wrongAuto)
+                           overall: Double(all) / Double(n), turnOrderOnly: Double(baseline) / Double(n), wrongAuto: wrongAuto,
+                           wrongCredited: Double(wrongCredit) / Double(n))
     }
 
     @Test func evidenceNeverBreaksInTurnShots() {
@@ -378,7 +385,8 @@ private func person(_ track: Int, pose: Double, dist: Double,
         for rate in [0.0, 0.1, 0.3] {
             let r = synthSession(outOfTurnRate: rate, genuine: 0.6, allConsented: false)
             #expect(r.wrongAuto == 0, "rate \(rate)")
-            #expect(r.overall >= r.turnOrderOnly - 1e-9, "rate \(rate)")
+            // Weak evidence may ask (credit nobody) but never credits the wrong player more than turn order would.
+            #expect(r.wrongCredited <= 1 - r.turnOrderOnly + 1e-9, "rate \(rate)")
         }
     }
 
@@ -388,7 +396,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
         for cos in [0.40, 0.60, 0.62, 0.70] {
             let out = attributor.attribute(views: [[person(1, pose: 0.9, dist: 0.05, clothes: [Synth.a: cos])]], context: ctx)
-            #expect(out.playerID == Synth.a && out.source == .turnOrder, "cos \(cos)")
+            #expect(out.playerID != Synth.b && out.source != .auto, "cos \(cos)")
         }
     }
 
@@ -406,7 +414,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
                         (Synth.c, .none), (Synth.d, .none)])
         let ctx = AttributionContext(roster: r, expectedShooter: Synth.a)
         let out = attributor.attribute(views: [[person(1, pose: 0.9, dist: 0.05, clothes: [Synth.a: 0.5, Synth.b: 0.5])]], context: ctx)
-        #expect(out.playerID == Synth.a && out.source == .turnOrder)
+        #expect(out.source != .auto && out.playerID != Synth.b)
     }
 }
 

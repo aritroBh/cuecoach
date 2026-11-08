@@ -110,6 +110,9 @@ struct StressTally: CustomStringConvertible {
     var shots = 0, wrong = 0, auto = 0, autoWrong = 0, outOfTurn = 0, taps = 0
     var guestShots = 0, guestToRegistered = 0, guestMergedAuto = 0
     var faceVisibleShots = 0, faceVisibleAuto = 0
+    /// Asked on the card (`.unknown`): nobody credited. Guest shots credited to a registered profile without a tap,
+    /// `.auto` or silent turn order (S10), and the off-team subset of those.
+    var unknown = 0, guestSilent = 0, guestOffTeamCredited = 0
 
     static func rate(_ a: Int, _ b: Int) -> Double { b == 0 ? 0 : Double(a) / Double(b) }
     var misattribution: Double { Self.rate(wrong, shots) }
@@ -117,6 +120,9 @@ struct StressTally: CustomStringConvertible {
     var autoRate: Double { Self.rate(auto, shots) }
     var autoWrongRate: Double { Self.rate(autoWrong, shots) }
     var guestMergeRate: Double { Self.rate(guestMergedAuto, guestShots) }
+    /// Guest shots credited to a registered profile before any tap: auto + silent (must be 0).
+    var guestMergedAny: Int { guestMergedAuto + guestSilent }
+    var unknownRate: Double { Self.rate(unknown, shots) }
 
     static func + (l: StressTally, r: StressTally) -> StressTally {
         var t = l
@@ -124,6 +130,7 @@ struct StressTally: CustomStringConvertible {
         t.outOfTurn += r.outOfTurn; t.taps += r.taps; t.guestShots += r.guestShots
         t.guestToRegistered += r.guestToRegistered; t.guestMergedAuto += r.guestMergedAuto
         t.faceVisibleShots += r.faceVisibleShots; t.faceVisibleAuto += r.faceVisibleAuto
+        t.unknown += r.unknown; t.guestSilent += r.guestSilent; t.guestOffTeamCredited += r.guestOffTeamCredited
         return t
     }
 
@@ -132,7 +139,9 @@ struct StressTally: CustomStringConvertible {
         return "shots=\(shots) misattr=\(p(misattribution)) turnOrderOnly=\(p(turnOrderBaseline)) auto=\(p(autoRate)) "
             + "autoWrong=\(p(autoWrongRate)) taps=\(taps) guestShots=\(guestShots) "
             + "guestMergedAuto=\(guestMergedAuto) (\(p(guestMergeRate))) guestToRegisteredAny=\(guestToRegistered) "
-            + "faceVisibleAuto=\(faceVisibleAuto)/\(faceVisibleShots)"
+            + "faceVisibleAuto=\(faceVisibleAuto)/\(faceVisibleShots) unknown=\(unknown) (\(p(unknownRate))) "
+            + "guestSilent=\(guestSilent) guestMergedAny=\(guestMergedAny) (\(p(Self.rate(guestMergedAny, guestShots)))) "
+            + "guestOffTeamCredited=\(guestOffTeamCredited)"
     }
 }
 
@@ -148,6 +157,8 @@ final class StressTable {
     var teams: [[UUID]]?
     var frames = 2
     var faceMatching = StrokeFaceMatching.off
+    /// The synthetic face model counts as having passed the on-device benchmark (F6) for face scenarios.
+    var faceGate: FaceShipGateRecord? = .testPass(modelID: stressFace)
     /// Shot → true shooter (to check stats after taps).
     var truth: [UUID: UUID] = [:]
     private let image = testImage(width: 4, height: 4)
@@ -210,7 +221,7 @@ final class StressTable {
                            faceVisible: faceVisible, shooterFaceVisible: faceVisible)
         let window = StrokeWindow(frames: (0..<frames).map { _ in IdentityFrame(image: image, cueBall: StressPose.cue) })
         let identifier = VisionShooterIdentifier(analyzer: StressAnalyzer(scene: people, fails: analyzerFails),
-                                                 faceMatching: faceMatching)
+                                                 faceMatching: faceMatching, faceGate: faceGate)
         let att = await session.identifyShot(shot, window: window, expectedShooter: expected,
                                              teamInTurn: team(of: expected), using: identifier)
         let truthID = players[actual].id
@@ -218,17 +229,21 @@ final class StressTable {
         tally.shots += 1
         if expected != truthID { tally.outOfTurn += 1 }
         if att.source == .auto { tally.auto += 1 }
-        let wrong = att.playerID != truthID
+        if att.source == .unknown { tally.unknown += 1 }
+        // Misattribution = credited to the wrong person. `.unknown` credits nobody (it is counted as an ask).
+        let wrong = att.playerID != nil && att.playerID != truthID
         if wrong { tally.wrong += 1; if att.source == .auto { tally.autoWrong += 1 } }
         if faceVisible && shooterVisible { tally.faceVisibleShots += 1; if att.source == .auto { tally.faceVisibleAuto += 1 } }
         if players[actual].isGuest {
             tally.guestShots += 1
             if wrong, let other = players.first(where: { $0.id == att.playerID }), !other.isGuest {
                 tally.guestToRegistered += 1
-                if att.source == .auto { tally.guestMergedAuto += 1 }
+                if att.source == .auto { tally.guestMergedAuto += 1 } else { tally.guestSilent += 1 }
+                if let t = team(of: expected), !t.contains(truthID) { tally.guestOffTeamCredited += 1 }
             }
         }
-        if wrong, tapIfWrong > 0, rng.chance(tapIfWrong) {
+        let needsTap = wrong || att.source == .unknown
+        if needsTap, tapIfWrong > 0, rng.chance(tapIfWrong) {
             _ = session.correct(shot: shot, to: truthID)
             tally.taps += 1
         }
@@ -265,7 +280,7 @@ final class StressTable {
     /// Per-player shot counts as the stats layer would read them (current attribution, taps included).
     func shotsPerPlayer() -> [UUID: Int] {
         var out: [UUID: Int] = [:]
-        for shot in truth.keys { if let a = session.attribution(for: shot) { out[a.playerID, default: 0] += 1 } }
+        for shot in truth.keys { if let id = session.attribution(for: shot)?.playerID { out[id, default: 0] += 1 } }
         return out
     }
 }
@@ -630,6 +645,22 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
         stressMetric("after revoke", table.tally)
     }
 
+    // S10 / r2 BLOCKER 2: an off-team guest in A's shirt keeps shooting on A's (and C's) turn.
+    @Test func offTeamLookalikeGuestIsNeverCreditedToARegisteredPlayer() async {
+        var rng = StressRNG(seed: 1200)
+        let shirt = StressSpace.randomUnit(&rng)
+        var ps = [StressPlayer(clothes: shirt, face: StressSpace.randomUnit(&rng), consent: clothesOnly),
+                  StressPlayer(clothes: StressSpace.randomUnit(&rng), face: StressSpace.randomUnit(&rng), consent: clothesOnly),
+                  StressPlayer(clothes: StressSpace.around(shirt, cos: 0.97, &rng), face: StressSpace.randomUnit(&rng)),
+                  StressPlayer(clothes: StressSpace.randomUnit(&rng), face: StressSpace.randomUnit(&rng), consent: clothesOnly)]
+        ps[2].isGuest = true
+        let table = StressTable(ps, teams: [[ps[0].id, ps[1].id], [ps[2].id, ps[3].id]], seed: 41)
+        for k in 0..<80 { await table.shoot(2, expected: ps[k % 2].id, shooterVisible: k % 5 != 0) }
+        stressMetric("off-team lookalike guest", table.tally)
+        #expect(table.tally.guestMergedAny == 0)
+        #expect(table.tally.guestOffTeamCredited == 0)
+    }
+
     // MARK: - Property test: 10k random sessions
 
     struct MonteCarlo {
@@ -682,5 +713,7 @@ let bothConsents = RecognitionConsent(clothes: true, face: true)
         let mc = await Self.monteCarlo(sessions: 10_000, seed: 0xC0FFEE)
         stressMetric("monte-carlo 10k sessions (guest merge)", mc.all)
         #expect(mc.all.guestMergedAuto == 0)
+        #expect(mc.all.guestSilent == 0, "S10: guest shots silently credited to a registered profile")
+        #expect(mc.all.guestOffTeamCredited == 0, "S10: off-team guest credited to a registered profile")
     }
 }

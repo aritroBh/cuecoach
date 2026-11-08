@@ -167,14 +167,41 @@ struct AttributionContext: Sendable {
     }
 }
 
+/// How a shot's shooter was decided. `.unknown` credits nobody: the post-shot card asks with one tap.
+enum AttributionDecision: String, Hashable, Sendable { case auto, turnOrder, tap, unknown }
+
 struct Attribution: Hashable, Sendable {
-    var playerID: UUID
-    var source: AttributionSource
+    /// Credited shooter; nil only for `.unknown` (nobody gets the shot until a tap names them).
+    var playerID: UUID?
+    var source: AttributionDecision
     var confidence: Double
     var shooterTrackID: Int?
-    /// Evidence says the turn-order pick is probably wrong but nobody could be named safely: the post-shot card
-    /// asks with one tap instead of guessing (never set on `.auto`).
-    var needsConfirmation = false
+    /// The turn-order pick the card offers first when asking. Never credited without a tap.
+    var suggestedPlayerID: UUID? = nil
+
+    init(playerID: UUID, source: AttributionDecision, confidence: Double, shooterTrackID: Int?) {
+        self.playerID = playerID; self.source = source; self.confidence = confidence; self.shooterTrackID = shooterTrackID
+    }
+
+    /// Unknown or tied evidence: ask, never a silent turn-order ID.
+    static func unknown(suggested: UUID?, confidence: Double, shooterTrackID: Int?) -> Attribution {
+        var a = Attribution(playerID: UUID(), source: .unknown, confidence: confidence, shooterTrackID: shooterTrackID)
+        a.playerID = nil
+        a.suggestedPlayerID = suggested
+        return a
+    }
+
+    var needsConfirmation: Bool { source == .unknown }
+
+    /// What `Shot.attributionSource` stores; nil = do not credit the shot to anyone yet.
+    var storedSource: AttributionSource? {
+        switch source {
+        case .auto: .auto
+        case .turnOrder: .turnOrder
+        case .tap: .tap
+        case .unknown: nil
+        }
+    }
 }
 
 /// "Somebody is actually shooting here": an absolute gate on top of the relative track weights.
@@ -255,6 +282,8 @@ struct ShooterAttributor: Sendable {
         /// factor, independent of the prior: the 0.8 turn prior alone may never turn a tie into a confident call
         /// (a lookalike guest shooting out of turn, lookalike teammates).
         var minEvidenceRatio = 4.0
+        /// Someone outside the roster may shoot (open venue). Off: the roster is everyone who may shoot.
+        var strangerPossible = false
     }
     var parameters = Parameters()
 
@@ -332,24 +361,70 @@ struct ShooterAttributor: Sendable {
         return e.mapValues { $0 / z }
     }
 
+    /// Competitor set (r2 BLOCKER 2): *every* roster member, off-team players and guests included, plus an explicit
+    /// "someone else" hypothesis (an unmodelled person: guest, no consent, stranger) whenever one could be shooting.
+    ///
+    /// - `.auto`: the winner's evidence beats every competitor's *and* "someone else"'s by `minEvidenceRatio`, with
+    ///   positive evidence of its own, and the posterior clears `decideAt` / `margin`.
+    /// - `.turnOrder` (silent): only when no guest could be at the cue ball unseen (or the expected shooter is the
+    ///   guest), the expected shooter is in the roster, and observed evidence neither contradicts them nor ties them
+    ///   with another *recognisable* player.
+    /// - `.unknown` otherwise: the card asks, nobody is credited.
     func attribute(views: [[TrackEvidence]], context ctx: AttributionContext) -> Attribution {
         let post = posterior(views: views, context: ctx)
         let ranked = post.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key.uuidString < $1.key.uuidString }
         let track = shooterTrack(views)
         let open = logEvidence(views, roster: ctx.roster)
+        let closed = logEvidence(views, roster: ctx.roster, openSet: false)
+        let guestPresent = ctx.roster.entries.contains(where: \.isGuest) || parameters.strangerPossible
+        let someoneElse = guestPresent || ctx.roster.entries.contains { $0.consent == .none }
+        let elseEvidence = someoneElse ? logSomeoneElseEvidence(views, roster: ctx.roster) : -Double.infinity
+        let ratio = log(parameters.minEvidenceRatio)
         func separated(_ p: UUID) -> Bool {
             let mine = open[p] ?? 0
-            return ctx.plausibleShooters.allSatisfy { $0 == p || mine - (open[$0] ?? 0) >= log(parameters.minEvidenceRatio) }
+            return ctx.roster.ids.allSatisfy { $0 == p || mine - (open[$0] ?? 0) >= ratio } && mine - elseEvidence >= ratio
         }
         if let top = ranked.first, top.value >= parameters.decideAt,
            top.value - (ranked.dropFirst().first?.value ?? 0) >= parameters.margin,
-           evidence(for: top.key, views: views, roster: ctx.roster) > 1, separated(top.key) {
+           (closed[top.key] ?? 0) > 0, separated(top.key) {
             return Attribution(playerID: top.key, source: .auto, confidence: top.value, shooterTrackID: track)
         }
-        let p = post[ctx.expectedShooter] ?? 0
-        let ask = !ctx.roster.contains(ctx.expectedShooter) || (track != nil && p < parameters.askBelow)
-        return Attribution(playerID: ctx.expectedShooter, source: .turnOrder, confidence: p, shooterTrackID: track,
-                           needsConfirmation: ask)
+        let e = ctx.expectedShooter
+        let p = post[e] ?? 0
+        let ask = Attribution.unknown(suggested: e, confidence: p, shooterTrackID: track)
+        guard let entry = ctx.roster.entries.first(where: { $0.playerID == e }) else { return ask }
+        // A guest could be the one shooting (seen or not): a registered profile is never silently credited.
+        if guestPresent && !entry.isGuest { return ask }
+        guard track != nil else { return Attribution(playerID: e, source: .turnOrder, confidence: p, shooterTrackID: nil) }
+        if p < parameters.askBelow { return ask }
+        // Tie with a recognisable player: someone whose own template matches (positive evidence) is within the ratio.
+        let mine = open[e] ?? 0
+        let tied = ctx.roster.ids.contains { $0 != e && (closed[$0] ?? 0) > 0 && mine - (open[$0] ?? 0) < ratio }
+        if tied { return ask }
+        return Attribution(playerID: e, source: .turnOrder, confidence: p, shooterTrackID: track)
+    }
+
+    /// log Π_views L_view(someone else): an unmodelled person scores the open-set lookalike LR of each observed cue.
+    private func logSomeoneElseEvidence(_ views: [[TrackEvidence]], roster: IdentityRoster) -> Double {
+        var out = 0.0
+        for view in views {
+            let tracks = gated(view)
+            guard !tracks.isEmpty else { continue }
+            let w = weights(tracks)
+            let l = zip(tracks, w).reduce(0.0) { acc, tw in
+                let (t, wt) = tw
+                var lr = 1.0
+                let app = roster.entries.filter(\.consent.clothes).compactMap { t.appearanceSimilarity[$0.playerID] }
+                    .map(parameters.clothes.likelihoodRatio).max()
+                let face = roster.entries.filter(\.consent.face).compactMap { t.faceSimilarity[$0.playerID] }
+                    .map(parameters.face.likelihoodRatio).max()
+                if let a = app { lr *= parameters.clothes.unmodelledLikelihoodRatio(bestModelled: a) }
+                if let f = face { lr *= parameters.face.unmodelledLikelihoodRatio(bestModelled: f) }
+                return acc + wt * min(parameters.lrRange.upperBound, max(parameters.lrRange.lowerBound, lr))
+            }
+            out += log(max(l, 1e-300))
+        }
+        return out
     }
 
     /// Π_views L_view(p) from p's own templates: > 1 only when the gated views actually look like p.
@@ -377,27 +452,15 @@ enum AppearanceLearning {
         templates.compactMap { sample.cosine($0) }.max() ?? -1
     }
 
-    /// Turn-order bind (research §7.2): may the shooter sample of the expected shooter's own turn extend their
-    /// template? Never when the sample looks more like someone else. A first-turn seed (empty template) follows the
-    /// research rule; extending an existing template also needs every plausible shooter to be clothes-consented,
-    /// so a non-consenting player's or guest's vector can't be learned into someone else's template by turn order.
-    static func turnOrderBind(_ sample: Embedding, roster: IdentityRoster, gallery: [UUID: [Embedding]],
-                              expectedShooter: UUID?, plausible: Set<UUID>?) -> UUID? {
-        guard let p = expectedShooter, roster.consent(of: p).clothes else { return nil }
-        let own = gallery[p] ?? []
-        let bestOther = gallery.filter { $0.key != p && roster.consent(of: $0.key).clothes }
-            .values.map { resemblance(sample, $0) }.max() ?? -1
-        if own.isEmpty { return bestOther < matchFloor ? p : nil }
-        let everyone = (plausible ?? Set(roster.ids)).union([p])
-        guard everyone.allSatisfy({ roster.consent(of: $0).clothes }) else { return nil }
-        return (bestOther < matchFloor || resemblance(sample, own) >= bestOther) ? p : nil
-    }
-
-    /// Keep the vector only if it resembles some clothes-consented player's template, or would be turn-order bound.
-    /// Anything else (a stranger, a non-consenting player who looks like nobody consented) is dropped at once.
+    /// Hold the vector (RAM, tap window only) if it resembles some clothes-consented player's template, or it was the
+    /// gated shooter on a clothes-consented player's own turn at a table where *everyone* consented to clothes (so a
+    /// tap can teach a changed look, S3/CX-8, without ever holding a guest's or non-consenting player's vector).
+    /// Holding never teaches: nothing is learned from turn order or `.auto` (r2 BLOCKER 1); only the player's own
+    /// registration capture or a one-tap confirmation naming a consented player does. Untapped vectors are dropped
+    /// when the tap window closes, and at once on revoke.
     static func mayHold(_ sample: Embedding, roster: IdentityRoster, gallery: [UUID: [Embedding]],
-                        expectedShooter: UUID?, plausible: Set<UUID>? = nil) -> Bool {
+                        expectedShooter: UUID? = nil) -> Bool {
         roster.clothesConsented.contains { resemblance(sample, gallery[$0] ?? []) >= matchFloor }
-            || turnOrderBind(sample, roster: roster, gallery: gallery, expectedShooter: expectedShooter, plausible: plausible) != nil
+            || (expectedShooter.map { roster.contains($0) } ?? false && roster.entries.allSatisfy(\.consent.clothes))
     }
 }

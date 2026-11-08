@@ -9,7 +9,14 @@ import SwiftData
 protocol EmbeddingExtracting: Sendable {
     /// Identifies model + version; templates from another modelID are ignored.
     var modelID: String { get }
+    /// True only for a face model trained for identity (AuraFace). Generic feature prints are never registered as
+    /// face templates (face-embedding.md F5).
+    var isIdentityTrained: Bool { get }
     func embedding(of image: CGImage) async throws -> Embedding
+}
+
+extension EmbeddingExtracting {
+    var isIdentityTrained: Bool { false }
 }
 
 /// Made only by the consent screen's deliberate "Agree" tap.
@@ -29,6 +36,10 @@ enum IdentityConsentTerms {
 
     /// Ask again when the player agreed to older terms, or a model change made a consented template unusable.
     static func needsReconsent(_ r: RecognitionData?, faceModelID: String, bodyModelID: String) -> Bool {
+        needsReconsent(r.map(StoredRecognitionTemplates.init), faceModelID: faceModelID, bodyModelID: bodyModelID)
+    }
+
+    static func needsReconsent(_ r: StoredRecognitionTemplates?, faceModelID: String, bodyModelID: String) -> Bool {
         guard let r else { return false }
         if r.version < current { return true }
         let t = IdentityTemplates(r, faceModelID: faceModelID, bodyModelID: bodyModelID)
@@ -47,6 +58,8 @@ enum RegistrationError: Error, Equatable {
     case notEnoughSamples
     /// "Delete my recognition data" ran while embeddings were being computed: nothing is written.
     case deletedDuringRegistration
+    /// Face consent needs an identity-trained face model; none is installed (or only a generic one was offered).
+    case faceModelUnavailable
 }
 
 @MainActor
@@ -54,23 +67,34 @@ struct RecognitionRegistrar {
     static let minSamples = 3
     static let maxSamples = 12
 
-    let stack: PersistenceStack
-    let face: any EmbeddingExtracting
+    let store: any RecognitionTemplateStore
+    /// nil when no identity-trained face model is installed: face consent then can't be registered.
+    let face: (any EmbeddingExtracting)?
     let body: any EmbeddingExtracting
-    /// Seam for tests (a failing save). Production always uses `ModelContext.save`.
-    var save: @MainActor (ModelContext) throws -> Void = { try $0.save() }
 
-    /// Gate: no consent → throws before any image is processed or any row is written.
+    init(store: any RecognitionTemplateStore, face: (any EmbeddingExtracting)?, body: any EmbeddingExtracting) {
+        self.store = store; self.face = face; self.body = body
+    }
+
+    /// Current-store convenience (`PlayerProfile.recognition`). `save` is a seam for tests.
+    init(stack: PersistenceStack, face: (any EmbeddingExtracting)?, body: any EmbeddingExtracting,
+         save: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() }) {
+        self.init(store: ProfileRecognitionTemplateStore(stack: stack, save: save), face: face, body: body)
+    }
+
+    /// Gate: no consent → throws before any image is processed or any row is written. This explicit registration
+    /// capture (and a one-tap confirmation later) is the only way a template is ever taught.
     func register(_ owner: PlayerProfile, decision: ConsentDecision, capture: RegistrationCapture) async throws {
         let c = decision.consent
         guard c.clothes || c.face else { throw RegistrationError.consentRequired }
         guard owner.isLocalOwner else { throw RegistrationError.notLocalOwner }
+        if c.face, !(face?.isIdentityTrained ?? false) { throw RegistrationError.faceModelUnavailable }
         if c.face, capture.faceImages.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
         if c.clothes, capture.bodyImages.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
 
         // A delete that lands during the awaits below must win: never write templates back after it.
-        let deletions = RecognitionDeletionLog.generation
-        let faces = c.face ? try await embed(capture.faceImages, with: face) : nil
+        let deletions = store.deletionGeneration
+        let faces = c.face ? try await embed(capture.faceImages, with: face!) : nil
         let bodies = c.clothes ? try await embed(capture.bodyImages, with: body) : nil
         if let faces, faces.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
         if let bodies, bodies.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
@@ -78,19 +102,11 @@ struct RecognitionRegistrar {
         // Encode before touching the store, so a codec error leaves nothing dirty.
         let faceData = try faces.map(EmbeddingCodec.encode)
         let bodyData = try bodies.map(EmbeddingCodec.encode)
-        guard deletions == RecognitionDeletionLog.generation else { throw RegistrationError.deletedDuringRegistration }
+        guard deletions == store.deletionGeneration else { throw RegistrationError.deletedDuringRegistration }
         guard owner.isLocalOwner, owner.modelContext != nil else { throw RegistrationError.notLocalOwner }
-        let ctx = stack.competitiveContext
-        if let old = owner.recognition { owner.recognition = nil; ctx.delete(old) }
-        let row = RecognitionData(faceEmbedding: faceData, appearanceEmbedding: bodyData,
-                                  optedInAt: decision.agreedAt, version: decision.termsVersion)
-        ctx.insert(row)
-        owner.recognition = row
-        do { try save(ctx) } catch {
-            // Never leave "old row deleted, new row inserted" pending for some later save to commit.
-            ctx.rollback()
-            throw error
-        }
+        try store.replaceTemplates(StoredRecognitionTemplates(faceEmbedding: faceData, appearanceEmbedding: bodyData,
+                                                              optedInAt: decision.agreedAt, version: decision.termsVersion),
+                                   for: owner.id)
     }
 
     private func embed(_ images: [CGImage], with x: any EmbeddingExtracting) async throws -> [Embedding] {
@@ -108,6 +124,10 @@ struct IdentityTemplates: Sendable {
     var body: [Embedding]
 
     init(_ r: RecognitionData?, faceModelID: String, bodyModelID: String) {
+        self.init(r.map(StoredRecognitionTemplates.init), faceModelID: faceModelID, bodyModelID: bodyModelID)
+    }
+
+    init(_ r: StoredRecognitionTemplates?, faceModelID: String, bodyModelID: String) {
         face = (EmbeddingCodec.decodeOrNil(r?.faceEmbedding) ?? []).filter { $0.modelID == faceModelID }
         body = (EmbeddingCodec.decodeOrNil(r?.appearanceEmbedding) ?? []).filter { $0.modelID == bodyModelID }
     }

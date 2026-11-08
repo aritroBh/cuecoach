@@ -16,10 +16,12 @@ func testImage(width: Int, height: Int = 8) -> CGImage {
 /// Fake extractor: image width w → unit vector on axis (w % 16). Counts calls.
 final class SpyExtractor: EmbeddingExtracting, @unchecked Sendable {
     let modelID: String
+    /// Fakes stand in for an identity-trained face model unless told otherwise.
+    let isIdentityTrained: Bool
     private let lock = NSLock()
     private var _calls = 0
     var calls: Int { lock.withLock { _calls } }
-    init(modelID: String) { self.modelID = modelID }
+    init(modelID: String, identity: Bool = true) { self.modelID = modelID; self.isIdentityTrained = identity }
     func embedding(of image: CGImage) async throws -> Embedding {
         lock.withLock { _calls += 1 }
         return Synth.axis(image.width % Synth.dim, model: modelID)
@@ -146,7 +148,7 @@ let bodyModel = "fake.body.v1"
         // Data-use / consent text changed → ask again.
         r.version = IdentityConsentTerms.current - 1
         #expect(IdentityConsentTerms.needsReconsent(r, faceModelID: faceModel, bodyModelID: bodyModel))
-        #expect(!IdentityConsentTerms.needsReconsent(nil, faceModelID: faceModel, bodyModelID: bodyModel))
+        #expect(!IdentityConsentTerms.needsReconsent(nil as StoredRecognitionTemplates?, faceModelID: faceModel, bodyModelID: bodyModel))
     }
 
     @Test func deleteWipesStorageSessionTemplatesAndEmitsRevoke() async throws {
@@ -333,13 +335,15 @@ final class DeletingExtractor: EmbeddingExtracting, @unchecked Sendable {
         #expect(s.pendingSampleCount == 0)
     }
 
-    @Test func guestBootstrapsOnTheirTurnAndACorrectionUndoesIt() {
+    @Test func guestIsNeverBootstrappedByTurnOrder() {
+        // Round 3 (r2 BLOCKER 1): a turn-order guess never seeds anyone; B is not consented, so nothing is even held.
         let s = IdentitySession(profiles: [plain(Synth.b)], guests: [Synth.d], faceModelID: faceModel, bodyModelID: bodyModel)
         s.grantGuestClothesConsent(Synth.d)
         let shot = UUID()
         s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.d, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
                                                    shooterAppearance: Synth.axis(6, model: bodyModel)), expectedShooter: Synth.d)
-        #expect(s.snapshot().appearanceGallery[Synth.d] == [Synth.axis(6, model: bodyModel)])
+        #expect(s.snapshot().appearanceGallery[Synth.d] == nil)
+        #expect(s.pendingSampleCount == 0)
         _ = s.correct(shot: shot, to: Synth.b)          // it was actually B → the bootstrap was B's vector; undo it
         #expect((s.snapshot().appearanceGallery[Synth.d] ?? []).isEmpty)
         #expect(s.snapshot().appearanceGallery[Synth.b] == nil)
@@ -387,7 +391,7 @@ final class DeletingExtractor: EmbeddingExtracting, @unchecked Sendable {
         }
         let shot = UUID()
         let att = await s.identifyShot(shot, window: StrokeWindow(frames: []), expectedShooter: Synth.b, teamInTurn: nil, using: id)
-        #expect(att.playerID == Synth.b && att.source == .turnOrder)
+        #expect(att.playerID == nil && att.source == .unknown && att.suggestedPlayerID == Synth.b)
         #expect(s.attribution(for: shot) == nil)
         #expect(s.stats.total == 0)
     }
@@ -407,13 +411,18 @@ final class DeletingExtractor: EmbeddingExtracting, @unchecked Sendable {
         #expect(s.snapshot().appearanceGallery[Synth.b]?.contains(newLook.normalised!) != true)
     }
 
-    @Test func ownTurnShotsKeepRefreshingTheTemplateWhenEveryoneConsented() {
-        // S4: today's clothes differ from registration; own-turn shots extend the template (seeds are kept).
+    @Test func ownTurnShotsRefreshTheTemplateOnlyThroughAConfirmingTap() {
+        // S4 under round 3: today's clothes differ from registration. The own-turn sample is held, not learned;
+        // a confirming tap teaches it (seeds are kept).
         let s = IdentitySession(profiles: [consentedProfile(Synth.a, body: 1), consentedProfile(Synth.b, body: 2)],
                                 faceModelID: faceModel, bodyModelID: bodyModel)
         let today = Synth.axis(9, model: bodyModel)
-        s.record(shot: UUID(), ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
-                                                     shooterAppearance: today), expectedShooter: Synth.a)
+        let shot = UUID()
+        s.record(shot: shot, ShooterIdentification(attribution: Attribution(playerID: Synth.a, source: .turnOrder, confidence: 0.8, shooterTrackID: 1),
+                                                   shooterAppearance: today), expectedShooter: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a] == [Synth.axis(1, model: bodyModel)])
+        #expect(s.pendingSampleCount == 1)
+        _ = s.correct(shot: shot, to: Synth.a)
         let g = s.snapshot().appearanceGallery[Synth.a]!
         #expect(g.contains(today) && g.contains(Synth.axis(1, model: bodyModel)))
     }
