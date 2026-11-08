@@ -85,16 +85,21 @@ struct TrackerR2Tests {
     /// A dead solid (number 3) does not hand its id to a different-looking solid born 40 cm away (no number);
     /// a detection that reads as the same number does inherit it.
     @Test func graveyardNeedsTheSameNumberToInheritFromAfar() {
-        func run(_ born: BallDetection) -> (old: Int, new: Int) {
+        func run(_ born: BallDetection, gap: Int = 15) -> (old: Int, new: Int) {
             var tr = KalmanBallTracker()
             var old = -1, new = -1
             for f in 0..<30 { old = tr.update([Stress.det(Vec2(1.0, 0.5), .solid, 3)], at: Double(f) / 30).first!.id }
-            for f in 30..<45 { _ = tr.update([], at: Double(f) / 30) }            // hidden: the track dies
-            for f in 45..<50 { new = tr.update([born], at: Double(f) / 30).first!.id }
+            for f in 30..<(30 + gap) { _ = tr.update([], at: Double(f) / 30) }   // hidden: the track dies
+            for f in (30 + gap)..<(35 + gap) { new = tr.update([born], at: Double(f) / 30).first!.id }
             return (old, new)
         }
         let a = run(Stress.det(Vec2(1.4, 0.5), .solid, nil))
         #expect(a.old != a.new, "a numberless solid 40 cm away inherited id \(a.old)")
+        // After a 2 s gap the old reach covered 1 m: a numberless same-colour ball inherited (r1 residual).
+        let a2 = run(Stress.det(Vec2(1.4, 0.5), .solid, nil), gap: 60)
+        #expect(a2.old != a2.new, "after 2 s a numberless solid 40 cm away inherited id \(a2.old)")
+        let c2 = run(Stress.det(Vec2(1.4, 0.5), .solid, 3), gap: 60)
+        #expect(c2.old == c2.new)
         let b = run(Stress.det(Vec2(1.4, 0.5), .solid, 7))
         #expect(b.old != b.new)
         let c = run(Stress.det(Vec2(1.4, 0.5), .solid, 3))
