@@ -386,7 +386,7 @@ struct ReplayLiveView: View {
     @State private var pixels: PixelImage?
     @State private var table: TableFrame?
     @State private var result: PerceptionResult?
-    @State private var pipeline = PerceptionPipeline()
+    @State private var pipeline = PerceptionPipeline(detector: PerceptionPipeline.defaultDetector())
     @State private var locator = AutoTableLocating()
     @State private var loop: Task<Void, Never>?
     @State private var viewSize: CGSize = .zero

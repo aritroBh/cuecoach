@@ -110,6 +110,13 @@ struct CoreMLBallDetectorTests {
 
     @Test func pipelineDefaultsToTheHybridDetector() {
         #expect(PerceptionPipeline.defaultDetector() is HybridBallDetector)
+        // Both app call sites (AR and replay) construct the pipeline with it.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for f in ["CueCoach/Live/ARLiveView.swift", "CueCoach/Live/LiveScreen.swift"] {
+            let src = (try? String(contentsOf: root.appendingPathComponent(f), encoding: .utf8)) ?? ""
+            #expect(src.contains("PerceptionPipeline(detector: PerceptionPipeline.defaultDetector())"), "\(f)")
+            #expect(!src.contains("PerceptionPipeline()"), "\(f)")
+        }
         // The model ships in the app bundle and loads.
         #expect(CoreMLBallInference.shared != nil, "BallDetector.mlpackage missing from the bundle")
     }

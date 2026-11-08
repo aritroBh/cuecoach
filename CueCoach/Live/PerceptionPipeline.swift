@@ -70,13 +70,13 @@ actor PerceptionPipeline {
     private var feltSamples: [(UInt8, UInt8, UInt8)] = []
     private let feltSampleCount = 10
 
-    /// The shipped detector: the trained Core ML model (synthetic-trained, ANE) with the classical detector as
-    /// fallback. `UserDefaults "cc.detector.classical" = true` forces classical-only (table-side A/B).
+    /// The shipped detector (the app's call sites pass it; the init default stays classical for logic tests on
+    /// rendered scenes): the trained Core ML model (synthetic-trained, ANE) with the classical detector as fallback. `UserDefaults "cc.detector.classical" = true` forces classical-only (table-side A/B).
     static func defaultDetector(defaults: UserDefaults = .standard) -> any BallDetector {
         defaults.bool(forKey: "cc.detector.classical") ? HybridBallDetector(model: nil) : HybridBallDetector()
     }
 
-    init(detector: any BallDetector = PerceptionPipeline.defaultDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
+    init(detector: any BallDetector = ClassicalBallDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
         self.detector = detector
         self.previewer = previewer
         let (engine, game) = TargetLegality.defaultGame()

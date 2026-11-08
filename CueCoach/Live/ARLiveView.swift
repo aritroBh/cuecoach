@@ -36,7 +36,7 @@ final class ARLiveController: NSObject {
     let model: LiveModel
     private let locator: any TableLocating
     private weak var view: ARView?
-    private let pipeline = PerceptionPipeline()
+    private let pipeline = PerceptionPipeline(detector: PerceptionPipeline.defaultDetector())
     private var tap: FrameTap?
     private var markers: CornerMarkers?
     private var overlay: TableOverlay?
