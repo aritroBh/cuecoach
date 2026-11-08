@@ -22,4 +22,19 @@ struct BallDetection: Sendable, Equatable {
 /// Swappable detector (classical v0 now, Core ML later).
 protocol BallDetector: Sendable {
     func detect(in image: PixelImage, geometry: FrameGeometry) -> [BallDetection]
+    /// Detect with the cloth colour captured at lock, for white balance under changed light.
+    func detect(in image: PixelImage, geometry: FrameGeometry, feltReference: (UInt8, UInt8, UInt8)?) -> [BallDetection]
+    /// This frame's cloth colour (captured once after lock as the reference); nil when not supported.
+    func feltColor(in image: PixelImage, geometry: FrameGeometry) -> (UInt8, UInt8, UInt8)?
+    /// Without LiDAR, white/unknown blobs from this detector must show sphere shading to be kept
+    /// (true for the classical colour detector; a learned detector or a replay vouches for its own output).
+    var needsShadingCheck: Bool { get }
+}
+
+extension BallDetector {
+    func detect(in image: PixelImage, geometry: FrameGeometry, feltReference: (UInt8, UInt8, UInt8)?) -> [BallDetection] {
+        detect(in: image, geometry: geometry)
+    }
+    func feltColor(in image: PixelImage, geometry: FrameGeometry) -> (UInt8, UInt8, UInt8)? { nil }
+    var needsShadingCheck: Bool { false }
 }
