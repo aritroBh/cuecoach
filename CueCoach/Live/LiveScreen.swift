@@ -14,9 +14,10 @@ struct LiveScreen: View {
 
     /// App-shell contract: `.game` (rules helpers + rating) or `.training(level:)` (aim lines, D24); the drill being
     /// trained (nil in a game); lifecycle hooks into LiveSession; `onClose` replaces the default dismiss.
-    init(mode: LiveMode = .training(level: 3), drill: DrillID? = nil, hooks: LiveHooks = LiveHooks(),
+    init(mode: LiveMode = .training(level: AssistLevel.full.rawValue), drill: DrillID? = nil, hooks: LiveHooks = LiveHooks(),
          onClose: (() -> Void)? = nil) {
         let m = LiveModel(mode: mode)
+        m.drill = drill
         m.hooks = hooks
         _model = State(initialValue: m)
         self.drill = drill

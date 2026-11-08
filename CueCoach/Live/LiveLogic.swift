@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Training
 import Geometry
 import Rules
 import Engine
@@ -247,7 +248,7 @@ struct RingStyle: Equatable, Sendable {
 enum LiveMode: Equatable, Sendable {
     /// A real game: rules helpers only (showing the shot would be cheating), post-shot rating badge.
     case game
-    /// Coaching: suggested Line 1 + Line 2; Line 3 (cue path) and the spin/power dock from level 3.
+    /// Coaching at the Training module's assist level (`AssistLevel.rawValue`: 1 full … 4 none, D1).
     case training(level: Int)
 }
 
@@ -263,14 +264,21 @@ struct OverlayVisibility: Equatable, Sendable {
     var illegalWarning: Bool   // red pulsing ring + one buzz when the cue points at an illegal ball
     var ratingBadge: Bool
 
-    static func of(_ mode: LiveMode) -> OverlayVisibility {
+    /// Training follows the Training module's policy (`AssistLevel.visibleWhileAiming(in:)`, D1: level 4 shows
+    /// nothing while aiming) with D24's Line 3 only in position play. Rings and the rules helpers always stay.
+    static func of(_ mode: LiveMode, drill: DrillID? = nil) -> OverlayVisibility {
         switch mode {
         case .game:
-            OverlayVisibility(line1: false, line2: false, line3: false, suggestedGhost: false, shotDock: false,
-                              liveCueLine: false, legalRings: true, illegalWarning: true, ratingBadge: true)
+            return OverlayVisibility(line1: false, line2: false, line3: false, suggestedGhost: false, shotDock: false,
+                                     liveCueLine: false, legalRings: true, illegalWarning: true, ratingBadge: true)
         case .training(let level):
-            OverlayVisibility(line1: true, line2: true, line3: level >= 3, suggestedGhost: true, shotDock: level >= 3,
-                              liveCueLine: true, legalRings: true, illegalWarning: true, ratingBadge: false)
+            let e = (AssistLevel(rawValue: level) ?? .full).visibleWhileAiming(in: drill ?? .straightIn)
+            return OverlayVisibility(line1: e.contains(.cueToGhostLine), line2: e.contains(.objectToPocketLine),
+                                     line3: e.contains(.cueAfterContactLine) && drill == .positionPlay,
+                                     suggestedGhost: e.contains(.ghostBall),
+                                     shotDock: e.contains(.spinDot) || e.contains(.powerMeter),
+                                     liveCueLine: e.contains(.liveAimLine), legalRings: true, illegalWarning: true,
+                                     ratingBadge: false)
         }
     }
 }

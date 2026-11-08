@@ -3,6 +3,7 @@ import ARKit
 import Combine
 import CoreMotion
 import Geometry
+import Training
 import RealityKit
 import simd
 import SwiftUI
@@ -751,7 +752,7 @@ final class TableOverlay {
 
     private let vis: OverlayVisibility
 
-    init(frame: TableFrame, visibility: OverlayVisibility = .of(.training(level: 3))) {
+    init(frame: TableFrame, visibility: OverlayVisibility = .of(.training(level: AssistLevel.full.rawValue))) {
         vis = visibility
         spec = frame.spec
         anchor = AnchorEntity(world: frame.tableToWorld.toFloat)

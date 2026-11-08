@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Geometry
 import Engine
+import Training
 import Testing
 @testable import CueCoach
 
@@ -12,16 +13,36 @@ struct LiveModeTests {
         #expect(v.legalRings && v.illegalWarning && v.ratingBadge)
     }
 
-    @Test(arguments: [1, 2])
-    func trainingBelowLevel3ShowsLines1And2(level: Int) {
-        let v = OverlayVisibility.of(.training(level: level))
-        #expect(v.line1 && v.line2 && v.suggestedGhost && v.liveCueLine)
-        #expect(!v.line3 && !v.shotDock && !v.ratingBadge)
+    /// Training levels are the Training module's AssistLevel (1 full … 4 none, D1), the value the shell passes;
+    /// what shows while aiming is `AssistLevel.visibleWhileAiming(in:)`, with D24's Line 3 only in position play.
+    @Test func trainingFullAssistShowsLines1And2GhostAndDock() {
+        let v = OverlayVisibility.of(.training(level: 1), drill: .straightIn)
+        #expect(v.line1 && v.line2 && v.suggestedGhost && v.liveCueLine && v.shotDock)
+        #expect(!v.line3 && !v.ratingBadge)   // D24: Line 3 only for position play
+        #expect(OverlayVisibility.of(.training(level: 1), drill: .positionPlay).line3)
     }
 
-    @Test func trainingLevel3AddsLine3() {
-        let v = OverlayVisibility.of(.training(level: 3))
-        #expect(v.line1 && v.line2 && v.line3 && v.shotDock)
+    @Test func trainingLevel2IsTheObjectLineOnly() {
+        let v = OverlayVisibility.of(.training(level: 2), drill: .straightIn)
+        #expect(v.line2 && !v.line1 && !v.line3 && !v.suggestedGhost && !v.shotDock && !v.liveCueLine)
+    }
+
+    @Test func trainingLevel3IsTheGhostOnly() {
+        let v = OverlayVisibility.of(.training(level: 3), drill: .straightIn)
+        #expect(v.suggestedGhost && !v.line1 && !v.line2 && !v.line3 && !v.shotDock)
+    }
+
+    /// D1: level 4 hides everything while aiming (rings and the rules helpers stay).
+    @Test func trainingLevel4HidesEverythingWhileAiming() {
+        let v = OverlayVisibility.of(.training(level: 4), drill: .positionPlay)
+        #expect(!v.line1 && !v.line2 && !v.line3 && !v.suggestedGhost && !v.shotDock && !v.liveCueLine)
+        #expect(v.legalRings)
+    }
+
+    /// The shell's picker value reaches Live unchanged, on the same scale.
+    @Test func shellAssistLevelMeansTheSameInLive() {
+        #expect(ShellLiveMode.training(.full).liveMode == .training(level: 1))
+        #expect(OverlayVisibility.of(ShellLiveMode.training(.none).liveMode, drill: .straightIn).line1 == false)
     }
 
     @Test func badgesAreIconColourAndAWord() {

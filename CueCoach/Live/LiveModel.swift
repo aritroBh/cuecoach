@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Training
 import Geometry
 import Observation
 import UIKit
@@ -11,7 +12,9 @@ import Engine
 final class LiveModel {
     let editor = CalibrationEditor()
     let mode: LiveMode
-    var visibility: OverlayVisibility { OverlayVisibility.of(mode) }
+    /// The drill being trained (Line 3 is position play only, D24); nil in a game or standalone.
+    var drill: DrillID?
+    var visibility: OverlayVisibility { OverlayVisibility.of(mode, drill: drill) }
     /// Why the table isn't locked yet (glyph + dev HUD).
     var lockFailure: LockFailure?
     /// World corners drags snap to (the locator's best current guess).
@@ -37,7 +40,7 @@ final class LiveModel {
     var showAimHint = false
     var lastRating: DecisionRating?
 
-    init(mode: LiveMode = .training(level: 3)) {
+    init(mode: LiveMode = .training(level: AssistLevel.full.rawValue)) {
         self.mode = mode
         let (e, g) = TargetLegality.defaultGame()
         engine = e; game = g
