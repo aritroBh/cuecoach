@@ -221,16 +221,32 @@ final class IdentitySession {
         }
         records[shot] = r
         recomputeCeilings()
-        // A tap is a human label: it teaches the tapped player when they consented to clothes. While anyone without
-        // a clothes template is at the table (guest, no consent), a mis-tap could bind *their* vector, so the sample
-        // must also already resemble the tapped player's template (r3 BLOCKER).
-        let open = roster.entries.contains { !$0.consent.clothes || $0.isGuest }
-        if let s = r.sample, r.boundTo == nil,
-           !open || AppearanceLearning.resemblance(s, appearance[player] ?? []) >= AppearanceLearning.matchFloor,
-           bind(player, appearance: s) { r.boundTo = player; epoch += 1 }
+        // A tap is a human label: it teaches the tapped player when they consented to clothes, unless the vector could
+        // be someone else's (`mayTeach`).
+        if let s = r.sample, r.boundTo == nil, mayTeach(s, player), bind(player, appearance: s) { r.boundTo = player; epoch += 1 }
         if r.boundTo == nil { r.sample = nil }
         records[shot] = r
         return r.current
+    }
+
+    /// Margin by which a sample must look more like the tapped player than like any guest at the table.
+    static let guestMargin = 0.1
+
+    /// Whether a tapped sample may teach `player`:
+    /// - a guest at the table with no template: never (we can't tell the vector isn't the guest's; D28 "stay safe");
+    /// - guests with session templates: the sample must resemble `player` and beat every guest by `guestMargin`;
+    /// - anyone else without clothes consent present: the sample must already resemble `player`;
+    /// - everyone consented, no guests: any tapped sample (changed clothes, S3).
+    private func mayTeach(_ s: Embedding, _ player: UUID) -> Bool {
+        let own = AppearanceLearning.resemblance(s, appearance[player] ?? [])
+        let guests = roster.entries.filter { $0.isGuest && $0.playerID != player }
+        if !guests.isEmpty {
+            if guests.contains(where: { (appearance[$0.playerID] ?? []).isEmpty }) { return false }
+            let g = guests.map { AppearanceLearning.resemblance(s, appearance[$0.playerID] ?? []) }.max() ?? -1
+            return own >= AppearanceLearning.matchFloor && own - g >= Self.guestMargin
+        }
+        if roster.entries.contains(where: { !$0.consent.clothes }) { return own >= AppearanceLearning.matchFloor }
+        return true
     }
 
     private func recomputeCeilings() {

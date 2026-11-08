@@ -247,6 +247,17 @@ face stays off and Phase 5 runs on clothing + turn order + tap, as Q4 already de
 | Ship gate (F6) | `FaceBenchmark.evaluate`: ≥ 10 consenting volunteers, ≥ 3,000 impostor pairs, TAR ≥ 0.90 at FAR 1e-3 (proposed target, user to confirm). Embeddings RAM-only for the run; only an aggregate `FaceShipGateRecord` is kept. `.shooterOnly` is honoured only when the record's modelID matches the templates' model |
 | Simulator latency | 41 ms / face (simulator has no ANE; measure on the 15 Pro Max) |
 
+Ship gate as implemented (D28): volunteers are split into two disjoint halves (≥ 10 each, so ≥ 20 volunteers with
+≥ 4 usable crops). The calibration half fixes the threshold: halfway between the impostor-side limit (stricter of FAR 1e-3 and
+open-set FPIR ≤ 0.5 %) and the genuine-side limit (where calibration TAR would fall to 0.90); the
+report half, never seen during calibration, must show TAR ≥ 0.90, FPIR ≤ 0.5 % and zero misidentifications. The
+record keeps 95 % Wilson bounds (TAR lower, FPIR and misidentification upper) and coverage (enrolled probes decided
+correctly). Wilson bounds treat probes as independent; a subject-level bootstrap is the stricter follow-up.
+
+**Release blocker (not code):** fal has not confirmed AuraFace-v1's training data in writing. The model card says
+"commercially and publicly available data sources" without naming them. Before any release that bundles the model,
+get written confirmation from fal of the dataset and its redistribution terms, and record it in docs/DECISIONS.md.
+
 Not yet measured: ANE latency on device, the A0–A5 arms, and a real benchmark run.
 
 ## Sources
