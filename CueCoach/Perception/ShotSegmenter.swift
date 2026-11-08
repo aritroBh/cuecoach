@@ -263,7 +263,9 @@ struct ShotSegmenter: ShotSegmenting {
             let certain = rolls >= along + 0.03
             return (pk, certain, seenT + (speed > 0 ? along / speed : 0))
         }
-        if let pk = spec.pockets.first(where: { p.distance(to: spec.pocketCenter($0)) < jawsRadius }), speed <= pocketEntrySpeed {
+        // Crawling into the jaws (not rolling away from the pocket: a nudge out, then an arm over it, is a vanish).
+        if let pk = spec.pockets.first(where: { p.distance(to: spec.pocketCenter($0)) < jawsRadius }), speed <= pocketEntrySpeed,
+           v.dot(spec.pocketCenter(pk) - p) >= 0 {
             return (pk, false, seenT)
         }
         return nil
