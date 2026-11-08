@@ -147,8 +147,12 @@ final class HybridBallDetector: BallDetector, @unchecked Sendable {
         self.model = model; self.classical = classical; self.minInterval = minInterval
     }
 
-    /// Classical frames need the no-LiDAR shading check; it is harmless on model frames (a real ball is shaded).
-    var needsShadingCheck: Bool { true }
+    /// Whether the last frame came from the classical detector (true until the model has produced a frame).
+    private let lastClassical = Mutex(true)
+
+    /// Only classical frames need the no-LiDAR shading check; a learned detector vouches for its own output
+    /// (`BallDetector` contract). Read right after `detect` by the one pipeline that owns this detector.
+    var needsShadingCheck: Bool { lastClassical.withLock { $0 } }
 
     func feltColor(in image: PixelImage, geometry: FrameGeometry) -> (UInt8, UInt8, UInt8)? {
         classical.feltColor(in: image, geometry: geometry)
@@ -166,8 +170,10 @@ final class HybridBallDetector: BallDetector, @unchecked Sendable {
     func detect(in image: PixelImage, geometry: FrameGeometry, feltReference: (UInt8, UInt8, UInt8)?,
                 timestamp t: Double) -> [BallDetection] {
         if let model, isDue(t), let raws = model.infer(image) {
+            lastClassical.withLock { $0 = false }
             return BallDetectorOutput.detections(raws, image: image, geometry: geometry)
         }
+        lastClassical.withLock { $0 = true }
         return classical.detect(in: image, geometry: geometry, feltReference: feltReference)
     }
 

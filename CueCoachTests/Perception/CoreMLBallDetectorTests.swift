@@ -97,6 +97,20 @@ struct CoreMLBallDetectorTests {
         #expect(ml.calls == 2 && failed.count >= 4)
     }
 
+    /// UI QA regression: model frames vouch for their own detections (the protocol's contract for a learned
+    /// detector); only frames the classical detector produced need the no-LiDAR shading check.
+    @Test func shadingCheckFollowsTheFramesSource() throws {
+        let cg = try #require(scene.render())
+        let img = try #require(PixelImage(cgImage: cg))
+        let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
+        let ml = ScriptedInference([[.init(center: Vec2(100, 100), radius: 10, cls: 0, score: 0.9)], nil])
+        let h = HybridBallDetector(model: ml, minInterval: 1.0 / 30)
+        _ = h.detect(in: img, geometry: geo, feltReference: nil, timestamp: 0)
+        #expect(!h.needsShadingCheck)
+        _ = h.detect(in: img, geometry: geo, feltReference: nil, timestamp: 0.01)   // not due: classical
+        #expect(h.needsShadingCheck)
+    }
+
     @Test func hybridWithoutAModelIsTheClassicalDetector() throws {
         let cg = try #require(scene.render())
         let img = try #require(PixelImage(cgImage: cg))

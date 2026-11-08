@@ -29,3 +29,20 @@ struct ReplayRegressionTests {
         #expect(r.aim != nil)
     }
 }
+
+extension ReplayRegressionTests {
+    /// Root cause found here: the model does detect the cue on the (flat-shaded) replay render, but its cue failed
+    /// the classical no-LiDAR shading check, which the hybrid applied to model frames too.
+    @Test func modelSeesTheCueAndItSurvivesThePipeline() async throws {
+        let scene = SyntheticTableScene.demo()
+        let cg = try #require(scene.render())
+        let px = try #require(PixelImage(cgImage: cg))
+        let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
+        let dets = HybridBallDetector().detect(in: px, geometry: geo, feltReference: nil, timestamp: 0)
+        #expect(dets.contains { $0.kind == .cue }, "model output: \(dets.map { "\($0.kind)\($0.tentativeNumber ?? -1)" })")
+        let p = PerceptionPipeline(detector: HybridBallDetector())
+        await p.setTable(scene.frame)
+        let r = await p.process(PerceptionFrame(image: px, camera: scene.camera, timestamp: 0))
+        #expect(r?.detections.contains { $0.kind == .cue } == true)
+    }
+}
