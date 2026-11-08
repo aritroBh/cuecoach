@@ -35,6 +35,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aritrobh.cuecoach
+        # FaceEmbedding.mlpackage is optional (gitignored, fetched by tools/faceid); it is loaded by URL, never via a
+        # generated class, so the app builds identically with or without it.
+        COREML_CODEGEN_LANGUAGE: None
   CueCoachTests:
     type: bundle.unit-test
     platform: iOS

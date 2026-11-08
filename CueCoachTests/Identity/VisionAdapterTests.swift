@@ -64,13 +64,6 @@ import Testing
         #expect(!wants.admits(stander, box: CGRect(x: 0.78, y: 0.3, width: 0.14, height: 0.5)))
     }
 
-    @Test func boxFaceAlignerMakesASquarePaddedCrop() throws {
-        let img = testImage(width: 200, height: 200)
-        let c = try #require(BoxFaceAligner().aligned(img, face: CGRect(x: 0.4, y: 0.4, width: 0.1, height: 0.2)))
-        #expect(abs(c.width - c.height) <= 1)          // square up to pixel rounding
-        #expect(c.height > 40)
-    }
-
     @Test func facesGoToTheNearestHeadNotTheFirstOverlappingBox() {
         // Two players stand close: inflated boxes overlap. Each face must land on its own person.
         let p1 = ObservedPerson(box: CGRect(x: 0.30, y: 0.2, width: 0.20, height: 0.6),

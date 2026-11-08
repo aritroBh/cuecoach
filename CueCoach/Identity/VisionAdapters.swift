@@ -4,8 +4,8 @@ import Vision
 
 // Vision-backed implementations of the identity protocols. On-device only.
 
-/// `GenerateImageFeaturePrintRequest` embedding. Generic (not identity-trained): fine for clothing,
-/// a weak stand-in for faces until a licensed face model clears `LIC-ID` (research §6).
+/// `GenerateImageFeaturePrintRequest` embedding. Generic (not identity-trained): clothing only. It is never used or
+/// registered as a face template (face-embedding.md F5); faces use AuraFace (`FaceEmbeddingExtractor`).
 struct VisionFeaturePrintExtractor: EmbeddingExtracting {
     /// "face" or "body"; part of the model ID so face and body templates never cross.
     var kind: String
@@ -26,46 +26,14 @@ struct VisionFeaturePrintExtractor: EmbeddingExtracting {
     }
 }
 
-/// Face crop handed to the face embedder. Box-only today; a 5-point aligner (ArcFace-style 112×112 template) for an
-/// identity-trained model drops in here without touching attribution (face-embedding.md F4).
-protocol FaceAligning: Sendable {
-    func aligned(_ image: CGImage, face: CGRect) -> CGImage?
-}
-
-/// Square crop around the face box with a margin. Generic feature prints were enrolled the same way.
-struct BoxFaceAligner: FaceAligning {
-    var margin: CGFloat = 0.15
-    func aligned(_ image: CGImage, face r: CGRect) -> CGImage? {
-        let side = max(r.width, r.height) * (1 + 2 * margin)
-        let aspect = CGFloat(image.width) / CGFloat(max(image.height, 1))
-        let sq = CGRect(x: r.midX - side / 2, y: r.midY - side * aspect / 2, width: side, height: side * aspect)
-        return VisionPersonAnalyzer.crop(image, sq)
-    }
-}
-
-/// Face capture quality in [0, 1] for one face box; nil when Vision can't say. Seam for tests.
-protocol FaceQualityScoring: Sendable {
-    func quality(of face: CGRect, in image: CGImage) async -> Double?
-}
-
-struct VisionFaceQuality: FaceQualityScoring {
-    func quality(of face: CGRect, in image: CGImage) async -> Double? {
-        var req = DetectFaceCaptureQualityRequest()
-        req.inputFaceObservations = [FaceObservation(boundingBox: NormalizedRect(normalizedRect: face))]
-        return ((try? await req.perform(on: image)) ?? []).first?.captureQuality.map { Double($0.score) }
-    }
-}
-
 /// People in a frame: 2D pose, a box from the joints, and (only when allowed, and only for people the shooter gate
 /// admits) upper-body / face embeddings. Bystanders get a pose and a box, nothing else.
 struct VisionPersonAnalyzer: PersonAnalyzing {
     var body: any EmbeddingExtracting = VisionFeaturePrintExtractor(kind: "body")
-    /// Swap for a licence-clean identity-trained model (its own modelID + calibration entry); never a model whose
-    /// weights or training data licence is unclear (face-embedding.md F2/F3).
-    var face: any EmbeddingExtracting = VisionFeaturePrintExtractor(kind: "face")
-    var aligner: any FaceAligning = BoxFaceAligner()
-    var faceQuality: any FaceQualityScoring = VisionFaceQuality()
-    var minFaceQuality = 0.5
+    /// AuraFace on 5-point aligned, gated crops; nil (face off) unless the model is installed and the caller opts in.
+    /// Never a generic feature print (F5) and never a detector/landmark model from a third party (F1/F3).
+    var face: FaceEmbeddingExtractor? = nil
+    var faceCropper: any FaceCropping = VisionFaceCropper()
     /// SPEC §3: up to eight players, so up to eight people nearest the cue ball are kept.
     var maxPeople = 8
 
@@ -77,17 +45,18 @@ struct VisionPersonAnalyzer: PersonAnalyzing {
         }
         var out = Self.nearestFirst(found, cueBall: wants.cueBall, limit: maxPeople)
         for i in out.indices where wants.appearance && wants.admits(out[i].joints, box: out[i].box) {
+            try Task.checkCancellation()
             if let crop = Self.crop(image, Self.upperBody(out[i].joints) ?? out[i].box) {
                 out[i].appearance = try? await body.embedding(of: crop)
             }
         }
-        if wants.face, out.contains(where: { wants.admits($0.joints, box: $0.box) }) {
-            let faces = ((try? await DetectFaceRectanglesRequest().perform(on: image)) ?? []).map { $0.boundingBox.cgRect }
-            for (fi, pi) in Self.assignFaces(faces, to: out) where wants.admits(out[pi].joints, box: out[pi].box) {
-                guard let q = await faceQuality.quality(of: faces[fi], in: image), q >= minFaceQuality,
-                      let crop = aligner.aligned(image, face: faces[fi]) else { continue }
-                out[pi].faceQuality = q
-                out[pi].face = try? await face.embedding(of: crop)
+        if wants.face, let face, out.contains(where: { wants.admits($0.joints, box: $0.box) }) {
+            try Task.checkCancellation()
+            let faces = await faceCropper.faces(in: image)   // already size / yaw / roll / quality gated + aligned
+            for (fi, pi) in Self.assignFaces(faces.map(\.box), to: out) where wants.admits(out[pi].joints, box: out[pi].box) {
+                try Task.checkCancellation()
+                out[pi].faceQuality = faces[fi].quality
+                out[pi].face = try? await face.embedding(of: faces[fi].image)
             }
         }
         return out

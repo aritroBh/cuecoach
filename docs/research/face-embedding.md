@@ -1,6 +1,7 @@
 # Face embedding for player recognition: model and licence research
 
-Status: research only, no app code changed. Written 2026-11-06 for Phase 5 (Identity), branch `wt/identity`.
+Status: research written 2026-11-06 for Phase 5 (Identity), branch `wt/identity`. **Decided 2026-11-08 (D25):
+AuraFace-v1 recognition graph, integrated behind the on-device ship gate** — see §8.
 Companion to `docs/research/mesh-identity.md` §6 (gating task `LIC-ID`, open question Q4).
 
 ## TL;DR
@@ -228,6 +229,25 @@ face stays off and Phase 5 runs on clothing + turn order + tap, as Q4 already de
   data trained `face_recognition_sface_2021dec` (still open from mesh-identity Q4).
 - Verify Apple's `faceCaptureQuality` semantics (relative vs absolute) on our captures, as §6.4.3 does.
 - Re-check the iOS 27 Vision API diff for any new face-identity capability.
+
+## 8. Integration record (D25, 2026-11-08)
+
+| Item | Value |
+|---|---|
+| Repo / commit | `fal/AuraFace-v1` @ `af6d057c9b0ec4071d4c49c80e3539258798b609` |
+| File used | `glintr100.onnx` only, sha256 `a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60` |
+| Licence | Apache-2.0 (`LICENSE.md` sha256 `609e2cb599f84aaa41d8ef29d8fdb04d164fab22e8d9292ca34a599d0f56a338`); see `THIRD_PARTY_NOTICES.md` |
+| Never fetched | `scrfd_10g_bnkps.onnx`, `2d106det.onnx`, `1k3d68.onnx`, `genderage.onnx` (F1/F3) |
+| Fetch + convert | `tools/faceid/fetch_auraface.sh` → `convert_auraface.py` (uv): ONNX → onnx2torch → trace → Core ML ML Program FP16, iOS 17+ |
+| Output | `CueCoach/Resources/Models/FaceEmbedding.mlpackage` (~125 MB, gitignored). Input `face` 112×112 RGB image (normalisation folded in), output `embedding` 512 floats |
+| Parity | ONNX Runtime fp32 vs Core ML fp16, 8 random images: min cos 0.99996, mean 0.99997 |
+| modelID | `fal.auraface.v1.fp16` (feature-print face templates are unusable → re-consent) |
+| Pipeline | Vision `DetectFaceLandmarksRequest` → 5 points (eye centroids, nose centroid, outer-lip extremes) → least-squares similarity to the ArcFace 112 template → `FaceQualityGate` (inter-ocular ≥ 24 px, |yaw| ≤ 35°, |roll| ≤ 25°, `DetectFaceCaptureQualityRequest` ≥ 0.5) → `FaceEmbeddingExtractor` (Core ML, `.cpuAndNeuralEngine`, off the main actor, L2-normalised) |
+| Without the model | App builds and runs; `FaceEmbeddingExtractor.bundled()` is nil, face consent can't be registered, face matching off |
+| Ship gate (F6) | `FaceBenchmark.evaluate`: ≥ 10 consenting volunteers, ≥ 3,000 impostor pairs, TAR ≥ 0.90 at FAR 1e-3 (proposed target, user to confirm). Embeddings RAM-only for the run; only an aggregate `FaceShipGateRecord` is kept. `.shooterOnly` is honoured only when the record's modelID matches the templates' model |
+| Simulator latency | 41 ms / face (simulator has no ANE; measure on the 15 Pro Max) |
+
+Not yet measured: ANE latency on device, the A0–A5 arms, and a real benchmark run.
 
 ## Sources
 
