@@ -53,6 +53,13 @@ actor PerceptionPipeline {
     private let previewer: any ShotPreviewing
     private var previewCache = PreviewCache()
     private var previewInFlight: String?
+    /// Cloth colour from the first frame after lock (white-balance reference).
+    private var feltReference: (UInt8, UInt8, UInt8)?
+    /// The established cue-ball track id, kept while it is briefly gone (it comes back with its id).
+    private var cueID: Int?
+    private var cueLostAt: Double?
+    /// s a lost cue-ball id is waited for before another white track can take over for good.
+    private let cueHoldSeconds = 10.0
 
     init(detector: any BallDetector = ClassicalBallDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
         self.detector = detector
@@ -68,6 +75,9 @@ actor PerceptionPipeline {
         cueTracker = CueAimTracker()
         previewCache = PreviewCache()   // previews belong to one table
         previewInFlight = nil
+        feltReference = nil
+        cueID = nil
+        cueLostAt = nil
     }
 
     func setLegal(_ l: Set<BallID>) { legal = l }
@@ -76,14 +86,15 @@ actor PerceptionPipeline {
         guard let table else { return nil }
         let t0 = Date()
         let geo = FrameGeometry(frame: table, camera: f.camera)
-        var dets = detector.detect(in: f.image, geometry: geo)
+        if feltReference == nil { feltReference = detector.feltColor(in: f.image, geometry: geo) }
+        var dets = detector.detect(in: f.image, geometry: geo, feltReference: feltReference)
         var depthBalls: [Vec2] = []
         if let d = f.depth {
             depthBalls = depthFinder.find(depth: d, camera: f.camera, table: table)
             dets = DepthFusion.verify(dets, depth: d, camera: f.camera, table: table)
             dets = DepthFusion.merge(dets, depthBalls: depthBalls, image: f.image, geometry: geo)
-        } else {
-            // No LiDAR: a white blob must look like a lit sphere (shading), not a flat mark.
+        } else if detector.needsShadingCheck {
+            // No LiDAR: a white blob must look like a lit sphere (shading), not a flat mark. Fails closed.
             dets = dets.filter { d in
                 d.kind != .cue && d.kind != .unknown
                     || ClassicalBallDetector.hasBallShading(f.image, sourcePoint: d.imagePoint, radiusPx: d.radiusPx)
@@ -93,25 +104,33 @@ actor PerceptionPipeline {
         let tracks = tracker.update(dets, at: f.timestamp)
         let rest = tracker.isAtRest
         let confirmed = tracks.filter(\.confirmed)
+        // At most one cue ball: continuity first, then the whitest steady track (C3).
+        let cueBall = pickCue(confirmed, at: f.timestamp)
         var marks: [Int: TargetMark] = [:]
-        for t in confirmed { marks[t.id] = TargetLegality.mark(kind: t.kind, number: t.tentativeNumber, legal: legal) }
+        for t in confirmed {
+            let m = TargetLegality.mark(kind: t.kind, number: t.tentativeNumber, legal: legal)
+            // A second "cue" (a reflection, chalk, a glass) is not the cue ball and is never a target.
+            marks[t.id] = m == .cue && t.id != cueBall?.id ? .unknown : m
+        }
         var aim: AimSuggestion?
-        if rest, let cue = confirmed.first(where: { marks[$0.id] == .cue }) {
+        if rest, let cue = cueBall {
             let others = confirmed.filter { $0.id != cue.id }
-            // Known-legal balls are the targets; unidentified ones only when nothing is identified as legal.
-            let legalBalls = others.filter { marks[$0.id] == .legal }
-            let targets = legalBalls.isEmpty ? others.filter { marks[$0.id] == .unknown } : legalBalls
+            // Only known-legal balls are targets. An unidentified ball could be the 8: with no ball known to be
+            // legal there is no suggestion at all.
+            let targets = others.filter { marks[$0.id] == .legal }
             // Blockers: every other track, tentative ones included (a real ball not yet confirmed still blocks).
             let blockers = tracks.filter { t in t.id != cue.id && !targets.contains { $0.id == t.id } }.map(\.position)
-            let cands = AimPlanner.candidates(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
-                                              spec: table.spec, limit: 3)
-            aim = refineWithPhysics(cands, cue: cue, tracks: confirmed, spec: table.spec) ?? cands.first
+            if !targets.isEmpty {
+                let cands = AimPlanner.candidates(cue: cue.position, objects: targets.map(\.position), blockers: blockers,
+                                                  spec: table.spec, limit: 3)
+                aim = refineWithPhysics(cands, cue: cue, tracks: tracks.filter { $0.id == cue.id || $0.confirmed || $0.measured },
+                                        spec: table.spec) ?? cands.first
+            }
         }
         // Live aim from the cue stick (only while the balls are still: that's when the player aims).
         var live: LiveAimTrace?
         var convergence = 0.0
         var liveTargetID: Int?
-        let cueBall = confirmed.first { marks[$0.id] == .cue }
         if let cb = cueBall {
             let otherTracks = confirmed.filter { $0.id != cb.id }
             let others = otherTracks.map(\.position)
@@ -175,6 +194,23 @@ extension PerceptionPipeline {
             if firstPreviewed == nil { firstPreviewed = a }
         }
         return firstPreviewed
+    }
+
+    /// C3: at most one cue ball. The established cue id wins while it is confirmed; while it is gone the
+    /// steadiest white track stands in, and the old id takes over again when the ball comes back.
+    func pickCue(_ confirmed: [TrackedBall], at t: Double) -> TrackedBall? {
+        let cands = confirmed.filter { TargetLegality.mark(kind: $0.kind, number: $0.tentativeNumber, legal: legal) == .cue }
+        if let id = cueID, let c = cands.first(where: { $0.id == id }) { cueLostAt = nil; return c }
+        if cueID != nil {
+            if cueLostAt == nil { cueLostAt = t }
+            if let l = cueLostAt, t - l > cueHoldSeconds { cueID = nil; cueLostAt = nil }
+        }
+        let best = cands.max { a, b in
+            let sa = a.kindShare * (a.measured ? 1 : 0.5), sb = b.kindShare * (b.measured ? 1 : 0.5)
+            return sa != sb ? sa < sb : a.id > b.id
+        }
+        if cueID == nil, let b = best { cueID = b.id }
+        return best
     }
 
     func storePreview(_ key: String, _ p: ShotPreview?) {

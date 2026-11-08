@@ -94,8 +94,13 @@ enum OverlayPath {
     }
 
     /// Dash pattern walked along the polyline, starting `skip` metres in.
-    static func dashes(_ pts: [Vec2], dash: Double, gap: Double, skip: Double, max: Int) -> [(Vec2, Vec2)] {
-        guard pts.count >= 2 else { return [] }
+    /// When the path is longer than `max` dashes cover, the pattern stretches so it still reaches the end.
+    static func dashes(_ pts: [Vec2], dash dash0: Double, gap gap0: Double, skip: Double, max: Int) -> [(Vec2, Vec2)] {
+        guard pts.count >= 2, max > 0 else { return [] }
+        let total = zip(pts, pts.dropFirst()).reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+        let need = total - skip
+        let stretch = need > 0 ? Swift.max(1, need / (Double(max) * (dash0 + gap0) - gap0)) : 1
+        let dash = dash0 * stretch, gap = gap0 * stretch
         var out: [(Vec2, Vec2)] = []
         var along = 0.0, next = skip
         var drawing = false

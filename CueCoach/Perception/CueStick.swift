@@ -165,13 +165,18 @@ struct LiveAimTrace: Sendable, Equatable {
             // |cue + u t − b| = 2R
             let f = cue - b
             let bq = f.dot(u), c = f.lengthSquared - 4 * R * R
+            // Frozen to (or, through detector noise, overlapping) the cue ball and ahead of it: hit at once.
+            if c <= 0 {
+                if bq < 0 && 0 < bestT { bestT = 0; bestI = i }
+                continue
+            }
             let disc = bq * bq - c
             guard disc >= 0 else { continue }
             let t = -bq - disc.squareRoot()
-            if t > 1e-6 && t < bestT { bestT = t; bestI = i }
+            if t >= 0 && t < bestT { bestT = t; bestI = i }
         }
         let wall = AimPlanner.clipToTable(from: cue, dir: u, maxLength: 4, spec: spec)
-        if let i = bestI, bestT < cue.distance(to: wall) {
+        if let i = bestI, bestT < cue.distance(to: wall) || bestT == 0 {
             let ghost = cue + u * bestT
             return LiveAimTrace(cue: cue, end: ghost, hitIndex: i, ghost: ghost,
                                 objectDirection: (balls[i] - ghost).normalized)

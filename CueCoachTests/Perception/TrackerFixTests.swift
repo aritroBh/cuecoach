@@ -62,4 +62,35 @@ struct TrackerFixTests {
         let img = Stress.blankImage()
         #expect(!ClassicalBallDetector.hasBallShading(img, sourcePoint: Vec2(500, 400), radiusPx: 5))
     }
+
+    /// M6: a tentative (not yet confirmed) ball is still a blocker for the physics preview.
+    @Test func physicsPreviewSeesTentativeBalls() async {
+        let rec = RecordingPreviewer()
+        let d = ScriptedDetector()
+        let p = PerceptionPipeline(detector: d, previewer: rec)
+        let scene = SyntheticTableScene.demo()
+        await p.setTable(scene.frame)
+        let cue = Stress.det(Vec2(0.5, 0.5), .cue, 0), obj = Stress.det(Vec2(1.3, 0.5), .solid, 3)
+        // A ball that flickers (2 frames on, 3 off) never confirms, but it is on the table.
+        let flicker = Stress.det(Vec2(1.0, 0.85), .solid, 5)   // off the aim lines, so a suggestion exists
+        for i in 0..<120 {
+            d.push(i % 5 < 2 ? [cue, obj, flicker] : [cue, obj])
+            _ = await p.process(PerceptionFrame(image: Stress.blankImage(), camera: scene.camera, timestamp: Double(i) / 30))
+            // Let the detached preview search finish before the next frame (the host may be slow).
+            for _ in 0..<400 where !(await p.previewIdle) { try? await Task.sleep(nanoseconds: 2_000_000) }
+        }
+        Stress.metric("m6.previewBallCounts", rec.all())
+        #expect(rec.maxBalls() >= 3, "preview saw at most \(rec.maxBalls()) balls")
+    }
+}
+
+final class RecordingPreviewer: ShotPreviewing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [Int] = []
+    func preview(cue: Vec2, object: BallID, pocket: Pocket, balls: [BallID: Vec2], spec: TableSpec) -> ShotPreview? {
+        lock.lock(); counts.append(balls.count); lock.unlock()
+        return nil
+    }
+    func all() -> [Int] { lock.lock(); defer { lock.unlock() }; return counts }
+    func maxBalls() -> Int { lock.lock(); defer { lock.unlock() }; return counts.max() ?? 0 }
 }

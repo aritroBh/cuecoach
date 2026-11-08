@@ -96,7 +96,7 @@ struct AimStressTests {
     }
 
     /// Line 3 is drawn with at most 14 dashes (~1 m): a long simulated cue path is cut off.
-    @Test(.disabled("STRESS-FINDING C1: the 14-dash pool truncates Line 3 after about 1 m of the simulated cue path"))
+    @Test
     func line3CoversTheWholeSimulatedPath() {
         let path = [Vec2(0.5, 0.5), Vec2(1.9, 0.5), Vec2(1.9, 0.9), Vec2(1.0, 0.9)]
         let dashes = OverlayPath.dashes(path, dash: 0.04, gap: 0.03, skip: Stress.R, max: 14)
@@ -148,6 +148,8 @@ struct AimStressTests {
         }
         let aimed = out.last?.aim.map { $0.object.distance(to: eight) < 0.01 } ?? false
         Stress.metric("unknownFallback.aimsAtUnidentifiedBall", aimed)
+        // An unidentified ball may be the 8: with no ball known to be legal there is no suggestion.
+        #expect(out.last?.aim == nil)
     }
 
     @Test func liveLineTurnsRedOnTheEight() async throws {
@@ -177,7 +179,7 @@ struct AimStressTests {
     }
 
     /// Cue ball frozen to the 8 (detections put them 1 mm closer than 2R): aiming straight into it.
-    @Test(.disabled("STRESS-FINDING C2: LiveAimTrace skips a ball frozen to or overlapping the cue ball, so aiming into a frozen illegal ball is not red"))
+    @Test
     func frozenBallIsStillHit() {
         let cue = Vec2(1.0, 0.5)
         for gap in [0.0005, 0.0, -0.001, -0.003] {
@@ -192,7 +194,7 @@ struct AimStressTests {
 
     /// A white glass reflection / chalk smudge is classified as "cue" and its track is older than the cue ball's
     /// (the real cue ball was hidden by the shooter's body for 1 s). The aim must still start at the real cue ball.
-    @Test(.disabled("STRESS-FINDING C3: the cue ball is the first confirmed track marked cue; an older white false positive becomes the cue ball and the aim starts from it"))
+    @Test
     func secondWhiteObjectDoesNotStealTheCueBall() async throws {
         let d = ScriptedDetector()
         let p = PerceptionPipeline(detector: d)
