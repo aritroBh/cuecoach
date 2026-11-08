@@ -238,7 +238,7 @@ face stays off and Phase 5 runs on clothing + turn order + tap, as Q4 already de
 | File used | `glintr100.onnx` only, sha256 `a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60` |
 | Licence | Apache-2.0 (`LICENSE.md` sha256 `609e2cb599f84aaa41d8ef29d8fdb04d164fab22e8d9292ca34a599d0f56a338`); see `THIRD_PARTY_NOTICES.md` |
 | Never fetched | `scrfd_10g_bnkps.onnx`, `2d106det.onnx`, `1k3d68.onnx`, `genderage.onnx` (F1/F3) |
-| Fetch + convert | `tools/faceid/fetch_auraface.sh` → `convert_auraface.py` (uv): ONNX → onnx2torch → trace → Core ML ML Program FP16, iOS 17+ |
+| Fetch + convert | `tools/faceid/fetch_auraface.sh` → `convert_auraface.py` (uv, exact pins + `convert_auraface.py.lock`, run `--locked`; coremltools 9.0, torch 2.15.0, onnx 1.23.2, onnx2torch 1.5.15, onnxruntime 1.31.1, numpy 2.3.5, pillow 13.0.0; locked re-run reproduced parity min 0.999963): ONNX → onnx2torch → trace → Core ML ML Program FP16, iOS 17+ |
 | Output | `CueCoach/Resources/Models/FaceEmbedding.mlpackage` (~125 MB, gitignored). Input `face` 112×112 RGB image (normalisation folded in), output `embedding` 512 floats |
 | Parity | ONNX Runtime fp32 vs Core ML fp16, 8 random images: min cos 0.99996, mean 0.99997 |
 | modelID | `fal.auraface.v1.fp16` (feature-print face templates are unusable → re-consent) |
@@ -253,6 +253,11 @@ open-set FPIR ≤ 0.5 %) and the genuine-side limit (where calibration TAR would
 report half, never seen during calibration, must show TAR ≥ 0.90, FPIR ≤ 0.5 % and zero misidentifications. The
 record keeps 95 % Wilson bounds (TAR lower, FPIR and misidentification upper) and coverage (enrolled probes decided
 correctly). Wilson bounds treat probes as independent; a subject-level bootstrap is the stricter follow-up.
+
+Benchmark consent can only be made by `FaceBenchConsentFlow.grant` (the consent screen's "Agree") and is checked
+against the flow's record, so a withdrawn grant stops further captures; runs are purged when expired on launch and on
+every return to the foreground. The tap "guest margin" (0.1) is a documented heuristic: resemblance cannot prove who
+produced a vector, so with an unmodelled guest present nothing is learned at all (D28).
 
 **Release blocker (not code):** fal has not confirmed AuraFace-v1's training data in writing. The model card says
 "commercially and publicly available data sources" without naming them. Before any release that bundles the model,

@@ -189,7 +189,7 @@ private func near(_ a: CGPoint, _ b: CGPoint, _ tol: Double = 1e-6) -> Bool {
 
     @MainActor @Test func benchmarkHoldsOnlyRAMAndForgetsOnWithdrawAndEnd() {
         let bench = FaceBenchmarkSession(modelID: "m")
-        let ok = FaceBenchConsent(agreedAt: .now)
+        let ok = FaceBenchConsentFlow.grant(agreedAt: .now)
         let s1 = bench.addSubject([Synth.axis(1, model: "m"), Synth.axis(1, model: "m")], consent: ok)!
         _ = bench.addSubject([Synth.axis(2, model: "m"), Synth.axis(2, model: "wrong.model")], consent: ok)
         #expect(bench.subjectCount == 2 && bench.embeddingCount == 3)   // other models are never mixed in

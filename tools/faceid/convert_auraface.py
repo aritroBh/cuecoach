@@ -1,13 +1,13 @@
 # /// script
 # requires-python = ">=3.11,<3.13"
 # dependencies = [
-#   "coremltools>=8.3",
-#   "torch>=2.4",
-#   "onnx>=1.16",
-#   "onnx2torch>=1.5.15",
-#   "onnxruntime>=1.18",
-#   "numpy<2.4",
-#   "pillow>=10",
+#   "coremltools==9.0",
+#   "torch==2.15.0",
+#   "onnx==1.23.2",
+#   "onnx2torch==1.5.15",
+#   "onnxruntime==1.31.1",
+#   "numpy==2.3.5",
+#   "pillow==13.0.0",
 # ]
 # ///
 """Convert the AuraFace-v1 recognition graph (glintr100.onnx, Apache-2.0) to a Core ML ML Program (FP16).

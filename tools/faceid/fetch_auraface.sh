@@ -34,7 +34,7 @@ fetch() {   # fetch <file> <sha256>
 fetch "$GRAPH" "$GRAPH_SHA256"
 fetch "LICENSE.md" "$LICENSE_SHA256"
 
-uv run --script "$here/convert_auraface.py" --onnx "$cache/$GRAPH" --out "$out" \
+uv run --locked --script "$here/convert_auraface.py" --onnx "$cache/$GRAPH" --out "$out" \
   --source "$REPO@$COMMIT/$GRAPH sha256:$GRAPH_SHA256"
 # Apache-2.0 §4(a): recipients get the licence text. The verified copy ships in the app bundle next to the model.
 cp "$cache/LICENSE.md" "$root/CueCoach/Resources/Licenses/AuraFace-v1-LICENSE.md"

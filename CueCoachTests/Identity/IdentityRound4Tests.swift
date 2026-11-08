@@ -163,7 +163,7 @@ struct FixedCropper: FaceCropping {
         let bench = FaceBenchmarkSession(modelID: "m", startedAt: Date(timeIntervalSince1970: 0))
         let t0 = Date(timeIntervalSince1970: 0)
         #expect(bench.addSubject([Synth.axis(1, model: "m")], consent: nil, now: t0) == nil)
-        #expect(bench.addSubject([Synth.axis(1, model: "m")], consent: FaceBenchConsent(agreedAt: t0), now: t0) != nil)
+        #expect(bench.addSubject([Synth.axis(1, model: "m")], consent: FaceBenchConsentFlow.grant(agreedAt: t0), now: t0) != nil)
         #expect(bench.subjectCount(now: t0) == 1)
         bench.expireIfNeeded(now: Date(timeIntervalSince1970: 8 * 86_400))
         #expect(bench.subjectCount == 0)
@@ -202,7 +202,7 @@ struct FixedCropper: FaceCropping {
     @Test func idleBenchmarkExpiresOnAnyRead() {
         let t0 = Date(timeIntervalSince1970: 0)
         let bench = FaceBenchmarkSession(modelID: "m", startedAt: t0)
-        _ = bench.addSubject([Synth.axis(1, model: "m")], consent: FaceBenchConsent(agreedAt: t0), now: t0)
+        _ = bench.addSubject([Synth.axis(1, model: "m")], consent: FaceBenchConsentFlow.grant(agreedAt: t0), now: t0)
         #expect(bench.subjectCount(now: Date(timeIntervalSince1970: 8 * 86_400)) == 0)
     }
 }

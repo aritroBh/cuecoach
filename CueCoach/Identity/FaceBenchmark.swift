@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // F6 ship gate: face matching turns on only after an on-device, consented benchmark passes for that exact model.
 // Volunteers give a separate "Help test face recognition" consent; their aligned crops are embedded and dropped
@@ -228,10 +229,29 @@ struct FaceShipGateRecord: Codable, Hashable, Sendable {
 }
 
 /// The separate "Help test face recognition" consent (face-embedding.md §6.2), distinct from product consent.
+/// Only `FaceBenchConsentFlow.grant` can make one (fileprivate init), and only a grant the flow still records is
+/// accepted, so no caller can fabricate or reuse a withdrawn consent.
 struct FaceBenchConsent: Hashable, Sendable {
     static let currentVersion = 1
-    var agreedAt: Date
-    var version = FaceBenchConsent.currentVersion
+    let id: UUID
+    let agreedAt: Date
+    let version: Int
+    fileprivate init(agreedAt: Date) { id = UUID(); self.agreedAt = agreedAt; version = Self.currentVersion }
+}
+
+/// The consent screen's only entry points: its deliberate "Agree" tap calls `grant`; "Withdraw" calls `withdraw`.
+@MainActor
+enum FaceBenchConsentFlow {
+    private static var granted: Set<UUID> = []
+
+    static func grant(agreedAt: Date = .now) -> FaceBenchConsent {
+        let c = FaceBenchConsent(agreedAt: agreedAt)
+        granted.insert(c.id)
+        return c
+    }
+
+    static func withdraw(_ c: FaceBenchConsent) { granted.remove(c.id) }
+    static func isGranted(_ c: FaceBenchConsent) -> Bool { granted.contains(c.id) && c.version == FaceBenchConsent.currentVersion }
 }
 
 /// Persists the gate record (aggregate numbers only) on this phone.
@@ -255,13 +275,16 @@ final class FaceBenchmarkSession {
     let startedAt: Date
     private var subjects: [UUID: [Embedding]] = [:]
 
-    init(modelID: String, startedAt: Date = .now) { self.modelID = modelID; self.startedAt = startedAt }
+    init(modelID: String, startedAt: Date = .now) {
+        self.modelID = modelID; self.startedAt = startedAt
+        FaceBenchmarkLifecycle.register(self)
+    }
 
     /// Adds one volunteer's embeddings (from N aligned crops at registration). nil without the bench consent.
     @discardableResult
     func addSubject(_ embeddings: [Embedding], consent: FaceBenchConsent?, now: Date = .now) -> UUID? {
         expireIfNeeded(now: now)
-        guard let consent, consent.version == FaceBenchConsent.currentVersion,
+        guard let consent, FaceBenchConsentFlow.isGranted(consent),
               now.timeIntervalSince(startedAt) <= Self.maxAge else { return nil }
         let code = UUID()
         subjects[code] = embeddings.filter { $0.modelID == modelID }.compactMap(\.normalised)
@@ -277,6 +300,8 @@ final class FaceBenchmarkSession {
     func subjectCount(now: Date = .now) -> Int { expireIfNeeded(now: now); return subjects.count }
     func embeddingCount(now: Date = .now) -> Int { expireIfNeeded(now: now); return subjects.values.reduce(0) { $0 + $1.count } }
     var subjectCount: Int { subjectCount() }
+    /// What is held right now, without expiring anything first (for lifecycle checks).
+    var heldEmbeddingCount: Int { subjects.values.reduce(0) { $0 + $1.count } }
     var embeddingCount: Int { embeddingCount() }
 
     /// Evaluates, stores the aggregate record on a pass, and deletes every embedding either way (run over).
@@ -286,5 +311,35 @@ final class FaceBenchmarkSession {
         if case .pass(let r) = v { try? store.save(r) }
         deleteAll()
         return v
+    }
+}
+
+/// Purges expired benchmark runs on app launch and every return to the foreground, not only when a run is touched.
+@MainActor
+enum FaceBenchmarkLifecycle {
+    private final class Weak { weak var session: FaceBenchmarkSession?; init(_ s: FaceBenchmarkSession) { session = s } }
+    private static var sessions: [Weak] = []
+    private static var observers: [NSObjectProtocol] = []
+
+    static func register(_ s: FaceBenchmarkSession) {
+        installObservers()
+        sessions.removeAll { $0.session == nil }
+        sessions.append(Weak(s))
+    }
+
+    static func purgeExpired(now: Date = .now) {
+        sessions.removeAll { $0.session == nil }
+        for w in sessions { w.session?.expireIfNeeded(now: now) }
+    }
+
+    private static func installObservers() {
+        guard observers.isEmpty else { return }
+        let names = [UIApplication.didFinishLaunchingNotification, UIApplication.willEnterForegroundNotification,
+                     UIApplication.didBecomeActiveNotification]
+        observers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+                MainActor.assumeIsolated { purgeExpired() }
+            }
+        }
     }
 }
