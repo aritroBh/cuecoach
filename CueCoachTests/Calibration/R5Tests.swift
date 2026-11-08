@@ -180,7 +180,7 @@ struct LockR5Tests {
         let loc = AutoTableLocating(keypoints: kp)
         var t = 0.0, lockedTable = false
         for _ in 0..<60 where !lockedTable {
-            let e = await loc.ingest(LocatorFrame(image: ti, camera: table.camera, planes: [], timestamp: t, depth: td))
+            let e = await loc.ingest(LocatorFrame(image: ti, camera: table.camera, planes: [Self.plane(table)], timestamp: t, depth: td))
             lockedTable = e?.locked == true
             t += 1.0 / 15
         }
@@ -189,16 +189,25 @@ struct LockR5Tests {
         let rugCorners = rug.frame.corners.map { rug.frame.world($0) }
         var lockedRug = false
         for _ in 0..<90 {
-            let e = await loc.ingest(LocatorFrame(image: ri, camera: rug.camera, planes: [], timestamp: t, depth: rd))
+            let e = await loc.ingest(LocatorFrame(image: ri, camera: rug.camera, planes: [Self.plane(rug)], timestamp: t, depth: rd))
             if let e, e.locked, e.corners.allSatisfy({ c in rugCorners.contains { simd_distance($0, c) < 0.3 } }) { lockedRug = true }
             t += 1.0 / 15
         }
         #expect(!lockedRug)
     }
 
+    /// The ARKit table plane under a scene's cloth (as on the phone).
+    static func plane(_ s: SyntheticTableScene) -> LocatorPlane {
+        LocatorPlane(center: s.frame.world(Vec2(s.frame.spec.length / 2, s.frame.spec.width / 2)), extent: SIMD2(1, 0.6), isTable: true)
+    }
+
     /// Pixels of a scene's six pocket centres (the keypoint model's mouths), in the rendered image.
-    static func pocketPixels(_ s: SyntheticTableScene) -> [SIMD2<Double>] {
-        s.frame.spec.pockets.compactMap { s.camera.project(s.frame.world(s.frame.spec.pocketCenter($0))) }.map { SIMD2($0.x, $0.y) }
+    static func pocketPixels(_ s: SyntheticTableScene) -> [AutoTableKeypoint] {
+        s.frame.spec.pockets.compactMap { pk in
+            s.camera.project(s.frame.world(s.frame.spec.pocketCenter(pk))).map {
+                AutoTableKeypoint(kind: pk.isSide ? .sideMouth : .cornerMouth, pixel: SIMD2($0.x, $0.y), confidence: 0.9)
+            }
+        }
     }
 
     /// Codex rerun MAJOR: a slow pan (each step < 0.3 m) must not drag the evidence along to another surface.
@@ -210,7 +219,7 @@ struct LockR5Tests {
         let loc = AutoTableLocating(keypoints: kp)
         var t = 0.0, lockedTable = false
         for _ in 0..<60 where !lockedTable {
-            let e = await loc.ingest(LocatorFrame(image: ti, camera: table.camera, planes: [], timestamp: t,
+            let e = await loc.ingest(LocatorFrame(image: ti, camera: table.camera, planes: [Self.plane(table)], timestamp: t,
                                                   depth: table.renderDepth(width: 256, height: 144)))
             lockedTable = e?.locked == true
             t += 1.0 / 15
@@ -233,7 +242,7 @@ struct LockR5Tests {
             let ri = try #require(PixelImage(cgImage: rcg))
             let rd = rug.renderDepth(width: 256, height: 144)
             for _ in 0..<4 {
-                let e = await loc.ingest(LocatorFrame(image: ri, camera: rug.camera, planes: [], timestamp: t, depth: rd))
+                let e = await loc.ingest(LocatorFrame(image: ri, camera: rug.camera, planes: [Self.plane(rug)], timestamp: t, depth: rd))
                 if let e, e.locked {
                     let c = e.corners.reduce(SIMD3<Double>(), +) / Double(max(1, e.corners.count))
                     if simd_distance(c, tableCentre) > 0.4 { badLock = true }
@@ -303,9 +312,7 @@ struct SizeAmbiguityTests {
 
 /// Keypoint fake: mouths at given pixels (none when empty).
 final class MouthsAtPockets: TableKeypointProvider, @unchecked Sendable {
-    var pixels: [SIMD2<Double>]
-    init(_ p: [SIMD2<Double>]) { pixels = p }
-    func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
-        pixels.enumerated().map { AutoTableKeypoint(kind: $0.offset % 3 == 0 ? .sideMouth : .cornerMouth, pixel: $0.element, confidence: 0.9) }
-    }
+    var pixels: [AutoTableKeypoint]
+    init(_ p: [AutoTableKeypoint]) { pixels = p }
+    func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] { pixels }
 }

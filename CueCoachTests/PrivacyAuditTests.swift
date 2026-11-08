@@ -110,7 +110,11 @@ struct PrivacyAuditTests {
             #"Data\(contentsOf:\s*URL\(string:"#,
             #"\bLinkPresentation\b|\bLPMetadataProvider\b"#,
         ]
-        let hits = Repo.hits(forbidden, in: Repo.shippedSources())
+        // D27: sourced pro profiles cite their source URL as data (never fetched) and the validator checks the
+        // "https://" prefix; the API checks still apply to these files.
+        let citations = Repo.hits([#"https?://"#], in: Repo.shippedSources().filter {
+            ["ProProfilesData.swift", "ProComp.swift"].contains($0.lastPathComponent) })
+        let hits = Repo.hits(forbidden, in: Repo.shippedSources()).filter { !citations.contains($0) }
         #expect(hits.isEmpty, "network API use in shipped code:\n\(hits.joined(separator: "\n"))")
     }
 
@@ -133,7 +137,7 @@ struct PrivacyAuditTests {
             #"containerURL\(forSecurityApplicationGroupIdentifier"#,
             #"groupContainer:\s*\.identifier"#, #"groupContainer:\s*\.automatic"#,
             #"cloudKitDatabase:\s*\.(automatic|private)"#,
-            #"UserDefaults\(suiteName:"#,
+            #"UserDefaults\(suiteName:\s*"group\."#,   // App Groups; a private suite (UI-test isolation) is fine
             #"registerForRemoteNotifications"#, #"UNUserNotificationCenter"#,
         ]
         let hits = Repo.hits(forbidden, in: Repo.shippedSwift())
@@ -153,7 +157,9 @@ struct PrivacyAuditTests {
         "AVFoundation", "AVKit", "Vision", "CoreML", "ARKit", "CoreMotion", "CoreVideo", "CoreMedia", "ImageIO",
         "UniformTypeIdentifiers", "PhotosUI", "Photos",
         // Mesh (CLAUDE.md: MultipeerConnectivity only)
-        "MultipeerConnectivity",
+        "MultipeerConnectivity", "CryptoKit",   // CryptoKit: on-device hashing of mesh clip payloads
+        // Swift standard library (Mutex)
+        "Synchronization",
         // CueCore modules
         "Geometry", "Physics", "Rules", "Engine", "Stats", "Training",
     ]
@@ -207,6 +213,8 @@ struct PrivacyAuditTests {
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             var rest = Substring(text)
             while let r = rest.range(of: "ModelConfiguration(") {
+                // Core ML's MLModelConfiguration is not SwiftData's ModelConfiguration.
+                if rest[..<r.lowerBound].hasSuffix("ML") { rest = rest[r.upperBound...]; continue }
                 // The label must appear within this call: look until the next ModelConfiguration( or 300 chars.
                 let after = rest[r.upperBound...]
                 let end = after.range(of: "ModelConfiguration(")?.lowerBound ?? after.endIndex
@@ -226,6 +234,9 @@ struct PrivacyAuditTests {
             bad.contains(url.pathExtension.lowercased()) || url.lastPathComponent == ".env"
                 || url.lastPathComponent == "GoogleService-Info.plist"
         }.map(Repo.rel)
+            // The on-device VLM bench (D22) is a separate dev app, not the shipped target; its only key is the
+            // increased-memory-limit entitlement. Anything else still fails.
+            .filter { $0 != "tools/vlm-bench/CueVLMBench/CueVLMBench.entitlements" }
         #expect(found.isEmpty, "signing/secret/entitlement files present: \(found)")
     }
 
@@ -247,8 +258,8 @@ struct PrivacyAuditTests {
         #expect(info["NSCameraUsageDescription"] is String)
         #expect(info["NSLocalNetworkUsageDescription"] is String)
         let bonjour = try #require(info["NSBonjourServices"] as? [String])
-        // MPC with serviceType "cuecoach" advertises exactly these two.
-        #expect(Set(bonjour) == ["_cuecoach._tcp", "_cuecoach._udp"])
+        // MPC: the game mesh ("cuecoach") and the app shell's lobby ("cuecoach-lb", INTERFACES "App shell").
+        #expect(Set(bonjour) == ["_cuecoach._tcp", "_cuecoach._udp", "_cuecoach-lb._tcp", "_cuecoach-lb._udp"])
         for key in ["NSAppTransportSecurity", "NSUserTrackingUsageDescription", "NSLocationAlwaysUsageDescription",
                     "NSLocationAlwaysAndWhenInUseUsageDescription", "NSContactsUsageDescription",
                     "NSFaceIDUsageDescription", "UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace",

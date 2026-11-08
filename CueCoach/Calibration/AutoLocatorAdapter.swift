@@ -130,10 +130,15 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         pocketPixels.filter { pk in mouths.contains { simd_distance($0, pk) <= tolerance } }.count
     }
 
-    /// Pockets are what make a table a table: ≥ 2 keypoint mouths, or ≥ 4 fitted pocket positions that look dark.
+    /// Pockets are what make a table a table: ≥ 2 keypoint mouths at the candidate's pockets, ≥ 4 fitted pocket
+    /// positions that look dark, or every in-frame fitted pocket dark (≥ 2).
     static func hasPocketEvidence(_ d: AutoFrameDiagnostics, mouthKeypoints: Int) -> Bool {
         if mouthKeypoints >= 2 { return true }
-        return d.pocketScores.values.filter { $0 >= 0.5 }.count >= 4
+        let scores = d.pocketScores.values   // only pockets in frame get a score
+        if scores.filter({ $0 >= 0.5 }).count >= 4 { return true }
+        // A steep close view sees only some pockets (both side pockets on a "sidePockets" fit): every one in frame
+        // dark, and at least two of them.
+        return scores.count >= 2 && scores.allSatisfy { $0 >= 0.5 }
     }
 
     private func map(_ e: AutoTableEstimate, frame f: LocatorFrame, plane: Plane3?) -> TableEstimate? {

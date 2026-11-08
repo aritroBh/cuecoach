@@ -76,6 +76,8 @@ final class PersistenceStack {
             try deleteMyRecognitionData()   // the app died inside an Undo window: finish the delete
         }
         try pruneOrphanRecognition()
+        // Retry any purge a tombstone still owes (an import whose purge failed after its stores committed).
+        try? purgeRevokedTemplates(of: Set(try competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).map(\.id)))
     }
 
     private static func container(name: String, schema versioned: any VersionedSchema.Type,

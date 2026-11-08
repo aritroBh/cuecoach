@@ -134,7 +134,9 @@ extension PersistenceStack {
             try compensateTraining(before: trainingSnapshot, imported: backup.training)
             throw error
         }
-        try purgeRevokedTemplates(of: backupIDs)
+        // The import itself has committed: a failed purge is not an import failure. Galleries were already told,
+        // the rows are unreadable behind the tombstone, and every open retries the purge.
+        try? purgeRevokedTemplates(of: backupIDs)
     }
 
     /// Templates opted in at or before their profile's (possibly just imported) revocation tombstone are removed

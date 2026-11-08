@@ -52,11 +52,15 @@ struct ShotIdentityTests {
         #expect(s.update(known: [1: .cue], inShot: false) == [1: .cue])
     }
 
+    /// Superseded by the rerun's alias rule: a retired track and its successor may both map to the ball; two
+    /// *live* tracks never do (see `reacquiredTrackAliasesTheRetiredOne`).
     @Test func aReusedTrackIdNeverGetsTwoBalls() {
         var s = ShotIdentities()
         _ = s.update(known: [2: BallID(3)!], inShot: false)
         let m = s.update(known: [5: BallID(3)!], inShot: true)                   // same ball, new track
-        #expect(m.values.filter { $0 == BallID(3)! }.count == 1)
+        #expect(m[5] == BallID(3)!)
+        let live = s.update(known: [5: BallID(3)!, 6: BallID(3)!], inShot: true)
+        #expect(live[6] == nil)
     }
 }
 

@@ -126,3 +126,40 @@ import Testing
         #expect(!g.changes.contains(.restored([guest.id])))
     }
 }
+
+/// Codex final-review MAJOR: the post-import purge can fail after the stores committed. Galleries are told first,
+/// the row is unreadable anyway (tombstone), and every open retries the purge.
+@MainActor
+@Suite struct PrivacyFinalTests {
+    @Test func revokedTemplatesLeftOnDiskArePurgedOnTheNextOpen() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("rv-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let id: UUID
+        do {
+            let s = try PersistenceStack(directory: dir)
+            let p = PlayerProfile(name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: true)
+            s.competitiveContext.insert(p)
+            try s.competitiveContext.save()
+            try s.storeRecognition(profileID: p.id, faceEmbedding: nil, appearanceEmbedding: Data([1]),
+                                   optedInAt: Date(timeIntervalSince1970: 1_000), version: 1)
+            p.recognitionRevokedAt = Date(timeIntervalSince1970: 2_000)   // tombstone saved, purge "failed"
+            try s.competitiveContext.save()
+            id = p.id
+        }
+        let reopened = try PersistenceStack(directory: dir)
+        let pid = id
+        #expect(try reopened.recognitionContext.fetchCount(FetchDescriptor<RecognitionData>(predicate: #Predicate { $0.profileID == pid })) == 0)
+    }
+
+    @Test func dropTellsGalleriesBeforeTouchingTheStore() throws {
+        final class G: RecognitionGallery {
+            var calls = 0
+            func recognitionDidChange(_ change: RecognitionChange) { calls += 1 }
+        }
+        let s = try PersistenceStack(inMemory: true)
+        let g = G()
+        s.register(g)
+        try s.dropRecognition(of: [UUID()])
+        #expect(g.calls == 1)
+    }
+}

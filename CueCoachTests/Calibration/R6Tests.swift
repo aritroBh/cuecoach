@@ -19,6 +19,30 @@ struct R6EvidenceTests {
         #expect(AutoTableLocating.hasPocketEvidence(dark, mouthKeypoints: 0))
     }
 
+    /// Lead (2026-11-08): a steep side-pocket view (partialAnchor "sidePockets") sees only the two side pockets.
+    /// Every in-frame fitted pocket dark, and at least two of them, is pocket evidence too.
+    @Test func sidePocketOnlyDarkEvidenceCounts() {
+        var side = AutoFrameDiagnostics()
+        side.pocketScores = [.sideLeft: 0.8, .sideRight: 0.7]
+        #expect(AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 0))
+    }
+
+    @Test func rugOrNoDarkMouthsStillRejects() {
+        var rug = AutoFrameDiagnostics()
+        rug.pocketScores = [.sideLeft: 0.1, .sideRight: 0.2, .headLeft: 0.0, .headRight: 0.1]
+        #expect(!AutoTableLocating.hasPocketEvidence(rug, mouthKeypoints: 0))
+        #expect(!AutoTableLocating.hasPocketEvidence(AutoFrameDiagnostics(), mouthKeypoints: 0))
+        var one = AutoFrameDiagnostics()
+        one.pocketScores = [.sideLeft: 0.9]
+        #expect(!AutoTableLocating.hasPocketEvidence(one, mouthKeypoints: 0))
+    }
+
+    @Test func oneDarkOneLightInFramePocketRejects() {
+        var mixed = AutoFrameDiagnostics()
+        mixed.pocketScores = [.sideLeft: 0.9, .sideRight: 0.2]
+        #expect(!AutoTableLocating.hasPocketEvidence(mixed, mouthKeypoints: 0))
+    }
+
     @Test func mouthCounterSeesOnlyMouths() {
         let kps = [AutoTableKeypoint(kind: .noseCorner, pixel: .zero, confidence: 0.9),
                    AutoTableKeypoint(kind: .noseCorner, pixel: .zero, confidence: 0.9),

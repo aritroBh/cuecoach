@@ -171,13 +171,14 @@ extension PersistenceStack {
     func dropRecognition(of ids: Set<UUID>) throws {
         guard !ids.isEmpty else { return }
         RecognitionDeletionLog.recordDeletion()
+        // RAM copies go first: if the store write below fails, no session keeps identifying with them.
+        notifyGalleries(.purged(ids))
         let ctx = recognitionContext
         let rows = try ctx.fetch(FetchDescriptor<RecognitionData>()).filter { ids.contains($0.profileID) }
         if !rows.isEmpty {
             for r in rows { ctx.delete(r) }
-            try ctx.save()
+            do { try ctx.save() } catch { ctx.rollback(); throw error }
         }
-        notifyGalleries(.purged(ids))
     }
 
     /// Moves the revocation tombstone forward to `now` (never back). Unsaved.
