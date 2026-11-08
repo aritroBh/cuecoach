@@ -21,7 +21,7 @@ import Rules
 
     /// One instance of every message case. Adding a case without adding it here fails `everyCaseIsCovered`.
     static var everyMessage: [MeshMessage] {
-        let entry = LogEntry(seq: 1, term: 2, event: .shot(ShotRecord(shotID: shot, shooterTeam: 1,
+        let entry = LogEntry(seq: 1, term: 2, event: .shot(MeshShotRecord(shotID: shot, shooterTeam: 1,
                                                                         outcome: sampleOutcome, postState: nil)))
         return [
             .hello(Hello(deviceClass: 17, batteryPercent: 80, onPower: false, supportedMajors: [1])),
@@ -39,7 +39,7 @@ import Rules
             .ruleBallot(RuleBallot(voteID: 1, choice: .wpaNine)),
             .ruleVoteResult(RuleVoteResult(voteID: 1, winner: .barEight)),
             .tableState(TableStateFrame(captureTime: 1_000_000, balls: [
-                BallDetection(ball: .cue, position: Vec2(0.5, 0.25), sigma: 0.004, confidence: 0.9)])),
+                MeshBallDetection(ball: .cue, position: Vec2(0.5, 0.25), sigma: 0.004, confidence: 0.9)])),
             .proposal(.shooterCorrection(shotID: shot, team: 0)),
             .logEntries([entry]),
             .logAck(LogAck(term: 2, upTo: 1)),

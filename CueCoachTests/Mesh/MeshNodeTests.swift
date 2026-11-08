@@ -8,7 +8,7 @@ import Rules
 /// ("killing host keeps game", SPEC Phase 5), clock sync, rule vote, clip transfer (D3).
 @Suite struct MeshNodeTests {
     static func shot(_ n: Int) -> GameEvent {
-        .shot(ShotRecord(shotID: UUID(), shooterTeam: n % 2, outcome: ShotOutcome(), postState: nil))
+        .shot(MeshShotRecord(shotID: UUID(), shooterTeam: n % 2, outcome: ShotOutcome(), postState: nil))
     }
 
     /// Device classes chosen so the expected winner is obvious: higher index = newer phone.

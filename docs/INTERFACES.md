@@ -161,3 +161,53 @@ right +); speed ratio (actual/intended − 1); cueBallDistance m (past target +)
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`
 (Foundation Models + rule fallback).
+
+## Live table locking (capture ↔ Calibration/Auto) — lock plan 2026-11-07
+```swift
+protocol TableLocating: Sendable {                       // CueCoach/Calibration/TableLocating.swift
+    func ingest(_ f: LocatorFrame) async -> TableEstimate?
+    func reset() async
+}
+struct LocatorFrame { var image: PixelImage; var camera: CameraModel; var planes: [LocatorPlane]
+                      var timestamp: Double; var depth: DepthMap?; var trackingNormal: Bool }
+struct TableEstimate { var corners: [SIMD3<Double>]; var confidence: Double; var locked: Bool; var size: TableSize?
+                       var failure: LockFailure?        // glyph + dev HUD (never text on screen)
+                       var frame: TableFrame?           // exact pose when locked — install it, don't re-fit
+                       var generation: Int }            // bumps on (re)lock / held-size change
+enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShape, unstable }
+```
+- **Lock source** = `AutoTableLocating` (adapter over `ClassicalAutoTableLocator`, Calibration/Auto). FeltQuad is a
+  ghost seed only (felt boundary at rail-top height, cushion inset from `AutoTableProfile`), never the lock.
+- Auto `diag.rejection` → `LockFailure`: cloth touches frame → partialTable; cloth too small / too small → tooFar;
+  no plane → noPlane; no cloth colour → noFelt; others → badShape; converging with spread > 2 cm → unstable.
+- **Cadence**: `LocatingGate` (~15 Hz, busy flag) shared by FrameTap and the VirtualTable harness; no locator throttle.
+- **Planes**: an ARKit anchor is an infinite plane at its height (no extent test); without one, Auto takes a
+  provisional LiDAR plane. A level > 1.4 m below the camera is the floor, never the table.
+- **History** expires after a > 1 s timestamp gap or 5 consecutive rejections.
+- **Keypoints**: `TableKeypointModel.provider()` → `TableKeypointProvider` (nil until the tablekp .mlpackage ships).
+- **Live screen (D24)**: `LiveScreen(mode: LiveMode, drill: DrillID?, hooks: LiveHooks, onClose: (() -> Void)?)`
+  with `.game` | `.training(level: Int)`; visibility per `OverlayVisibility.of(mode)`.
+  `LiveHooks` (closures, all `@MainActor`) is how Live drives the shell's `LiveSession`:
+  `aimStarted / aimEnded / aimCancelled / ballsSettled / settled(DecisionRating, turnPasses)`, emitted by the pure
+  `AimEvents` state machine. With hooks set, the shell draws the post-shot badge; standalone, Live does (hidden
+  the moment the next aim starts or any ball moves). Ratings: `RuleRating` (RulesEngine; any foul ≤ Mistake,
+  a game-losing foul = Blunder) until a live ShotEngine evaluation is wired.
+- **Measured size**: on lock Live writes `UserDefaults "cc.table.measured"` (TableSize raw value).
+- **Lock safety**: a lock needs pocket evidence (≥ 2 keypoint mouths or ≥ 4 dark fitted mouths, 3 frames) and a
+  measured length that isn't ambiguous between two presets; keypoints come from `CoreMLTableKeypointProvider`
+  (tablekp YOLO26n-pose, ANE, ≤ 10 Hz).
+- **Manual fallback**: tap the 2 nearest corner pockets (any order) → `TwoTapTable` fills the table from the plane +
+  preset → drag any corner (loupe + snap) → ✓.
+- **Acceptance**: `CueCoachTests/VirtualTable` matrix + `LockGate` (0 false locks always; accurate-lock / TTL floors
+  ratcheted per step). Baselines in `CueCoachTests/VirtualTable/Results/`.
+
+### AutoTableLocator (Calibration/Auto, zero-tap table pose)
+`AutoTableLocator.process(AutoTableFrame) -> AutoTableEstimate` (thread-safe; calls are serialised,
+`latest` / `flipHeadFoot()` / `reset()` never wait for a detection; a detection in flight during `reset()`
+is dropped). `AutoTableEstimate.state` is `.locked` after ≥ 6 agreeing frames at ≤ 1 cm robust corner
+spread, or 15 at ≤ 2 cm; `generation` bumps on every new lock and on an adopted size change (size changes
+need 10 consistent frames plus a ±15 % vote-share band). `frame.rejection` strings start with one of:
+"tracking", "duplicate frame", "no plane", "no cloth colour", "cloth too small", "cloth touches frame",
+"no quad", "edge refine", "reprojection", "view too shallow", "reset" (a failed partial fit appends "(partial: …)"). Keypoint plug-in: `TableKeypointProvider` returns
+`AutoTableKeypoint`s of kind `.cornerMouth` / `.sideMouth` / `.noseCorner`, the tablekp model's three
+groups; `AutoTableKeypointModel` adapts its 10 rows (model-input pixels, Ultralytics letterbox).
