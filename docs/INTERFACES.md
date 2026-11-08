@@ -81,7 +81,7 @@ struct CueModel { calibration; lookalikeRate; lrRange }         // per cue, per 
 enum StrokeFaceMatching { case off /* default, Q10 */, shooterOnly }   // honoured only with a matching FaceShipGateRecord
 protocol FaceCropping { func faces(in: CGImage) async -> [AlignedFace] }  // Vision landmarks → 5-pt → gate → 112² warp
 struct FaceEmbeddingExtractor: EmbeddingExtracting               // AuraFace Core ML, modelID fal.auraface.v1.fp16
-protocol RecognitionTemplateStore { templates(for:) / replaceTemplates(_:for:) / deletionGeneration }  // @MainActor
+protocol RecognitionTemplateStore { templates(for:) / replaceTemplates(_:for:) / deleteTemplates(for:) / deletionGeneration }
 struct StoredRecognitionTemplates { faceEmbedding, appearanceEmbedding: Data?; optedInAt: Date; version: Int }
 @MainActor final class IdentitySession {                        // RAM only; owns roster + session templates
   init(players: [(UUID, StoredRecognitionTemplates?)], guests:, faceModelID:, bodyModelID:)
@@ -93,12 +93,15 @@ struct StoredRecognitionTemplates { faceEmbedding, appearanceEmbedding: Data?; o
   var needsReconsent: Set<UUID>                                 // stored consent outdated: nothing loaded
   func grantGuestClothesConsent(_ guest: UUID); func revoke(_ player: UUID); func end() }
 IdentityPrivacy.deleteMyRecognitionData(stack:, session:, onRevoke:)   // onRevoke required (Mesh IdentityRevoke)
+IdentityPrivacy.deleteRecognitionData(of:, store:, session:, onRevoke:)  // same, through the template store
+FaceBenchmarkSession.addSubject(_:, consent: FaceBenchConsent?) -> UUID?   // separate bench consent; RAM; ≤ 7 days
 FaceBenchmark.evaluate(subjects:modelID:) -> .pass(FaceShipGateRecord) | .fail | .insufficientData   // F6
 ```
 Rules (round 3): only tracks admitted by `ShooterGate` are evidence. Competitors for `.auto` are *every* roster
 member (off-team players and guests too) plus an explicit "someone else" (unmodelled person) whenever a guest or a
 non-consenting player is at the table; the pick must beat all of them by `minEvidenceRatio` with positive evidence.
-A registered profile is never silently credited while a guest is at the table: no `.auto` → `.unknown`. Silent
+A registered profile is never credited (neither `.auto` nor silent turn order) while a guest is at the table:
+`.unknown`, one tap. Face consent enrols only frames with exactly one admissible face. Silent
 `.turnOrder` only when no guest is present (or the guest is the expected shooter) and evidence neither contradicts
 the expected shooter nor ties them with another recognisable player. Nothing is embedded unless a consented template
 exists to compare against (no bootstrap). Nothing is learned from turn order or `.auto`: only registration and a tap.
@@ -107,7 +110,9 @@ consented player's turn at an all-clothes-consented table. A correction away fro
 the session (numbers only). Every roster/consent change bumps the epoch; revoke/end cancel in-flight work (checked per
 frame and before each embedding); retry exhaustion → `.unknown`. Stored consent for older terms/models → nothing
 loaded, `needsReconsent`. Face consent needs an identity-trained model (`isIdentityTrained`); generic feature prints
-are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID. Backups never carry
+are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID: TAR ≥ 0.90 @ FAR 1e-3 *and* open-set FPIR ≤ 0.5 %
+with zero misidentifications on rotating held-out folds. A tap teaches only a sample that already resembles the
+tapped player's template unless everyone at the table consented to clothes. Backups never carry
 recognition data. `RecognitionData.version` = consent-terms version.
 
 ## App-side protocols (later phases; declared now so wiring compiles)

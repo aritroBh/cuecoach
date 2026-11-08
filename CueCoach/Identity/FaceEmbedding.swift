@@ -107,19 +107,20 @@ struct VisionFaceCropper: FaceCropping {
     }
 }
 
-/// Registration-side extractor: a whole selfie frame → the largest gated face → aligned → AuraFace.
-/// Frames with no admissible face throw, so registration simply keeps fewer samples.
+/// Registration-side extractor: a whole selfie frame → its single gated face → aligned → AuraFace.
+/// A frame with no admissible face, or with more than one (someone else in shot), throws and is skipped, so another
+/// person's face is never enrolled as the owner's (r3 BLOCKER).
 struct AlignedFaceExtractor: EmbeddingExtracting {
     var cropper: any FaceCropping = VisionFaceCropper()
     var embedder: FaceEmbeddingExtractor
     var modelID: String { embedder.modelID }
     var isIdentityTrained: Bool { true }
 
-    enum Failure: Error { case noAdmissibleFace }
+    enum Failure: Error, Equatable { case notExactlyOneFace }
 
     func embedding(of image: CGImage) async throws -> Embedding {
-        guard let best = await cropper.faces(in: image).max(by: { $0.interOcularPixels < $1.interOcularPixels })
-        else { throw Failure.noAdmissibleFace }
-        return try await embedder.embedding(of: best.image)
+        let faces = await cropper.faces(in: image)
+        guard faces.count == 1, let face = faces.first else { throw Failure.notExactlyOneFace }
+        return try await embedder.embedding(of: face.image)
     }
 }

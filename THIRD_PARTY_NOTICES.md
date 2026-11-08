@@ -16,4 +16,6 @@
   (InsightFace detector / landmark / attribute models, non-commercial). They are never downloaded. Face detection
   and landmarks come from Apple Vision.
 
-Apache License 2.0 text: https://www.apache.org/licenses/LICENSE-2.0
+The full licence text ships in the app bundle as `CueCoach/Resources/Licenses/AuraFace-v1-LICENSE.md` (the verified
+copy of the repository's `LICENSE.md`). Training-data provenance: fal states commercially available sources but does
+not name them; written confirmation from fal is still pending (docs/research/face-embedding.md §7).

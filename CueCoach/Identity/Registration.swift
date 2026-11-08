@@ -41,7 +41,7 @@ enum IdentityConsentTerms {
 
     static func needsReconsent(_ r: StoredRecognitionTemplates?, faceModelID: String, bodyModelID: String) -> Bool {
         guard let r else { return false }
-        if r.version < current { return true }
+        if r.version != current { return true }
         let t = IdentityTemplates(r, faceModelID: faceModelID, bodyModelID: bodyModelID)
         return (r.faceEmbedding != nil && t.face.isEmpty) || (r.appearanceEmbedding != nil && t.body.isEmpty)
     }
@@ -60,6 +60,8 @@ enum RegistrationError: Error, Equatable {
     case deletedDuringRegistration
     /// Face consent needs an identity-trained face model; none is installed (or only a generic one was offered).
     case faceModelUnavailable
+    /// The decision was made on older (or newer) consent terms than this app's: show the current text again.
+    case consentOutdated
 }
 
 @MainActor
@@ -87,6 +89,7 @@ struct RecognitionRegistrar {
     func register(_ owner: PlayerProfile, decision: ConsentDecision, capture: RegistrationCapture) async throws {
         let c = decision.consent
         guard c.clothes || c.face else { throw RegistrationError.consentRequired }
+        guard decision.termsVersion == IdentityConsentTerms.current else { throw RegistrationError.consentOutdated }
         guard owner.isLocalOwner else { throw RegistrationError.notLocalOwner }
         if c.face, !(face?.isIdentityTrained ?? false) { throw RegistrationError.faceModelUnavailable }
         if c.face, capture.faceImages.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
@@ -94,8 +97,8 @@ struct RecognitionRegistrar {
 
         // A delete that lands during the awaits below must win: never write templates back after it.
         let deletions = store.deletionGeneration
-        let faces = c.face ? try await embed(capture.faceImages, with: face!) : nil
-        let bodies = c.clothes ? try await embed(capture.bodyImages, with: body) : nil
+        let faces = c.face ? try await embed(capture.faceImages, with: face!, since: deletions) : nil
+        let bodies = c.clothes ? try await embed(capture.bodyImages, with: body, since: deletions) : nil
         if let faces, faces.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
         if let bodies, bodies.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
 
@@ -109,9 +112,12 @@ struct RecognitionRegistrar {
                                    for: owner.id)
     }
 
-    private func embed(_ images: [CGImage], with x: any EmbeddingExtracting) async throws -> [Embedding] {
+    /// Stops at once (before the next image) when a delete lands or the task is cancelled (r3 MAJOR).
+    private func embed(_ images: [CGImage], with x: any EmbeddingExtracting, since deletions: Int) async throws -> [Embedding] {
         var out: [Embedding] = []
         for img in images.prefix(Self.maxSamples) {
+            guard deletions == store.deletionGeneration else { throw RegistrationError.deletedDuringRegistration }
+            try Task.checkCancellation()
             if let e = try? await x.embedding(of: img), e.modelID == x.modelID, let n = e.normalised { out.append(n) }
         }
         return out
@@ -138,6 +144,13 @@ enum IdentityPrivacy {
     /// Settings → "Delete my recognition data": wipes the stored template, clears this session's RAM copies,
     /// and calls `onRevoke` per owner so Mesh can send `IdentityRevoke` to peers. `onRevoke` is required: a caller
     /// with no mesh passes an explicit no-op, so peers holding templates in RAM can't be forgotten by omission.
+    /// Same, against any template store (the one registration writes to).
+    static func deleteRecognitionData(of owners: Set<UUID>, store: some RecognitionTemplateStore, session: IdentitySession?,
+                                      onRevoke: (UUID) -> Void) throws {
+        try store.deleteTemplates(for: owners)
+        for id in owners.sorted(by: { $0.uuidString < $1.uuidString }) { session?.revoke(id); onRevoke(id) }
+    }
+
     static func deleteMyRecognitionData(stack: PersistenceStack, session: IdentitySession?,
                                         onRevoke: (UUID) -> Void) throws {
         let owners = try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))

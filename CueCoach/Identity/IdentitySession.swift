@@ -46,6 +46,8 @@ final class IdentitySession {
         var expectedShooter: UUID?
         /// The gated shooter track's similarities (numbers only), for the S9 negative signal on correction.
         var shooterEvidence: TrackEvidence?
+        /// S9: the claim ceiling this shot's correction put on the wrongly chosen player (retracted if tapped back).
+        var ceiling: (player: UUID, appearance: Double?, face: Double?)?
         /// Player whose template `sample` was added to by a tap, so a later tap can undo it.
         var boundTo: UUID?
         var seq: Int
@@ -203,22 +205,41 @@ final class IdentitySession {
     /// looks from their old template (jacket off, other clothes than at registration). A wrong earlier bind is undone.
     func correct(shot: UUID, to player: UUID) -> Attribution? {
         guard var r = records[shot], roster.contains(player) else { return nil }
-        let wrong = r.current.playerID.flatMap { $0 != player ? $0 : nil }
         var tapped = Attribution(playerID: player, source: .tap, confidence: 1, shooterTrackID: r.original.shooterTrackID)
         tapped.suggestedPlayerID = r.original.suggestedPlayerID
         r.current = tapped
         if let s = r.sample, let b = r.boundTo, b != player { unbind(b, appearance: s); r.boundTo = nil }
-        // S9 negative signal: the look a tap said is not `wrong` may not be claimed by `wrong` again this session.
-        if let w = wrong, let ev = r.shooterEvidence {
-            if let s = ev.appearanceSimilarity[w] { appearanceCeiling[w] = max(appearanceCeiling[w] ?? -1, s) }
-            if let s = ev.faceSimilarity[w] { faceCeiling[w] = max(faceCeiling[w] ?? -1, s) }
-            epoch += 1
+        // S9 negative signal: the look a tap said is not the originally chosen player may not be claimed by them again
+        // this session. Tapping back to that player retracts it.
+        let chosen = r.original.playerID
+        if let w = chosen, w != player, let ev = r.shooterEvidence {
+            r.ceiling = (w, ev.appearanceSimilarity[w], ev.faceSimilarity[w])
+        } else {
+            r.ceiling = nil
         }
-        // A tap is a human label: it teaches the tapped player when they consented to clothes.
-        if let s = r.sample, r.boundTo == nil, bind(player, appearance: s) { r.boundTo = player; epoch += 1 }
+        records[shot] = r
+        recomputeCeilings()
+        // A tap is a human label: it teaches the tapped player when they consented to clothes. While anyone without
+        // a clothes template is at the table (guest, no consent), a mis-tap could bind *their* vector, so the sample
+        // must also already resemble the tapped player's template (r3 BLOCKER).
+        let open = roster.entries.contains { !$0.consent.clothes }
+        if let s = r.sample, r.boundTo == nil,
+           !open || AppearanceLearning.resemblance(s, appearance[player] ?? []) >= AppearanceLearning.matchFloor,
+           bind(player, appearance: s) { r.boundTo = player; epoch += 1 }
         if r.boundTo == nil { r.sample = nil }
         records[shot] = r
         return r.current
+    }
+
+    private func recomputeCeilings() {
+        var app: [UUID: Double] = [:], fc: [UUID: Double] = [:]
+        for r in records.values {
+            guard let c = r.ceiling, roster.contains(c.player) else { continue }
+            if let s = c.appearance { app[c.player] = max(app[c.player] ?? -1, s) }
+            if let s = c.face { fc[c.player] = max(fc[c.player] ?? -1, s) }
+        }
+        if app != appearanceCeiling || fc != faceCeiling { epoch += 1 }
+        appearanceCeiling = app; faceCeiling = fc
     }
 
     /// Shooter vectors held in RAM, waiting for a tap (not yet part of any template).
@@ -252,6 +273,7 @@ final class IdentitySession {
         for (k, r) in records {
             var r = r
             if r.boundTo == player { r.boundTo = nil }
+            if r.ceiling?.player == player { r.ceiling = nil }
             // Drop anything held for this player or no longer justified by anyone else's consent.
             if r.current.playerID == player || r.original.playerID == player { r.sample = nil }
             if let s = r.sample, r.boundTo == nil, !mayHold(s, expected: r.expectedShooter) { r.sample = nil }

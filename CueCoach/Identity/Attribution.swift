@@ -384,7 +384,10 @@ struct ShooterAttributor: Sendable {
             let mine = open[p] ?? 0
             return ctx.roster.ids.allSatisfy { $0 == p || mine - (open[$0] ?? 0) >= ratio } && mine - elseEvidence >= ratio
         }
-        if let top = ranked.first, top.value >= parameters.decideAt,
+        // With a guest at the table no registered profile is ever auto-credited: even an identity face model has false
+        // accepts at its FAR, and a wrong credit is worse than asking (r3 BLOCKER).
+        let guestIDs = Set(ctx.roster.entries.filter(\.isGuest).map(\.playerID))
+        if let top = ranked.first, top.value >= parameters.decideAt, !guestPresent || guestIDs.contains(top.key),
            top.value - (ranked.dropFirst().first?.value ?? 0) >= parameters.margin,
            (closed[top.key] ?? 0) > 0, separated(top.key) {
             return Attribution(playerID: top.key, source: .auto, confidence: top.value, shooterTrackID: track)

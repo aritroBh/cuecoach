@@ -102,9 +102,10 @@ private func stored(body: [Embedding]? = nil, face: [Embedding]? = nil, version:
         #expect(out == .unknown(suggested: Synth.c, confidence: 0, shooterTrackID: nil))
     }
 
-    @Test func identityFaceCanStillAutoInAGuestSession() {
-        // An identity-trained model (small lookalike rate from the benchmark) can separate A from "someone else".
-        let r = roster([(Synth.a, .init(clothes: false, face: true))], guests: [Synth.d])
+    @Test func identityFaceCanAutoAgainstAnUnmodelledRegisteredPlayer() {
+        // An identity-trained model (small lookalike rate from the benchmark) can separate A from "someone else"
+        // (here: non-consenting C). With a guest at the table it never autos (IdentityRound4Tests).
+        let r = roster([(Synth.a, .init(clothes: false, face: true)), (Synth.c, .none)])
         var trained = ShooterAttributor(); trained.parameters.face = ShooterAttributionTests.identityFace
         let out = trained.attribute(views: [[shooter(face: [Synth.a: 0.95])]],
                                     context: AttributionContext(roster: r, expectedShooter: Synth.a))

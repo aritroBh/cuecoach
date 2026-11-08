@@ -19,6 +19,8 @@ protocol RecognitionTemplateStore {
     func templates(for profileID: UUID) throws -> StoredRecognitionTemplates?
     /// Replaces the profile's templates in one commit; on failure nothing changes.
     func replaceTemplates(_ t: StoredRecognitionTemplates, for profileID: UUID) throws
+    /// One-tap delete for these profiles; bumps `deletionGeneration` first so in-flight registrations abort.
+    func deleteTemplates(for profileIDs: Set<UUID>) throws
     /// Bumped by every "delete recognition data", so an in-flight registration can tell it was overtaken.
     var deletionGeneration: Int { get }
 }
@@ -62,6 +64,15 @@ struct ProfileRecognitionTemplateStore: RecognitionTemplateStore {
     }
 
     var deletionGeneration: Int { RecognitionDeletionLog.generation }
+
+    func deleteTemplates(for profileIDs: Set<UUID>) throws {
+        RecognitionDeletionLog.recordDeletion()
+        let ctx = stack.competitiveContext
+        for id in profileIDs {
+            if let p = try profile(id), let r = p.recognition { p.recognition = nil; ctx.delete(r) }
+        }
+        try save(ctx)
+    }
 }
 
 extension IdentitySession {
