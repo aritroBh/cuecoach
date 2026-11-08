@@ -57,8 +57,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var epoch = 0
     }
 
-    /// Test/debug hook: the raw cloth mask and its largest component for each full search.
-    nonisolated(unsafe) static var debugMaskSink: ((AutoMask, AutoMask, AutoClothModel) -> Void)?
+    /// Test/debug hook: the raw cloth mask, the table component and the cloth model of each full search.
+    /// Never set in production.
+    static let debugMaskSink = Mutex<(@Sendable (AutoMask, AutoMask, AutoClothModel) -> Void)?>(nil)
 
     let config: Config
     private let keypointProvider: (any TableKeypointProvider)?
@@ -291,7 +292,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             // One rail edge confused (a lamp highlight on the cushion, a shadow, an arm) while the other three agree:
             // refit without it, sizing from the other axis at 2:1. Never more than one rail.
             let perRail = rails.map { Self.reprojectionRMS($0.points, pose: pose0, plane: plane, camera: camera, profile: prof) }
-            guard let k = perRail.indices.max(by: { perRail[$0] < perRail[$1] }), perRail[k] >= config.maxFrameRMS,
+            // Never for a table the frame may crop (the partial-view rule would be bypassed): all four corners in view.
+            let inFrame = imgCorners.allSatisfy { $0.x > 8 && $0.y > 8 && $0.x < Double(img.width - 9) && $0.y < Double(img.height - 9) }
+            guard inFrame, let k = perRail.indices.max(by: { perRail[$0] < perRail[$1] }), perRail[k] >= config.maxFrameRMS,
                   perRail.indices.filter({ $0 != k }).allSatisfy({ perRail[$0] < config.maxFrameRMS }),
                   let f2 = fitRectangle(rails: rails, corners: imgCorners, keypoints: keypoints, camera: camera,
                                         plane: plane, profile: prof, exclude: k, diag: &diag) else {
@@ -342,9 +345,11 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         if let h = f.plane {
             // ARKit often anchors the floor before a low-texture cloth: if LiDAR sees a clear horizontal level at
             // pool-table height above the hinted plane, that level is the table.
-            if let d = f.depth, abs(h.normal.y) > 0.95,
+            // Only a floor-like hint (≥ 1 m under the camera) is replaced, and only by the dominant level in the
+            // central part of the view (where the user points at the table), not any table-height surface in frame.
+            if let d = f.depth, abs(h.normal.y) > 0.95, camera.position.y - h.point.y >= 1.0,
                let level = AutoPlaneRefiner.horizontalLevels(depth: d, camera: camera, imageWidth: f.image.width,
-                                                             imageHeight: f.image.height)
+                                                             imageHeight: f.image.height, central: true)
                    .first(where: { (0.55...1.1).contains($0.level - h.point.y) && camera.position.y - $0.level > 0.2 }) {
                 // Largest-share level in range: the bed, not the narrower rail caps 4.5 cm above it.
                 return AutoTablePlane(origin: SIMD3(h.point.x, level.level, h.point.z), normal: SIMD3(0, 1, 0))
@@ -420,7 +425,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         let opened = AutoClothSegmenter.open(raw)
         // Occluders split the cloth: merge large neighbouring pieces (gap ≤ ~8 % of the frame width).
         let (comp, size) = AutoClothSegmenter.tableComponent(opened, maxGap: max(4, opened.width / 12), minFraction: 0.15)
-        Self.debugMaskSink?(raw, comp, model)
+        if let sink = Self.debugMaskSink.withLock({ $0 }) { sink(raw, comp, model) }
         let expected = expectedTableArea(f, camera: camera, plane: plane)
         let minArea = min(Double(img.width * img.height) / 40, 0.3 * (expected ?? .infinity))
         let gridCell = Double(stride * stride)

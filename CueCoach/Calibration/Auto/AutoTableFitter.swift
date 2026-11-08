@@ -229,8 +229,9 @@ enum AutoPlaneRefiner {
 
     /// Horizontal surfaces LiDAR sees (world y with their share of the samples, largest share first): 1 cm
     /// histogram peaks of trusted samples holding ≥ `minShare`. Walls and people spread over heights: no peak.
+    /// `central`: only the middle 60 % of the view (both axes).
     static func horizontalLevels(depth: AutoDepthMap, camera: AutoCamera, imageWidth: Int, imageHeight: Int,
-                                 minShare: Double = 0.06) -> [(level: Double, share: Double)] {
+                                 minShare: Double = 0.06, central: Bool = false) -> [(level: Double, share: Double)] {
         let sx = Double(imageWidth) / Double(depth.width), sy = Double(imageHeight) / Double(depth.height)
         let top = camera.position.y - 0.15, bottom = camera.position.y - 2.5
         let bins = Int((top - bottom) / 0.01)
@@ -238,8 +239,10 @@ enum AutoPlaneRefiner {
         var hist = [Int](repeating: 0, count: bins)
         var ys: [Double] = []
         var n = 0
-        for v in Swift.stride(from: 0, to: depth.height, by: 3) {
-            for u in Swift.stride(from: 0, to: depth.width, by: 3) {
+        let (v0, v1) = central ? (depth.height / 5, depth.height * 4 / 5) : (0, depth.height)
+        let (u0, u1) = central ? (depth.width / 5, depth.width * 4 / 5) : (0, depth.width)
+        for v in Swift.stride(from: v0, to: v1, by: 3) {
+            for u in Swift.stride(from: u0, to: u1, by: 3) {
                 let i = v * depth.width + u
                 if let c = depth.confidence, c[i] < 1 { continue }
                 let z = Double(depth.depth[i])

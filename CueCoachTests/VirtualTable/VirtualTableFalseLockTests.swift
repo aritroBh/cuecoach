@@ -1,6 +1,7 @@
 import Foundation
 import Geometry
 import simd
+import Synchronization
 import Testing
 @testable import CueCoach
 
@@ -33,6 +34,7 @@ extension VirtualTableFalseLockTests {
         var thumb: VTFrame?
         let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
         #expect(!r.falseLock, "seed \(seed): false lock, corner error \((r.cornerErr ?? 0) * 100) cm")
+        if r.locked { #expect(r.accurate && r.sizeOK == true, "seed \(seed): locked \((r.cornerErr ?? 0) * 100) cm off") }
     }
 }
 
@@ -45,6 +47,7 @@ extension VirtualTableFalseLockTests {
         var thumb: VTFrame?
         let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
         #expect(!r.falseLock, "false lock, corner error \((r.cornerErr ?? 0) * 100) cm")
+        if r.locked { #expect(r.accurate && r.sizeOK == true, "locked \((r.cornerErr ?? 0) * 100) cm off") }
     }
 }
 
@@ -53,9 +56,12 @@ struct VirtualTableTrace {
     @Test func trace() async throws {
         guard let spec = ProcessInfo.processInfo.environment["VQA_TRACE"] else { return }
         let outDir = ProcessInfo.processInfo.environment["VQA_OUT"]
-        nonisolated(unsafe) var lastMask: (AutoMask, AutoMask)?
-        ClassicalAutoTableLocator.debugMaskSink = { lastMask = ($0, $1); print("[trace] model m1 \($2.m1) m2 \($2.m2) s1 \($2.s1) s2 \($2.s2) mI \($2.mI) neutral \($2.neutral)") }
-        defer { ClassicalAutoTableLocator.debugMaskSink = nil }
+        let box = Mutex<(AutoMask, AutoMask)?>(nil)
+        ClassicalAutoTableLocator.debugMaskSink.withLock { $0 = { r, c, m in
+            box.withLock { $0 = (r, c) }
+            print("[trace] model m1 \(m.m1) m2 \(m.m2) s1 \(m.s1) s2 \(m.s2) mI \(m.mI) neutral \(m.neutral)")
+        } }
+        defer { ClassicalAutoTableLocator.debugMaskSink.withLock { $0 = nil } }
         let p = spec.split(separator: ":").map(String.init)
         let s = VTSetup.make(try VirtualTableFalseLockTests.condition(p[0]), seed: UInt64(p[1])!)
         // 1. The shipped path (the harness prints a [trace] line per frame for this cond:seed).
@@ -87,7 +93,7 @@ struct VirtualTableTrace {
                 // Frame with the raw cloth mask (blue tint), the kept component (green) and the truth corners.
                 var rgb = f.pixel.rgb
                 let W = f.pixel.width, H = f.pixel.height
-                if let (raw, comp) = lastMask {
+                if let (raw, comp) = box.withLock({ $0 }) {
                     let st = W / raw.width
                     for y in 0..<H { for x in 0..<W {
                         let gx = min(raw.width - 1, x / st), gy = min(raw.height - 1, y / st), o = (y * W + x) * 3
@@ -103,7 +109,7 @@ struct VirtualTableTrace {
                 if let img = VTImageIO.cgImage(rgb: rgb, width: W, height: H) {
                     VTHarness.writePNG(img, to: URL(fileURLWithPath: dir).appendingPathComponent("trace-\(p[0])-\(p[1])-\(i).png"))
                 }
-                lastMask = nil
+                box.withLock { $0 = nil }
             }
             print(String(format: "[trace] t %.2f %@ path %@ L %.3f W %.3f snap %@ kp %d vis %@ rej %@ | fused %@ err %@ cm",
                          t, "\(e.state)", "\(d.path)", d.measuredLength ?? 0, d.measuredWidth ?? 0, "\(d.snappedSize.map { "\($0)" } ?? "-")",
