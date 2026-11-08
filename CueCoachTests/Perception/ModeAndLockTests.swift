@@ -31,6 +31,16 @@ struct LiveModeTests {
         }
     }
 
+    /// Integration: standalone Live draws the shell's post-shot badge (Screens/PostShot), one vocabulary, so the
+    /// aiming-path code (Live/Perception/Calibration) holds no text at all.
+    @Test func liveBadgeIsTheSharedPostShotBadge() {
+        for c in DecisionRating.allCases {
+            let live = BadgeStyle.of(c), shell = RatingBadgeStyle.of(c)
+            #expect(live.rating == c)
+            #expect(live.symbol == shell.symbol && live.word == shell.words)
+        }
+    }
+
 }
 
 /// Bar conditions the locator must survive (A2).

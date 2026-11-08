@@ -113,6 +113,28 @@ struct LockPlanTests {
         #expect(e.frame != nil)
     }
 
+    /// The keypoint model runs at ≤ 10 Hz of *frame* time (the adapter gates it on frame timestamps), so a
+    /// replay or the VirtualTable harness that feeds frames faster than real time still gets keypoints on every
+    /// due frame, and the 3-frame pocket-evidence rule can be met. A wall-clock throttle starved them (only
+    /// frame 0 ran), which made `adapterLocksOnSyntheticTableWithDepth` fail.
+    @Test func keypointCadenceFollowsFrameTimeNotWallClock() async throws {
+        final class Counting: TableKeypointProvider, @unchecked Sendable {
+            var calls = 0
+            func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] { calls += 1; return [] }
+        }
+        let scene = SyntheticTableScene.demo()
+        let cg = try #require(scene.render())
+        let img = try #require(PixelImage(cgImage: cg))
+        let depth = scene.renderDepth(width: 256, height: 144)
+        let kp = Counting()
+        let loc = AutoTableLocating(keypoints: kp)
+        for i in 0..<30 {   // 2 s of frames at 15 Hz, fed instantly
+            _ = await loc.ingest(LocatorFrame(image: img, camera: scene.camera, planes: [], timestamp: Double(i) / 15, depth: depth))
+        }
+        #expect(kp.calls >= 5, "keypoints ran \(kp.calls)× in 2 s of frames")
+        #expect(kp.calls <= 15, "keypoints ran \(kp.calls)× in 2 s of frames: more than 10 Hz")
+    }
+
     @Test func adapterExpiresHistoryAfterAGap() async throws {
         let scene = SyntheticTableScene.demo()
         let cg = try #require(scene.render())

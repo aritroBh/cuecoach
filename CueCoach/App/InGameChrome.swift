@@ -1,17 +1,30 @@
 import SwiftUI
 
-/// The one place that constructs LiveScreen. When the capture worker's `LiveScreen(mode:)` lands, replace the body
-/// with `LiveScreen(mode: mode.liveMode)` (and uncomment `liveMode` below).
+/// The one place that constructs LiveScreen: mode, drill and the hooks that drive `LiveSession` (aim → menu
+/// closed + badge silenced; settled → rating recorded, badge, turn), with the shell's game injected for ratings
+/// and ring legality. Live's own ✕ dismisses; the cover's `onDismiss` maps it (`AppRouter.liveClosed`).
 struct LiveScreenAdapter: View {
-    let mode: ShellLiveMode
-    var body: some View { LiveScreen() }
+    let session: LiveSession
+    var body: some View {
+        LiveScreen(mode: session.mode.liveMode, drill: session.drill, hooks: Self.hooks(for: session))
+    }
+
+    @MainActor static func hooks(for session: LiveSession) -> LiveHooks {
+        var h = LiveHooks(aimStarted: { session.aimStarted() }, aimEnded: { session.aimEnded() },
+                          aimCancelled: { session.aimCancelled() }, ballsSettled: { session.ballsSettled() },
+                          settled: { rating, passes in session.settled(rating: rating, turnPasses: passes) })
+        let game = session.game
+        h.currentGame = { game?.rules }
+        h.gameAdvanced = { game?.rulesAdvanced($0) }
+        return h
+    }
 }
 
-// extension ShellLiveMode {
-//     var liveMode: LiveMode {
-//         switch self { case .game: .game; case .training(let level): .training(level: level) }
-//     }
-// }
+extension ShellLiveMode {
+    var liveMode: LiveMode {
+        switch self { case .game: .game; case .training(let level): .training(level: level) }
+    }
+}
 
 /// Live camera + the shell's minimal chrome.
 struct LiveHost: View {
@@ -20,7 +33,7 @@ struct LiveHost: View {
 
     var body: some View {
         ZStack {
-            LiveScreenAdapter(mode: session.mode)
+            LiveScreenAdapter(session: session)
             InGameChrome(session: session, router: router)
         }
         .accessibilityElement(children: .contain)

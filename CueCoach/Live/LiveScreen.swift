@@ -105,7 +105,7 @@ struct LiveScreen: View {
         }
         .padding(16)
         .overlay {
-            if let b = model.badge { RatingBadge(style: b).transition(.scale(scale: 0.9).combined(with: .opacity)) }
+            if let b = model.badge { PostShotRatingBadge(rating: b.rating).transition(.scale(scale: 0.9).combined(with: .opacity)) }
         }
         .animation(.smooth(duration: 0.25), value: model.badge)
         .overlay(alignment: .bottomTrailing) {
@@ -244,26 +244,6 @@ struct ShotDock: View {
         .padding(10)
         .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 20))
         .accessibilityIdentifier("live.shotDock")
-    }
-}
-
-/// Post-shot badge (MASTER.md): 72-pt circle, SF Symbol + rating colour + ≤2 words. Shown after the balls settle.
-struct RatingBadge: View {
-    var style: BadgeStyle
-    var body: some View {
-        let c = Color(red: Double((style.color >> 16) & 0xFF) / 255, green: Double((style.color >> 8) & 0xFF) / 255,
-                      blue: Double(style.color & 0xFF) / 255)
-        VStack(spacing: 8) {
-            Image(systemName: style.symbol)
-                .font(.system(size: 30, weight: .bold))
-                .foregroundStyle(c)
-                .frame(width: 72, height: 72)
-                .background(Circle().fill(.black.opacity(0.55)))
-                .overlay(Circle().stroke(c, lineWidth: 3))
-            Text(style.word).font(.system(size: 13, weight: .semibold)).foregroundStyle(c)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("live.badge")
     }
 }
 

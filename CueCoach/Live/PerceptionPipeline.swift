@@ -70,7 +70,13 @@ actor PerceptionPipeline {
     private var feltSamples: [(UInt8, UInt8, UInt8)] = []
     private let feltSampleCount = 10
 
-    init(detector: any BallDetector = ClassicalBallDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
+    /// The shipped detector: the trained Core ML model (synthetic-trained, ANE) with the classical detector as
+    /// fallback. `UserDefaults "cc.detector.classical" = true` forces classical-only (table-side A/B).
+    static func defaultDetector(defaults: UserDefaults = .standard) -> any BallDetector {
+        defaults.bool(forKey: "cc.detector.classical") ? HybridBallDetector(model: nil) : HybridBallDetector()
+    }
+
+    init(detector: any BallDetector = PerceptionPipeline.defaultDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {
         self.detector = detector
         self.previewer = previewer
         let (engine, game) = TargetLegality.defaultGame()
@@ -103,7 +109,7 @@ actor PerceptionPipeline {
             func med(_ k: ((UInt8, UInt8, UInt8)) -> UInt8) -> UInt8 { feltSamples.map(k).sorted()[feltSamples.count / 2] }
             feltReference = (med { $0.0 }, med { $0.1 }, med { $0.2 })
         }
-        var dets = detector.detect(in: f.image, geometry: geo, feltReference: feltReference)
+        var dets = detector.detect(in: f.image, geometry: geo, feltReference: feltReference, timestamp: f.timestamp)
         var depthBalls: [Vec2] = []
         if let d = f.depth {
             depthBalls = depthFinder.find(depth: d, camera: f.camera, table: table)
@@ -124,9 +130,12 @@ actor PerceptionPipeline {
         let cueBall = pickCue(confirmed, at: f.timestamp)
         var marks: [Int: TargetMark] = [:]
         for t in confirmed {
-            let m = TargetLegality.mark(kind: t.kind, number: t.tentativeNumber, legal: legal)
+            var m = TargetLegality.mark(kind: t.kind, number: t.tentativeNumber, legal: legal)
             // A second "cue" (a reflection, chalk, a glass) is not the cue ball and is never a target.
-            marks[t.id] = m == .cue && t.id != cueBall?.id ? .unknown : m
+            if m == .cue && t.id != cueBall?.id { m = .unknown }
+            // D29: a warning needs a settled identity; class votes that still disagree are not one.
+            if m == .illegal && t.kindShare < Self.minTargetShare { m = .unknown }
+            marks[t.id] = m
         }
         var aim: AimSuggestion?
         if rest, let cue = cueBall {

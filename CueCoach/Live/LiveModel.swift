@@ -69,6 +69,7 @@ final class LiveModel {
         let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state)
         game = result.nextState
         lastRating = rating
+        hooks.gameAdvanced(result.nextState)
         legalChanged(eng.legalTargets(result.nextState))
         if mode == .game {
             hooks.settled(rating, result.turnPasses)

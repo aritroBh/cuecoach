@@ -192,3 +192,26 @@ struct SBAvatar: View {
         .opacity(dimmed ? 0.4 : 1)
     }
 }
+
+/// The post-shot badge without the shell's team arc and tap/swipe (MASTER.md: 72-pt circle, symbol + colour +
+/// ≤ 2 words). Standalone Live shows it after the balls settle; Live hides it the moment the next aim starts.
+struct PostShotRatingBadge: View {
+    var rating: DecisionRating
+
+    var body: some View {
+        let style = RatingBadgeStyle.of(rating)
+        VStack(spacing: 8) {
+            RatingBadgeCircle(style: style, diameter: 72, symbolSize: 32)
+            Text(style.words)
+                .font(SBFont.caption)
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+                .foregroundStyle(SBColor.ink)
+                .lineLimit(1)
+                .fixedSize()
+                .shadow(color: .black.opacity(0.85), radius: 3)
+                .shadow(color: .black.opacity(0.85), radius: 6)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("live.badge")
+    }
+}

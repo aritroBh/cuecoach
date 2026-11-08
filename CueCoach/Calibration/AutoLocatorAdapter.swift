@@ -82,7 +82,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             plane: hint.map { AutoPlaneHint(point: $0.point, normal: $0.normal) },
             timestamp: f.timestamp,
             tracking: f.trackingNormal ? .normal : .limited)
-        mouthCounter?.beginFrame()   // this frame's count only (inference may be skipped/throttled)
+        mouthCounter?.beginFrame(timestamp: f.timestamp)   // this frame's count only; ≤ 10 Hz of frame time
         let e = auto.process(frame)
         state.withLock { s in
             s.lastAuto = e
@@ -185,19 +185,31 @@ enum TableKeypointModel {
     static func provider() -> (any TableKeypointProvider)? { CoreMLTableKeypointProvider.shared }
 }
 
-/// Wraps the keypoint model and remembers how many *mouth* keypoints (corner/side pocket mouths) it returned last.
+/// Wraps the keypoint model: paces it at ≤ 10 Hz of *frame* time (not wall clock, so a replay or the VirtualTable
+/// harness running faster than real time sees the same cadence as the phone) and remembers how many *mouth*
+/// keypoints (corner/side pocket mouths) it returned on this frame.
 final class MouthCountingProvider: TableKeypointProvider, @unchecked Sendable {
     private let inner: any TableKeypointProvider
-    private let count = Mutex(0)
+    private let state = Mutex((mouths: 0, due: true, lastRun: Double?.none))
+    /// Seconds of frame time between model runs (≤ 10 Hz on the ANE).
+    var minInterval = 0.1
     init(wrapping inner: any TableKeypointProvider) { self.inner = inner }
 
-    var lastMouths: Int { count.withLock { $0 } }
-    /// Call before each locator frame so a frame that skips inference reports 0, not the previous count.
-    func beginFrame() { count.withLock { $0 = 0 } }
+    var lastMouths: Int { state.withLock { $0.mouths } }
+    /// Call before each locator frame: resets the count (a frame that skips inference reports 0, not the previous
+    /// count) and decides whether the model is due on this frame. A timestamp going backwards (new view) runs.
+    func beginFrame(timestamp t: Double) {
+        state.withLock { s in
+            s.mouths = 0
+            if let l = s.lastRun, t >= l, t - l < minInterval * 0.9 { s.due = false } else { s.due = true; s.lastRun = t }
+        }
+    }
 
     func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+        // Once per due frame: Auto may ask more than once per frame.
+        guard state.withLock({ s -> Bool in defer { s.due = false }; return s.due }) else { return [] }
         let k = inner.keypoints(in: image, intrinsics: intrinsics)
-        count.withLock { $0 = Self.mouths(in: k) }
+        state.withLock { $0.mouths = Self.mouths(in: k) }
         return k
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import Engine
+import Rules
 import Geometry
 
 struct SessionShot: Hashable, Sendable {
@@ -27,11 +28,25 @@ final class GameSessionModel {
     /// The game's mesh session when other phones joined (nil = this phone only).
     var mesh: (any GameMeshLink)?
     @ObservationIgnored let badge = PostShotBadgeModel()
+    /// The game's rules (D11 rule set from setup) and state, which Live rates shots against and advances.
+    @ObservationIgnored let rulesEngine: RulesEngine
+    @ObservationIgnored private var rulesState: GameState
 
     init(config: GameConfig) {
         self.config = config
         teams = config.teams
+        (rulesEngine, rulesState) = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count)
     }
+
+    /// Rules state with the shooter the chrome shows (a one-tap turn correction moves it too).
+    var rules: (RulesEngine, GameState) {
+        var g = rulesState
+        g.shooter = shootingTeam
+        return (rulesEngine, g)
+    }
+
+    /// Live settled a shot against `rules`: keep its next state.
+    func rulesAdvanced(_ next: GameState) { rulesState = next }
 
     /// Joiner phones may not know the lineup yet (camera angle only).
     var hasLineup: Bool { !rotation.isEmpty }

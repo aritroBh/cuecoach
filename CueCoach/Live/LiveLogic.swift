@@ -52,22 +52,29 @@ struct BumpDetector: Sendable {
 enum TargetMark: Equatable, Sendable { case cue, legal, illegal, unknown }
 
 enum TargetLegality {
-    /// Bar-8 open table until the Rules wiring lands (game flow).
-    static func defaultGame() -> (RulesEngine, GameState) {
-        let engine = RulesEngine(ruleSet: .barEight)
+    /// Bar-8 open table: standalone Live (no shell game).
+    static func defaultGame() -> (RulesEngine, GameState) { startingGame(.barEight) }
+
+    /// A game as Live first sees it: the break already taken (the camera can't count balls to the rail on a
+    /// break), table open (8-ball) or in play (9-ball), no ball in hand.
+    static func startingGame(_ ruleSet: RuleSetID, teams: Int = 2) -> (RulesEngine, GameState) {
+        let engine = RulesEngine(ruleSet: ruleSet, teams: max(2, teams))
         var g = engine.newGame()
-        g.phase = .open
+        g.phase = ruleSet == .wpaNine ? .inPlay : .open
         g.ballInHand = .none
         return (engine, g)
     }
 
+    /// D29: `.illegal` (red ring + one buzz) only for an identified ball (its number is known). A ball known only
+    /// by its look (a group, or "dark") could be a misread 8 or another group's ball: it can show a legal ring
+    /// but never a warning.
     static func mark(kind: BallKind, number: Int?, legal: Set<BallID>) -> TargetMark {
         if kind == .cue || number == 0 { return .cue }
         if let n = number, let id = BallID(n) { return legal.contains(id) ? .legal : .illegal }
         switch kind {
-        case .eight: return legal.contains(.eight) ? .legal : .illegal
-        case .solid: return legal.contains { $0.group == .solids } ? .legal : .illegal
-        case .stripe: return legal.contains { $0.group == .stripes } ? .legal : .illegal
+        case .eight: return legal.contains(.eight) ? .legal : .unknown
+        case .solid: return legal.contains { $0.group == .solids } ? .legal : .unknown
+        case .stripe: return legal.contains { $0.group == .stripes } ? .legal : .unknown
         default: return .unknown
         }
     }
@@ -311,26 +318,14 @@ enum RuleRating {
     }
 }
 
-/// Badge look (MASTER.md post-shot badge): SF Symbol + colour + ≤2 words.
+/// Badge look (MASTER.md post-shot badge): SF Symbol + colour + ≤2 words — the shell's `RatingBadgeStyle`
+/// (Screens/PostShot), so standalone Live and the shell show the same badge. Live holds no text itself.
 struct BadgeStyle: Equatable, Sendable {
-    var symbol: String
-    var color: UInt32   // 0xRRGGBB
-    var word: String
+    var rating: DecisionRating
+    var symbol: String { RatingBadgeStyle.of(rating).symbol }
+    var word: String { RatingBadgeStyle.of(rating).words }
 
-    static func of(_ r: DecisionRating) -> BadgeStyle {
-        switch r {
-        case .brilliant: BadgeStyle(symbol: "sparkles", color: 0x22D3EE, word: "Brilliant")
-        case .great: BadgeStyle(symbol: "star.fill", color: 0x4ADE80, word: "Great")
-        case .best: BadgeStyle(symbol: "checkmark.seal.fill", color: 0x4ADE80, word: "Best")
-        case .good: BadgeStyle(symbol: "checkmark", color: 0xF2F5F3, word: "Good")
-        case .okay: BadgeStyle(symbol: "hand.thumbsup", color: 0xF2F5F3, word: "Okay")
-        case .book: BadgeStyle(symbol: "book.fill", color: 0xF2F5F3, word: "Book")
-        case .inaccuracy: BadgeStyle(symbol: "exclamationmark", color: 0xFACC15, word: "Inaccuracy")
-        case .miss: BadgeStyle(symbol: "circle.dashed", color: 0xFACC15, word: "Miss")
-        case .mistake: BadgeStyle(symbol: "questionmark", color: 0xFB923C, word: "Mistake")
-        case .blunder: BadgeStyle(symbol: "xmark", color: 0xF87171, word: "Blunder")
-        }
-    }
+    static func of(_ r: DecisionRating) -> BadgeStyle { BadgeStyle(rating: r) }
 }
 
 /// Glyph for each lock failure (icon only, no text).
@@ -448,6 +443,8 @@ struct LiveHooks {
     var shellShowsBadge = false
     /// The shell's active game (rules + state) for ratings and ring legality; nil = bar-8 open table.
     var currentGame: @MainActor () -> (RulesEngine, GameState)? = { nil }
+    /// The rules state after a settled shot (from `currentGame`'s state), so the shell's copy follows play.
+    var gameAdvanced: @MainActor (GameState) -> Void = { _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

@@ -143,7 +143,7 @@ struct R7Tests {
         _ = c.keypoints(in: AutoRGBImage(width: 1, height: 1, rgb: [0, 0, 0]),
                         intrinsics: AutoIntrinsics(fx: 1, fy: 1, cx: 0, cy: 0, width: 1, height: 1))
         #expect(c.lastMouths == 2)
-        c.beginFrame()
+        c.beginFrame(timestamp: 1)
         #expect(c.lastMouths == 0)   // this frame never called the model
     }
 

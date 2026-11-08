@@ -12,7 +12,8 @@ final class CoreMLTableKeypointProvider: TableKeypointProvider, @unchecked Senda
     private let inputName: String
     private let outputName: String
     private let state = Mutex((last: -Double.infinity, inferenceMs: 0.0))
-    var minInterval = 0.1          // ≤ 10 Hz
+    /// Wall-clock backstop; the live cadence (≤ 10 Hz of frame time) is `MouthCountingProvider`'s.
+    var minInterval = 0.0
     var minDetectionConfidence = 0.35
 
     /// The bundled model, loaded once (nil if missing — the locator then runs classical-only).
