@@ -176,7 +176,7 @@ struct LockR5Tests {
         let ti = try #require(PixelImage(cgImage: tcg))
         let ri = try #require(PixelImage(cgImage: rcg))
         let td = table.renderDepth(width: 256, height: 144), rd = rug.renderDepth(width: 256, height: 144)
-        let kp = MouthsAtPockets(Self.pocketPixels(table))
+        let kp = try RealModelSwitch()
         let loc = AutoTableLocating(keypoints: kp)
         var t = 0.0, lockedTable = false
         for _ in 0..<60 where !lockedTable {
@@ -185,7 +185,7 @@ struct LockR5Tests {
             t += 1.0 / 15
         }
         #expect(lockedTable)
-        kp.pixels = []
+        kp.on = false
         let rugCorners = rug.frame.corners.map { rug.frame.world($0) }
         var lockedRug = false
         for _ in 0..<90 {
@@ -215,7 +215,7 @@ struct LockR5Tests {
         let table = SyntheticTableScene.demo()
         let tcg = try #require(table.render())
         let ti = try #require(PixelImage(cgImage: tcg))
-        let kp = MouthsAtPockets(Self.pocketPixels(table))
+        let kp = try RealModelSwitch()
         let loc = AutoTableLocating(keypoints: kp)
         var t = 0.0, lockedTable = false
         for _ in 0..<60 where !lockedTable {
@@ -225,7 +225,7 @@ struct LockR5Tests {
             t += 1.0 / 15
         }
         #expect(lockedTable)
-        kp.pixels = []
+        kp.on = false
         let tableCentre = table.frame.world(Vec2(table.frame.spec.length / 2, table.frame.spec.width / 2))
         var badLock = false
         for step in 1...12 {
@@ -315,4 +315,14 @@ final class MouthsAtPockets: TableKeypointProvider, @unchecked Sendable {
     var pixels: [AutoTableKeypoint]
     init(_ p: [AutoTableKeypoint]) { pixels = p }
     func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] { pixels }
+}
+
+/// The bundled table-keypoint model, switchable off (a scene with no pockets for the model to see).
+final class RealModelSwitch: TableKeypointProvider, @unchecked Sendable {
+    var on = true
+    let real: any TableKeypointProvider
+    init() throws { real = try #require(TableKeypointModel.provider(), "TableKeypoints model missing") }
+    func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+        on ? real.keypoints(in: image, intrinsics: intrinsics) : []
+    }
 }
