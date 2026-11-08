@@ -12,14 +12,15 @@ Competitive.store (backed up)        Training.store (backed up)          Recogni
 ```
 
 Schema versions: Competitive V1 (RecognitionData inside) → **V2** (custom stage moves every RecognitionData row
-to Recognition.store, deletes it here, then the stack VACUUMs the file and removes the old external-blob
-folder so no template bytes stay in a device backup). Training V1. Recognition V1.
+to Recognition.store, writes `.Competitive.scrub-pending`, deletes the rows here; every open then retries the
+scrub (remove the old external-blob folder, VACUUM, WAL checkpoint(TRUNCATE) checked for busy) until it succeeds
+and clears the marker, so no template bytes stay in a device backup even after a crash). Training V1. Recognition V1.
 
 ## Competitive store
 
 | Model | Fields | Notes |
 |---|---|---|
-| `PlayerProfile` | `id: UUID` (unique), `name`, `avatarSymbol`, `avatarColor`, `isLocalOwner: Bool`, `createdAt`, `skillModel: SkillModel` (Codable: aim/speed/spin noise σ, n samples), `recognitionRevokedAt: Date?` (V2; revocation tombstone, exported, merged max-wins) | One local owner per phone; peers' profiles cached only for the session (`isSessionGuest`) and purged on session end (with their templates). A backup profile that matches a guest id is promoted to a saved profile; promotion drops the guest's session templates unless the person consents then (`importBackup(_:keepingRecognitionOf:)`, `promoteSessionGuest(_:keepRecognition:)`). |
+| `PlayerProfile` | `id: UUID` (unique), `name`, `avatarSymbol`, `avatarColor`, `isLocalOwner: Bool`, `createdAt`, `skillModel: SkillModel` (Codable: aim/speed/spin noise σ, n samples), `recognitionRevokedAt: Date?` (V2; revocation tombstone, exported, merged max-wins) | One local owner per phone; peers' profiles cached only for the session (`isSessionGuest`) and purged on session end (with their templates). A backup profile that matches a guest id is promoted to a saved profile; promotion drops the guest's session templates (and tells the galleries) unless the person consents then (`importBackup(_:keepingRecognitionOf:)`, `promoteSessionGuest(_:keepRecognition:)`); without consent it also moves `recognitionRevokedAt` to now, so a late session capture is refused. |
 | `Session` | `id`, `startedAt`, `endedAt?`, `ruleSet: RuleSetID`, `format: GameFormat`, `tableSize: TableSize`, `peerDeviceNames: [String]`, `voteTally: [RuleSetID: Int]` | |
 | `Game` | `id`, `session`, `index`, `ruleSet`, `teams: [Team]` (Codable: member player IDs, shooting order), `winnerTeam: Int?`, `winProbSeries: [Double]`, `startedAt`, `endedAt?` | Shooting order editable mid-game → stored as order-change events inside `teams`. |
 | `Shot` | `id`, `game`, `index`, `shooterID: UUID`, `attributionSource` (auto/turnOrder/tap), `preState: TableState`, `postState: TableState`, `calledPocket: Pocket?`, `firstContact: BallID?`, `railsAfterContact: Int`, `pocketed: [BallID: Pocket]`, `fouls: [Foul]`, `features: ShotFeatures` (cut bucket, distance bucket, pocket type, kind bank/combo/kick/rail/jump/safety), `made`, `onTarget`, `cueResult` (inZone/outOfZone/nA), `decisionRating`, `executionRating`, `wpaDelta: Double`, `isClutch`, `timeOnShot: Double`, `clipRef: String?` | Table states stored as Codable value types from `Geometry`. |

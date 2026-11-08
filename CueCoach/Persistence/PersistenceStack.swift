@@ -37,7 +37,8 @@ final class PersistenceStack {
     /// - Parameters:
     ///   - inMemory: tests only; nothing touches disk.
     ///   - directory: where the stores live (default: Application Support).
-    init(inMemory: Bool = false, directory: URL? = nil) throws {
+    ///   - skipScrubForTesting: simulates a crash between the V1 → V2 migration and its scrub.
+    init(inMemory: Bool = false, directory: URL? = nil, skipScrubForTesting: Bool = false) throws {
         let dir = directory ?? URL.applicationSupportDirectory
         self.directory = inMemory ? nil : dir
         if !inMemory { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
@@ -48,7 +49,11 @@ final class PersistenceStack {
             let url = dir.appendingPathComponent("Competitive.store")
             do { _ = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,
                                         plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: false) }
-            if RecognitionMigration.consumeMigrated(url) { try RecognitionMigration.scrub(url) }
+            // Retried on every open until it succeeds; a failure (e.g. a blocked checkpoint) keeps the marker and
+            // the app usable rather than locking the user out of their stats.
+            if RecognitionMigration.isScrubPending(in: dir), !skipScrubForTesting {
+                try? RecognitionMigration.scrub(url)
+            }
         }
         competitiveContainer = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,
                                                   plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: inMemory)

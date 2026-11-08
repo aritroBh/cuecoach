@@ -149,6 +149,22 @@ import Testing
         #expect(!RawScan.contains(Self.bigMarker.prefix(4096), under: dir, excluding: rec))
     }
 
+    /// Codex r1: the scrub must survive a crash between the migration and the VACUUM. The pending mark is a file
+    /// written before the rows are deleted, so the next open still scrubs.
+    @Test func scrubInterruptedAfterMigrationIsRetriedOnNextOpen() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try makeV1Store(at: dir)
+        do { _ = try PersistenceStack(directory: dir, skipScrubForTesting: true) }   // "crash" before the scrub
+        #expect(FileManager.default.fileExists(atPath: RecognitionMigration.pendingScrubURL(in: dir).path))
+        let stack = try PersistenceStack(directory: dir)
+        #expect(!FileManager.default.fileExists(atPath: RecognitionMigration.pendingScrubURL(in: dir).path))
+        let rec = PersistenceStack.recognitionDirectory(in: dir)
+        #expect(!RawScan.contains(Self.marker, under: dir, excluding: rec))
+        #expect(!RawScan.contains(Self.bigMarker.prefix(4096), under: dir, excluding: rec))
+        #expect(try stack.recognition(for: Fixture.ownerID)?.faceEmbedding == Self.marker)
+    }
+
     @Test func migratedStoreReopensWithoutMigratingAgain() throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -422,6 +438,40 @@ import Testing
         let other = try stackWithLiveGuest()
         try other.promoteSessionGuest(Fixture.guestID, keepRecognition: true)
         #expect(try other.recognition(for: Fixture.guestID) != nil)
+    }
+
+    /// Codex r1: a delayed session capture can't sneak back after a non-consented promotion.
+    @Test func promotionWithoutConsentFencesLateSessionCaptures() throws {
+        let stack = try stackWithLiveGuest()
+        try stack.promoteSessionGuest(Fixture.guestID, keepRecognition: false)
+        #expect(throws: RecognitionError.revoked) {
+            try stack.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([1]), appearanceEmbedding: nil,
+                                       optedInAt: Fixture.t0.addingTimeInterval(10), version: 1)
+        }
+        let viaImport = try stackWithLiveGuest()
+        try viaImport.importBackup(backupSavingGuest())
+        #expect(throws: RecognitionError.revoked) {
+            try viaImport.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([1]), appearanceEmbedding: nil,
+                                           optedInAt: Fixture.t0.addingTimeInterval(10), version: 1)
+        }
+        // A fresh opt-in after promotion is still possible.
+        try stack.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([2]), appearanceEmbedding: nil,
+                                   optedInAt: .now.addingTimeInterval(60), version: 1)
+        #expect(try stack.recognition(for: Fixture.guestID)?.faceEmbedding == Data([2]))
+    }
+
+    /// Codex r1: a gallery can hold a session-only copy with no persisted row; promotion must still reach it.
+    @Test func promotionNotifiesGalleriesEvenWithoutAStoredRow() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        stack.competitiveContext.insert(PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "s",
+                                                      avatarColor: "c", isSessionGuest: true))
+        try stack.competitiveContext.save()
+        let gallery = FakeGallery()
+        stack.register(gallery)
+        try stack.promoteSessionGuest(Fixture.guestID, keepRecognition: false)
+        #expect(gallery.changes == [.purged([Fixture.guestID])])
+        try stack.purgeSessionGuests()   // nothing left to purge: no notification for an empty set
+        #expect(gallery.changes == [.purged([Fixture.guestID])])
     }
 
     @Test func failedImportDoesNotPromoteOrKeepGuestRecognition() throws {

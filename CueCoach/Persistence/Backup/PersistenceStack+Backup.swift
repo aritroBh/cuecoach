@@ -111,10 +111,11 @@ extension PersistenceStack {
         let backupIDs = Set(backup.competitive.profiles.map(\.id))
         let promoted = Set(try c.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isSessionGuest }))
             .map(\.id)).intersection(backupIDs)
-        try dropRecognition(of: promoted.subtracting(consented))
+        let fenced = promoted.subtracting(consented)
+        try dropRecognition(of: fenced)
         let trainingSnapshot = try trainingSection()
         do {
-            try mergeCompetitive(backup.competitive, into: c)
+            try mergeCompetitive(backup.competitive, fencing: fenced, at: .now, into: c)
             try mergeTraining(backup.training, into: t)
             try beforeSave?(.training)
             try t.save()
@@ -181,7 +182,8 @@ extension PersistenceStack {
         }
     }
 
-    private func mergeCompetitive(_ b: BackupV1.Competitive, into ctx: ModelContext) throws {
+    private func mergeCompetitive(_ b: BackupV1.Competitive, fencing fenced: Set<UUID>, at now: Date,
+                                  into ctx: ModelContext) throws {
         var hasOwner = try ctx.fetchCount(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })) > 0
 
         let profiles = try upsert(b.profiles, ctx, id: \PlayerProfile.id, dtoID: \BackupV1.Profile.id,
@@ -208,6 +210,7 @@ extension PersistenceStack {
             if let r = d.recognitionRevokedAt, m.recognitionRevokedAt.map({ BackupV1.millis($0) < BackupV1.millis(r) }) ?? true {
                 m.recognitionRevokedAt = r
             }
+            if fenced.contains(d.id) { Self.fence(m, at: now) }   // non-consented promotion: block late captures
         }
 
         let sessions = try upsert(b.sessions, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },

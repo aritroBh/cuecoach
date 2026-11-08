@@ -1,7 +1,6 @@
 import Foundation
 import SQLite3
 import SwiftData
-import Synchronization
 
 // Recognition store (Recognition/Recognition.store). See docs/SCHEMA.md.
 // Opt-in face/appearance embeddings only. Its own SwiftData store, in its own directory that is excluded from
@@ -150,27 +149,30 @@ enum RecognitionStoreFiles {
     }
 }
 
-/// Tracks which Competitive.store files just ran the V1 → V2 migration, so the stack can scrub the pages the
-/// deleted embeddings occupied (SQLite keeps freed pages until VACUUM).
+/// After the V1 → V2 stage deleted the embeddings from Competitive.store, SQLite still holds their bytes in free
+/// pages and the WAL, and the V1 external-blob folder still holds the big ones. A marker file (written by the stage
+/// before it deletes anything) makes the scrub durable: every open retries it until it succeeds.
 enum RecognitionMigration {
-    enum Failure: Error { case noStoreURL, sqlite(String) }
+    enum Failure: Error { case noStoreURL, sqlite(String), checkpointBlocked, marker }
 
-    private static let migrated = Mutex<Set<String>>([])
+    static func pendingScrubURL(in base: URL) -> URL { base.appendingPathComponent(".Competitive.scrub-pending") }
 
-    static func markMigrated(_ storeURL: URL) {
-        _ = migrated.withLock { $0.insert(storeURL.standardizedFileURL.path) }
+    static func markScrubPending(in base: URL) throws {
+        guard FileManager.default.createFile(atPath: pendingScrubURL(in: base).path, contents: nil) else {
+            throw Failure.marker
+        }
     }
 
-    /// True once per migrated store (consumes the mark).
-    static func consumeMigrated(_ storeURL: URL) -> Bool {
-        migrated.withLock { $0.remove(storeURL.standardizedFileURL.path) != nil }
+    static func isScrubPending(in base: URL) -> Bool {
+        FileManager.default.fileExists(atPath: pendingScrubURL(in: base).path)
     }
 
-    /// Rewrites the database without free pages and empties the WAL, so deleted rows' bytes are gone, and
-    /// removes the external-blob folder: in CompetitiveSchemaV2 no attribute uses external storage, so every
-    /// file left there belonged to a V1 RecognitionData row.
+    /// Removes the V1 external-blob folder (no CompetitiveSchemaV2 attribute uses external storage, so every file
+    /// there belonged to a V1 RecognitionData row), VACUUMs the database and truncates the WAL, checking that each
+    /// checkpoint really completed. Only call with no other connection open. Clears the marker on success.
     static func scrub(_ storeURL: URL) throws {
-        let support = storeURL.deletingLastPathComponent()
+        let base = storeURL.deletingLastPathComponent()
+        let support = base
             .appendingPathComponent(".\(storeURL.deletingPathExtension().lastPathComponent)_SUPPORT/_EXTERNAL_DATA")
         if FileManager.default.fileExists(atPath: support.path) { try FileManager.default.removeItem(at: support) }
         var db: OpaquePointer?
@@ -180,10 +182,23 @@ enum RecognitionMigration {
         }
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, 5_000)
-        for sql in ["PRAGMA wal_checkpoint(TRUNCATE);", "VACUUM;", "PRAGMA wal_checkpoint(TRUNCATE);"] {
-            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
-                throw Failure.sqlite("\(sql) \(String(cString: sqlite3_errmsg(db)))")
-            }
+        try checkpoint(db)
+        guard sqlite3_exec(db, "VACUUM;", nil, nil, nil) == SQLITE_OK else {
+            throw Failure.sqlite("VACUUM \(String(cString: sqlite3_errmsg(db)))")
         }
+        try checkpoint(db)
+        try FileManager.default.removeItem(at: pendingScrubURL(in: base))
+    }
+
+    /// `PRAGMA wal_checkpoint(TRUNCATE)` reports a blocked checkpoint in its result row (busy = 1), not in the
+    /// return code, so read the row.
+    private static func checkpoint(_ db: OpaquePointer?) throws {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA wal_checkpoint(TRUNCATE);", -1, &stmt, nil) == SQLITE_OK else {
+            throw Failure.sqlite(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { throw Failure.sqlite(String(cString: sqlite3_errmsg(db))) }
+        guard sqlite3_column_int(stmt, 0) == 0 else { throw Failure.checkpointBlocked }
     }
 }

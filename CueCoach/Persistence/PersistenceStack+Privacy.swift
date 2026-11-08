@@ -54,8 +54,10 @@ extension PersistenceStack {
         let undo = RecognitionUndo(records: rows.map(\.record))
         if let directory {
             try RecognitionStoreFiles.prepareDirectory(in: directory)
-            FileManager.default.createFile(atPath: RecognitionStoreFiles.pendingDeleteURL(in: directory).path,
-                                           contents: nil, attributes: [.protectionKey: FileProtectionType.complete])
+            // No marker, no staging: without it a crash inside the window would leave the templates on disk.
+            guard FileManager.default.createFile(atPath: RecognitionStoreFiles.pendingDeleteURL(in: directory).path,
+                                                 contents: nil, attributes: [.protectionKey: FileProtectionType.complete])
+            else { throw CocoaError(.fileWriteUnknown) }
         }
         for r in rows { ctx.delete(r) }
         notifyGalleries(.purgedAll)
@@ -65,12 +67,17 @@ extension PersistenceStack {
     /// Undo inside the window: puts the snapshot back. Rolls back the staged deletes and re-inserts any row that a
     /// commit already removed, then drops the marker.
     func undoRecognitionDeletion(_ undo: RecognitionUndo) throws {
+        // Marker first: if it can't be removed, throw before restoring, so the caller commits instead of
+        // leaving restored data that the next launch would delete behind the user's back.
+        if let directory {
+            let marker = RecognitionStoreFiles.pendingDeleteURL(in: directory)
+            if FileManager.default.fileExists(atPath: marker.path) { try FileManager.default.removeItem(at: marker) }
+        }
         let ctx = recognitionContext
         ctx.rollback()
         let present = Set(try ctx.fetch(FetchDescriptor<RecognitionData>()).map(\.id))
         for r in undo.records where !present.contains(r.id) { ctx.insert(RecognitionData(r)) }
         if ctx.hasChanges { try ctx.save() }
-        if let directory { try? FileManager.default.removeItem(at: RecognitionStoreFiles.pendingDeleteURL(in: directory)) }
         try protectRecognitionFiles()
         notifyGalleries(.restored(Set(undo.records.map(\.profileID))))
     }
@@ -109,12 +116,16 @@ extension PersistenceStack {
     }
 
     /// A live session guest becomes a saved profile. Its session templates go unless the person consented to
-    /// being remembered at promotion time (`keepRecognition`).
-    func promoteSessionGuest(_ id: UUID, keepRecognition: Bool) throws {
+    /// being remembered at promotion time (`keepRecognition`). Without consent a revocation fence is set too, so a
+    /// late capture from the session can't be stored afterwards; only a fresh opt-in can.
+    func promoteSessionGuest(_ id: UUID, keepRecognition: Bool, now: Date = .now) throws {
         let c = competitiveContext
         guard let p = try c.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.id == id })).first,
               p.isSessionGuest else { return }
-        if !keepRecognition { try dropRecognition(of: [id]) }
+        if !keepRecognition {
+            try dropRecognition(of: [id])
+            Self.fence(p, at: now)
+        }
         p.isSessionGuest = false
         try c.save()
     }
@@ -126,15 +137,22 @@ extension PersistenceStack {
         try competitiveContext.save()
     }
 
-    /// Removes these profiles' templates (saved) and tells the galleries. No-op for an empty set or no rows.
+    /// Removes these profiles' templates (saved) and tells the galleries, which may hold session-only copies
+    /// even when nothing was persisted. No-op for an empty set.
     func dropRecognition(of ids: Set<UUID>) throws {
         guard !ids.isEmpty else { return }
         let ctx = recognitionContext
         let rows = try ctx.fetch(FetchDescriptor<RecognitionData>()).filter { ids.contains($0.profileID) }
-        guard !rows.isEmpty else { return }
-        for r in rows { ctx.delete(r) }
-        try ctx.save()
-        notifyGalleries(.purged(Set(rows.map(\.profileID))))
+        if !rows.isEmpty {
+            for r in rows { ctx.delete(r) }
+            try ctx.save()
+        }
+        notifyGalleries(.purged(ids))
+    }
+
+    /// Moves the revocation tombstone forward to `now` (never back). Unsaved.
+    static func fence(_ p: PlayerProfile, at now: Date) {
+        if p.recognitionRevokedAt.map({ $0 < now }) ?? true { p.recognitionRevokedAt = now }
     }
 
     /// Templates whose profile is gone (deleted elsewhere, or a crash between the two saves) are removed on open.

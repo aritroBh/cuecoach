@@ -91,7 +91,7 @@ enum CompetitiveMigrationPlan: SchemaMigrationPlan {
 
     /// Copies every V1 RecognitionData row into Recognition.store (next to Competitive.store), then deletes the
     /// rows here so the entity can be dropped. If the copy fails the migration throws and V1 stays intact.
-    /// Freed pages are scrubbed afterwards by `PersistenceStack` (see `RecognitionMigration`).
+    /// Freed pages are scrubbed afterwards by `PersistenceStack`; a marker file keeps that retryable across crashes.
     static var v1ToV2: MigrationStage {
         MigrationStage.custom(
         fromVersion: CompetitiveSchemaV1.self, toVersion: CompetitiveSchemaV2.self,
@@ -109,9 +109,10 @@ enum CompetitiveMigrationPlan: SchemaMigrationPlan {
             }
             let dir = storeURL.deletingLastPathComponent()
             try RecognitionStoreFiles.write(records, in: dir)
+            // Durable before the delete: a crash anywhere after this point still gets scrubbed on the next open.
+            try RecognitionMigration.markScrubPending(in: dir)
             for r in rows { ctx.delete(r) }
             try ctx.save()
-            RecognitionMigration.markMigrated(storeURL)
         },
         didMigrate: nil)
     }

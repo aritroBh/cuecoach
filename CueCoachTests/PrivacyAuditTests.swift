@@ -147,8 +147,8 @@ struct PrivacyAuditTests {
         "Foundation", "Darwin", "Glibc", "os", "Observation", "Combine", "Dispatch", "simd", "Accelerate",
         // UI
         "SwiftUI", "UIKit", "CoreGraphics", "QuartzCore", "CoreImage", "Metal", "MetalKit", "RealityKit", "Charts",
-        // Persistence (SQLite3 only to VACUUM a migrated store file; Synchronization for a Mutex)
-        "SwiftData", "SQLite3", "Synchronization",
+        // Persistence (SQLite3 only to VACUUM a migrated store file)
+        "SwiftData", "SQLite3",
         // Perception (on-device)
         "AVFoundation", "AVKit", "Vision", "CoreML", "ARKit", "CoreMotion", "CoreVideo", "CoreMedia", "ImageIO",
         "UniformTypeIdentifiers", "PhotosUI", "Photos",
