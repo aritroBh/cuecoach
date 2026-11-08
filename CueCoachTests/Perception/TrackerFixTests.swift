@@ -56,4 +56,10 @@ struct TrackerFixTests {
         #expect(records.count == 1)
         #expect(records.allSatisfy { $0.end > $0.start })
     }
+
+    /// M7: without LiDAR a blob too small to judge for shading is rejected, not waved through.
+    @Test func shadingFilterFailsClosedOnTinyBlobs() {
+        let img = Stress.blankImage()
+        #expect(!ClassicalBallDetector.hasBallShading(img, sourcePoint: Vec2(500, 400), radiusPx: 5))
+    }
 }

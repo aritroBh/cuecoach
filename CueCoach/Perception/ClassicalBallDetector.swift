@@ -6,38 +6,58 @@ import Geometry
 struct ClassicalBallDetector: BallDetector {
     var minCoverage = 0.72
     var minDiscFill = 0.68
+    /// Cloth colour measured at lock (neutral light). When set, each frame is white-balanced so the cloth
+    /// matches it again: a coloured bar light or a dimmer then leaves the cue ball white (B1/B2).
+    var feltReference: RGB8? = nil
+
+    typealias RGB8 = (UInt8, UInt8, UInt8)
+
+    var needsShadingCheck: Bool { true }
+
+    func detect(in img: PixelImage, geometry geo: FrameGeometry, feltReference ref: RGB8?) -> [BallDetection] {
+        var d = self
+        d.feltReference = ref
+        return d.detect(in: img, geometry: geo)
+    }
+
+    /// Median cloth colour of this frame (what `feltReference` is captured from at lock).
+    func feltColor(in img: PixelImage, geometry geo: FrameGeometry) -> RGB8? {
+        guard let reg = tableRegion(img, geo: geo), reg.1 > 100 else { return nil }
+        return medianColor(img, region: reg.0, step: 3)
+    }
+
+    /// Per-channel gains that map this frame's cloth back to the reference chromaticity (brightness kept).
+    static func whiteBalance(felt: RGB8, reference ref: RGB8?) -> (Double, Double, Double) {
+        guard let ref else { return (1, 1, 1) }
+        let f = (Double(felt.0) + 1, Double(felt.1) + 1, Double(felt.2) + 1)
+        let q = (Double(ref.0) + 1, Double(ref.1) + 1, Double(ref.2) + 1)
+        var g = (q.0 / f.0, q.1 / f.1, q.2 / f.2)
+        let k = (f.0 + f.1 + f.2) / (g.0 * f.0 + g.1 * f.1 + g.2 * f.2)
+        g = (g.0 * k, g.1 * k, g.2 * k)
+        func c(_ x: Double) -> Double { min(4, max(0.25, x)) }
+        return (c(g.0), c(g.1), c(g.2))
+    }
 
     func detect(in img: PixelImage, geometry geo: FrameGeometry) -> [BallDetection] {
         let w = img.width, h = img.height
         guard w > 8, h > 8 else { return [] }
         let spec = geo.spec, R = TableSpec.ballRadius
-        let clothInv = geo.clothInverse, ballInv = geo.ballInverse
+        let ballInv = geo.ballInverse
         let centreW = geo.cloth.w(Vec2(spec.length / 2, spec.width / 2))
         guard centreW != 0 else { return [] }
         let sgn: Double = centreW > 0 ? 1 : -1
 
         // 1. Region: working pixels whose cloth-plane point lies on the table (plus a ball radius).
-        var region = [UInt8](repeating: 0, count: w * h)
-        var regionCount = 0
-        let (x0, x1, y0, y1) = bounds(geo: geo, img: img)
-        if x0 <= x1 && y0 <= y1 {
-            for y in y0...y1 {
-                for x in x0...x1 {
-                    let (sx, sy) = img.toSource(Double(x), Double(y))
-                    guard let t = clothInv.apply(Vec2(sx, sy)), geo.cloth.w(t) * sgn > 0 else { continue }
-                    if t.x >= -R && t.x <= spec.length + R && t.y >= -R && t.y <= spec.width + R {
-                        region[y * w + x] = 1; regionCount += 1
-                    }
-                }
-            }
-        }
-        guard regionCount > 100 else { return [] }
+        guard let reg = tableRegion(img, geo: geo), reg.1 > 100 else { return [] }
+        let region = reg.0
 
-        // 2. Felt reference: per-channel median of region pixels.
+        // 2. Felt reference: per-channel median of region pixels; white balance against the lock-time cloth.
         let felt = medianColor(img, region: region, step: 3)
         let feltSum = max(30, Double(Int(felt.0) + Int(felt.1) + Int(felt.2)))
         let fr = Double(felt.0) / feltSum, fg = Double(felt.1) / feltSum
-        let feltHSV = ColorMath.hsv(felt.0, felt.1, felt.2)
+        let gains = Self.whiteBalance(felt: felt, reference: feltReference)
+        let fb = Self.apply(gains, felt)
+        let feltHSV = ColorMath.hsv(fb.0, fb.1, fb.2)
 
         // 3. Ball mask.
         var mask = [UInt8](repeating: 0, count: w * h)
@@ -107,7 +127,7 @@ struct ClassicalBallDetector: BallDetector {
             else { continue }
             let pocketDist = spec.pockets.map { t.distance(to: spec.pocketCenter($0)) - ($0.isSide ? 0.01 : 0) }.min() ?? 1
             if pocketDist < 0.06 { continue }
-            let cls = classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: feltHSV)
+            let cls = classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: feltHSV, gains: gains)
             // Pocket holes look like dark balls: reject dark blobs close to a pocket.
             if (cls.kind == .eight || cls.kind == .unknown) && pocketDist < 0.11 { continue }
             accepted.append((cx, cy, r))
@@ -151,12 +171,42 @@ struct ClassicalBallDetector: BallDetector {
                 vs.append(Int(max(q.0, q.1, q.2)))
             }
         }
-        guard vs.count >= 6 else { return true }   // too small to judge: don't reject
+        guard vs.count >= 6 else { return false }   // too small to judge: fail closed (no LiDAR to vouch for it)
         vs.sort()
         return Double(vs[vs.count * 9 / 10] - vs[vs.count / 4]) >= minSpread
     }
 
     // MARK: - Helpers
+
+    static func apply(_ g: (Double, Double, Double), _ p: RGB8) -> RGB8 {
+        (UInt8(min(255, (Double(p.0) * g.0).rounded())), UInt8(min(255, (Double(p.1) * g.1).rounded())),
+         UInt8(min(255, (Double(p.2) * g.2).rounded())))
+    }
+
+    private func tableRegion(_ img: PixelImage, geo: FrameGeometry) -> ([UInt8], Int)? {
+        let w = img.width, h = img.height
+        guard w > 8, h > 8 else { return nil }
+        let spec = geo.spec, R = TableSpec.ballRadius
+        let clothInv = geo.clothInverse
+        let centreW = geo.cloth.w(Vec2(spec.length / 2, spec.width / 2))
+        guard centreW != 0 else { return nil }
+        let sgn: Double = centreW > 0 ? 1 : -1
+        var region = [UInt8](repeating: 0, count: w * h)
+        var regionCount = 0
+        let (x0, x1, y0, y1) = bounds(geo: geo, img: img)
+        if x0 <= x1 && y0 <= y1 {
+            for y in y0...y1 {
+                for x in x0...x1 {
+                    let (sx, sy) = img.toSource(Double(x), Double(y))
+                    guard let t = clothInv.apply(Vec2(sx, sy)), geo.cloth.w(t) * sgn > 0 else { continue }
+                    if t.x >= -R && t.x <= spec.length + R && t.y >= -R && t.y <= spec.width + R {
+                        region[y * w + x] = 1; regionCount += 1
+                    }
+                }
+            }
+        }
+        return (region, regionCount)
+    }
 
     private func bounds(geo: FrameGeometry, img: PixelImage) -> (Int, Int, Int, Int) {
         let R = TableSpec.ballRadius, s = geo.spec
@@ -248,22 +298,27 @@ struct ClassicalBallDetector: BallDetector {
     }
 
     func classify(_ img: PixelImage, cx: Double, cy: Double, r: Double,
-                          feltHSV: (h: Double, s: Double, v: Double)) -> (kind: BallKind, number: Int?) {
+                  feltHSV: (h: Double, s: Double, v: Double),
+                  gains: (Double, Double, Double) = (1, 1, 1)) -> (kind: BallKind, number: Int?) {
         var white = 0.0, black = 0.0, colored = 0.0, all = 0.0
         var hx = 0.0, hy = 0.0, vsum = 0.0
         let ri = Int(r.rounded(.up)), r2 = r * r
         let ix = Int(cx.rounded()), iy = Int(cy.rounded())
-        let whiteV = max(0.45, feltHSV.v * 1.25), blackV = max(0.18, feltHSV.v * 0.45)
+        // Brightness relative to the cloth (a dimmer scales both), with low absolute floors for sensor noise.
+        let whiteV = max(0.15, feltHSV.v * 1.25), blackV = max(0.07, feltHSV.v * 0.45)
+        let colourV = max(0.08, min(0.2, feltHSV.v * 0.45))
+        let balanced = gains != (1, 1, 1)
         for y in max(0, iy - ri)...min(img.height - 1, iy + ri) {
             for x in max(0, ix - ri)...min(img.width - 1, ix + ri) {
                 let dx = Double(x) - cx, dy = Double(y) - cy
                 guard dx * dx + dy * dy <= r2 else { continue }
-                let p = img.pixel(x, y)
+                let raw = img.pixel(x, y)
+                let p = balanced ? Self.apply(gains, raw) : raw
                 let c = ColorMath.hsv(p.0, p.1, p.2)
                 all += 1
                 if c.s < 0.3 && c.v > whiteV { white += 1 }
                 else if c.v < blackV { black += 1 }
-                else if c.s >= 0.35 && c.v >= 0.2 && ColorMath.hueDistance(c.h, feltHSV.h) > 20 {
+                else if c.s >= 0.35 && c.v >= colourV && ColorMath.hueDistance(c.h, feltHSV.h) > 20 {
                     colored += 1
                     hx += cos(c.h * .pi / 180); hy += sin(c.h * .pi / 180); vsum += c.v
                 }

@@ -73,7 +73,7 @@ struct PerceptionStressTests {
 
     // MARK: Lighting
 
-    @Test(.disabled("STRESS-FINDING B1: at 40% brightness the cue ball classifies as unknown (whiteV floor 0.45), so no cue ball and no aim"))
+    @Test
     func sixtyPercentLightingDropKeepsTheCueBall() async throws {
         let img = Stress.mapPixels(try Stress.image(Self.base)) { ($0 * 0.4, $1 * 0.4, $2 * 0.4) }
         let dets = Self.detect(img)
@@ -101,13 +101,16 @@ struct PerceptionStressTests {
         #expect(sc.found >= Self.base.balls.count - 1)
     }
 
-    @Test(.disabled("STRESS-FINDING B2: under magenta/blue/red bar light the cue ball classifies as a solid"))
+    @Test
     func neonCueBallIdentity() throws {
         // Recorded separately so the colour-cast verdict is one line.
         var cueOK: [String: Bool] = [:]
+        // The cloth colour is known from lock (neutral light); the bar light comes on afterwards.
+        let geo = FrameGeometry(frame: Self.base.frame, camera: Self.base.camera)
+        let lockFelt = try #require(ClassicalBallDetector().feltColor(in: try Stress.image(Self.base), geometry: geo))
         for (name, r, g, b) in [("magenta", 1.0, 0.45, 1.1), ("blue", 0.5, 0.7, 1.35), ("red", 1.3, 0.6, 0.5)] {
             let img = Stress.mapPixels(try Stress.image(Self.base)) { ($0 * r, $1 * g, $2 * b) }
-            let dets = Self.detect(img)
+            let dets = ClassicalBallDetector(feltReference: lockFelt).detect(in: img, geometry: geo)
             cueOK[name] = dets.contains { $0.kind == .cue && $0.tablePoint.distance(to: Self.base.balls[0].position) < 0.03 }
         }
         Stress.metric("neon.cueIdentified", cueOK)
