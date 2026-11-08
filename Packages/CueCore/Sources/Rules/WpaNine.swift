@@ -29,7 +29,9 @@ extension RulesEngine {
         n.ballInHand = .none
         countFouls(&n, shooter: g.shooter, fouled: false)
 
-        let pastOrPocketed = o.objectBallsPastHeadStringOrPocketedOnBreak ?? 3 // unknown → legal (Reg 25)
+        // Unknown → legal (Reg 25). Reg 16(1): pocketed balls count on their own, so a tracker that under-reports
+        // can never push the count below what the outcome itself shows was pocketed.
+        let pastOrPocketed = max(o.objectBallsPastHeadStringOrPocketedOnBreak ?? 3, pocketedObjects.count)
         if threeBallRule && pastOrPocketed < 3 {
             // WPA 5.3(c) / Reg 16(1)-(2): illegal break; incoming player accepts or hands it back.
             let opts: [PlayerOption] = [.acceptTable, .handBack]

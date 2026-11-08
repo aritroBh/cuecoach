@@ -18,11 +18,11 @@ import Testing
 
     @Test func exportWipeImportRoundTripsBothStores() throws {
         let original = try populated()
-        let backup = try original.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let backup = try original.exportBackup(exportedAt: Fixture.t0)
 
         let fresh = try PersistenceStack(inMemory: true)   // wiped device
         try fresh.importBackup(backup)
-        let again = try fresh.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let again = try fresh.exportBackup(exportedAt: Fixture.t0)
 
         let a = try decode(backup), b = try decode(again)
         #expect(a == b)
@@ -39,14 +39,13 @@ import Testing
     }
 
     @Test func importRestoresRelationships() throws {
-        let backup = try populated().exportBackup(includeRecognition: true)
+        let backup = try populated().exportBackup()
         let fresh = try PersistenceStack(inMemory: true)
         try fresh.importBackup(backup)
         let session = try #require(fresh.competitiveContext.fetch(FetchDescriptor<Session>()).first)
         #expect(session.games.first?.shots.count == 2)
         #expect(session.games.first?.highlights.count == 1)
-        let owner = try #require(fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first)
-        #expect(owner.recognition?.faceEmbedding == Data([1, 2, 3]))
+        #expect(try Fixture.count(RecognitionData.self, fresh.recognitionContext) == 0)
         let progress = try #require(fresh.trainingContext.fetch(FetchDescriptor<DrillProgress>()).first)
         #expect(progress.attempts.count == 3)
     }
@@ -57,9 +56,9 @@ import Testing
         #expect(json.contains("\"version\":1"))
         #expect(json.contains("\"exportedAt\":\"2023-11-14T22:13:20.123Z\""))
         let top = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(Set(top.keys) == ["version", "exportedAt", "competitive", "training", "includesRecognition"])
+        #expect(Set(top.keys) == ["version", "exportedAt", "competitive", "training"])
         // sortedKeys: top-level keys appear alphabetically
-        let order = ["competitive", "exportedAt", "includesRecognition", "training", "version"]
+        let order = ["competitive", "exportedAt", "training", "version"]
             .compactMap { json.range(of: "\"\($0)\":")?.lowerBound }
         #expect(order == order.sorted())
     }
@@ -72,23 +71,19 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self).contains("\"exportedAt\":\"2023-11-14T22:13:20.123Z\""))
     }
 
-    @Test func recognitionExcludedUnlessRequested() throws {
+    @Test func recognitionIsNeverExported() throws {
         let stack = try populated()
-        let without = try stack.exportBackup()
-        let b = try decode(without)
-        #expect(b.includesRecognition == false)
-        #expect(b.competitive.profiles.allSatisfy { $0.recognition == nil })
-        #expect(!String(decoding: without, as: UTF8.self).contains("faceEmbedding"))
-
-        let with = try decode(stack.exportBackup(includeRecognition: true))
-        #expect(with.includesRecognition)
-        #expect(with.competitive.profiles.first?.recognition?.faceEmbedding == Data([1, 2, 3]))
+        try Fixture.addOwnerRecognition(stack)
+        let json = String(decoding: try stack.exportBackup(), as: UTF8.self)
+        #expect(!json.contains("faceEmbedding"))
+        #expect(!json.contains("appearanceEmbedding"))
     }
 
-    @Test func importingBackupWithoutRecognitionKeepsLocalEmbeddings() throws {
+    @Test func importingABackupKeepsLocalEmbeddings() throws {
         let stack = try populated()
-        try stack.importBackup(stack.exportBackup(includeRecognition: false))
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 1)
+        try Fixture.addOwnerRecognition(stack)
+        try stack.importBackup(stack.exportBackup())
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 1)
     }
 
     @Test func mergeConflictNewerUpdatedAtWins() throws {
@@ -119,10 +114,10 @@ import Testing
 
     @Test func reImportIsIdempotent() throws {
         let stack = try populated()
-        let backup = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let backup = try stack.exportBackup(exportedAt: Fixture.t0)
         try stack.importBackup(backup)
         try stack.importBackup(backup)
-        let after = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let after = try stack.exportBackup(exportedAt: Fixture.t0)
         #expect(try decode(after) == decode(backup))
         #expect(try Fixture.count(Shot.self, stack.competitiveContext) == 2)
         #expect(try Fixture.count(TrainingAttempt.self, stack.trainingContext) == 3)
@@ -157,7 +152,7 @@ import Testing
                                                        avatarColor: "red", isSessionGuest: true))
         try source.competitiveContext.save()
         let fresh = try PersistenceStack(inMemory: true)
-        try fresh.importBackup(source.exportBackup(includeRecognition: true))
+        try fresh.importBackup(source.exportBackup())
         let all = try fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
         #expect(all.map(\.id) == [Fixture.ownerID])
         #expect(all.allSatisfy { !$0.isSessionGuest })

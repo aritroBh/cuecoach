@@ -273,7 +273,10 @@ extension RulesEngine {
     func reRacked(_ g: GameState, breakingTeam: Int) -> GameState {
         var n = breakingTeam == g.shooter ? sameBreaker(g, team: breakingTeam, player: g.activePlayer)
                                           : freshRack(from: g, breaker: breakingTeam)
+        // `breaker` and `breakingPlayer` stay paired on the rack's opening breaker (team + slot), so a later
+        // stalemate (WPA 4.11) re-breaks with that athlete rather than a mixed team/slot.
         n.breaker = g.breaker
+        n.breakingPlayer = g.breakingPlayer
         return n
     }
 

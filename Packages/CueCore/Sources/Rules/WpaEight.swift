@@ -94,6 +94,9 @@ extension RulesEngine {
                     ? .eightWithLastGroupBall : .eightEarly
                 return over(g, winner: winnerIfLoss, reason, fouls: fouls)
             }
+            if o.calledSafety {                                            // WPA 4.6/4.8(c): a safety calls no pocket,
+                return over(g, winner: winnerIfLoss, .eightNotCalled, fouls: fouls) // so the 8 was not called
+            }
             if calledOther {                                               // WPA 4.6: "then the 8-ball is the called ball";
                 return over(g, winner: winnerIfLoss, .eightNotCalled, fouls: fouls) // its pocket was not called, 4.8(c)
             }

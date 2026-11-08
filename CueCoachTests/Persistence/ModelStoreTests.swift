@@ -18,7 +18,8 @@ import Engine
         #expect(profile.id == Fixture.ownerID)
         #expect(profile.isLocalOwner)
         #expect(profile.skillModel.samples == 12)
-        #expect(profile.recognition?.faceEmbedding == Data([1, 2, 3]))
+        try Fixture.addOwnerRecognition(stack)
+        #expect(try stack.recognition(for: profile.id)?.faceEmbedding == Data([1, 2, 3]))
 
         let session = try #require(ctx.fetch(FetchDescriptor<Session>()).first)
         #expect(session.ruleSet == .wpaNine)
@@ -62,15 +63,15 @@ import Engine
         #expect(try Fixture.count(PlayerProfile.self, ctx) == 1)
     }
 
-    @Test func deletingProfileCascadesToRecognitionData() throws {
+    @Test func deletingProfileRemovesItsRecognitionData() throws {
         let stack = try PersistenceStack(inMemory: true)
         let ctx = stack.competitiveContext
         _ = Fixture.populateCompetitive(ctx)
         try ctx.save()
+        try Fixture.addOwnerRecognition(stack)
         let profile = try #require(ctx.fetch(FetchDescriptor<PlayerProfile>()).first)
-        ctx.delete(profile)
-        try ctx.save()
-        #expect(try Fixture.count(RecognitionData.self, ctx) == 0)
+        try stack.deleteProfile(profile)
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
     }
 }
 

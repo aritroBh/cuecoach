@@ -1,0 +1,342 @@
+import Foundation
+import SwiftData
+import Testing
+@testable import CueCoach
+
+// Adversarial privacy / hard-constraint audit (SPEC §2, CLAUDE.md non-negotiables).
+// Scans the source tree at test time (located via #filePath; the simulator can read the host checkout)
+// and the built app's Info.plist. Tests that expose a defect are .disabled("AUDIT-FINDING: ...")
+// so the suite stays green; remove the trait once fixed.
+
+private enum Repo {
+    /// <repo>/CueCoachTests/PrivacyAuditTests.swift → <repo>
+    static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+
+    /// Directories that ship in the app binary.
+    static let shippedSourceDirs = ["CueCoach", "Packages/CueCore/Sources"]
+
+    static let skippedDirNames: Set<String> = [".build", ".git", ".worktrees", "DerivedData", "build",
+                                               ".venv", "node_modules", ".swiftpm", "__pycache__"]
+
+    static func files(under relative: String, matching keep: (URL) -> Bool) -> [URL] {
+        let base = root.appendingPathComponent(relative)
+        guard let e = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return []
+        }
+        var out: [URL] = []
+        for case let url as URL in e {
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                if skippedDirNames.contains(url.lastPathComponent) || url.pathExtension == "xcodeproj" {
+                    e.skipDescendants()
+                }
+                continue
+            }
+            if keep(url) { out.append(url) }
+        }
+        return out
+    }
+
+    static func shippedSwift() -> [URL] {
+        shippedSourceDirs.flatMap { files(under: $0) { $0.pathExtension == "swift" } }
+    }
+
+    /// Every compilable source that ships (Swift plus any C-family file a target could pick up).
+    static let sourceExtensions: Set<String> = ["swift", "m", "mm", "c", "cc", "cpp", "h", "hpp"]
+    static func shippedSources() -> [URL] {
+        shippedSourceDirs.flatMap { files(under: $0) { sourceExtensions.contains($0.pathExtension.lowercased()) } }
+    }
+
+    /// Directories (bundles) anywhere in the repo whose extension matches, honouring the skip list.
+    static func bundles(withExtensions exts: Set<String>) -> [URL] {
+        guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return []
+        }
+        var out: [URL] = []
+        for case let url as URL in e where (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            if skippedDirNames.contains(url.lastPathComponent) { e.skipDescendants(); continue }
+            if exts.contains(url.pathExtension.lowercased()) { out.append(url); e.skipDescendants() }
+        }
+        return out
+    }
+
+    /// Source lines with `//` comments removed (string literals are kept: a URL in a literal is a finding).
+    static func codeLines(_ url: URL) -> [(Int, String)] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.components(separatedBy: .newlines).enumerated().compactMap { i, line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("//") || trimmed.hasPrefix("*") || trimmed.hasPrefix("/*") { return nil }
+            return (i + 1, line)
+        }
+    }
+
+    static func rel(_ url: URL) -> String {
+        String(url.path.dropFirst(root.path.count + 1))
+    }
+
+    static func hits(_ patterns: [String], in urls: [URL]) -> [String] {
+        let regexes = patterns.map { try! NSRegularExpression(pattern: $0) }
+        var out: [String] = []
+        for url in urls {
+            for (n, line) in codeLines(url) {
+                let range = NSRange(line.startIndex..., in: line)
+                for (p, r) in zip(patterns, regexes) where r.firstMatch(in: line, range: range) != nil {
+                    out.append("\(rel(url)):\(n) matches /\(p)/")
+                }
+            }
+        }
+        return out
+    }
+}
+
+@Suite("Audit: privacy & hard constraints")
+struct PrivacyAuditTests {
+
+    @Test func sourceTreeIsReachable() {
+        let swift = Repo.shippedSwift()
+        #expect(swift.count > 5, "found \(swift.count) Swift files under \(Repo.root.path); scan would be vacuous")
+        #expect(swift.contains { $0.lastPathComponent == "PersistenceStack.swift" })
+    }
+
+    /// SPEC §2: "No network calls of any kind". Mesh = MultipeerConnectivity only (CLAUDE.md).
+    @Test func noNetworkAPIsInShippedCode() {
+        let forbidden = [
+            #"\bURLSession\b"#, #"\bURLRequest\b"#, #"\bNSURLConnection\b"#, #"\bURLSessionConfiguration\b"#,
+            #"\bWKWebView\b"#, #"\bSFSafariViewController\b"#, #"\bASWebAuthenticationSession\b"#,
+            #"\bCFStream"#, #"\bCFSocket"#, #"\bgetaddrinfo\b"#, #"\bsocket\("#,
+            #"\bNW(Connection|Listener|Browser|PathMonitor|Endpoint|Parameters)\b"#,
+            #"^\s*(@preconcurrency\s+)?import\s+(Network|WebKit|SafariServices|CFNetwork)\b"#,
+            #"\bNetwork(Connection|Listener|Browser)\b"#,
+            #"https?://"#,
+            #"Data\(contentsOf:\s*URL\(string:"#,
+            #"\bLinkPresentation\b|\bLPMetadataProvider\b"#,
+        ]
+        let hits = Repo.hits(forbidden, in: Repo.shippedSources())
+        #expect(hits.isEmpty, "network API use in shipped code:\n\(hits.joined(separator: "\n"))")
+    }
+
+    /// SPEC §2: no analytics SDKs / anything that phones home.
+    @Test func noAnalyticsOrTelemetrySDKs() {
+        let forbidden = [
+            #"^\s*import\s+(Firebase\w*|FirebaseAnalytics|Crashlytics|Sentry|Mixpanel|Amplitude\w*|AppCenter\w*|Segment|PostHog|TelemetryDeck|Bugsnag|Datadog\w*|NewRelic|Instabug|FacebookCore|FBSDK\w*|GoogleMobileAds|AdSupport|AppTrackingTransparency|MetricKit)\b"#,
+            #"\bATTrackingManager\b"#, #"\bASIdentifierManager\b"#, #"\bMXMetricManager\b"#,
+        ]
+        let hits = Repo.hits(forbidden, in: Repo.shippedSources())
+        #expect(hits.isEmpty, "telemetry in shipped code:\n\(hits.joined(separator: "\n"))")
+    }
+
+    /// Free Personal Team: no iCloud/CloudKit, Push, App Groups, Associated Domains, or other restricted capabilities.
+    @Test func noPersonalTeamForbiddenCapabilitiesInCode() {
+        let forbidden = [
+            #"^\s*import\s+(CloudKit|UserNotifications|PushKit|HealthKit|HomeKit|WeatherKit|ShazamKit|StoreKit|PassKit|CarPlay|WiFiAware|NetworkExtension|DeviceCheck|ManagedSettings|FamilyControls|SensitiveContentAnalysis|AuthenticationServices)\b"#,
+            #"\bCKContainer\b"#, #"\bCKDatabase\b"#, #"\bNSUbiquitousKeyValueStore\b"#,
+            #"\bforUbiquityContainerIdentifier\b"#, #"\burl\(forUbiquityContainerIdentifier"#,
+            #"containerURL\(forSecurityApplicationGroupIdentifier"#,
+            #"groupContainer:\s*\.identifier"#, #"groupContainer:\s*\.automatic"#,
+            #"cloudKitDatabase:\s*\.(automatic|private)"#,
+            #"UserDefaults\(suiteName:"#,
+            #"registerForRemoteNotifications"#, #"UNUserNotificationCenter"#,
+        ]
+        let hits = Repo.hits(forbidden, in: Repo.shippedSwift())
+        #expect(hits.isEmpty, "Personal-Team-forbidden capability use:\n\(hits.joined(separator: "\n"))")
+    }
+
+    /// A1: a deny-list only catches SDKs it names. Every module imported by shipped code must be on this
+    /// allow-list (Apple frameworks the spec needs + our own CueCore modules); adding one is a reviewed edit here.
+    static let allowedImports: Set<String> = [
+        // Language / OS
+        "Foundation", "Darwin", "Glibc", "os", "Observation", "Combine", "Dispatch", "simd", "Accelerate",
+        // UI
+        "SwiftUI", "UIKit", "CoreGraphics", "QuartzCore", "CoreImage", "Metal", "MetalKit", "RealityKit", "Charts",
+        // Persistence (SQLite3 only to VACUUM a migrated store file)
+        "SwiftData", "SQLite3",
+        // Perception (on-device)
+        "AVFoundation", "AVKit", "Vision", "CoreML", "ARKit", "CoreMotion", "CoreVideo", "CoreMedia", "ImageIO",
+        "UniformTypeIdentifiers", "PhotosUI", "Photos",
+        // Mesh (CLAUDE.md: MultipeerConnectivity only)
+        "MultipeerConnectivity",
+        // CueCore modules
+        "Geometry", "Physics", "Rules", "Engine", "Stats", "Training",
+    ]
+
+    @Test func everyImportInShippedCodeIsAllowListed() {
+        let regex = try! NSRegularExpression(
+            pattern: #"^\s*(?:@\w+(?:\([^)]*\))?\s+)*import\s+(?:(?:struct|class|enum|protocol|typealias|func|var|let)\s+)?([A-Za-z_][A-Za-z0-9_]*)"#)
+        var offenders: [String] = []
+        var seen = 0
+        for url in Repo.shippedSwift() {
+            for (n, line) in Repo.codeLines(url) {
+                let range = NSRange(line.startIndex..., in: line)
+                guard let m = regex.firstMatch(in: line, range: range), let r = Range(m.range(at: 1), in: line) else {
+                    continue
+                }
+                seen += 1
+                let module = String(line[r])
+                if !Self.allowedImports.contains(module) { offenders.append("\(Repo.rel(url)):\(n) imports \(module)") }
+            }
+        }
+        #expect(seen > 10, "import scan saw only \(seen) imports; it would be vacuous")
+        #expect(offenders.isEmpty, "imports not on the allow-list:\n\(offenders.joined(separator: "\n"))")
+    }
+
+    /// A1: no prebuilt binaries or vendored frameworks anywhere in the repo (an SDK could hide in one).
+    @Test func noPrebuiltBinariesOrVendoredFrameworks() {
+        let libs = Repo.files(under: ".") { ["a", "dylib", "so", "o"].contains($0.pathExtension.lowercased()) }
+            .map(Repo.rel)
+        #expect(libs.isEmpty, "prebuilt binaries in repo: \(libs)")
+        let bundles = Repo.bundles(withExtensions: ["framework", "xcframework", "bundle"]).map(Repo.rel)
+        #expect(bundles.isEmpty, "vendored frameworks/bundles in repo: \(bundles)")
+    }
+
+    /// A1: the generated (git-ignored) Xcode project is what actually builds; capabilities added in Xcode's UI
+    /// land in project.pbxproj, which project.yml checks never see. Skipped only when no project is generated.
+    @Test func generatedXcodeProjectHasNoCapabilitiesOrRemotePackages() throws {
+        let url = Repo.root.appendingPathComponent("CueCoach.xcodeproj/project.pbxproj")
+        guard let pbx = try? String(contentsOf: url, encoding: .utf8) else { return }
+        for needle in ["CODE_SIGN_ENTITLEMENTS", "SystemCapabilities", "XCRemoteSwiftPackageReference",
+                       "com.apple.developer", "aps-environment", "wrapper.xcframework", ".xcframework",
+                       "com.apple.security.application-groups", "iCloud"] {
+            #expect(!pbx.contains(needle), "project.pbxproj contains '\(needle)'")
+        }
+    }
+
+    /// Every on-disk ModelConfiguration must state cloudKitDatabase: .none (the default is .automatic,
+    /// which turns CloudKit sync on as soon as an iCloud container entitlement appears).
+    @Test func everyModelConfigurationDisablesCloudKit() {
+        var offenders: [String] = []
+        for url in Repo.shippedSwift() {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var rest = Substring(text)
+            while let r = rest.range(of: "ModelConfiguration(") {
+                // The label must appear within this call: look until the next ModelConfiguration( or 300 chars.
+                let after = rest[r.upperBound...]
+                let end = after.range(of: "ModelConfiguration(")?.lowerBound ?? after.endIndex
+                let call = after[..<end].prefix(300)
+                if !call.contains("cloudKitDatabase: .none") { offenders.append(Repo.rel(url)) }
+                rest = rest[r.upperBound...]
+            }
+        }
+        #expect(offenders.isEmpty, "ModelConfiguration without cloudKitDatabase: .none in \(offenders)")
+    }
+
+    /// No entitlements files, provisioning profiles, signing identities, or env files in the public repo.
+    @Test func noEntitlementsOrSigningSecretsInRepo() {
+        let bad: Set<String> = ["entitlements", "mobileprovision", "provisionprofile", "p12", "p8", "cer",
+                                "pem", "key", "keystore", "env"]
+        let found = Repo.files(under: ".") { url in
+            bad.contains(url.pathExtension.lowercased()) || url.lastPathComponent == ".env"
+                || url.lastPathComponent == "GoogleService-Info.plist"
+        }.map(Repo.rel)
+        #expect(found.isEmpty, "signing/secret/entitlement files present: \(found)")
+    }
+
+    /// project.yml must not wire entitlements, capabilities, or remote packages.
+    @Test func projectSpecHasNoEntitlementsOrRemotePackages() throws {
+        let yml = try String(contentsOf: Repo.root.appendingPathComponent("project.yml"), encoding: .utf8)
+        for needle in ["CODE_SIGN_ENTITLEMENTS", "entitlements:", "SystemCapabilities", "com.apple.developer",
+                       "url: http", "github.com", "aps-environment", "icloud", "application-groups"] {
+            #expect(!yml.localizedCaseInsensitiveContains(needle), "project.yml contains '\(needle)'")
+        }
+        let pkg = try String(contentsOf: Repo.root.appendingPathComponent("Packages/CueCore/Package.swift"),
+                             encoding: .utf8)
+        #expect(!pkg.contains(".package("), "CueCore declares an external package dependency")
+    }
+
+    /// The built app's Info.plist: only the usage strings the spec needs; no ATS holes, push or tracking keys.
+    @Test func builtInfoPlistMatchesSpec() throws {
+        let info = try #require(Bundle.main.infoDictionary)
+        #expect(info["NSCameraUsageDescription"] is String)
+        #expect(info["NSLocalNetworkUsageDescription"] is String)
+        let bonjour = try #require(info["NSBonjourServices"] as? [String])
+        // MPC with serviceType "cuecoach" advertises exactly these two.
+        #expect(Set(bonjour) == ["_cuecoach._tcp", "_cuecoach._udp"])
+        for key in ["NSAppTransportSecurity", "NSUserTrackingUsageDescription", "NSLocationAlwaysUsageDescription",
+                    "NSLocationAlwaysAndWhenInUseUsageDescription", "NSContactsUsageDescription",
+                    "NSFaceIDUsageDescription", "UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace",
+                    "NSUbiquitousContainers", "UIRequiredDeviceCapabilities-push"] {
+            #expect(info[key] == nil, "Info.plist has unexpected key \(key)")
+        }
+        if let modes = info["UIBackgroundModes"] as? [String] {
+            #expect(!modes.contains("remote-notification"), "push background mode needs aps entitlement")
+            #expect(!modes.contains("fetch"), "background fetch implies network")
+        }
+    }
+
+    /// SPEC §2: embeddings are stored *only* on the player's own phone. Application Support is included in
+    /// iCloud/Finder device backups by default, so recognition lives in its own excluded store; competitive
+    /// stats still back up. (Was AUDIT-FINDING; fixed. RecognitionStoreTests covers the details.)
+    @MainActor
+    @Test func recognitionStoreIsExcludedFromDeviceBackup() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("audit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        _ = try PersistenceStack(directory: dir)
+        let rec = PersistenceStack.recognitionDirectory(in: dir)
+        #expect(try rec.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+        let store = rec.appendingPathComponent("Recognition.store")
+        #expect(try store.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+        let competitive = dir.appendingPathComponent("Competitive.store")
+        #expect(try competitive.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == false)
+    }
+
+    /// The signed app's entitlements (what actually ships, whatever Xcode's UI added) hold only the keys every
+    /// free-Personal-Team build gets. Read from the code signature in the running app binary: the embedded
+    /// entitlements blob (magic 0xFADE7171) on device, or the `__entitlements` plist on the simulator.
+    @Test func signedAppHasOnlyAllowedEntitlements() throws {
+        guard let exe = Bundle.main.executableURL, let binary = try? Data(contentsOf: exe, options: .alwaysMapped) else {
+            return   // skipped: no readable app binary in this host
+        }
+        let found = EmbeddedEntitlements.all(in: binary)
+        #if targetEnvironment(simulator)
+        if found.isEmpty { return }   // skipped: simulator build signed without an entitlements section
+        #else
+        try #require(!found.isEmpty, "no embedded entitlements in \(exe.lastPathComponent); unsigned build?")
+        #endif
+        // Not vacuous: the scan must have found the app's own signature (its application identifier).
+        #expect(found.contains { ($0["application-identifier"] as? String)?.hasSuffix("com.aritrobh.cuecoach") == true },
+                "entitlements found but none is the app's: \(found)")
+        let allowed: Set<String> = ["application-identifier", "com.apple.developer.team-identifier",
+                                    "get-task-allow", "com.apple.security.get-task-allow", "keychain-access-groups"]
+        for ents in found {
+            let extra = Set(ents.keys).subtracting(allowed)
+            #expect(extra.isEmpty, "unexpected entitlements: \(extra.sorted())")
+            for key in ents.keys {
+                for banned in ["icloud", "ubiquity", "aps-environment", "application-groups", "associated-domains",
+                               "push", "healthkit", "networking.", "siri", "in-app-payments"] {
+                    #expect(!key.lowercased().contains(banned), "entitlement \(key)")
+                }
+            }
+        }
+    }
+}
+
+/// Finds entitlements property lists inside a Mach-O: code-signature blobs and the simulator's plain section.
+enum EmbeddedEntitlements {
+    static func all(in binary: Data) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        let bytes = [UInt8](binary)
+        // CSMAGIC_EMBEDDED_ENTITLEMENTS: big-endian magic, big-endian total length, XML plist.
+        let magic: [UInt8] = [0xFA, 0xDE, 0x71, 0x71]
+        var i = 0
+        while let r = binary.range(of: Data(magic), in: i..<binary.count) {
+            let start = r.lowerBound
+            i = r.upperBound
+            guard start + 8 <= bytes.count else { break }
+            let len = Int(bytes[start + 4]) << 24 | Int(bytes[start + 5]) << 16 | Int(bytes[start + 6]) << 8 | Int(bytes[start + 7])
+            guard len > 8, start + len <= bytes.count else { continue }
+            if let d = plist(binary.subdata(in: (start + 8)..<(start + len))) { out.append(d) }
+        }
+        // Simulator builds: __TEXT,__entitlements holds the XML plist as-is.
+        let open = Data("<?xml".utf8), close = Data("</plist>".utf8)
+        i = 0
+        while let r = binary.range(of: open, in: i..<binary.count),
+              let e = binary.range(of: close, in: r.upperBound..<binary.count) {
+            i = e.upperBound
+            let chunk = binary.subdata(in: r.lowerBound..<e.upperBound)
+            if let d = plist(chunk), !out.contains(where: { NSDictionary(dictionary: $0).isEqual(to: d) }) { out.append(d) }
+        }
+        return out
+    }
+
+    private static func plist(_ data: Data) -> [String: Any]? {
+        (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+    }
+}

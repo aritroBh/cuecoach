@@ -1,7 +1,7 @@
 # Module interfaces (proposal — awaiting user review)
 
 All `CueCore` types are value types, `Sendable`, `Codable` where they cross the mesh or disk.
-Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = foot-left cushion nose, +x toward the head.
+Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = head-left cushion nose, +x toward the foot (head spot at 0.25 L, foot spot at 0.75 L).
 
 ## Geometry (merged)
 `Vec2`, `TableSize` (7/8/9 ft), `TableSpec` (dims, pocket centres + mouths, spots, head string),
@@ -227,3 +227,13 @@ encryption required). On Start every phone opens `MultipeerMeshSession.multipeer
 host's random tag (`MeshGameLink`). `FakeGameLobbyMesh` drives tests; `OfflineGameLobby` = one phone.
 Guests are `ShellPlayer(isGuest: true)` in memory only, never written to SwiftData.
 Measured table size: Live writes `UserDefaults "cc.table.measured"` (TableSize raw value); setup preselects it.
+
+## Recognition persistence (privacy round; docs/SCHEMA.md "Recognition store")
+`PersistenceStack`: `recognition(for:)`, `storeRecognition(profileID:faceEmbedding:appearanceEmbedding:optedInAt:version:)`
+(throws `RecognitionError.revoked`), `beginRecognitionDeletion() -> RecognitionUndo`, `undoRecognitionDeletion(_:)`,
+`deleteMyRecognitionData(now:)` (commit, empties the store), `purgeSessionGuests()`,
+`promoteSessionGuest(_:keepRecognition:)`, `deleteProfile(_:)`, `importBackup(_:keepingRecognitionOf:)`,
+`exportBackup(exportedAt:)` (never includes templates), `register(_: RecognitionGallery)`.
+`@MainActor protocol RecognitionGallery: AnyObject { func recognitionDidChange(_: RecognitionChange) }`,
+`RecognitionChange = .purgedAll | .purged(Set<UUID>) | .restored(Set<UUID>)`. Identity's in-memory galleries
+(`IdentitySession` face/appearance) register so a delete, purge or promotion clears them synchronously.
