@@ -14,14 +14,20 @@ struct AutoTableMeasurement: Sendable {
     var measuredWidth: Double
     var snapped: TableSize?
     var cameraPosition: SIMD3<Double>
+    /// Fraction of the playing length actually seen (1 = whole table; < 1 = partial fit completed by 2:1 + preset).
+    var visibleLengthFraction: Double = 1
 }
 
 struct AutoFusionConfig: Sendable {
     var window = 30
-    /// Frames that must agree before locking.
+    /// Adaptive lock: this few frames suffice when their robust corner spread is ≤ `lockCornerSpread`…
+    var fastLockFrames = 6
+    /// …otherwise this many frames with spread ≤ `slowLockCornerSpread`. Never above that.
     var lockFrames = 15
-    /// Robust spread of per-frame corners that allows a lock (m).
+    /// Robust spread of per-frame corners that allows a fast lock (m).
     var lockCornerSpread = 0.01
+    /// Robust spread that allows a lock after `lockFrames` frames (m).
+    var slowLockCornerSpread = 0.02
     /// A frame whose corners are this far from the fused ones disagrees (m).
     var disagreeDistance = 0.04
     /// This many consecutive disagreeing frames = the table (or tracking) changed → re-lock.
@@ -30,6 +36,17 @@ struct AutoFusionConfig: Sendable {
     /// While locked the table size is held; only a size change larger than this is adopted, and it
     /// bumps `generation` (m, playing length).
     var sizeChangeTolerance = 0.015
+    /// Preset vote share that snaps the size (D12 majority).
+    var snapVoteShare = 0.6
+    /// Hysteresis band around `snapVoteShare` while locked: a held preset is dropped only below
+    /// share − band, a held measured size switches to a preset only above share + band.
+    var snapVoteBand = 0.15
+    /// While locked, a different size must be the candidate this many consecutive frames before adoption.
+    var sizeAdoptFrames = 10
+    /// A partial-view window locks only if some frame saw this much of the length…
+    var partialLockVisibleFraction = 0.6
+    /// …or its view directions (camera around the table centre) span at least this angle (rad).
+    var partialLockViewSpread = 15 * Double.pi / 180
 }
 
 /// Multi-frame fusion in world coordinates: robust (median → Huber) pose over a sliding window,
@@ -48,6 +65,8 @@ struct AutoTableFusion: Sendable {
     private var deviations: [Double] = []
     /// Size held since lock (spec, snapped preset).
     private var heldSize: (spec: TableSpec, snapped: TableSize?)?
+    /// Candidate size that differs from the held one, and for how many consecutive frames.
+    private var pendingSize: (spec: TableSpec, snapped: TableSize?, frames: Int)?
 
     mutating func reset() { self = AutoTableFusion(config: config) }
 
@@ -76,6 +95,7 @@ struct AutoTableFusion: Sendable {
                         locked = false
                         deviations = []
                         heldSize = nil
+                        pendingSize = nil
                         recompute(camera: m.cameraPosition)
                     } else {
                         // Scattered glitches, not a moved table: keep the lock, age out the oldest.
@@ -96,7 +116,7 @@ struct AutoTableFusion: Sendable {
 
     var progress: Double {
         guard fused != nil else { return 0 }
-        let n = min(1, Double(window.count) / Double(config.lockFrames))
+        let n = min(1, Double(window.count) / Double(config.fastLockFrames))
         let s = spread.isFinite ? min(1, config.lockCornerSpread / max(spread, 1e-6)) : 0
         return min(0.99, 0.6 * n + 0.4 * s)
     }
@@ -125,13 +145,27 @@ struct AutoTableFusion: Sendable {
             }
             cx = sx / sw; cy = sy / sw; cz = sz / sw; th = st / swt
         }
-        // Size: majority preset, else the median measurement at 2:1.
+        // Size: majority preset, else the median measurement at 2:1. While locked the vote threshold has
+        // a hysteresis band around the held choice, so a table near the 6 % snap edge does not flap.
         var votes: [TableSize: Int] = [:]
         for m in window { if let s = m.snapped { votes[s, default: 0] += 1 } }
         var spec: TableSpec
         var snapped: TableSize?
         let mL = autoMedian(window.map(\.measuredLength)), mW = autoMedian(window.map(\.measuredWidth))
-        if let (s, n) = votes.max(by: { $0.value < $1.value }), Double(n) >= 0.6 * Double(window.count) {
+        let n = Double(window.count), top = votes.max(by: { $0.value < $1.value })
+        var preset: TableSize?
+        if locked, let held = heldSize {
+            // A held preset stays while it keeps ≥ share − band of the votes (whoever else leads); any other
+            // preset, or a preset after a measured size, needs ≥ share + band.
+            if let hp = held.snapped, Double(votes[hp] ?? 0) >= (config.snapVoteShare - config.snapVoteBand) * n {
+                preset = hp
+            } else if let (s, c) = top, Double(c) >= (config.snapVoteShare + config.snapVoteBand) * n {
+                preset = s
+            }
+        } else if let (s, c) = top, Double(c) >= config.snapVoteShare * n {
+            preset = s
+        }
+        if let s = preset {
             spec = TableSpec(size: s); snapped = s
         } else {
             let (s, _) = AutoRectFitter.snap(length: mL, width: mW)
@@ -139,12 +173,25 @@ struct AutoTableFusion: Sendable {
             let len = (mL + 2 * mW) / 2
             spec.length = len; spec.width = len / 2
         }
-        // Locked: hold the size so corners never move without a new generation.
+        // Locked: hold the size so corners never move without a new generation. A different size is
+        // adopted only after it has been the (self-consistent) candidate for `sizeAdoptFrames` frames.
         if locked, let held = heldSize {
             if abs(spec.length - held.spec.length) > config.sizeChangeTolerance {
-                heldSize = (spec, snapped)
-                generation += 1
+                if let p = pendingSize, p.snapped == snapped,
+                   abs(p.spec.length - spec.length) <= config.sizeChangeTolerance {
+                    pendingSize = (spec, snapped, p.frames + 1)
+                } else {
+                    pendingSize = (spec, snapped, 1)
+                }
+                if let p = pendingSize, p.frames >= config.sizeAdoptFrames {
+                    heldSize = (spec, snapped)
+                    pendingSize = nil
+                    generation += 1
+                } else {
+                    spec = held.spec; snapped = held.snapped
+                }
             } else {
+                pendingSize = nil
                 spec = held.spec; snapped = held.snapped
             }
         }
@@ -162,8 +209,14 @@ struct AutoTableFusion: Sendable {
         let recent = window.suffix(config.lockFrames)
         let devs = recent.map { Self.deviation($0, from: pose) }
         spread = recent.count >= 3 ? autoMedian(devs) : .infinity
-        if !locked, window.count >= config.lockFrames, spread < config.lockCornerSpread,
-           Double(devs.filter { $0 < 1.5 * config.lockCornerSpread }.count) >= 0.8 * Double(devs.count) {
+        func agrees(frames: Int, spread limit: Double) -> Bool {
+            guard window.count >= frames else { return false }
+            let d = window.suffix(frames).map { Self.deviation($0, from: pose) }
+            return autoMedian(d) <= limit && Double(d.filter { $0 < 1.5 * limit }.count) >= 0.8 * Double(d.count)
+                && Self.partialViewsAgree(window, center: center, up: up, config: config)
+        }
+        if !locked, agrees(frames: config.fastLockFrames, spread: config.lockCornerSpread)
+            || agrees(frames: config.lockFrames, spread: config.slowLockCornerSpread) {
             locked = true
             generation += 1
             heldSize = (spec, snapped)
@@ -173,6 +226,22 @@ struct AutoTableFusion: Sendable {
             // Re-locked onto a table turned by ~90°: re-derive head from the camera.
             headToFoot = simd_dot(camera - center, axis) > 0 ? -axis : axis
         }
+    }
+
+    /// A partial-view lock needs ≥ 60 % of the length seen in some frame, or ≥ 2 distinct view angles.
+    static func partialViewsAgree(_ ms: [AutoTableMeasurement], center: SIMD3<Double>, up: SIMD3<Double>,
+                                  config: AutoFusionConfig) -> Bool {
+        guard ms.contains(where: { $0.visibleLengthFraction < 1 }) else { return true }
+        if ms.contains(where: { $0.visibleLengthFraction >= config.partialLockVisibleFraction }) { return true }
+        let dirs: [SIMD3<Double>] = ms.compactMap { m in
+            var d = m.cameraPosition - center
+            d -= up * simd_dot(d, up)
+            return simd_length(d) > 0.1 ? simd_normalize(d) : nil
+        }
+        for i in dirs.indices { for j in dirs.indices where j > i {
+            if acos(max(-1, min(1, simd_dot(dirs[i], dirs[j])))) >= config.partialLockViewSpread { return true }
+        } }
+        return false
     }
 
     static func pose(center: SIMD3<Double>, axis: SIMD3<Double>, up: SIMD3<Double>, spec: TableSpec,

@@ -2,7 +2,7 @@ import Foundation
 import simd
 
 /// Per-scene cloth colour model: robust centre + spread of chromaticity (r/S, g/S) and brightness,
-/// learned from the image centre (gated to the LiDAR table plane when depth is available).
+/// learned from the pixels the LiDAR gate puts at table height (anywhere in the frame), else the image centre.
 /// Chromaticity is shading-invariant, so lamp falloff and soft shadows stay "cloth"; glare (neutral),
 /// wood, pockets and people do not.
 struct AutoClothModel: Sendable {
@@ -10,38 +10,47 @@ struct AutoClothModel: Sendable {
     /// Median brightness (r+g+b)/3.
     var mI: Float
     var maxDistance: Float = 4.0
+    /// Grey/tan cloth with almost no chroma: only usable inside the depth gate, with a tighter brightness band.
+    var neutral = false
 
     @inline(__always) func distance(_ r: Float, _ g: Float, _ b: Float) -> Float {
         let s = r + g + b
-        if s < 45 { return 99 }
+        // Too dark for stable chromaticity — relative to the cloth's own brightness (dim rooms).
+        if s < min(45, 0.9 * mI) || s < 9 { return 99 }
         let d1 = (r / s - m1) / s1, d2 = (g / s - m2) / s2
         return (d1 * d1 + d2 * d2).squareRoot()
     }
 
     @inline(__always) func isCloth(_ r: Float, _ g: Float, _ b: Float) -> Bool {
         let i = (r + g + b) / 3
+        if neutral { return i > 0.55 * mI && i < 1.6 * mI && distance(r, g, b) < maxDistance }
         return i > 0.3 * mI && i < 2.0 * mI && distance(r, g, b) < maxDistance
     }
 
-    /// Learn from coarse-grid samples. `accept(x, y)` (working pixels) gates candidate samples.
-    static func learn(_ img: AutoRGBImage, stride s: Int, accept: ((Int, Int) -> Bool)? = nil) -> AutoClothModel? {
+    /// Learn from coarse-grid samples. `accept(x, y)` (working pixels) gates candidate samples: with a gate the
+    /// whole frame is sampled (the cloth need not cover the image centre), without one the central 40 %.
+    /// `allowNeutral` (only with a depth gate) accepts grey/tan cloth instead of returning nil.
+    static func learn(_ img: AutoRGBImage, stride s: Int, accept: ((Int, Int) -> Bool)? = nil,
+                      allowNeutral: Bool = false, minSamples: Int = 40) -> AutoClothModel? {
         let w = img.width, h = img.height
         var c1: [Float] = [], c2: [Float] = [], ii: [Float] = []
         c1.reserveCapacity(4096); c2.reserveCapacity(4096); ii.reserveCapacity(4096)
         let step = max(1, s / 2) * 2
         img.rgb.withUnsafeBufferPointer { p in
-            for y in Swift.stride(from: h * 3 / 10, to: h * 7 / 10, by: step) {
-                for x in Swift.stride(from: w * 3 / 10, to: w * 7 / 10, by: step) {
+            let (x0, x1, y0, y1) = accept == nil ? (w * 3 / 10, w * 7 / 10, h * 3 / 10, h * 7 / 10) : (0, w, 0, h)
+            let st = accept == nil ? step : step * 2
+            for y in Swift.stride(from: y0, to: y1, by: st) {
+                for x in Swift.stride(from: x0, to: x1, by: st) {
                     if let a = accept, !a(x, y) { continue }
                     let o = (y * w + x) * 3
                     let r = Float(p[o]), g = Float(p[o + 1]), b = Float(p[o + 2])
                     let sum = r + g + b
-                    guard sum >= 60 else { continue }
+                    guard sum >= 24 else { continue }
                     c1.append(r / sum); c2.append(g / sum); ii.append(sum / 3)
                 }
             }
         }
-        guard c1.count >= 40 else { return nil }
+        guard c1.count >= minSamples else { return nil }
         func med(_ v: [Float]) -> Float { let s = v.sorted(); return s[s.count / 2] }
         var m1 = med(c1), m2 = med(c2)
         // Keep the dominant cluster (balls, glare and chalk marks are minorities), then re-estimate.
@@ -58,9 +67,10 @@ struct AutoClothModel: Sendable {
         s1 = max(0.01, spread(k1, m1)); s2 = max(0.01, spread(k2, m2))
         let mI = med(ki)
         // A grey cloth has no chroma to lock onto; its "model" would match floors and walls.
-        let neutral = abs(m1 - 1 / 3) + abs(m2 - 1 / 3)
-        guard neutral > 0.04 else { return nil }
-        return AutoClothModel(m1: m1, m2: m2, s1: s1, s2: s2, mI: mI)
+        // Inside the depth gate the floor and walls are already excluded, so a neutral model is safe there.
+        let neutral = abs(m1 - 1 / 3) + abs(m2 - 1 / 3) <= 0.04
+        guard !neutral || (allowNeutral && accept != nil) else { return nil }
+        return AutoClothModel(m1: m1, m2: m2, s1: s1, s2: s2, mI: mI, neutral: neutral)
     }
 }
 

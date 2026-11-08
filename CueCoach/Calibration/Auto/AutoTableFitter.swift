@@ -207,16 +207,17 @@ enum AutoPlaneRefiner {
     }
 
     /// Depth gate on the depth grid: 1 = within `tolerance` of the plane (or untrusted), 0 = clearly off it.
+    /// `trustUnknown`: no-confidence samples pass (segmentation veto) or fail (learning the cloth model).
     static func gate(depth: AutoDepthMap, camera: AutoCamera, imageWidth: Int, imageHeight: Int,
-                     plane: AutoTablePlane, tolerance: Double = 0.12, grow: Int = 0) -> [UInt8] {
+                     plane: AutoTablePlane, tolerance: Double = 0.12, grow: Int = 0, trustUnknown: Bool = true) -> [UInt8] {
         let sx = Double(imageWidth) / Double(depth.width), sy = Double(imageHeight) / Double(depth.height)
         var g = [UInt8](repeating: 1, count: depth.width * depth.height)
         for v in 0..<depth.height {
             for u in 0..<depth.width {
                 let i = v * depth.width + u
-                if let c = depth.confidence, c[i] < 1 { continue }
+                if let c = depth.confidence, c[i] < 1 { if !trustUnknown { g[i] = 0 }; continue }
                 let z = Double(depth.depth[i])
-                guard z > 0.05 else { continue }
+                guard z > 0.05 else { if !trustUnknown { g[i] = 0 }; continue }
                 let px = AutoP2((Double(u) + 0.5) * sx - 0.5, (Double(v) + 0.5) * sy - 0.5)
                 let h = simd_dot(camera.unproject(px, depth: z) - plane.origin, plane.normal)
                 if abs(h) > tolerance { g[i] = 0 }

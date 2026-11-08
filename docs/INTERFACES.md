@@ -189,3 +189,14 @@ enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShap
   visibility per `OverlayVisibility.of(mode)`.
 - **Acceptance**: `CueCoachTests/VirtualTable` matrix + `LockGate` (0 false locks always; accurate-lock / TTL floors
   ratcheted per step). Baselines in `CueCoachTests/VirtualTable/Results/`.
+
+### AutoTableLocator (Calibration/Auto, zero-tap table pose)
+`AutoTableLocator.process(AutoTableFrame) -> AutoTableEstimate` (thread-safe; calls are serialised,
+`latest` / `flipHeadFoot()` / `reset()` never wait for a detection; a detection in flight during `reset()`
+is dropped). `AutoTableEstimate.state` is `.locked` after ≥ 6 agreeing frames at ≤ 1 cm robust corner
+spread, or 15 at ≤ 2 cm; `generation` bumps on every new lock and on an adopted size change (size changes
+need 10 consistent frames plus a ±15 % vote-share band). `frame.rejection` strings start with one of:
+"tracking", "duplicate frame", "no plane", "no cloth colour", "cloth too small", "cloth touches frame",
+"no quad", "edge refine", "reprojection", "view too shallow", "reset" (a failed partial fit appends "(partial: …)"). Keypoint plug-in: `TableKeypointProvider` returns
+`AutoTableKeypoint`s of kind `.cornerMouth` / `.sideMouth` / `.noseCorner`, the tablekp model's three
+groups; `AutoTableKeypointModel` adapts its 10 rows (model-input pixels, Ultralytics letterbox).

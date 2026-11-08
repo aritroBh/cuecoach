@@ -80,16 +80,22 @@ struct AutoTableProfile: Hashable, Sendable {
     var railTopHeight: Double = 0.045
     /// Cushion nose height above the cloth (WPA 1 7/16" ≈ 36.5 mm).
     var noseHeight: Double = 0.0365
+    /// tablekp corner-mouth label offset from the nose corner along each table axis: half its 4.5" mouth (m).
+    var cornerMouthInset: Double = 0.05715
 }
 
 // MARK: - Keypoint model plug-in (Core ML YOLO-pose, trained in .worktrees/tablekp)
 
-/// What a table keypoint marks. Semantics the model must be trained to:
-/// - `cornerPocket`: where the two cushion-nose lines meet (Geometry `pocketCenter`), seen at nose height.
-/// - `sidePocket`: the long-rail nose line at its midpoint.
-/// - `cushionCorner`: the outer felt corner on the rail cap (felt/wood boundary lines meeting).
+/// What a table keypoint marks — the tablekp YOLO-pose model's three label groups
+/// (tools/tablekp/generate_dataset.py `KEYPOINT_NAMES`; see `AutoTableKeypointModel` for the index order).
+/// The model labels a planar table texture whose rectangle is the nose lines, so all three kinds are
+/// lifted at cushion-nose height. Each group is unordered (no head/foot); the fit matches by geometry.
+/// - `noseCorner`: where the two cushion-nose lines meet (Geometry `pocketCenter` of a corner pocket).
+/// - `sideMouth`: the long-rail nose line at its midpoint (side-pocket mouth centre).
+/// - `cornerMouth`: corner-pocket mouth centre, inset `AutoTableProfile.cornerMouthInset` along both
+///   table axes from the nose corner into the bed (generate_dataset.py:170-179).
 enum AutoKeypointKind: String, Sendable, CaseIterable {
-    case cornerPocket, sidePocket, cushionCorner
+    case cornerMouth, sideMouth, noseCorner
 }
 
 struct AutoTableKeypoint: Sendable {
@@ -169,6 +175,10 @@ struct AutoFrameDiagnostics: Sendable {
     var keypointsUsed: Int = 0
     /// Cloth height refined from LiDAR (world y of the bed), if depth was used.
     var lidarClothHeight: Double?
+    /// Rail-cap height above the cloth used for this frame (profile default or the LiDAR median).
+    var railTopHeight: Double?
+    /// Partial-view fit: fraction of the playing length seen (nil = whole table in view).
+    var visibleLengthFraction: Double?
     var processingSeconds: Double = 0
     var rejection: String?
 }
