@@ -65,38 +65,49 @@ protocol ShooterIdentifier: Sendable {
                 teamInTurn: Set<UUID>?) async -> ShooterIdentification }
 struct StrokeWindow { frames: [IdentityFrame] }                 // ±0.5 s around stroke start
 struct IdentityFrame { image: CGImage; cueBall: CGPoint }       // Vision normalised, origin lower-left
-struct IdentitySnapshot { roster: IdentityRoster; appearanceGallery, faceGallery: [UUID: [Embedding]] }
+struct IdentitySnapshot { roster: IdentityRoster; appearanceGallery, faceGallery: [UUID: [Embedding]];
+                          appearanceClaimCeiling, faceClaimCeiling: [UUID: Double] }   // S9 negative signal
 struct ShooterIdentification { attribution: Attribution; shooterAppearance: Embedding?; evidence: [TrackEvidence] }
-struct Attribution { playerID: UUID; source: AttributionSource /* auto | turnOrder | tap */; confidence: Double;
-                    shooterTrackID: Int?; needsConfirmation: Bool }  // true → card asks with one tap, never .auto
+enum AttributionDecision { case auto, turnOrder, tap, unknown }
+struct Attribution { playerID: UUID? /* nil only for .unknown */; source: AttributionDecision; confidence: Double;
+                    shooterTrackID: Int?; suggestedPlayerID: UUID?
+                    var needsConfirmation: Bool /* == .unknown: card asks, nobody credited */
+                    var storedSource: AttributionSource? /* nil = don't credit */ }
 protocol PersonAnalyzing: Sendable { func people(in: CGImage, wants: AnalysisWants) async throws -> [ObservedPerson] }
 struct AnalysisWants { appearance, face: Bool; cueBall: CGPoint; gate: ShooterGate }  // embed only gate-admitted people
 struct ObservedPerson { box; joints; appearance: Embedding?; face: Embedding?; faceQuality: Double? }
 struct ShooterGate { minPose = 0.5; maxDistance = 0.15 }        // "someone is shooting here", absolute, per track
 struct CueModel { calibration; lookalikeRate; lrRange }         // per cue, per modelID (IdentityCalibrationTable)
-enum StrokeFaceMatching { case off /* default, Q10 */, shooterOnly }
-protocol FaceAligning { func aligned(_: CGImage, face: CGRect) -> CGImage? }   // drop-in for a 5-point aligner
-protocol FaceQualityScoring { func quality(of: CGRect, in: CGImage) async -> Double? }  // DetectFaceCaptureQuality
+enum StrokeFaceMatching { case off /* default, Q10 */, shooterOnly }   // honoured only with a matching FaceShipGateRecord
+protocol FaceCropping { func faces(in: CGImage) async -> [AlignedFace] }  // Vision landmarks → 5-pt → gate → 112² warp
+struct FaceEmbeddingExtractor: EmbeddingExtracting               // AuraFace Core ML, modelID fal.auraface.v1.fp16
+protocol RecognitionTemplateStore { templates(for:) / replaceTemplates(_:for:) / deletionGeneration }  // @MainActor
+struct StoredRecognitionTemplates { faceEmbedding, appearanceEmbedding: Data?; optedInAt: Date; version: Int }
 @MainActor final class IdentitySession {                        // RAM only; owns roster + session templates
+  init(players: [(UUID, StoredRecognitionTemplates?)], guests:, faceModelID:, bodyModelID:)
   func snapshot() -> IdentitySnapshot
   func identifyShot(_ shot: UUID, window:, expectedShooter:, teamInTurn:, using:) async -> Attribution
-  func correct(shot: UUID, to: UUID) -> Attribution?            // one-tap fix (ShooterCorrection)
+  func correct(shot: UUID, to: UUID) -> Attribution?            // one tap: fix or confirm; the only learning path
   func bind(_ player: UUID, appearance: Embedding) -> Bool      // AppearanceBind (clothes consent only)
-  func addPlayer(_: PlayerProfile); func addGuest(_: UUID); func removePlayer(_: UUID)
+  func addPlayer(id:, stored:); func addGuest(_: UUID); func removePlayer(_: UUID)
+  var needsReconsent: Set<UUID>                                 // stored consent outdated: nothing loaded
   func grantGuestClothesConsent(_ guest: UUID); func revoke(_ player: UUID); func end() }
 IdentityPrivacy.deleteMyRecognitionData(stack:, session:, onRevoke:)   // onRevoke required (Mesh IdentityRevoke)
+FaceBenchmark.evaluate(subjects:modelID:) -> .pass(FaceShipGateRecord) | .fail | .insufficientData   // F6
 ```
-Rules: only tracks admitted by `ShooterGate` are evidence or learning samples; nobody at the cue ball → turn order.
-Open set: a candidate with no template for a cue (no consent, guest) gets `CueModel.unmodelledLikelihoodRatio` of the
-best match, never LR 1, so a consented player cannot out-score an unmodelled one on clothes (`lookalikeRate` 1) or on
-the generic face feature print. `.auto` also needs positive evidence for the pick. Stroke-time face matching is
-`.off` by default (Q10 open); `.shooterOnly` embeds only the gated shooter's face and only above
-`minFaceQuality` 0.5. A face model is trusted only through its `IdentityCalibrationTable` entry; none but the generic
-Vision feature print ships (face-embedding.md: no licence-unclear weights). `shooterAppearance` is non-nil only when
-it resembles a clothes-consented template or would be turn-order bound; held vectors expire after
-`IdentitySession.tapWindow` shots. A tap teaches the tapped clothes-consented player regardless of resemblance.
-Own-turn binding extends a template only when every plausible shooter is clothes-consented. A revoke/end during
-`identifyShot` discards the in-flight result; a delete during registration aborts it. Backups never carry
+Rules (round 3): only tracks admitted by `ShooterGate` are evidence. Competitors for `.auto` are *every* roster
+member (off-team players and guests too) plus an explicit "someone else" (unmodelled person) whenever a guest or a
+non-consenting player is at the table; the pick must beat all of them by `minEvidenceRatio` with positive evidence.
+A registered profile is never silently credited while a guest is at the table: no `.auto` → `.unknown`. Silent
+`.turnOrder` only when no guest is present (or the guest is the expected shooter) and evidence neither contradicts
+the expected shooter nor ties them with another recognisable player. Nothing is embedded unless a consented template
+exists to compare against (no bootstrap). Nothing is learned from turn order or `.auto`: only registration and a tap.
+`shooterAppearance` is held (RAM, `tapWindow` shots) only if it resembles a clothes-consented template, or on a
+consented player's turn at an all-clothes-consented table. A correction away from W caps W's claim on that look for
+the session (numbers only). Every roster/consent change bumps the epoch; revoke/end cancel in-flight work (checked per
+frame and before each embedding); retry exhaustion → `.unknown`. Stored consent for older terms/models → nothing
+loaded, `needsReconsent`. Face consent needs an identity-trained model (`isIdentityTrained`); generic feature prints
+are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID. Backups never carry
 recognition data. `RecognitionData.version` = consent-terms version.
 
 ## App-side protocols (later phases; declared now so wiring compiles)
