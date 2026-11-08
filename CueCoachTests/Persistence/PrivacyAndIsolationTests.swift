@@ -10,36 +10,38 @@ import Testing
         let ctx = stack.competitiveContext
         _ = Fixture.populateCompetitive(ctx)
         try ctx.save()
+        try Fixture.addOwnerRecognition(stack)
         try stack.deleteMyRecognitionData()
 
-        #expect(try Fixture.count(RecognitionData.self, ctx) == 0)
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
+        #expect(try stack.recognition(for: Fixture.ownerID) == nil)
         let owner = try #require(ctx.fetch(FetchDescriptor<PlayerProfile>()).first)
-        #expect(owner.recognition == nil)
         #expect(owner.name == "Ari")
         #expect(try Fixture.count(Session.self, ctx) == 1)
         #expect(try Fixture.count(Shot.self, ctx) == 2)
         #expect(try Fixture.count(ArchetypeSnapshot.self, ctx) == 1)
     }
 
-    @Test func deleteMyRecognitionDataKeepsOtherProfilesEmbeddings() throws {
+    /// The one tap clears the whole store: cached peer templates go too (they come back over the mesh if the
+    /// peer still consents).
+    @Test func deleteMyRecognitionDataClearsEveryProfilesTemplates() throws {
         let stack = try PersistenceStack(inMemory: true)
         let ctx = stack.competitiveContext
         _ = Fixture.populateCompetitive(ctx)
-        let guest = PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "star", avatarColor: "red",
-                                  isSessionGuest: true)
-        guest.recognition = Fixture.recognition()
-        ctx.insert(guest)
+        ctx.insert(PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "star", avatarColor: "red",
+                                 isSessionGuest: true))
         try ctx.save()
+        try Fixture.addOwnerRecognition(stack)
+        try stack.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([5]), appearanceEmbedding: nil,
+                                   optedInAt: Fixture.t0, version: 1)
         try stack.deleteMyRecognitionData()
-        let remaining = try ctx.fetch(FetchDescriptor<RecognitionData>())
-        #expect(remaining.count == 1)
-        #expect(remaining.first?.profile?.id == Fixture.guestID)
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
     }
 
     @Test func deleteMyRecognitionDataIsSafeWhenNothingStored() throws {
         let stack = try PersistenceStack(inMemory: true)
         try stack.deleteMyRecognitionData()
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
     }
 }
 
@@ -49,18 +51,19 @@ import Testing
         let stack = try PersistenceStack(inMemory: true)
         let ctx = stack.competitiveContext
         _ = Fixture.populateCompetitive(ctx)
-        let guest = PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "star", avatarColor: "red",
-                                  isSessionGuest: true)
-        guest.recognition = Fixture.recognition()
-        ctx.insert(guest)
+        ctx.insert(PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "star", avatarColor: "red",
+                                 isSessionGuest: true))
         try ctx.save()
+        try Fixture.addOwnerRecognition(stack)
+        try stack.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([5]), appearanceEmbedding: nil,
+                                   optedInAt: Fixture.t0, version: 1)
         #expect(try Fixture.count(PlayerProfile.self, ctx) == 2)
 
         try stack.purgeSessionGuests()
 
         let left = try ctx.fetch(FetchDescriptor<PlayerProfile>())
         #expect(left.map(\.id) == [Fixture.ownerID])
-        #expect(try Fixture.count(RecognitionData.self, ctx) == 1)   // owner's own stays
+        #expect(try stack.recognitionContext.fetch(FetchDescriptor<RecognitionData>()).map(\.profileID) == [Fixture.ownerID])
         #expect(try Fixture.count(Shot.self, ctx) == 2)              // guest's shots are game history
     }
 }
@@ -71,15 +74,18 @@ import Testing
         let stack = try PersistenceStack(inMemory: true)
         let comp = Set(stack.competitiveContainer.schema.entities.map(\.name))
         let train = Set(stack.trainingContainer.schema.entities.map(\.name))
-        #expect(comp == ["PlayerProfile", "RecognitionData", "Session", "Game", "Shot", "ArchetypeSnapshot", "Highlight"])
+        let rec = Set(stack.recognitionContainer.schema.entities.map(\.name))
+        #expect(comp == ["PlayerProfile", "Session", "Game", "Shot", "ArchetypeSnapshot", "Highlight"])
         #expect(train == ["TrainingProfile", "DrillProgress", "TrainingAttempt", "BiasRecord"])
-        #expect(comp.isDisjoint(with: train))
+        #expect(rec == ["RecognitionData"])
+        #expect(comp.isDisjoint(with: train) && comp.isDisjoint(with: rec) && train.isDisjoint(with: rec))
     }
 
     @Test func noRelationshipCrossesStores() throws {
         let stack = try PersistenceStack(inMemory: true)
         for (schema, own) in [(stack.competitiveContainer.schema, stack.competitiveContainer.schema),
-                              (stack.trainingContainer.schema, stack.trainingContainer.schema)] {
+                              (stack.trainingContainer.schema, stack.trainingContainer.schema),
+                              (stack.recognitionContainer.schema, stack.recognitionContainer.schema)] {
             let names = Set(own.entities.map(\.name))
             for e in schema.entities {
                 for r in e.relationships { #expect(names.contains(r.destination), "\(e.name).\(r.name)") }
@@ -120,7 +126,7 @@ import Testing
 
     private func competitiveCounts(_ s: PersistenceStack) throws -> [Int] {
         let c = s.competitiveContext
-        return [try Fixture.count(PlayerProfile.self, c), try Fixture.count(RecognitionData.self, c),
+        return [try Fixture.count(PlayerProfile.self, c), try Fixture.count(RecognitionData.self, s.recognitionContext),
                 try Fixture.count(Session.self, c), try Fixture.count(Game.self, c),
                 try Fixture.count(Shot.self, c), try Fixture.count(ArchetypeSnapshot.self, c),
                 try Fixture.count(Highlight.self, c)]

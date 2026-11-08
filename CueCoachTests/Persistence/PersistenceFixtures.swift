@@ -26,9 +26,11 @@ enum Fixture {
                       skillModel: StoredSkillModel(aimSigma: 0.01, speedSigma: 0.05, spinSigma: 0.1, samples: 12))
     }
 
-    static func recognition() -> RecognitionData {
-        RecognitionData(faceEmbedding: Data([1, 2, 3]), appearanceEmbedding: Data([4, 5]),
-                        optedInAt: t0, version: 1)
+    /// Stores the local owner's templates in the recognition store (the owner profile must exist).
+    static func addOwnerRecognition(_ stack: PersistenceStack, face: Data? = Data([1, 2, 3]),
+                                    appearance: Data? = Data([4, 5]), optedInAt: Date = t0) throws {
+        try stack.storeRecognition(profileID: ownerID, faceEmbedding: face, appearanceEmbedding: appearance,
+                                   optedInAt: optedInAt, version: 1)
     }
 
     static func shot(index: Int, shooter: UUID = ownerID) -> Shot {
@@ -43,10 +45,7 @@ enum Fixture {
 
     /// Session with one game, two shots and one highlight, plus owner + archetype.
     static func populateCompetitive(_ ctx: ModelContext) -> Session {
-        let owner = owner()
-        owner.recognition = recognition()
-        owner.updatedAt = t0   // linking bumps the stamp; keep fixture rows dated t0
-        ctx.insert(owner)
+        ctx.insert(owner())
         let session = Session(startedAt: t0, ruleSet: .wpaNine, format: .oneVsOne, tableSize: .eightFoot,
                               peerDeviceNames: ["Pixel"], voteTally: [.wpaNine: 2, .barEight: 1])
         ctx.insert(session)

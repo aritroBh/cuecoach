@@ -62,3 +62,13 @@ public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [C
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`
 (Foundation Models + rule fallback).
+
+## Recognition persistence (privacy round; docs/SCHEMA.md "Recognition store")
+`PersistenceStack`: `recognition(for:)`, `storeRecognition(profileID:faceEmbedding:appearanceEmbedding:optedInAt:version:)`
+(throws `RecognitionError.revoked`), `beginRecognitionDeletion() -> RecognitionUndo`, `undoRecognitionDeletion(_:)`,
+`deleteMyRecognitionData(now:)` (commit, empties the store), `purgeSessionGuests()`,
+`promoteSessionGuest(_:keepRecognition:)`, `deleteProfile(_:)`, `importBackup(_:keepingRecognitionOf:)`,
+`exportBackup(exportedAt:)` (never includes templates), `register(_: RecognitionGallery)`.
+`@MainActor protocol RecognitionGallery: AnyObject { func recognitionDidChange(_: RecognitionChange) }`,
+`RecognitionChange = .purgedAll | .purged(Set<UUID>) | .restored(Set<UUID>)`. Identity's in-memory galleries
+(`IdentitySession` face/appearance) register so a delete, purge or promotion clears them synchronously.

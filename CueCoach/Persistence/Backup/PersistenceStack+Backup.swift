@@ -6,13 +6,11 @@ import Rules
 extension PersistenceStack {
     // MARK: Export
 
-    /// Serialises both stores to `BackupV1` JSON. Recognition embeddings are left out unless
-    /// `includeRecognition` is set, and even then only the local owner's are written: another player's
-    /// biometrics never leave this phone (audit F3). Session guests are never exported. Rows are sorted by id.
-    func exportBackup(includeRecognition: Bool = false, exportedAt: Date = .now) throws -> Data {
-        try BackupV1(exportedAt: exportedAt, includesRecognition: includeRecognition,
-                     competitive: competitiveSection(includeRecognition: includeRecognition),
-                     training: trainingSection()).encoded()
+    /// Serialises the competitive and training stores to `BackupV1` JSON. The recognition store is never read:
+    /// face/appearance templates never leave this phone (SPEC §2, D26); only each profile's revocation flag is
+    /// written. Session guests are never exported. Rows are sorted by id.
+    func exportBackup(exportedAt: Date = .now) throws -> Data {
+        try BackupV1(exportedAt: exportedAt, competitive: competitiveSection(), training: trainingSection()).encoded()
     }
 
     private func all<M: PersistentModel>(_: M.Type, _ ctx: ModelContext) throws -> [M] {
@@ -20,17 +18,13 @@ extension PersistenceStack {
     }
     private func sorted<D>(_ xs: [D], _ id: (D) -> UUID) -> [D] { xs.sorted { id($0).uuidString < id($1).uuidString } }
 
-    private func competitiveSection(includeRecognition: Bool) throws -> BackupV1.Competitive {
+    private func competitiveSection() throws -> BackupV1.Competitive {
         let c = competitiveContext
         var comp = BackupV1.Competitive()
         comp.profiles = sorted(try all(PlayerProfile.self, c).filter { !$0.isSessionGuest }.map {
             .init(id: $0.id, name: $0.name, avatarSymbol: $0.avatarSymbol, avatarColor: $0.avatarColor,
                   isLocalOwner: $0.isLocalOwner, createdAt: $0.createdAt, updatedAt: $0.updatedAt,
-                  skillModel: $0.skillModel,
-                  recognition: includeRecognition && $0.isLocalOwner ? $0.recognition.map {
-                      .init(id: $0.id, faceEmbedding: $0.faceEmbedding, appearanceEmbedding: $0.appearanceEmbedding,
-                            optedInAt: $0.optedInAt, version: $0.version, updatedAt: $0.updatedAt)
-                  } : nil)
+                  skillModel: $0.skillModel, recognitionRevokedAt: $0.recognitionRevokedAt)
         }, \.id)
         comp.sessions = sorted(try all(Session.self, c).map {
             .init(id: $0.id, startedAt: $0.startedAt, endedAt: $0.endedAt, ruleSet: $0.ruleSet, format: $0.format,
@@ -101,19 +95,26 @@ extension PersistenceStack {
     ///
     /// Device-local fields are never taken from a backup: `isLocalOwner` of existing profiles is kept;
     /// a new profile becomes the local owner only if this phone has none yet (fresh-phone restore).
-    /// Recognition rows are read only when the manifest's `includesRecognition` is true, only for the
-    /// local owner, never over a revocation tombstone, and never onto another row's id (audit F2-F4).
+    /// Backups carry no recognition templates (a legacy file's are ignored). `recognitionRevokedAt` merges
+    /// max-wins, so a restore never un-revokes. A live session guest that the backup saves is promoted; its
+    /// session templates are dropped first unless its id is in `keepingRecognitionOf` (consent given at
+    /// promotion time). The drop happens before the merge so a failed import can't leave a promoted profile
+    /// that still holds session templates.
     ///
     /// Refuses (`BackupError.pendingChanges`) while either context has unsaved edits, because a failed
     /// import rolls the contexts back and would otherwise discard that unrelated work (audit F9).
-    func importBackup(_ data: Data) throws {
+    func importBackup(_ data: Data, keepingRecognitionOf consented: Set<UUID> = []) throws {
         let c = competitiveContext, t = trainingContext
         guard !c.hasChanges, !t.hasChanges else { throw BackupError.pendingChanges }
         let backup = try BackupV1.decode(data)
         try validateParents(backup)
+        let backupIDs = Set(backup.competitive.profiles.map(\.id))
+        let promoted = Set(try c.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isSessionGuest }))
+            .map(\.id)).intersection(backupIDs)
+        try dropRecognition(of: promoted.subtracting(consented))
         let trainingSnapshot = try trainingSection()
         do {
-            try mergeCompetitive(backup.competitive, includeRecognition: backup.includesRecognition, into: c)
+            try mergeCompetitive(backup.competitive, into: c)
             try mergeTraining(backup.training, into: t)
             try beforeSave?(.training)
             try t.save()
@@ -180,8 +181,7 @@ extension PersistenceStack {
         }
     }
 
-    private func mergeCompetitive(_ b: BackupV1.Competitive, includeRecognition: Bool,
-                                  into ctx: ModelContext) throws {
+    private func mergeCompetitive(_ b: BackupV1.Competitive, into ctx: ModelContext) throws {
         var hasOwner = try ctx.fetchCount(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })) > 0
 
         let profiles = try upsert(b.profiles, ctx, id: \PlayerProfile.id, dtoID: \BackupV1.Profile.id,
@@ -199,37 +199,15 @@ extension PersistenceStack {
                 m.updatedAt = d.updatedAt
             })
         // Guests are never exported, so a backup profile is a saved one: matching a live guest's id promotes
-        // it, whether or not the backup copy is newer, so the next guest purge keeps it (audit F8).
-        for d in b.profiles { profiles[d.id]?.isSessionGuest = false }
-
-        // RecognitionData.id is unique: inserting a colliding id would upsert over another row (audit F2).
-        var recognitionOwner = Dictionary(try ctx.fetch(FetchDescriptor<RecognitionData>()).map { ($0.id, $0) },
-                                          uniquingKeysWith: { a, _ in a })
-        for d in b.profiles where includeRecognition {
-            guard let r = d.recognition, let profile = profiles[d.id], profile.isLocalOwner else { continue }
-            if let revoked = profile.recognitionRevokedAt,
-               BackupV1.millis(r.optedInAt) <= BackupV1.millis(revoked) { continue }        // audit F4
-            if let other = recognitionOwner[r.id], other !== profile.recognition { continue } // audit F2
-            let profileStamp = profile.updatedAt
-            defer { profile.updatedAt = profileStamp }   // linking embeddings isn't a profile edit
-            if let existing = profile.recognition {
-                guard isNewer(r.updatedAt, than: existing.updatedAt) else { continue }
-                if existing.id != r.id {
-                    profile.recognition = nil
-                    recognitionOwner[existing.id] = nil
-                    ctx.delete(existing)
-                }
+        // it, whether or not the backup copy is newer, so the next guest purge keeps it (audit F8). Its session
+        // templates were already dropped by `importBackup` unless consented.
+        // The revocation tombstone is device-safe to merge: the later of the two instants wins, nil never clears.
+        for d in b.profiles {
+            guard let m = profiles[d.id] else { continue }
+            m.isSessionGuest = false
+            if let r = d.recognitionRevokedAt, m.recognitionRevokedAt.map({ BackupV1.millis($0) < BackupV1.millis(r) }) ?? true {
+                m.recognitionRevokedAt = r
             }
-            let row = profile.recognition ?? {
-                let n = RecognitionData(id: r.id, faceEmbedding: nil, appearanceEmbedding: nil,
-                                        optedInAt: r.optedInAt, version: r.version)
-                ctx.insert(n)
-                profile.recognition = n
-                recognitionOwner[n.id] = n
-                return n
-            }()
-            row.faceEmbedding = r.faceEmbedding; row.appearanceEmbedding = r.appearanceEmbedding
-            row.optedInAt = r.optedInAt; row.version = r.version; row.updatedAt = r.updatedAt
         }
 
         let sessions = try upsert(b.sessions, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },

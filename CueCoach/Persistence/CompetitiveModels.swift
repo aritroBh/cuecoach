@@ -20,16 +20,14 @@ final class PlayerProfile {
     var isLocalOwner: Bool
     /// Peer profile cached only for the current mesh session; removed by `purgeSessionGuests()`.
     var isSessionGuest: Bool
-    /// Tombstone set by "Delete my recognition data". Device-local, never exported: an import ignores any
-    /// recognition row opted in at or before this instant, so deleted embeddings need a fresh opt-in (audit F4).
+    /// Tombstone set by "Delete recognition data" (schema V2). Exported in backups (the flag, never the data) and
+    /// merged newest-wins on import, so a restore can't bring recognition back: any opt-in at or before this
+    /// instant is refused by `storeRecognition` and needs a fresh opt-in (audit F4).
     var recognitionRevokedAt: Date? = nil
     private var createdAtValue: Date
     var createdAt: Date { get { createdAtValue } set { createdAtValue = newValue; updatedAt = .now } }
     var updatedAt: Date
     private var skillModelData: Data
-    @Relationship(deleteRule: .cascade, inverse: \RecognitionData.profileLink)
-    fileprivate var recognitionLink: RecognitionData?
-    var recognition: RecognitionData? { get { recognitionLink } set { recognitionLink = newValue; updatedAt = .now } }
 
     var skillModel: StoredSkillModel {
         get { Blob.decode(StoredSkillModel.self, skillModelData, fallback: .prior) }
@@ -53,34 +51,7 @@ final class PlayerProfile {
     func touch(_ now: Date = .now) { updatedAt = now }
 }
 
-/// Opt-in face/appearance embeddings. Separate row so "delete my recognition data" is one delete.
-@Model
-final class RecognitionData {
-    @Attribute(.unique) var id: UUID
-    @Attribute(.externalStorage) private var faceEmbeddingValue: Data?
-    var faceEmbedding: Data? { get { faceEmbeddingValue } set { faceEmbeddingValue = newValue; updatedAt = .now } }
-    @Attribute(.externalStorage) private var appearanceEmbeddingValue: Data?
-    var appearanceEmbedding: Data? { get { appearanceEmbeddingValue } set { appearanceEmbeddingValue = newValue; updatedAt = .now } }
-    private var optedInAtValue: Date
-    var optedInAt: Date { get { optedInAtValue } set { optedInAtValue = newValue; updatedAt = .now } }
-    private var versionValue: Int
-    var version: Int { get { versionValue } set { versionValue = newValue; updatedAt = .now } }
-    var updatedAt: Date
-    fileprivate var profileLink: PlayerProfile?
-    var profile: PlayerProfile? { get { profileLink } set { profileLink = newValue; updatedAt = .now } }
-
-    init(id: UUID = UUID(), faceEmbedding: Data?, appearanceEmbedding: Data?, optedInAt: Date,
-         version: Int, updatedAt: Date? = nil) {
-        self.id = id
-        self.faceEmbeddingValue = faceEmbedding
-        self.appearanceEmbeddingValue = appearanceEmbedding
-        self.optedInAtValue = optedInAt
-        self.versionValue = version
-        self.updatedAt = updatedAt ?? optedInAt
-    }
-
-    func touch(_ now: Date = .now) { updatedAt = now }
-}
+// RecognitionData lives in its own backup-excluded store: RecognitionModels.swift.
 
 @Model
 final class Session {

@@ -11,7 +11,6 @@ struct BackupV1: Codable, Equatable, Sendable {
 
     var version: Int = BackupV1.currentVersion
     var exportedAt: Date
-    var includesRecognition: Bool
     var competitive: Competitive
     var training: Training
 
@@ -40,17 +39,9 @@ struct BackupV1: Codable, Equatable, Sendable {
         var createdAt: Date
         var updatedAt: Date
         var skillModel: StoredSkillModel
-        /// Present only when the user opted to include recognition data.
-        var recognition: Recognition?
-    }
-
-    struct Recognition: Codable, Equatable, Sendable {
-        var id: UUID
-        var faceEmbedding: Data?
-        var appearanceEmbedding: Data?
-        var optedInAt: Date
-        var version: Int
-        var updatedAt: Date
+        /// "Delete recognition data" tombstone: the flag travels so revocation survives a restore.
+        /// Embeddings themselves are never exported (D26, SPEC §2); a legacy file's `recognition` key is ignored.
+        var recognitionRevokedAt: Date? = nil
     }
 
     struct SessionDTO: Codable, Equatable, Sendable {

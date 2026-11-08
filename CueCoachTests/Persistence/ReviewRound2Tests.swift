@@ -93,7 +93,6 @@ import Testing
         let shot = try #require(c.fetch(FetchDescriptor<Shot>()).first)
         let highlight = try #require(c.fetch(FetchDescriptor<Highlight>()).first)
         let owner = try #require(c.fetch(FetchDescriptor<PlayerProfile>()).first)
-        let rec = try #require(c.fetch(FetchDescriptor<RecognitionData>()).first)
         let attempt = try #require(t.fetch(FetchDescriptor<TrainingAttempt>()).first)
         let drill2 = DrillProgress(playerID: Fixture.ownerID, drill: "banks", level: 1)
         t.insert(drill2)
@@ -102,8 +101,7 @@ import Testing
         check("Shot.game", shot, \.updatedAt) { $0.game = game2 }
         check("Highlight.game", highlight, \.updatedAt) { $0.game = game2 }
         check("TrainingAttempt.progress", attempt, \.updatedAt) { $0.progress = drill2 }
-        check("RecognitionData.profile", rec, \.updatedAt) { $0.profile = nil }
-        check("PlayerProfile.recognition", owner, \.updatedAt) { $0.recognition = nil }
+        check("PlayerProfile.skillModel", owner, \.updatedAt) { $0.skillModel.samples += 1 }
         check("Session.games", session2, \.updatedAt) { $0.games.append(game2) }
         check("Game.shots", game, \.updatedAt) { $0.shots.append(shot) }
         check("Game.highlights", game, \.updatedAt) { $0.highlights.append(highlight) }
@@ -123,27 +121,33 @@ import Testing
         #expect(shot.game?.id == game2.id)
     }
 
-    @Test func importDoesNotRestampProfileWhenLinkingRecognition() throws {
+    @Test func importRoundTripsProfileStampExactly() throws {
         let original = try populated()
-        let data = try original.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let data = try original.exportBackup(exportedAt: Fixture.t0)
         let fresh = try PersistenceStack(inMemory: true)
         try fresh.importBackup(data)
-        #expect(try BackupV1.decode(fresh.exportBackup(includeRecognition: true, exportedAt: Fixture.t0))
+        #expect(try BackupV1.decode(fresh.exportBackup(exportedAt: Fixture.t0))
                 == BackupV1.decode(data))
     }
 
     // Versioned schemas
     @Test func eachStoreHasAVersionedSchemaAndMigrationPlan() throws {
         #expect(CompetitiveSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
+        #expect(CompetitiveSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
         #expect(TrainingSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
-        #expect(Set(CompetitiveSchemaV1.models.map { "\($0)" }) == Set(PersistenceStack.competitiveModels.map { "\($0)" }))
+        #expect(RecognitionSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
+        #expect(Set(CompetitiveSchemaV2.models.map { "\($0)" }) == Set(PersistenceStack.competitiveModels.map { "\($0)" }))
         #expect(Set(TrainingSchemaV1.models.map { "\($0)" }) == Set(PersistenceStack.trainingModels.map { "\($0)" }))
-        #expect(CompetitiveMigrationPlan.schemas.count == 1)
+        #expect(CompetitiveMigrationPlan.schemas.count == 2)
+        #expect(CompetitiveMigrationPlan.stages.count == 1)
         #expect(TrainingMigrationPlan.schemas.count == 1)
+        #expect(RecognitionMigrationPlan.schemas.count == 1)
         let stack = try PersistenceStack(inMemory: true)
-        #expect(stack.competitiveContainer.schema.version == Schema.Version(1, 0, 0))
+        #expect(stack.competitiveContainer.schema.version == Schema.Version(2, 0, 0))
         #expect(stack.trainingContainer.schema.version == Schema.Version(1, 0, 0))
+        #expect(stack.recognitionContainer.schema.version == Schema.Version(1, 0, 0))
         #expect(stack.competitiveContainer.migrationPlan != nil)
         #expect(stack.trainingContainer.migrationPlan != nil)
+        #expect(stack.recognitionContainer.migrationPlan != nil)
     }
 }

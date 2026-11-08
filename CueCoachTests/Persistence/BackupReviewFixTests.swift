@@ -19,7 +19,7 @@ import Testing
 
     /// Backup that changes both stores: newer owner name + one extra attempt.
     private func changingBackup(from stack: PersistenceStack) throws -> Data {
-        var b = try BackupV1.decode(stack.exportBackup(includeRecognition: true))
+        var b = try BackupV1.decode(stack.exportBackup())
         b.competitive.profiles[0].name = "Changed"
         b.competitive.profiles[0].updatedAt = .now.addingTimeInterval(60)
         var extra = b.training.attempts[0]
@@ -32,12 +32,12 @@ import Testing
     @Test(arguments: [PersistenceStack.StoreKind.competitive, .training])
     func failedSaveLeavesBothStoresUnchanged(failing: PersistenceStack.StoreKind) throws {
         let stack = try populated()
-        let before = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let before = try stack.exportBackup(exportedAt: Fixture.t0)
         let backup = try changingBackup(from: stack)
         stack.beforeSave = { if $0 == failing { throw Injected() } }
         #expect(throws: Injected.self) { try stack.importBackup(backup) }
         stack.beforeSave = nil
-        let after = try stack.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let after = try stack.exportBackup(exportedAt: Fixture.t0)
         #expect(try BackupV1.decode(after) == BackupV1.decode(before))
         #expect(try Fixture.count(TrainingAttempt.self, stack.trainingContext) == 3)
         let reopened = try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
@@ -57,7 +57,8 @@ import Testing
             #expect(m[keyPath: stamp] > old, "\(M.self)")
         }
         try check(PlayerProfile.self, c, \.updatedAt) { $0.skillModel.samples += 1 }
-        try check(RecognitionData.self, c, \.updatedAt) { $0.version += 1 }
+        try Fixture.addOwnerRecognition(stack)
+        try check(RecognitionData.self, stack.recognitionContext, \.updatedAt) { $0.version += 1 }
         try check(Session.self, c, \.updatedAt) { $0.endedAt = .now }
         try check(Game.self, c, \.updatedAt) { $0.winnerTeam = 1 }
         try check(Shot.self, c, \.updatedAt) { $0.made = false }
@@ -71,7 +72,7 @@ import Testing
 
     @Test func localEditsAfterExportSurviveImportOfOlderBackup() throws {
         let stack = try populated()
-        let backup = try stack.exportBackup(includeRecognition: true)
+        let backup = try stack.exportBackup()
         let c = stack.competitiveContext, t = stack.trainingContext
         try #require(c.fetch(FetchDescriptor<Highlight>()).first).label = "Clutch"
         try #require(c.fetch(FetchDescriptor<ArchetypeSnapshot>()).first).tags = ["longGun"]
@@ -131,32 +132,33 @@ import Testing
         b.competitive.profiles[0].updatedAt = .now.addingTimeInterval(60)
         b.competitive.profiles.append(.init(id: UUID(), name: "Kim", avatarSymbol: "bolt", avatarColor: "blue",
                                             isLocalOwner: true, createdAt: Fixture.t0, updatedAt: Fixture.t0,
-                                            skillModel: .prior, recognition: nil))
+                                            skillModel: .prior))
         try stack.importBackup(b.encoded())
 
         let owners = try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
         #expect(owners.map(\.id) == [Fixture.ownerID])
         #expect(owners.first?.name == "Renamed")
         try stack.deleteMyRecognitionData()
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
     }
 
     @Test func freshPhoneRestoreKeepsOwner() throws {
         let fresh = try PersistenceStack(inMemory: true)
-        try fresh.importBackup(populated().exportBackup(includeRecognition: true))
+        try fresh.importBackup(populated().exportBackup())
         let owners = try fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner }))
         #expect(owners.map(\.id) == [Fixture.ownerID])
         try fresh.deleteMyRecognitionData()
-        #expect(try Fixture.count(RecognitionData.self, fresh.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, fresh.recognitionContext) == 0)
     }
 
-    // 5. manifest governs recognition
-    @Test func recognitionIgnoredWhenManifestSaysExcluded() throws {
-        var b = try BackupV1.decode(populated().exportBackup(includeRecognition: true))
-        b.includesRecognition = false
+    // 5. backups never carry recognition, so a restore never creates templates
+    @Test func restoreNeverCreatesRecognition() throws {
+        let source = try populated()
+        try Fixture.addOwnerRecognition(source)
+        let b = try BackupV1.decode(source.exportBackup())
         let fresh = try PersistenceStack(inMemory: true)
         try fresh.importBackup(b.encoded())
         #expect(try Fixture.count(PlayerProfile.self, fresh.competitiveContext) == 1)
-        #expect(try Fixture.count(RecognitionData.self, fresh.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, fresh.recognitionContext) == 0)
     }
 }

@@ -147,8 +147,8 @@ struct PrivacyAuditTests {
         "Foundation", "Darwin", "Glibc", "os", "Observation", "Combine", "Dispatch", "simd", "Accelerate",
         // UI
         "SwiftUI", "UIKit", "CoreGraphics", "QuartzCore", "CoreImage", "Metal", "MetalKit", "RealityKit", "Charts",
-        // Persistence
-        "SwiftData",
+        // Persistence (SQLite3 only to VACUUM a migrated store file; Synchronization for a Mutex)
+        "SwiftData", "SQLite3", "Synchronization",
         // Perception (on-device)
         "AVFoundation", "AVKit", "Vision", "CoreML", "ARKit", "CoreMotion", "CoreVideo", "CoreMedia", "ImageIO",
         "UniformTypeIdentifiers", "PhotosUI", "Photos",
@@ -262,16 +262,81 @@ struct PrivacyAuditTests {
     }
 
     /// SPEC §2: embeddings are stored *only* on the player's own phone. Application Support is included in
-    /// iCloud/Finder device backups by default, so Competitive.store (which holds RecognitionData) leaves the
-    /// phone in every iCloud backup unless it is excluded.
+    /// iCloud/Finder device backups by default, so recognition lives in its own excluded store; competitive
+    /// stats still back up. (Was AUDIT-FINDING; fixed. RecognitionStoreTests covers the details.)
     @MainActor
-    @Test(.disabled("AUDIT-FINDING: Competitive.store (face/appearance embeddings) is not excluded from iCloud device backup; SPEC §2 says embeddings stay on the phone. Needs a product decision: exclude the store, or move RecognitionData to its own excluded store."))
-    func recognitionStoreIsExcludedFromDeviceBackup() throws {
+    @Test func recognitionStoreIsExcludedFromDeviceBackup() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("audit-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         _ = try PersistenceStack(directory: dir)
-        let store = dir.appendingPathComponent("Competitive.store")
-        let excluded = try store.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
-        #expect(excluded == true)
+        let rec = PersistenceStack.recognitionDirectory(in: dir)
+        #expect(try rec.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+        let store = rec.appendingPathComponent("Recognition.store")
+        #expect(try store.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+        let competitive = dir.appendingPathComponent("Competitive.store")
+        #expect(try competitive.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == false)
+    }
+
+    /// The signed app's entitlements (what actually ships, whatever Xcode's UI added) hold only the keys every
+    /// free-Personal-Team build gets. Read from the code signature in the running app binary: the embedded
+    /// entitlements blob (magic 0xFADE7171) on device, or the `__entitlements` plist on the simulator.
+    @Test func signedAppHasOnlyAllowedEntitlements() throws {
+        guard let exe = Bundle.main.executableURL, let binary = try? Data(contentsOf: exe, options: .alwaysMapped) else {
+            return   // skipped: no readable app binary in this host
+        }
+        let found = EmbeddedEntitlements.all(in: binary)
+        #if targetEnvironment(simulator)
+        if found.isEmpty { return }   // skipped: simulator build signed without an entitlements section
+        #else
+        try #require(!found.isEmpty, "no embedded entitlements in \(exe.lastPathComponent); unsigned build?")
+        #endif
+        // Not vacuous: the scan must have found the app's own signature (its application identifier).
+        #expect(found.contains { ($0["application-identifier"] as? String)?.hasSuffix("com.aritrobh.cuecoach") == true },
+                "entitlements found but none is the app's: \(found)")
+        let allowed: Set<String> = ["application-identifier", "com.apple.developer.team-identifier",
+                                    "get-task-allow", "com.apple.security.get-task-allow", "keychain-access-groups"]
+        for ents in found {
+            let extra = Set(ents.keys).subtracting(allowed)
+            #expect(extra.isEmpty, "unexpected entitlements: \(extra.sorted())")
+            for key in ents.keys {
+                for banned in ["icloud", "ubiquity", "aps-environment", "application-groups", "associated-domains",
+                               "push", "healthkit", "networking.", "siri", "in-app-payments"] {
+                    #expect(!key.lowercased().contains(banned), "entitlement \(key)")
+                }
+            }
+        }
+    }
+}
+
+/// Finds entitlements property lists inside a Mach-O: code-signature blobs and the simulator's plain section.
+enum EmbeddedEntitlements {
+    static func all(in binary: Data) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        let bytes = [UInt8](binary)
+        // CSMAGIC_EMBEDDED_ENTITLEMENTS: big-endian magic, big-endian total length, XML plist.
+        let magic: [UInt8] = [0xFA, 0xDE, 0x71, 0x71]
+        var i = 0
+        while let r = binary.range(of: Data(magic), in: i..<binary.count) {
+            let start = r.lowerBound
+            i = r.upperBound
+            guard start + 8 <= bytes.count else { break }
+            let len = Int(bytes[start + 4]) << 24 | Int(bytes[start + 5]) << 16 | Int(bytes[start + 6]) << 8 | Int(bytes[start + 7])
+            guard len > 8, start + len <= bytes.count else { continue }
+            if let d = plist(binary.subdata(in: (start + 8)..<(start + len))) { out.append(d) }
+        }
+        // Simulator builds: __TEXT,__entitlements holds the XML plist as-is.
+        let open = Data("<?xml".utf8), close = Data("</plist>".utf8)
+        i = 0
+        while let r = binary.range(of: open, in: i..<binary.count),
+              let e = binary.range(of: close, in: r.upperBound..<binary.count) {
+            i = e.upperBound
+            let chunk = binary.subdata(in: r.lowerBound..<e.upperBound)
+            if let d = plist(chunk), !out.contains(where: { NSDictionary(dictionary: $0).isEqual(to: d) }) { out.append(d) }
+        }
+        return out
+    }
+
+    private static func plist(_ data: Data) -> [String: Any]? {
+        (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
     }
 }

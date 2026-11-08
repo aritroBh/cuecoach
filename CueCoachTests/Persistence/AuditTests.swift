@@ -20,7 +20,7 @@ import Testing
     }
 
     private func snapshot(_ s: PersistenceStack) throws -> BackupV1 {
-        try BackupV1.decode(s.exportBackup(includeRecognition: true, exportedAt: Fixture.t0))
+        try BackupV1.decode(s.exportBackup(exportedAt: Fixture.t0))
     }
 
     private func tempDir() -> URL {
@@ -28,14 +28,13 @@ import Testing
     }
 
     private func profile(_ id: UUID = UUID(), name: String = "P", updatedAt: Date = Fixture.t0,
-                         owner: Bool = false, recognition: BackupV1.Recognition? = nil) -> BackupV1.Profile {
+                         owner: Bool = false) -> BackupV1.Profile {
         .init(id: id, name: name, avatarSymbol: "star", avatarColor: "red", isLocalOwner: owner,
-              createdAt: Fixture.t0, updatedAt: updatedAt, skillModel: .prior, recognition: recognition)
+              createdAt: Fixture.t0, updatedAt: updatedAt, skillModel: .prior)
     }
 
-    private func emptyBackup(includesRecognition: Bool = false) -> BackupV1 {
-        BackupV1(exportedAt: Fixture.t0, includesRecognition: includesRecognition,
-                 competitive: .init(), training: .init())
+    private func emptyBackup() -> BackupV1 {
+        BackupV1(exportedAt: Fixture.t0, competitive: .init(), training: .init())
     }
 
     // MARK: Malformed input is rejected without touching either store
@@ -322,15 +321,16 @@ import Testing
         #expect(elapsed < .seconds(60), "import of \(data.count) bytes took \(elapsed)")
     }
 
-    @Test func hugeEmbeddingRoundTrips() throws {
+    @Test func hugeEmbeddingIsStoredButNeverExported() throws {
         let stack = try populated()
         let big = Data((0..<4_000_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
-        let r = try #require(stack.competitiveContext.fetch(FetchDescriptor<RecognitionData>()).first)
-        r.faceEmbedding = big
-        try stack.competitiveContext.save()
+        try Fixture.addOwnerRecognition(stack, face: big)
+        #expect(try stack.recognition(for: Fixture.ownerID)?.faceEmbedding == big)
+        let data = try stack.exportBackup()
+        #expect(data.count < 1_000_000)
         let fresh = try PersistenceStack(inMemory: true)
-        try fresh.importBackup(stack.exportBackup(includeRecognition: true))
-        #expect(try fresh.competitiveContext.fetch(FetchDescriptor<RecognitionData>()).first?.faceEmbedding == big)
+        try fresh.importBackup(data)
+        #expect(try Fixture.count(RecognitionData.self, fresh.recognitionContext) == 0)
     }
 
     // MARK: Non-finite numbers
@@ -376,82 +376,22 @@ import Testing
     }
 
     // MARK: Recognition privacy
+    // F2/F3 (crafted recognition rows in a backup) can no longer happen: import never writes the recognition
+    // store. RecognitionStoreTests.importIgnoresRecognitionInALegacyBackup pins that.
 
-    // F2: a crafted recognition row reusing the owner's RecognitionData id cannot overwrite the owner's embeddings.
-    @Test func recognitionIDCollisionCannotOverwriteOwnerEmbeddings() throws {
-        let stack = try populated()
-        let ownerRec = try #require(stack.competitiveContext.fetch(FetchDescriptor<RecognitionData>()).first)
-        var b = emptyBackup(includesRecognition: true)
-        b.competitive.profiles = [profile(recognition: .init(id: ownerRec.id, faceEmbedding: Data([9, 9, 9]),
-                                                             appearanceEmbedding: nil, optedInAt: Fixture.t0,
-                                                             version: 7, updatedAt: .now.addingTimeInterval(60)))]
-        _ = try? stack.importBackup(b.encoded())
-        let all = try stack.competitiveContext.fetch(FetchDescriptor<RecognitionData>())
-        let owner = try #require(stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
-            .first { $0.id == Fixture.ownerID })
-        #expect(owner.recognition?.faceEmbedding == Data([1, 2, 3]))
-        #expect(all.filter { $0.faceEmbedding == Data([1, 2, 3]) }.count == 1)
-    }
-
-    // F2: the owner's own (newer) backup row cannot hijack another profile's RecognitionData id either.
-    @Test func ownerRecognitionReusingAnotherRowsIDIsSkipped() throws {
-        let stack = try populated()
-        let guest = PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "s", avatarColor: "c",
-                                  isSessionGuest: true)
-        let guestRec = RecognitionData(faceEmbedding: Data([5, 5]), appearanceEmbedding: nil, optedInAt: Fixture.t0,
-                                       version: 1)
-        guest.recognition = guestRec
-        stack.competitiveContext.insert(guest)
-        try stack.competitiveContext.save()
-        var b = emptyBackup(includesRecognition: true)
-        b.competitive.profiles = [profile(Fixture.ownerID, owner: true,
-                                          recognition: .init(id: guestRec.id, faceEmbedding: Data([9]),
-                                                             appearanceEmbedding: nil, optedInAt: Fixture.t0,
-                                                             version: 2, updatedAt: .now.addingTimeInterval(60)))]
-        try stack.importBackup(b.encoded())
-        #expect(guest.recognition?.faceEmbedding == Data([5, 5]))
-        let owner = try #require(stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
-            .first { $0.id == Fixture.ownerID })
-        #expect(owner.recognition?.faceEmbedding == Data([1, 2, 3]))
-    }
-
-    // F3: only the local owner's recognition is imported; a friend's embeddings never land on this phone.
-    @Test func importDoesNotStoreOtherPlayersEmbeddings() throws {
-        let stack = try populated()
-        var b = emptyBackup(includesRecognition: true)
-        b.competitive.profiles = [profile(recognition: .init(id: UUID(), faceEmbedding: Data([7]),
-                                                             appearanceEmbedding: nil, optedInAt: Fixture.t0,
-                                                             version: 1, updatedAt: Fixture.t0))]
-        try stack.importBackup(b.encoded())
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 1)
-    }
-
-    // F3: an opt-in export carries only the local owner's recognition, never another player's.
-    @Test func exportIncludesOnlyOwnersRecognition() throws {
-        let stack = try populated()
-        let friend = PlayerProfile(name: "Friend", avatarSymbol: "s", avatarColor: "c", createdAt: Fixture.t0)
-        friend.recognition = RecognitionData(faceEmbedding: Data([7, 7]), appearanceEmbedding: nil,
-                                             optedInAt: Fixture.t0, version: 1)
-        stack.competitiveContext.insert(friend)
-        try stack.competitiveContext.save()
-        let b = try BackupV1.decode(stack.exportBackup(includeRecognition: true))
-        #expect(b.competitive.profiles.first { $0.id == friend.id }?.recognition == nil)
-        #expect(b.competitive.profiles.first { $0.id == Fixture.ownerID }?.recognition?.faceEmbedding == Data([1, 2, 3]))
-    }
-
-    // F4: deletion sticks: an older backup cannot bring deleted embeddings back without a fresh opt-in.
+    // F4: deletion sticks: an older backup cannot bring deleted embeddings back, and the tombstone stays.
     @Test func deletedRecognitionStaysDeletedAfterOldBackupImport() throws {
         let stack = try populated()
-        let old = try stack.exportBackup(includeRecognition: true)
+        try Fixture.addOwnerRecognition(stack)
+        let old = try stack.exportBackup()
         try stack.deleteMyRecognitionData()
         try stack.importBackup(old)
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 0)
-        // Even a crafted backup that bumps updatedAt (but carries the old opt-in) stays out.
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
         var b = try BackupV1.decode(old)
-        b.competitive.profiles[0].recognition?.updatedAt = .now.addingTimeInterval(3600)
         b.competitive.profiles[0].updatedAt = .now.addingTimeInterval(3600)
         try stack.importBackup(b.encoded())
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 0)
+        let owner = try #require(stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first)
+        #expect(owner.recognitionRevokedAt != nil)
     }
 
     @Test func deletionTombstoneSurvivesReopenOnDisk() throws {
@@ -462,28 +402,23 @@ import Testing
             let s = try PersistenceStack(directory: dir)
             _ = Fixture.populateCompetitive(s.competitiveContext)
             try s.competitiveContext.save()
-            old = try s.exportBackup(includeRecognition: true)
+            try Fixture.addOwnerRecognition(s)
+            old = try s.exportBackup()
             try s.deleteMyRecognitionData()
         }
         let reopened = try PersistenceStack(directory: dir)
         try reopened.importBackup(old)
-        #expect(try Fixture.count(RecognitionData.self, reopened.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, reopened.recognitionContext) == 0)
+        #expect(throws: RecognitionError.revoked) { try Fixture.addOwnerRecognition(reopened) }
     }
 
-    // F4: a fresh opt-in made after the deletion (e.g. on another phone) is accepted.
-    @Test func recognitionOptedInAfterDeletionIsImported() throws {
+    // F4: a fresh opt-in made after the deletion is accepted.
+    @Test func recognitionOptedInAfterDeletionIsStored() throws {
         let stack = try populated()
+        try Fixture.addOwnerRecognition(stack)
         try stack.deleteMyRecognitionData()
-        let later = Date.now.addingTimeInterval(60)
-        var b = emptyBackup(includesRecognition: true)
-        b.competitive.profiles = [profile(Fixture.ownerID, owner: true,
-                                          recognition: .init(id: UUID(), faceEmbedding: Data([8]),
-                                                             appearanceEmbedding: nil, optedInAt: later,
-                                                             version: 1, updatedAt: later))]
-        try stack.importBackup(b.encoded())
-        let owner = try #require(stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>())
-            .first { $0.id == Fixture.ownerID })
-        #expect(owner.recognition?.faceEmbedding == Data([8]))
+        try Fixture.addOwnerRecognition(stack, face: Data([8]), optedInAt: .now.addingTimeInterval(60))
+        #expect(try stack.recognition(for: Fixture.ownerID)?.faceEmbedding == Data([8]))
     }
 
     @Test func deleteMyRecognitionDataSurvivesReopenOnDisk() throws {
@@ -493,30 +428,22 @@ import Testing
             let s = try PersistenceStack(directory: dir)
             _ = Fixture.populateCompetitive(s.competitiveContext)
             try s.competitiveContext.save()
+            try Fixture.addOwnerRecognition(s)
             try s.deleteMyRecognitionData()
         }
         let reopened = try PersistenceStack(directory: dir)
-        #expect(try Fixture.count(RecognitionData.self, reopened.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, reopened.recognitionContext) == 0)
         #expect(try Fixture.count(PlayerProfile.self, reopened.competitiveContext) == 1)
-        let backup = String(decoding: try reopened.exportBackup(includeRecognition: true), as: UTF8.self)
+        let backup = String(decoding: try reopened.exportBackup(), as: UTF8.self)
         #expect(!backup.contains("faceEmbedding"))
     }
 
     @Test func deleteMyRecognitionDataTwiceIsSafe() throws {
         let stack = try populated()
+        try Fixture.addOwnerRecognition(stack)
         try stack.deleteMyRecognitionData()
         try stack.deleteMyRecognitionData()
-        #expect(try Fixture.count(RecognitionData.self, stack.competitiveContext) == 0)
-    }
-
-    @Test func recognitionInBackupIgnoredWhenFlagFalseEvenIfPresent() throws {
-        let fresh = try PersistenceStack(inMemory: true)
-        var b = emptyBackup(includesRecognition: false)
-        b.competitive.profiles = [profile(owner: true, recognition: .init(id: UUID(), faceEmbedding: Data([1]),
-                                                                          appearanceEmbedding: nil, optedInAt: Fixture.t0,
-                                                                          version: 1, updatedAt: Fixture.t0))]
-        try fresh.importBackup(b.encoded())
-        #expect(try Fixture.count(RecognitionData.self, fresh.competitiveContext) == 0)
+        #expect(try Fixture.count(RecognitionData.self, stack.recognitionContext) == 0)
     }
 
     // MARK: Session guests
@@ -529,15 +456,17 @@ import Testing
             _ = Fixture.populateCompetitive(s.competitiveContext)
             let guest = PlayerProfile(id: Fixture.guestID, name: "Sam", avatarSymbol: "s", avatarColor: "c",
                                       isSessionGuest: true)
-            guest.recognition = Fixture.recognition()
             s.competitiveContext.insert(guest)
             s.competitiveContext.insert(Fixture.shot(index: 9, shooter: Fixture.guestID))
             try s.competitiveContext.save()
+            try Fixture.addOwnerRecognition(s)
+            try s.storeRecognition(profileID: Fixture.guestID, faceEmbedding: Data([5]), appearanceEmbedding: nil,
+                                   optedInAt: Fixture.t0, version: 1)
             try s.purgeSessionGuests()
         }
         let r = try PersistenceStack(directory: dir)
         #expect(try r.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).map(\.id) == [Fixture.ownerID])
-        #expect(try Fixture.count(RecognitionData.self, r.competitiveContext) == 1)
+        #expect(try r.recognitionContext.fetch(FetchDescriptor<RecognitionData>()).map(\.profileID) == [Fixture.ownerID])
         #expect(try r.competitiveContext.fetch(FetchDescriptor<Shot>()).contains { $0.shooterID == Fixture.guestID })
     }
 
@@ -612,12 +541,12 @@ import Testing
 
     @Test func importThenOnDiskReopenMatchesExport() throws {
         let source = try populated()
-        let backup = try source.exportBackup(includeRecognition: true, exportedAt: Fixture.t0)
+        let backup = try source.exportBackup(exportedAt: Fixture.t0)
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         do { try PersistenceStack(directory: dir).importBackup(backup) }
         let reopened = try PersistenceStack(directory: dir)
-        #expect(try BackupV1.decode(reopened.exportBackup(includeRecognition: true, exportedAt: Fixture.t0))
+        #expect(try BackupV1.decode(reopened.exportBackup(exportedAt: Fixture.t0))
                 == BackupV1.decode(backup))
     }
 
@@ -641,7 +570,7 @@ import Testing
     @Test func emptyBackupIsANoOp() throws {
         let stack = try populated()
         let before = try snapshot(stack)
-        try stack.importBackup(emptyBackup(includesRecognition: true).encoded())
+        try stack.importBackup(emptyBackup().encoded())
         #expect(try snapshot(stack) == before)
     }
 }
