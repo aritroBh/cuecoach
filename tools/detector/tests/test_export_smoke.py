@@ -28,5 +28,9 @@ def test_coreml_model_loads_and_returns_boxes_for_a_rendered_table():
     assert "coordinates" in prediction
     assert "confidence" in prediction
     assert prediction["coordinates"].shape[-1] == 4
-    assert prediction["confidence"].shape[-1] == len(metadata["classes"])
+    # Ultralytics' Core ML NMS pipeline pads class scores to 80 (COCO width); extra columns must be zero
+    # and the app reads only the first len(classes) columns.
+    n = len(metadata["classes"])
+    assert prediction["confidence"].shape[-1] >= n
+    assert prediction["confidence"][:, n:].max(initial=0) == 0
     assert prediction["confidence"].max() > 0
