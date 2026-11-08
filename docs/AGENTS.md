@@ -28,6 +28,7 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 | 2026-11-08 | Tracking + shot segmentation + classical detector fixes (wt/tracker: stress findings A0-A8, B1, B2, C1-C3, E1; Codex r5 M3, M6, M7) | Claude (tracker worker) | Codex (2 adversarial rounds, both REJECT; r1 F1-F8 fixed or narrowed, r2 residuals reported to head) | awaiting head merge decision |
 | 2026-11-07 | App shell (Home, Game setup, Join nearby, Training picker, in-game chrome, MPC lobby) | Claude (worker subagent) | Codex (code, 6 rounds) + Codex (UX from screenshots, 4 rounds) ‡ | code APPROVE (r6), UX APPROVE (r5); Live/calibration/Training owner items open |
 | 2026-11-08 | Privacy round: recognition store split + migration, one-tap delete/Undo (wt/audit, wt/screens-a) | Claude (privacy worker) | Codex r1 REJECT (3 fixed, 3 rebutted and accepted in r2) · Codex r2 REJECT (3 fixed, not re-reviewed) | awaiting head merge |
+| 2026-11-08 | Integration (wt/integration): 8 branches merged, detector/hooks/gallery wiring, D29 in Live | Claude (integration worker) | Codex ×4 areas (capture-r8, autocal-r4, privacy-r3, wiring): all REJECT r1; fixes test-first; r2 REJECT (MAJORs only); fixes; final combined rerun pending | awaiting head merge decision |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
 

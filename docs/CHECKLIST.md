@@ -95,3 +95,13 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Recognition: 30 findings real → fixed (open-set "someone else", shooter gate, tap relearning, no recognition in backups, delete beats in-flight registration); Codex re-review r2 running
 - [~] Privacy: one-tap delete + Undo; recognition in its own backup-excluded store; guest promotion drops session data — privacy worker
 - [ ] User: face model (AuraFace-v1, Apache-2.0) yes/no · clothing templates on disk vs session-only · recognition expiry · pro profiles era/game split
+
+## Integration branch wt/integration (2026-11-08, integration worker; not merged to phase/1-core)
+- [x] Merged in order: capture 0f87a45 · autocal-r3 c8be83f · tracker 4f2dbbd · detector 1cbeaf1 · app-shell 61d810a · audit f6b1609 · screens-a 68c703f · identity 6cefa3f → 43a6f2a → 5c59884 → 3b60430 → 4eca63f
+- [x] screens-a delete/Undo on audit's staged-delete API; identity templates on the backup-excluded recognition store; IdentitySession galleries registered with the stack
+- [x] Trained ball detector behind BallDetector (HybridBallDetector: model ≤ 30 Hz of frame time, classical fallback); keypoint cadence on frame time
+- [x] D29 in Live (no red ring/buzz without a settled identity; unsettled ids never reach Rules; impulsive launch / addressing opens the aim)
+- [x] No text in the aiming path (shared PostShotRatingBadge); shell LiveScreenAdapter drives LiveSession and injects the game's rules
+- [x] Codex reviews: capture-r8, autocal-r4, privacy-r3, wiring (REJECT → fixes → rerun REJECT, MAJORs only → fixes)
+- [~] Final combined Codex rerun; app unit + UI suites; lock matrix re-run
+- [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
