@@ -12,6 +12,8 @@ struct AutoClothModel: Sendable {
     var maxDistance: Float = 4.0
     /// Grey/tan cloth with almost no chroma: only usable inside the depth gate, with a tighter brightness band.
     var neutral = false
+    /// Learned (and to be applied) on 3×3 mean colours: a dim cloth whose single pixels are noise-dominated.
+    var smoothed = false
 
     @inline(__always) func distance(_ r: Float, _ g: Float, _ b: Float) -> Float {
         let s = r + g + b
@@ -32,6 +34,17 @@ struct AutoClothModel: Sendable {
     /// `allowNeutral` (only with a depth gate) accepts grey/tan cloth instead of returning nil.
     static func learn(_ img: AutoRGBImage, stride s: Int, accept: ((Int, Int) -> Bool)? = nil,
                       allowNeutral: Bool = false, minSamples: Int = 40) -> AutoClothModel? {
+        let first = learn(img, stride: s, accept: accept, allowNeutral: allowNeutral, minSamples: minSamples, smooth: false)
+        // A dim cloth (VirtualTable light-dim: mean level ~20) is noise-dominated per pixel: relearn on 3×3 means.
+        guard let m = first, m.mI < 70,
+              var sm = learn(img, stride: s, accept: accept, allowNeutral: allowNeutral, minSamples: minSamples, smooth: true)
+        else { return first }
+        sm.smoothed = true
+        return sm
+    }
+
+    private static func learn(_ img: AutoRGBImage, stride s: Int, accept: ((Int, Int) -> Bool)?,
+                              allowNeutral: Bool, minSamples: Int, smooth: Bool) -> AutoClothModel? {
         let w = img.width, h = img.height
         var c1: [Float] = [], c2: [Float] = [], ii: [Float] = []
         c1.reserveCapacity(4096); c2.reserveCapacity(4096); ii.reserveCapacity(4096)
@@ -42,8 +55,11 @@ struct AutoClothModel: Sendable {
             for y in Swift.stride(from: y0, to: y1, by: st) {
                 for x in Swift.stride(from: x0, to: x1, by: st) {
                     if let a = accept, !a(x, y) { continue }
-                    let o = (y * w + x) * 3
-                    let r = Float(p[o]), g = Float(p[o + 1]), b = Float(p[o + 2])
+                    let (r, g, b): (Float, Float, Float)
+                    if smooth { (r, g, b) = autoBox3(p, w, h, x, y) } else {
+                        let o = (y * w + x) * 3
+                        (r, g, b) = (Float(p[o]), Float(p[o + 1]), Float(p[o + 2]))
+                    }
                     let sum = r + g + b
                     guard sum >= 24 else { continue }
                     c1.append(r / sum); c2.append(g / sum); ii.append(sum / 3)
@@ -74,6 +90,19 @@ struct AutoClothModel: Sendable {
     }
 }
 
+/// 3×3 mean colour around (x, y): the coarse grid samples single pixels, and in a dim room sensor noise
+/// dominates their chromaticity (VirtualTable light-dim: the model's spread grew to 0.14 and took in the rails).
+@inline(__always) func autoBox3(_ p: UnsafeBufferPointer<UInt8>, _ w: Int, _ h: Int, _ x: Int, _ y: Int) -> (Float, Float, Float) {
+    var r: Float = 0, g: Float = 0, b: Float = 0, n: Float = 0
+    for yy in max(0, y - 1)...min(h - 1, y + 1) {
+        for xx in max(0, x - 1)...min(w - 1, x + 1) {
+            let o = (yy * w + xx) * 3
+            r += Float(p[o]); g += Float(p[o + 1]); b += Float(p[o + 2]); n += 1
+        }
+    }
+    return (r / n, g / n, b / n)
+}
+
 /// Binary mask on a coarse grid (working pixel = grid · stride).
 struct AutoMask: Sendable {
     var width: Int
@@ -97,8 +126,12 @@ enum AutoClothSegmenter {
                     for gx in 0..<gw {
                         let x = gx * s
                         if let g = gate, g[gRow + x * gateWidth / w] == 0 { continue }
-                        let o = (y * w + x) * 3
-                        if model.isCloth(Float(p[o]), Float(p[o + 1]), Float(p[o + 2])) { out[gy * gw + gx] = 1 }
+                        let (r, g, b): (Float, Float, Float)
+                        if model.smoothed { (r, g, b) = autoBox3(p, w, img.height, x, y) } else {
+                            let o = (y * w + x) * 3
+                            (r, g, b) = (Float(p[o]), Float(p[o + 1]), Float(p[o + 2]))
+                        }
+                        if model.isCloth(r, g, b) { out[gy * gw + gx] = 1 }
                     }
                 }
             }
@@ -140,6 +173,43 @@ enum AutoClothSegmenter {
             }
         }
         return AutoMask(width: w, height: h, stride: m.stride, bits: out)
+    }
+
+    /// The table's cloth: the largest 4-connected component plus every component of at least `minFraction` of its
+    /// size whose bounding box lies within `maxGap` cells of it (an occluder or shadow band splits the cloth;
+    /// the convex hull of the merged outline bridges it). Returns the merged mask and its pixel count.
+    static func tableComponent(_ m: AutoMask, maxGap: Int, minFraction: Double) -> (AutoMask, Int) {
+        let w = m.width, h = m.height, n = w * h
+        var label = [Int32](repeating: 0, count: n)
+        var stack = [Int32]()
+        struct Comp { var size = 0; var x0 = Int.max, y0 = Int.max, x1 = -1, y1 = -1 }
+        var comps: [Comp] = [Comp()]
+        for i in 0..<n where m.bits[i] != 0 && label[i] == 0 {
+            let id = Int32(comps.count)
+            var c = Comp()
+            label[i] = id; stack.append(Int32(i))
+            while let jj = stack.popLast() {
+                let j = Int(jj), x = j % w, y = j / w
+                c.size += 1; c.x0 = min(c.x0, x); c.x1 = max(c.x1, x); c.y0 = min(c.y0, y); c.y1 = max(c.y1, y)
+                for k in [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, y > 0 ? j - w : -1, y < h - 1 ? j + w : -1]
+                where k >= 0 && m.bits[k] != 0 && label[k] == 0 { label[k] = id; stack.append(Int32(k)) }
+            }
+            comps.append(c)
+        }
+        guard comps.count > 1, let best = comps.indices.dropFirst().max(by: { comps[$0].size < comps[$1].size }) else {
+            return (AutoMask(width: w, height: h, stride: m.stride, bits: [UInt8](repeating: 0, count: n)), 0)
+        }
+        let b = comps[best]
+        var keep = Set([best])
+        for i in comps.indices.dropFirst() where i != best && Double(comps[i].size) >= minFraction * Double(b.size) {
+            let c = comps[i]
+            let gx = max(0, max(c.x0 - b.x1, b.x0 - c.x1)), gy = max(0, max(c.y0 - b.y1, b.y0 - c.y1))
+            if gx <= maxGap && gy <= maxGap { keep.insert(i) }
+        }
+        var out = [UInt8](repeating: 0, count: n)
+        var total = 0
+        for i in 0..<n where keep.contains(Int(label[i])) && label[i] != 0 { out[i] = 1; total += 1 }
+        return (AutoMask(width: w, height: h, stride: m.stride, bits: out), total)
     }
 
     /// Largest 4-connected component (mask with only that component set), and its pixel count.

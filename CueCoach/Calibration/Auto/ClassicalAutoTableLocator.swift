@@ -30,6 +30,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         /// Keypoint-only frames whose own fit explains the keypoints worse than this are dropped (px; model
         /// keypoints are noisier than sub-pixel rail edges).
         var maxKeypointFrameRMS = 10.0
+        /// Cloth segmentation counts only pixels LiDAR positively puts within this of the cloth plane (m).
+        /// (0.035 — below the rail caps — was tried: no matrix gain, and it broke partial views.)
+        var segmentationTolerance = 0.12
     }
 
     /// Per-frame detector state. Owned by the `processing` lock, which serialises `process()` calls, so
@@ -53,6 +56,10 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         /// Bumped by `reset()`. A detection that started before a reset is dropped, not fused.
         var epoch = 0
     }
+
+    /// Test/debug hook: the raw cloth mask, the table component and the cloth model of each full search.
+    /// Never set in production.
+    static let debugMaskSink = Mutex<(@Sendable (AutoMask, AutoMask, AutoClothModel) -> Void)?>(nil)
 
     let config: Config
     private let keypointProvider: (any TableKeypointProvider)?
@@ -124,6 +131,9 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var diag = AutoFrameDiagnostics()
         let camera = AutoCamera(intrinsics: frame.intrinsics, cameraToWorld: frame.cameraToWorld)
         let det = detect(frame, camera: camera, state: &work, diag: &diag)
+        if let m = det?.measurement {
+            diag.measuredLength = m.measuredLength; diag.measuredWidth = m.measuredWidth; diag.snappedSize = m.snapped
+        }
         work.fused = nil
 
         // 3. Under the state lock: fuse and validate, unless a reset happened meanwhile (then this frame
@@ -268,14 +278,42 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         diag.railTopHeight = prof.railTopHeight
 
         // 4. Lift to the plane and fit the rectangle.
-        guard let fit = fitRectangle(rails: rails, corners: imgCorners, keypoints: keypoints, camera: camera,
+        guard var fit = fitRectangle(rails: rails, corners: imgCorners, keypoints: keypoints, camera: camera,
                                      plane: plane, profile: prof, diag: &diag) else { return nil }
-        let allPts = rails.flatMap(\.points)
-        let pose0 = AutoTableFusion.pose(center: plane.to3D(fit.rect.center), axis: plane.e1 * fit.rect.u.x + plane.e2 * fit.rect.u.y,
-                                         up: plane.normal, spec: fit.spec, snapped: fit.snapped,
-                                         measured: (fit.measuredL, fit.measuredW), headToFoot: plane.e1 * fit.rect.u.x + plane.e2 * fit.rect.u.y)!
+        func pose(_ f: RectFit) -> AutoTablePose {
+            let ax = plane.e1 * f.rect.u.x + plane.e2 * f.rect.u.y
+            return AutoTableFusion.pose(center: plane.to3D(f.rect.center), axis: ax, up: plane.normal, spec: f.spec,
+                                        snapped: f.snapped, measured: (f.measuredL, f.measuredW), headToFoot: ax)!
+        }
+        var allPts = rails.flatMap(\.points)
+        var pose0 = pose(fit)
         diag.reprojectionRMS = Self.reprojectionRMS(allPts, pose: pose0, plane: plane, camera: camera, profile: prof)
-        guard diag.reprojectionRMS < config.maxFrameRMS else { diag.rejection = "reprojection"; return nil }
+        if diag.reprojectionRMS >= config.maxFrameRMS {
+            // One rail edge confused (a lamp highlight on the cushion, a shadow, an arm) while the other three agree:
+            // refit without it, sizing from the other axis at 2:1. Never more than one rail.
+            let perRail = rails.map { Self.reprojectionRMS($0.points, pose: pose0, plane: plane, camera: camera, profile: prof) }
+            // Never for a table the frame may crop (the partial-view rule would be bypassed): all four corners in view.
+            let inFrame = imgCorners.allSatisfy { $0.x > 8 && $0.y > 8 && $0.x < Double(img.width - 9) && $0.y < Double(img.height - 9) }
+            guard inFrame, let k = perRail.indices.max(by: { perRail[$0] < perRail[$1] }), perRail[k] >= config.maxFrameRMS,
+                  perRail.indices.filter({ $0 != k }).allSatisfy({ perRail[$0] < config.maxFrameRMS }),
+                  let f2 = fitRectangle(rails: rails, corners: imgCorners, keypoints: keypoints, camera: camera,
+                                        plane: plane, profile: prof, exclude: k, diag: &diag) else {
+                diag.rejection = diag.rejection ?? "reprojection"; return nil
+            }
+            // The size now comes from the one axis whose two rails remain; it must be the well-conditioned one
+            // (across the image, not along the view rays — VirtualTable light-lamp seed 6 sized a 7 ft as 8 ft from
+            // a width measured 13 % long along the rays).
+            let liftedK = rails[k].points.compactMap { plane.lift($0, camera: camera, height: prof.railTopHeight) }
+            let view2 = plane.to2D(plane.to3D(f2.rect.center) + (plane.to3D(f2.rect.center) - camera.position)) - f2.rect.center
+            guard let lk = AutoLine.fit(liftedK), simd_length(view2) > 1e-6 else { diag.rejection = "reprojection"; return nil }
+            let sizingAxis = abs(simd_dot(lk.direction, f2.rect.u)) > 0.7 ? f2.rect.u : f2.rect.v
+            guard abs(simd_dot(sizingAxis, simd_normalize(view2))) <= 0.64 else { diag.rejection = "reprojection"; return nil }
+            let kept = rails.indices.filter { $0 != k }.flatMap { rails[$0].points }
+            let p2 = pose(f2)
+            let rms2 = Self.reprojectionRMS(kept, pose: p2, plane: plane, camera: camera, profile: prof)
+            guard rms2 < config.maxFrameRMS else { diag.rejection = "reprojection"; return nil }
+            fit = f2; pose0 = p2; allPts = kept; diag.reprojectionRMS = rms2; diag.droppedRail = k
+        }
         guard viewElevation(camera, center: pose0.center, up: plane.normal) >= config.minViewElevation else {
             diag.rejection = "view too shallow"; return nil
         }
@@ -304,7 +342,20 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
     }
 
     private func basePlane(_ f: AutoTableFrame, camera: AutoCamera) -> AutoTablePlane? {
-        if let h = f.plane { return AutoTablePlane(origin: h.point, normal: h.normal) }
+        if let h = f.plane {
+            // ARKit often anchors the floor before a low-texture cloth: if LiDAR sees a clear horizontal level at
+            // pool-table height above the hinted plane, that level is the table.
+            // Only a floor-like hint (≥ 1 m under the camera) is replaced, and only by the dominant level in the
+            // central part of the view (where the user points at the table), not any table-height surface in frame.
+            if let d = f.depth, abs(h.normal.y) > 0.95, camera.position.y - h.point.y >= 1.0,
+               let level = AutoPlaneRefiner.horizontalLevels(depth: d, camera: camera, imageWidth: f.image.width,
+                                                             imageHeight: f.image.height, central: true)
+                   .first(where: { (0.55...1.1).contains($0.level - h.point.y) && camera.position.y - $0.level > 0.2 }) {
+                // Largest-share level in range: the bed, not the narrower rail caps 4.5 cm above it.
+                return AutoTablePlane(origin: SIMD3(h.point.x, level.level, h.point.z), normal: SIMD3(0, 1, 0))
+            }
+            return AutoTablePlane(origin: h.point, normal: h.normal)
+        }
         guard let d = f.depth else { return nil }
         // No ARKit plane yet: the dominant horizontal level in the central depth region.
         var ys: [Double] = []
@@ -348,8 +399,10 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var gate: [UInt8]?
         var learnGate: [UInt8]?
         if let d = f.depth {
+            // Segment only where LiDAR positively sees table height (dim rooms: a dark, noisy floor or wall with
+            // no depth confidence otherwise matches a dark cloth model).
             gate = AutoPlaneRefiner.gate(depth: d, camera: camera, imageWidth: img.width, imageHeight: img.height,
-                                         plane: plane, tolerance: 0.12, grow: 3)
+                                         plane: plane, tolerance: config.segmentationTolerance, grow: 3, trustUnknown: false)
             learnGate = AutoPlaneRefiner.gate(depth: d, camera: camera, imageWidth: img.width, imageHeight: img.height,
                                               plane: plane, tolerance: 0.025, trustUnknown: false)
         }
@@ -366,10 +419,13 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         // A neutral model matches any grey surface, so it only counts pixels LiDAR positively puts at table height.
         if model.neutral, let d = f.depth {
             gate = AutoPlaneRefiner.gate(depth: d, camera: camera, imageWidth: img.width, imageHeight: img.height,
-                                         plane: plane, tolerance: 0.12, grow: 3, trustUnknown: false)
+                                         plane: plane, tolerance: config.segmentationTolerance, grow: 3, trustUnknown: false)
         }
         let raw = AutoClothSegmenter.mask(img, model: model, stride: stride, gate: gate, gateWidth: dw, gateHeight: dh)
-        let (comp, size) = AutoClothSegmenter.largestComponent(AutoClothSegmenter.open(raw))
+        let opened = AutoClothSegmenter.open(raw)
+        // Occluders split the cloth: merge large neighbouring pieces (gap ≤ ~8 % of the frame width).
+        let (comp, size) = AutoClothSegmenter.tableComponent(opened, maxGap: max(4, opened.width / 12), minFraction: 0.15)
+        if let sink = Self.debugMaskSink.withLock({ $0 }) { sink(raw, comp, model) }
         let expected = expectedTableArea(f, camera: camera, plane: plane)
         let minArea = min(Double(img.width * img.height) / 40, 0.3 * (expected ?? .infinity))
         let gridCell = Double(stride * stride)
@@ -420,9 +476,11 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         var measuredW: Double
     }
 
+    /// `exclude`: a rail whose edge is not trusted (its samples are left out and the size comes from the other
+    /// axis at 2:1).
     private func fitRectangle(rails: [AutoRailEdge], corners q: [AutoP2], keypoints: [AutoTableKeypoint],
                               camera: AutoCamera, plane: AutoTablePlane, profile prof: AutoTableProfile,
-                              diag: inout AutoFrameDiagnostics) -> RectFit? {
+                              exclude: Int? = nil, diag: inout AutoFrameDiagnostics) -> RectFit? {
         let hr = prof.railTopHeight, c = prof.cushionWidth
         let Q = q.compactMap { plane.lift($0, camera: camera, height: hr) }
         guard Q.count == 4 else { diag.rejection = "corner above horizon"; return nil }
@@ -451,26 +509,40 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         guard rect.a > 0.4, rect.b > 0.2 else { diag.rejection = "too small"; return nil }
 
         var samples: [AutoRectFitter.EdgeSample] = []
-        for (i, r) in rails.enumerated() {
+        for (i, r) in rails.enumerated() where i != exclude {
             for p in r.points {
                 if let w = plane.lift(p, camera: camera, height: hr) {
                     samples.append(.init(p: w, side: side[i], offset: c))
                 }
             }
         }
-        guard let free = AutoRectFitter.fit(rect, edges: samples, mode: .free) else { diag.rejection = "fit"; return nil }
+        guard let free = AutoRectFitter.fit(rect, edges: samples, mode: exclude == nil ? .free : .aspect) else {
+            diag.rejection = "fit"; return nil
+        }
         rect = free.rect
         let kp = keypointSamples(keypoints, rect: rect, camera: camera, plane: plane, profile: prof)
         diag.keypointsUsed = kp.count
         if !kp.isEmpty, let f2 = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .free) { rect = f2.rect }
         let L = 2 * rect.a, W = 2 * rect.b
-        let snap = AutoRectFitter.snap(length: L, width: W)
-        var spec = TableSpec(size: snap.size)
+        diag.measuredLength = L; diag.measuredWidth = W
+        let verdict = AutoRectFitter.sizeVerdict(length: L, width: W)
+        switch verdict {
+        case .notTwoToOne: diag.rejection = "not 2:1"; return nil
+        case .ambiguous: diag.rejection = "size ambiguous"; return nil
+        case .implausibleSize: diag.rejection = "too small"; return nil
+        case .measured where exclude != nil:
+            // A three-rail fit has no independent size check: it must land on a preset.
+            diag.rejection = "reprojection"; return nil
+        case .preset, .measured: break
+        }
+        var spec = TableSpec(size: AutoRectFitter.snap(length: L, width: W).size)
         var snapped: TableSize?
         let final: AutoRect
-        if snap.relativeError <= 0.06,
-           let f = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2)) {
-            final = f.rect; snapped = snap.size
+        if case .preset(let size) = verdict {
+            spec = TableSpec(size: size)
+            guard let f = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
+            else { diag.rejection = "fit"; return nil }
+            final = f.rect; snapped = size
         } else if let f = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .aspect) {
             final = f.rect
             spec.length = 2 * f.rect.a; spec.width = 2 * f.rect.b
@@ -525,10 +597,16 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         let kp = keypointSamples(kps, rect: rect, camera: camera, plane: plane, profile: prof)
         guard kp.count >= 4, let free = AutoRectFitter.fit(rect, edges: [], points: kp, mode: .free) else { return nil }
         diag.keypointsUsed = kp.count
+        diag.measuredLength = 2 * free.rect.a; diag.measuredWidth = 2 * free.rect.b
         let snap = AutoRectFitter.snap(length: 2 * free.rect.a, width: 2 * free.rect.b)
+        switch AutoRectFitter.sizeVerdict(length: 2 * free.rect.a, width: 2 * free.rect.b) {
+        case .notTwoToOne: diag.rejection = "not 2:1"; return nil
+        case .ambiguous: diag.rejection = "size ambiguous"; return nil
+        case .measured, .implausibleSize: return nil
+        case .preset: break
+        }
         let spec = TableSpec(size: snap.size)
-        guard snap.relativeError <= 0.06,
-              let fixed = AutoRectFitter.fit(free.rect, edges: [], points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
+        guard let fixed = AutoRectFitter.fit(free.rect, edges: [], points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
         else { return nil }
         let axis = plane.e1 * fixed.rect.u.x + plane.e2 * fixed.rect.u.y
         let m = AutoTableMeasurement(center: plane.to3D(fixed.rect.center), axis: axis, up: plane.normal,
