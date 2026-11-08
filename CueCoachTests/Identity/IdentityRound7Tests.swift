@@ -60,3 +60,32 @@ import Testing
         #expect(r.farUpper95 >= r.farObserved && r.farUpper95 <= 1)
     }
 }
+
+// Codex r6: FAR bound from a volunteer-level bootstrap that recomputes impostor pairs among resampled volunteers.
+@Suite struct FARBootstrapTests {
+    @Test func boundDoesNotDependOnVolunteerOrder() {
+        let sets = HeldOutShipGateTests.subjects(20, spread: 0.3)
+        let t = 0.05
+        let a = FaceBenchmark.farUpperBootstrap(sets, threshold: t)
+        let b = FaceBenchmark.farUpperBootstrap(Array(sets.reversed()), threshold: t)
+        let c = FaceBenchmark.farUpperBootstrap(sets.enumerated().sorted { ($0.offset * 7) % 20 < ($1.offset * 7) % 20 }.map(\.element), threshold: t)
+        #expect(a == b && a == c)
+        #expect(a > 0)
+    }
+
+    @Test func aClusteredImpostorWidensTheBoundWellBeyondWilson() {
+        // 20 volunteers, 144 comparisons per pair; every false accept involves volunteer 0.
+        let n = 20
+        var m = [[(fa: Int, n: Int)]](repeating: [(fa: Int, n: Int)](repeating: (0, 144), count: n), count: n)
+        for j in 1..<n { m[0][j] = (2, 144); m[j][0] = (2, 144) }
+        let boot = FaceBenchmark.farUpperBootstrap(matrix: m)
+        let fa = 2 * (n - 1), total = n * (n - 1) / 2 * 144
+        let wilson = FaceBenchmark.wilsonUpper(successes: fa, n: total)
+        #expect(boot > 1.5 * wilson, "bootstrap \(boot) vs Wilson \(wilson)")
+    }
+
+    @Test func copiesOfOneVolunteerNeverFormImpostorPairs() {
+        // Only one volunteer: no impostor pairs in any resample → FAR bound 0 (and no crash).
+        #expect(FaceBenchmark.farUpperBootstrap(matrix: [[(0, 0)]]) == 0)
+    }
+}
