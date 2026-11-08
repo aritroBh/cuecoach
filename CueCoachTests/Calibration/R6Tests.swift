@@ -128,3 +128,52 @@ struct R6ModelTests {
         #expect(m.badge == nil, "cue ball creeping")
     }
 }
+
+/// Codex r7 follow-ups.
+struct R7Tests {
+    /// Mouth count belongs to one frame: reset before each process, so a frame that skipped inference counts 0.
+    @Test func mouthCountDoesNotCarryOver() {
+        struct Fixed: TableKeypointProvider {
+            func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+                [AutoTableKeypoint(kind: .cornerMouth, pixel: .zero, confidence: 0.9),
+                 AutoTableKeypoint(kind: .sideMouth, pixel: .zero, confidence: 0.9)]
+            }
+        }
+        let c = MouthCountingProvider(wrapping: Fixed())
+        _ = c.keypoints(in: AutoRGBImage(width: 1, height: 1, rgb: [0, 0, 0]),
+                        intrinsics: AutoIntrinsics(fx: 1, fy: 1, cx: 0, cy: 0, width: 1, height: 1))
+        #expect(c.lastMouths == 2)
+        c.beginFrame()
+        #expect(c.lastMouths == 0)   // this frame never called the model
+    }
+
+    /// The latch is only taken by frames that actually deliver a callback to the controller.
+    @Test func latchTakenOnlyWhenSomethingIsDelivered() {
+        #expect(FrameDelivery.delivers(statusTick: true, active: false, trackingNormal: false))
+        #expect(FrameDelivery.delivers(statusTick: false, active: true, trackingNormal: true))
+        #expect(!FrameDelivery.delivers(statusTick: false, active: true, trackingNormal: false))   // dropped frame
+        #expect(!FrameDelivery.delivers(statusTick: false, active: false, trackingNormal: true))
+    }
+
+    /// Order is only claimed when every pocketed (known) ball has a distinct time.
+    @Test func partialOrTiedTimesStayUnknown() {
+        let ids: [Int: BallID] = [1: .cue, 2: BallID(3)!, 4: BallID(11)!]
+        let r = ShotRecord(start: 0, end: 1, preState: [:], finalState: [:], cueID: 1, firstContact: 2,
+                           rails: [], pocketed: [2: .footLeft, 4: .sideRight])
+        #expect(RuleRating.outcome(r, ids: ids, pocketTimes: [2: 1.0]).pocketOrder.isEmpty)
+        #expect(RuleRating.outcome(r, ids: ids, pocketTimes: [2: 1.0, 4: 1.0]).pocketOrder.isEmpty)
+        #expect(RuleRating.outcome(r, ids: ids, pocketTimes: [2: 1.0, 4: 0.5]).pocketOrder == [BallID(11)!, BallID(3)!])
+    }
+
+    /// An injected game seeds ring legality before the first shot.
+    @MainActor @Test func injectedGameSeedsLegality() {
+        let m = LiveModel(mode: .game)
+        let engine = RulesEngine(ruleSet: .barEight)
+        var g = engine.newGame(); g.phase = .inPlay; g.groups = [0: .stripes, 1: .solids]; g.ballInHand = .none
+        var h = LiveHooks()
+        h.currentGame = { (engine, g) }
+        m.hooks = h
+        let legal = m.initialLegalTargets()
+        #expect(legal.contains(BallID(11)!) && !legal.contains(BallID(3)!))
+    }
+}

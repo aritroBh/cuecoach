@@ -432,6 +432,8 @@ struct ReplayLiveView: View {
         .task {
             let pl = pipeline
             model.legalChanged = { legal in Task { await pl.setLegal(legal) } }
+            let seed = model.initialLegalTargets()
+            Task { await pl.setLegal(seed) }
             model.undo = { model.editor.undo() }
             model.recalibrate = { reset() }
             model.confirm = { confirm() }

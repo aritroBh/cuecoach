@@ -78,6 +78,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             plane: hint.map { AutoPlaneHint(point: $0.point, normal: $0.normal) },
             timestamp: f.timestamp,
             tracking: f.trackingNormal ? .normal : .limited)
+        mouthCounter?.beginFrame()   // this frame's count only (inference may be skipped/throttled)
         let e = auto.process(frame)
         state.withLock { s in
             if Self.hasPocketEvidence(e.frame, mouthKeypoints: mouthCounter?.lastMouths ?? 0) { s.pocketEvidence += 1 }
@@ -172,6 +173,8 @@ final class MouthCountingProvider: TableKeypointProvider, @unchecked Sendable {
     init(wrapping inner: any TableKeypointProvider) { self.inner = inner }
 
     var lastMouths: Int { count.withLock { $0 } }
+    /// Call before each locator frame so a frame that skips inference reports 0, not the previous count.
+    func beginFrame() { count.withLock { $0 = 0 } }
 
     func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
         let k = inner.keypoints(in: image, intrinsics: intrinsics)

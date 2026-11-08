@@ -275,10 +275,14 @@ enum RuleRating {
         var pocketed: [BallID: Pocket] = [:]
         for (tid, p) in r.pocketed { if let id = ids[tid] { pocketed[id] = p } }
         let first = r.firstContact.flatMap { ids[$0] }
+        // Only claim an order when every known pocketed ball has a time and no two times tie (else unknown).
         var order: [BallID] = []
         if let times = pocketTimes {
-            order = r.pocketed.keys.filter { times[$0] != nil && ids[$0] != nil }
-                .sorted { times[$0]! < times[$1]! }.compactMap { ids[$0] }
+            let known = r.pocketed.keys.filter { ids[$0] != nil }
+            let ts = known.compactMap { times[$0] }
+            if ts.count == known.count, Set(ts).count == ts.count {
+                order = known.sorted { times[$0]! < times[$1]! }.compactMap { ids[$0] }
+            }
         }
         return ShotOutcome(firstContact: first, noContact: false, pocketed: pocketed, pocketOrder: order,
                            anyRailAfterContact: nil)
@@ -490,6 +494,14 @@ enum SizeAmbiguity {
 
 /// Latches any non-normal ARKit tracking seen on any frame until the next status tick takes it (Codex r6: a
 /// relocalization shorter than the 250 ms tick must still re-validate the table).
+/// Whether this AR frame hands anything to the controller (a status tick, or a processed result). The tracking
+/// latch is only taken by delivering frames, so a dropped frame can't swallow it (Codex r7).
+enum FrameDelivery {
+    static func delivers(statusTick: Bool, active: Bool, trackingNormal: Bool) -> Bool {
+        statusTick || (active && trackingNormal)
+    }
+}
+
 struct LimitedLatch: Sendable {
     private var seen = false
     mutating func note(trackingNormal: Bool) { if !trackingNormal { seen = true } }

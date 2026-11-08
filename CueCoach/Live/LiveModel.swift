@@ -56,6 +56,12 @@ final class LiveModel {
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
 
+    /// Ring legality before the first shot: the shell's active game if injected, else the local default.
+    func initialLegalTargets() -> Set<BallID> {
+        if let (e, g) = hooks.currentGame() { return e.legalTargets(g) }
+        return engine.legalTargets(game)
+    }
+
     /// A shot ended: rate it through the Rules engine against the shell's game (or the local default), advance the
     /// local copy, tell the shell. The shell owns the real game state; it applies its own result.
     func shotSettled(_ record: ShotRecord, ids: [Int: BallID]) {

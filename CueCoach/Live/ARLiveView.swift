@@ -74,6 +74,8 @@ final class ARLiveController: NSObject {
         view = v
         let pipeline = pipeline
         model.legalChanged = { legal in Task { await pipeline.setLegal(legal) } }
+        let seed = model.initialLegalTargets()   // the shell's active game, before any shot
+        Task { await pipeline.setLegal(seed) }
         let tap = FrameTap(pipeline: pipeline, locator: locator,
                            onResult: { [weak self] r, s in self?.handle(r, s) },
                            onEstimate: { [weak self] e, s in self?.handleEstimate(e, s) })
@@ -549,7 +551,9 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var status = Status(planeFound: plane, trackingOK: tracking,
                             depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil, seq: seq, epoch: epoch)
         // Hand the latch to whatever this frame delivers (a status tick or a result).
-        if sendStatus || mode != .idle { status.limitedSeen = state.withLock { $0.limited.take() } }
+        if FrameDelivery.delivers(statusTick: sendStatus, active: mode != .idle, trackingNormal: tracking) {
+            status.limitedSeen = state.withLock { $0.limited.take() }
+        }
         let onResult = onResult, onEstimate = onEstimate
         // World-anchored work is meaningless while ARKit is relocalizing: pause it.
         guard mode != .idle, tracking else {
