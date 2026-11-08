@@ -89,7 +89,7 @@ def main() -> int:
         got = np.asarray(mlmodel.predict({"face": img})["embedding"]).reshape(-1)
         cos.append(float(ref @ got / (np.linalg.norm(ref) * np.linalg.norm(got))))
     print(f"parity cosine onnx vs coreml-fp16: min {min(cos):.6f} mean {np.mean(cos):.6f}")
-    if np.mean(cos) < 0.999:
+    if min(cos) < 0.999:   # every sample, not just the mean
         print("parity check failed", file=sys.stderr)
         return 1
     mlmodel.user_defined_metadata["parityCosineMean"] = f"{np.mean(cos):.6f}"

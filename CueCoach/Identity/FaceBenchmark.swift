@@ -87,6 +87,39 @@ enum FaceBenchmark {
         return max(0, (p + z2 / (2 * nn) - z * (p * (1 - p) / nn + z2 / (4 * nn * nn)).squareRoot()) / (1 + z2 / nn))
     }
 
+    /// Subject-level bootstrap (resample volunteers with replacement; deterministic seed) of a pooled rate from
+    /// per-volunteer (hits, n): 95 % (2.5th, 97.5th percentile) bounds. Respects within-volunteer correlation.
+    static func bootstrapRate(_ groups: [(Int, Int)], rounds: Int = 400, seed: UInt64 = 0xFACE) -> (Double, Double) {
+        guard !groups.isEmpty else { return (0, 1) }
+        var state = seed
+        func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9; z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+        var rates: [Double] = []
+        for _ in 0..<rounds {
+            var h = 0, n = 0
+            for _ in groups.indices { let g = groups[Int(next() % UInt64(groups.count))]; h += g.0; n += g.1 }
+            rates.append(n == 0 ? 0 : Double(h) / Double(n))
+        }
+        rates.sort()
+        return (rates[Int(0.025 * Double(rounds))], rates[min(rounds - 1, Int(0.975 * Double(rounds)))])
+    }
+
+    /// Pairs keyed by the volunteer they belong to (impostor pairs to the lower index), for the bootstrap.
+    static func groupedPairs(_ sets: [[Embedding]]) -> (genuine: [[Double]], impostor: [[Double]]) {
+        var genuine: [[Double]] = [], impostor: [[Double]] = []
+        for (i, s) in sets.enumerated() {
+            var g: [Double] = [], m: [Double] = []
+            for a in s.indices { for b in s.indices where b > a { if let c = s[a].cosine(s[b]) { g.append(c) } } }
+            for t in sets[(i + 1)...] { for x in s { for y in t { if let c = x.cosine(y) { m.append(c) } } } }
+            genuine.append(g); impostor.append(m)
+        }
+        return (genuine, impostor)
+    }
+
     static func pairs(_ sets: [[Embedding]]) -> (genuine: [Double], impostor: [Double]) {
         var genuine: [Double] = [], impostor: [Double] = []
         for (i, s) in sets.enumerated() {
@@ -116,28 +149,45 @@ enum FaceBenchmark {
         // calibration TAR would just reach `requiredTAR`. Operate halfway between them, so the unseen report half has
         // margin on both sides (with ~100 report probes, one stray impostor already breaks FPIR 0.5 %).
         let low = max(op.threshold, calUnknown[min(k, calUnknown.count - 1)])
-        let gen = c.genuine.sorted()
-        let high = gen.isEmpty ? low : gen[min(gen.count - 1, Int((1 - requiredTAR) * Double(gen.count)))]
+        let calGen = c.genuine.sorted()
+        let high = calGen.isEmpty ? low : calGen[min(calGen.count - 1, Int((1 - requiredTAR) * Double(calGen.count)))]
         let threshold = high > low ? (low + high) / 2 : low
 
-        let r = pairs(rep)
-        let tarHits = r.genuine.filter { $0 > threshold }.count
-        let tar = r.genuine.isEmpty ? 0 : Double(tarHits) / Double(r.genuine.count)
+        let r = groupedPairs(rep)
+        let gen = r.genuine.flatMap { $0 }, imp = r.impostor.flatMap { $0 }
+        guard imp.count >= minImpostorPairs else { return .insufficientData }
+        let tarHits = gen.filter { $0 > threshold }.count
+        let tar = gen.isEmpty ? 0 : Double(tarHits) / Double(gen.count)
+        // Held-out verification FAR at the operating threshold (D28: TAR is claimed *at* FAR 1e-3).
+        let fa = imp.filter { $0 > threshold }.count
+        let farObserved = Double(fa) / Double(imp.count)
         let probes = openSetProbes(rep)
-        let unknown = probes.filter { !$0.enrolled }.map { $0.best?.score ?? -1 }
-        let fp = unknown.filter { $0 > threshold }.count
-        let fpir = unknown.isEmpty ? 1 : Double(fp) / Double(unknown.count)
+        let unknownProbes = probes.filter { !$0.enrolled }
+        let fp = unknownProbes.filter { ($0.best?.score ?? -1) > threshold }.count
+        let fpir = unknownProbes.isEmpty ? 1 : Double(fp) / Double(unknownProbes.count)
         let enrolled = probes.filter(\.enrolled)
-        let misID = enrolled.filter { p in p.best.map { $0.score > threshold && $0.subject != p.subject } ?? false }.count
-        let decided = enrolled.filter { p in p.best.map { $0.score > threshold && $0.subject == p.subject } ?? false }.count
-        let coverage = enrolled.isEmpty ? 0 : Double(decided) / Double(enrolled.count)
-        guard tar >= requiredTAR, fpir <= maxFPIR, misID == 0 else {
+        func wrong(_ p: Probe) -> Bool { p.best.map { $0.score > threshold && $0.subject != p.subject } ?? false }
+        func right(_ p: Probe) -> Bool { p.best.map { $0.score > threshold && $0.subject == p.subject } ?? false }
+        let misID = enrolled.filter(wrong).count
+        let coverage = enrolled.isEmpty ? 0 : Double(enrolled.filter(right).count) / Double(enrolled.count)
+        guard tar >= requiredTAR, farObserved <= far, fpir <= maxFPIR, misID == 0 else {
             return .fail(tar: tar, fpir: fpir, misidentifications: misID)
         }
+        // Bounds: the more conservative of a subject-level bootstrap and Wilson (which ignores correlation).
+        let subjects = Array(Set(probes.map(\.subject))).sorted()
+        func groups(_ ps: [Probe], _ hit: (Probe) -> Bool) -> [(Int, Int)] {
+            subjects.map { s in let mine = ps.filter { $0.subject == s }; return (mine.filter(hit).count, mine.count) }
+        }
+        let tarB = bootstrapRate(r.genuine.map { g in (g.filter { $0 > threshold }.count, g.count) })
+        let fpirB = bootstrapRate(groups(unknownProbes) { ($0.best?.score ?? -1) > threshold })
+        let misB = bootstrapRate(groups(enrolled, wrong))
         return .pass(FaceShipGateRecord(
-            modelID: modelID, threshold: threshold, tar: tar, tarLower95: wilsonLower(successes: tarHits, n: r.genuine.count),
-            far: far, fpir: fpir, fpirUpper95: wilsonUpper(successes: fp, n: unknown.count),
-            misidentifications: misID, misidentificationUpper95: wilsonUpper(successes: misID, n: enrolled.count),
+            modelID: modelID, threshold: threshold, tar: tar,
+            tarLower95: min(tarB.0, wilsonLower(successes: tarHits, n: gen.count)),
+            far: far, farObserved: farObserved, fpir: fpir,
+            fpirUpper95: max(fpirB.1, wilsonUpper(successes: fp, n: unknownProbes.count)),
+            misidentifications: misID,
+            misidentificationUpper95: max(misB.1, wilsonUpper(successes: misID, n: enrolled.count)),
             coverage: coverage, folds: folds, calibrationSubjects: cal.count, reportSubjects: rep.count,
             subjectCount: sets.count, passedAt: now))
     }
@@ -150,6 +200,8 @@ struct FaceShipGateRecord: Codable, Hashable, Sendable {
     var tar: Double
     var tarLower95: Double
     var far: Double
+    /// FAR measured on the report half's impostor pairs at `threshold`.
+    var farObserved: Double
     var fpir: Double
     var fpirUpper95: Double
     var misidentifications: Int
@@ -161,6 +213,13 @@ struct FaceShipGateRecord: Codable, Hashable, Sendable {
     var reportSubjects: Int
     var subjectCount: Int
     var passedAt: Date
+
+    /// Re-validated wherever the record is trusted (a stale or hand-made record never opens face matching).
+    var meetsD28: Bool {
+        tar >= FaceBenchmark.requiredTAR && far <= 1e-3 && farObserved <= far && fpir <= FaceBenchmark.maxFPIR
+            && misidentifications == 0 && calibrationSubjects >= FaceBenchmark.minSubjectsPerHalf
+            && reportSubjects >= FaceBenchmark.minSubjectsPerHalf
+    }
 
     /// Calibration earned by the benchmark: decision point at the threshold; lookalike rate = the FPIR upper bound.
     var cueModel: CueModel {

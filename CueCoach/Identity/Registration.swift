@@ -109,19 +109,22 @@ struct RecognitionRegistrar {
         let faceData = try faces.map(EmbeddingCodec.encode)
         let bodyData = try bodies.map(EmbeddingCodec.encode)
         guard deletions == store.deletionGeneration else { throw RegistrationError.deletedDuringRegistration }
+        try Task.checkCancellation()   // a cancellation swallowed inside the last embedding still stops the write
         guard owner.isLocalOwner, owner.modelContext != nil else { throw RegistrationError.notLocalOwner }
         try store.replaceTemplates(StoredRecognitionTemplates(faceEmbedding: faceData, appearanceEmbedding: bodyData,
                                                               optedInAt: decision.agreedAt, version: decision.termsVersion),
                                    for: owner.id)
     }
 
-    /// Every face capture must resemble the others: a different person in one frame fails the whole registration
-    /// rather than being enrolled as the owner. Floor is an assumption (identity models put different people near 0);
-    /// the §6 benchmark tunes it.
-    static let sameFaceFloor = 0.4
-    static func samePerson(_ faces: [Embedding]) -> Bool {
-        guard let mean = Embedding.mean(faces) else { return false }
-        return faces.allSatisfy { ($0.cosine(mean) ?? -1) >= sameFaceFloor }
+    /// Every face capture must resemble *every* other one (pairwise, not against the mean, which three different
+    /// people pass): a different person in any frame fails the whole registration. Floor 0.4 (D28 starting value).
+    nonisolated static let sameFaceFloor = 0.4
+    nonisolated static func samePerson(_ faces: [Embedding]) -> Bool {
+        guard faces.count >= 2 else { return !faces.isEmpty }
+        for i in faces.indices { for j in faces.indices where j > i {
+            guard let c = faces[i].cosine(faces[j]), c >= sameFaceFloor else { return false }
+        } }
+        return true
     }
 
     /// Stops at once (before the next image) when a delete lands or the task is cancelled (r3 MAJOR).
