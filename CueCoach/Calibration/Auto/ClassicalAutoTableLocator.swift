@@ -681,14 +681,22 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                 guard x >= 0, y >= 0, x < seed.mask.width, y < seed.mask.height else { return false }
                 return seed.mask.bits[y * seed.mask.width + x] != 0
             }
+            // Probe at a few places along the run (its middle can be a side pocket's mouth).
             let n = r.line.n
-            let plus = onMask(mid + n * 3 * st), minus = onMask(mid - n * 3 * st)
-            guard plus != minus else { continue }
-            runs.append(Run(a: a, b: b, outward: plus ? -n : n))
+            var vote = 0
+            for f in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                let p = a + (b - a) * f
+                let plus = onMask(p + n * 3 * st), minus = onMask(p - n * 3 * st)
+                if plus != minus { vote += plus ? 1 : -1 }
+            }
+            _ = mid
+            guard vote != 0 else { continue }
+            runs.append(Run(a: a, b: b, outward: vote > 0 ? -n : n))
         }
         guard runs.count >= 2 else { diag.rejection = "partial: < 2 rails"; return nil }
         // 2. Sub-pixel edges on each visible rail, lifted to the felt boundary height.
         var rails: [(edge: AutoRailEdge, lifted: [AutoP2], outward: AutoP2, dir: AutoP2)] = []
+        var runEnds: [(AutoP2, AutoP2)] = []   // the outline run each rail came from (image), for its visible extent
         for r in runs {
             guard let e = AutoRailDetector.refineSegment(img, model: seed.model, from: r.a, to: r.b, outward: r.outward,
                                                          radius: max(6, 2.5 * st), rng: &s.rng) else { continue }
@@ -701,51 +709,64 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             var nrm = l3.n
             if simd_dot(nrm, p1 - p0) < 0 { nrm = -nrm }
             rails.append((e, lifted, nrm, l3.direction))
+            runEnds.append((r.a, r.b))
         }
         // 3. A perpendicular pair gives a felt corner.
         var pair: (Int, Int)?
         for i in rails.indices { for j in rails.indices where j > i {
             if abs(simd_dot(rails[i].dir, rails[j].dir)) < sin(8 * .pi / 180) { pair = pair ?? (i, j) }
         } }
-        guard let (i, j) = pair else { diag.rejection = "partial: no rail corner (\(runs.count) runs, \(rails.count) rails)"; return nil }
-        let li = AutoLine.fit(rails[i].lifted)!, lj = AutoLine.fit(rails[j].lifted)!
-        guard let C = li.intersect(lj) else { diag.rejection = "partial: parallel"; return nil }
-        let di = -rails[i].outward, dj = -rails[j].outward  // inward normals (bed side)
         let c = prof.cushionWidth
-        let nose = C + (di + dj) * c
-        // A visible opposite rail measures the nose extent across the pair directly (e.g. both long rails).
-        func spacing(parallelTo r: Int) -> Double? {
-            let lr = r == i ? li : lj
-            for k in rails.indices where k != i && k != j && abs(simd_dot(rails[k].dir, rails[r].dir)) > cos(8 * .pi / 180) {
-                let pk = rails[k].lifted
-                let d = abs(pk.map { lr.distance($0) }.reduce(0, +) / Double(pk.count))
-                if d > 0.5 { return d - 2 * c }
+        let chosen: (rect: AutoRect, size: TableSize)
+        if let (i, j) = pair {
+            let li = AutoLine.fit(rails[i].lifted)!, lj = AutoLine.fit(rails[j].lifted)!
+            guard let C = li.intersect(lj) else { diag.rejection = "partial: parallel"; return nil }
+            let di = -rails[i].outward, dj = -rails[j].outward  // inward normals (bed side)
+            let nose = C + (di + dj) * c
+            // A visible opposite rail measures the nose extent across the pair directly (e.g. both long rails).
+            func spacing(parallelTo r: Int) -> Double? {
+                let lr = r == i ? li : lj
+                for k in rails.indices where k != i && k != j && abs(simd_dot(rails[k].dir, rails[r].dir)) > cos(8 * .pi / 180) {
+                    let pk = rails[k].lifted
+                    let d = abs(pk.map { lr.distance($0) }.reduce(0, +) / Double(pk.count))
+                    if d > 0.5 { return d - 2 * c }
+                }
+                return nil
             }
-            return nil
-        }
-        let extentAlongDi = spacing(parallelTo: i), extentAlongDj = spacing(parallelTo: j)
-        // 4. Hypotheses: which visible rail is long, and the preset.
-        struct Hyp { var rect: AutoRect; var size: TableSize; var iou: Double; var iLong: Bool }
-        var hyps: [Hyp] = []
-        for size in TableSize.allCases {
-            let spec = TableSpec(size: size)
-            for iLong in [true, false] {
-                // Rail i runs along dj from the corner; rail j along di.
-                let li = iLong ? spec.length : spec.width, lj = iLong ? spec.width : spec.length
-                if let e = extentAlongDi, abs(e - lj) / lj > 0.06 { continue }
-                if let e = extentAlongDj, abs(e - li) / li > 0.06 { continue }
-                let center = nose + dj * (li / 2) + di * (lj / 2)
-                let u = iLong ? dj : di
-                let rect = AutoRect(center: center, theta: atan2(u.y, u.x), a: spec.length / 2, b: spec.width / 2)
-                hyps.append(Hyp(rect: rect, size: size, iou: maskIoU(rect, seed: seed, camera: camera, plane: plane, profile: prof),
-                                iLong: iLong))
+            let extentAlongDi = spacing(parallelTo: i), extentAlongDj = spacing(parallelTo: j)
+            // 4. Hypotheses: which visible rail is long, and the preset.
+            struct Hyp { var rect: AutoRect; var size: TableSize; var iou: Double; var iLong: Bool }
+            var hyps: [Hyp] = []
+            for size in TableSize.allCases {
+                let spec = TableSpec(size: size)
+                for iLong in [true, false] {
+                    // Rail i runs along dj from the corner; rail j along di.
+                    let li = iLong ? spec.length : spec.width, lj = iLong ? spec.width : spec.length
+                    if let e = extentAlongDi, abs(e - lj) / lj > 0.06 { continue }
+                    if let e = extentAlongDj, abs(e - li) / li > 0.06 { continue }
+                    let center = nose + dj * (li / 2) + di * (lj / 2)
+                    let u = iLong ? dj : di
+                    let rect = AutoRect(center: center, theta: atan2(u.y, u.x), a: spec.length / 2, b: spec.width / 2)
+                    hyps.append(Hyp(rect: rect, size: size, iou: maskIoU(rect, seed: seed, camera: camera, plane: plane, profile: prof),
+                                    iLong: iLong))
+                }
             }
+            hyps.sort { $0.iou > $1.iou }
+            guard let best = hyps.first, best.iou >= 0.75 else { diag.rejection = "partial: mask disagrees"; return nil }
+            if hyps.count > 1, hyps[1].iou > best.iou - 0.05 { diag.rejection = "partial: ambiguous size"; return nil }
+            chosen = (best.rect, best.size)
+            diag.partialAnchor = "corner"
+        } else {
+            // No corner in view (steep, close: VirtualTable elev-45/60): both long rails and a side pocket on each.
+            guard let sp = sidePocketFit(rails: rails, image: img, camera: camera, plane: plane, profile: prof,
+                                         model: seed.model, diag: &diag) else {
+                if diag.rejection == nil { diag.rejection = "partial: no rail corner (\(runs.count) runs, \(rails.count) rails)" }
+                return nil
+            }
+            chosen = sp
         }
-        hyps.sort { $0.iou > $1.iou }
-        guard let best = hyps.first, best.iou >= 0.75 else { diag.rejection = "partial: mask disagrees"; return nil }
-        if hyps.count > 1, hyps[1].iou > best.iou - 0.05 { diag.rejection = "partial: ambiguous size"; return nil }
         // 5. Refine centre + heading at the fixed preset size from every visible rail's edge samples.
-        var rect = best.rect
+        var rect = chosen.rect
         var samples: [AutoRectFitter.EdgeSample] = []
         for r in rails {
             let ang = autoWrapPi(atan2(r.outward.y, r.outward.x) - rect.theta)
@@ -763,10 +784,10 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         if bedQuad.count == 4 {
             refineLevel(f, camera: camera, quad: bedQuad, plane: &plane, hintLevel: hintLevel, state: &s, diag: &diag)
         }
-        let spec = TableSpec(size: best.size)
+        let spec = TableSpec(size: chosen.size)
         let axis = plane.e1 * rect.u.x + plane.e2 * rect.u.y
         guard let pose = AutoTableFusion.pose(center: plane.to3D(rect.center), axis: axis, up: plane.normal, spec: spec,
-                                              snapped: best.size, measured: (spec.length, spec.width), headToFoot: axis) else { return nil }
+                                              snapped: chosen.size, measured: (spec.length, spec.width), headToFoot: axis) else { return nil }
         let allPts = rails.flatMap(\.edge.points)
         diag.railLines = rails.map(\.edge.line.abc)
         diag.reprojectionRMS = Self.reprojectionRMS(allPts, pose: pose, plane: plane, camera: camera, profile: prof)
@@ -776,18 +797,121 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         }
         // Visible fraction of the length: the long rails' lifted extent along the axis.
         var visible = 0.0
-        for r in rails where abs(simd_dot(r.dir, rect.u)) > 0.9 {
-            let t = r.lifted.map { simd_dot($0 - rect.center, rect.u) }
-            // Samples lie on the outer felt edge (−c…L+c): count only what can be playing length.
-            visible = max(visible, ((t.max() ?? 0) - (t.min() ?? 0) - 2 * c) / spec.length)
+        for (k, r) in rails.enumerated() where abs(simd_dot(r.dir, rect.u)) > 0.9 {
+            // The rail's visible extent is its whole outline run (the sub-pixel samples skip 6 % at each end),
+            // clipped to the playing length −L/2…L/2 of the fitted table.
+            var t = r.lifted.map { simd_dot($0 - rect.center, rect.u) }
+            for e in [runEnds[k].0, runEnds[k].1] {
+                if let w = plane.lift(e, camera: camera, height: prof.railTopHeight) { t.append(simd_dot(w - rect.center, rect.u)) }
+            }
+            let lo = max(-spec.length / 2, t.min() ?? 0), hi = min(spec.length / 2, t.max() ?? 0)
+            visible = max(visible, max(0, hi - lo) / spec.length)
         }
         diag.visibleLengthFraction = min(1, visible)
         diag.railTopHeight = prof.railTopHeight
         var m = AutoTableMeasurement(center: pose.center, axis: pose.xAxis, up: plane.normal,
-                                     measuredLength: spec.length, measuredWidth: spec.width, snapped: best.size,
+                                     measuredLength: spec.length, measuredWidth: spec.width, snapped: chosen.size,
                                      cameraPosition: camera.position)
         m.visibleLengthFraction = min(0.99, visible)
         return Detection(measurement: m, edgePoints: allPts, plane: plane, profile: prof)
+    }
+
+    /// Steep close view with no corner in frame: two parallel rails `W + 2c` apart (W within 3 % of exactly one
+    /// preset's width) and one dark side-pocket mouth on each, at the same place along the table. The side pockets
+    /// fix the table's centre along its length; any other dark mouth on those rails must sit at a corner (± L/2).
+    private func sidePocketFit(rails: [(edge: AutoRailEdge, lifted: [AutoP2], outward: AutoP2, dir: AutoP2)],
+                               image img: AutoRGBImage, camera: AutoCamera, plane: AutoTablePlane,
+                               profile prof: AutoTableProfile, model: AutoClothModel,
+                               diag: inout AutoFrameDiagnostics) -> (rect: AutoRect, size: TableSize)? {
+        let c = prof.cushionWidth
+        // 1. The parallel pair (most samples) and its width.
+        var pair: (i: Int, j: Int, d: Double, n: Int)?
+        for i in rails.indices { for j in rails.indices where j > i && abs(simd_dot(rails[i].dir, rails[j].dir)) > cos(5 * .pi / 180) {
+            guard let li = AutoLine.fit(rails[i].lifted) else { continue }
+            let d = rails[j].lifted.map { abs(li.distance($0)) }.reduce(0, +) / Double(rails[j].lifted.count)
+            let n = rails[i].lifted.count + rails[j].lifted.count
+            if (0.8...1.6).contains(d - 2 * c), n > (pair?.n ?? 0) { pair = (i, j, d, n) }
+        } }
+        guard let pr = pair else {
+            var info: [String] = []
+            for i in rails.indices { for j in rails.indices where j > i {
+                let ang = acos(min(1, abs(simd_dot(rails[i].dir, rails[j].dir)))) * 180 / .pi
+                let d = AutoLine.fit(rails[i].lifted).map { li in rails[j].lifted.map { abs(li.distance($0)) }.reduce(0, +) / Double(rails[j].lifted.count) } ?? -1
+                info.append(String(format: "%.0f° %.2fm", ang, d))
+            } }
+            diag.rejection = "partial: no rail pair [\(info.joined(separator: ", "))]"; return nil
+        }
+        let W = pr.d - 2 * c
+        let sizes = TableSize.allCases.filter { abs(TableSpec(size: $0).width - W) / TableSpec(size: $0).width <= 0.03 }
+        guard sizes.count == 1, let size = sizes.first else { diag.rejection = "partial: width not a preset"; return nil }
+        let L = TableSpec(size: size).length
+        guard let li = AutoLine.fit(rails[pr.i].lifted), let lj = AutoLine.fit(rails[pr.j].lifted) else { return nil }
+        var u = li.direction
+        if simd_dot(u, lj.direction) < 0 { u = simd_normalize(u - lj.direction) } else { u = simd_normalize(u + lj.direction) }
+        // 2. Dark mouths along each felt line (at rail-top height), as positions along u.
+        let dark = min(50, 0.45 * model.mI)
+        func mouths(_ k: Int, _ line: AutoLine) -> (runs: [Double], tMin: Double, tMax: Double) {
+            let pts = rails[k].lifted
+            let foot = line.n * -line.c
+            let out = rails[k].outward
+            let ts = pts.map { simd_dot($0 - foot, u) }
+            let t0 = (ts.min() ?? 0) - 0.3, t1 = (ts.max() ?? 0) + 0.3
+            var runs: [Double] = []
+            var start: Double?
+            var t = t0
+            img.rgb.withUnsafeBufferPointer { px in
+                while t <= t1 {
+                    defer { t += 0.01 }
+                    var isDark = false
+                    var inside = false
+                    if let q = camera.project(plane.to3D(foot + u * t, height: prof.railTopHeight)) {
+                        let x = Int(q.x.rounded()), y = Int(q.y.rounded())
+                        if x > 1, y > 1, x < img.width - 2, y < img.height - 2 {
+                            inside = true
+                            let (r, g, b) = autoBox3(px, img.width, img.height, x, y)
+                            isDark = (r + g + b) / 3 < dark
+                        }
+                    }
+                    if isDark { if start == nil { start = t } } else {
+                        if let s0 = start, inside, (0.06...0.22).contains(t - s0) {
+                            // A pocket mouth is a hole cut into the rail: dark 3 cm outward of the felt line too
+                            // (a ball or a mark on the cloth is inside the cushion; the rail cap beside it is wood).
+                            let tc = (s0 + t - 0.01) / 2
+                            if let q = camera.project(plane.to3D(foot + u * tc + out * 0.03, height: prof.railTopHeight)) {
+                                let x = Int(q.x.rounded()), y = Int(q.y.rounded())
+                                if x > 1, y > 1, x < img.width - 2, y < img.height - 2 {
+                                    let (r, g, b) = autoBox3(px, img.width, img.height, x, y)
+                                    if (r + g + b) / 3 < dark { runs.append(tc) }
+                                }
+                            }
+                        }
+                        start = nil   // a run cut by the frame edge is not a mouth
+                    }
+                }
+            }
+            return (runs, ts.min() ?? 0, ts.max() ?? 0)
+        }
+        let mi = mouths(pr.i, li), mj = mouths(pr.j, lj)
+        // Both lines share the axis direction, but their feet differ: compare positions in a common frame.
+        let footI = li.n * -li.c, footJ = lj.n * -lj.c
+        let offJ = simd_dot(footJ - footI, u)
+        let ri = mi.runs, rj = mj.runs.map { $0 + offJ }
+        let matches = ri.flatMap { a in rj.filter { abs($0 - a) <= 0.04 }.map { (a + $0) / 2 } }
+        guard matches.count == 1, let tSide = matches.first else { diag.rejection = "partial: no side pockets"; return nil }
+        // The side mouth is mid-rail: both rails run on past it; every other mouth must be a corner (± L/2).
+        let spanI = (mi.tMin, mi.tMax), spanJ = (mj.tMin + offJ, mj.tMax + offJ)
+        guard spanI.0 < tSide - 0.15, spanI.1 > tSide + 0.15, spanJ.0 < tSide - 0.15, spanJ.1 > tSide + 0.15 else {
+            diag.rejection = "partial: side pocket at a rail end"; return nil
+        }
+        for t in ri + rj where abs(t - tSide) > 0.06 && abs(abs(t - tSide) - L / 2) > 0.08 {
+            _ = t; diag.rejection = "partial: stray pocket"; return nil
+        }
+        diag.partialAnchor = "sidePockets"
+        // 3. Centre: midway between the felt lines, at the side pockets.
+        let pI = footI + u * tSide
+        let across = (footJ + u * (tSide - offJ)) - pI
+        let center = pI + across / 2
+        return (AutoRect(center: center, theta: atan2(u.y, u.x), a: L / 2, b: TableSpec(size: size).width / 2), size)
     }
 
     /// IoU (on the mask grid, inside the image) of a hypothesised outer felt rectangle and the cloth mask.

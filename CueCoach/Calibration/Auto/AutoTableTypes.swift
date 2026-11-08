@@ -185,6 +185,9 @@ struct AutoFrameDiagnostics: Sendable {
     var snappedSize: TableSize?
     /// A rail left out of this frame's fit because its edge disagreed with the other three (index into railLines).
     var droppedRail: Int?
+    /// What anchored a partial-view fit along the table: "corner" (a felt corner) or "sidePockets" (both side
+    /// pocket mouths on two parallel rails — two pocket mouths confirmed dark in the image).
+    var partialAnchor: String?
     var processingSeconds: Double = 0
     var rejection: String?
 }

@@ -69,6 +69,27 @@ struct VirtualTableTrace {
         var thumb: VTFrame?
         let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
         print("[trace] app result: locked \(r.locked) accurate \(r.accurate) err \(r.cornerErr.map { $0 * 100 } ?? -1) cm ttl \(r.ttlStart ?? -1)")
+        if ProcessInfo.processInfo.environment["VQA_TRACE_KP"] == "1", let kp = try? CoreMLTableKeypointProvider() {
+            // What the keypoint model sees, every second, against the true pocket pixels.
+            kp.minInterval = 0; kp.minDetectionConfidence = Double(ProcessInfo.processInfo.environment["VQA_KP_CONF"] ?? "") ?? 0.35
+            var pl = VTPlaneSim(truths: s.planeTruths, seed: s.seed ^ 0x51, trackingReady: s.trackingReady)
+            var jt = VTRandom(seed: s.seed ^ 0x77)
+            var t = s.trackingReady, i = 0
+            while t < 10 {
+                if t - pl.lastUpdate >= 0.1 { pl.update(t: t, renderer: VTRenderer(scene: s.scene.at(time: t), camera: s.camera(t))) }
+                if i % 15 == 0 {
+                    let f = VTHarness.render(s, t: t, index: i, planes: pl.planes(t: t, jitter: &jt))
+                    let k = f.camera.intrinsics
+                    let pts = kp.keypoints(in: AutoRGBImage(width: f.pixel.width, height: f.pixel.height, rgb: f.pixel.rgb),
+                                           intrinsics: AutoIntrinsics(fx: k.fx / 2, fy: k.fy / 2, cx: k.cx / 2, cy: k.cy / 2, width: 960, height: 720))
+                    let L = s.truth.spec.length, W = s.truth.spec.width
+                    let truthPx = [(0.0, 0.0), (L / 2, 0), (L, 0), (L, W), (L / 2, W), (0, W)].compactMap { x, y -> String? in
+                        f.camera.project(s.truth.world(x, y, 0.0365)).map { "(\(Int($0.x / 2)),\(Int($0.y / 2)))" } }
+                    print("[kp] t \(String(format: "%.1f", t)) n \(pts.count): \(pts.map { "\($0.kind.rawValue.prefix(5))(\(Int($0.pixel.x)),\(Int($0.pixel.y)) \(String(format: "%.2f", $0.confidence)))" }.joined(separator: " ")) | truth noses/sides \(truthPx.joined(separator: " "))")
+                }
+                t += 1.0 / 15; i += 1
+            }
+        }
         guard ProcessInfo.processInfo.environment["VQA_TRACE_IMAGES"] == "1" else { return }
         // 2. Raw Auto over the same session with mask images.
         let auto = ClassicalAutoTableLocator(keypoints: TableKeypointModel.provider())
