@@ -110,6 +110,8 @@ struct KalmanBallTracker: BallTracker {
         var graveyardMaxReach = 1.0
         /// m: without a matching number, a birth inherits a dead id only this close to where it was last seen.
         var graveyardRestReach = 0.06
+        /// m: the largest table-frame jump `noteFrameShift()` re-associates across (bigger jumps re-birth tracks).
+        var maxFrameShift = 0.3
         /// Misses that break the measurement run (`measuredSince` restarts after a longer gap).
         var continuityMisses = 3
         /// Added to the squared Mahalanobis cost when a detection's class disagrees with the track's.
@@ -270,7 +272,9 @@ struct KalmanBallTracker: BallTracker {
                     // Still: a launch from the last measurement. Moving: an abrupt turn (cushion, kiss) within
                     // one frame's travel of the prediction or of the last measurement.
                     let slow = tr.still || tr.vel.length < 0.5
-                    let reach = slow ? params.maxLaunchSpeed * dt : tr.vel.length * dt + params.minGate
+                    // Told the frame moved: every ball may have jumped by up to `maxFrameShift`.
+                    let reach = (slow ? params.maxLaunchSpeed * dt : tr.vel.length * dt + params.minGate)
+                        + (pendingShift ? params.maxFrameShift : 0)
                     let fromLast = tr.lastMeasured.distance(to: det.tablePoint)
                     let d = slow ? fromLast : min(fromLast, tr.pos.distance(to: det.tablePoint))
                     // Same class but a different number guess: allowed (numbers flicker), but dearer.
@@ -309,6 +313,22 @@ struct KalmanBallTracker: BallTracker {
                 tracks[ti].recent.append((z, t))
                 tracks[ti].votes[det.kind, default: 0] += det.confidence
             if let c = det.cueScore { tracks[ti].cue.sum += c; tracks[ti].cue.n += 1 }
+                if let n = det.tentativeNumber { tracks[ti].numberVotes[n, default: 0] += det.confidence }
+                continue
+            }
+            if shifted && !tracks[ti].still && tracks[ti].misses == 0 {
+                launched.remove(ti)
+                // A moving ball in a shifted frame: move the track with the frame and keep its velocity.
+                let v = tracks[ti].vel
+                tracks[ti].x.reseed(p: z.x, v: v.x, positionVar: r, velocityVar: tracks[ti].x.vv)
+                tracks[ti].y.reseed(p: z.y, v: v.y, positionVar: r, velocityVar: tracks[ti].y.vv)
+                tracks[ti].recent = []
+                tracks[ti].hits += 1; tracks[ti].misses = 0
+                tracks[ti].lastMeasured = z
+                tracks[ti].hitBits = (tracks[ti].hitBits << 1) | 1
+                tracks[ti].recent.append((z, t))
+                tracks[ti].votes[det.kind, default: 0] += det.confidence
+                if let c = det.cueScore { tracks[ti].cue.sum += c; tracks[ti].cue.n += 1 }
                 if let n = det.tentativeNumber { tracks[ti].numberVotes[n, default: 0] += det.confidence }
                 continue
             }

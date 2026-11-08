@@ -131,7 +131,8 @@ actor PerceptionPipeline {
         let rest = tracker.isAtRest
         let confirmed = tracks.filter(\.confirmed)
         // At most one cue ball: continuity first, then the whitest steady track (C3).
-        let cueBall = pickCue(confirmed, at: f.timestamp)
+        // The cue ball is only ever re-chosen with the table at rest and no shot open.
+        let cueBall = pickCue(confirmed, at: f.timestamp, allowSwitch: rest && !(segmenter?.inShot ?? false))
         var marks: [Int: TargetMark] = [:]
         for t in confirmed {
             let m = TargetLegality.mark(kind: t.kind, number: t.tentativeNumber, legal: legal)
@@ -227,16 +228,17 @@ extension PerceptionPipeline {
 
     /// C3: at most one cue ball. The established cue id wins while it is confirmed; while it is gone the
     /// steadiest white track stands in, and the old id takes over again when the ball comes back.
-    func pickCue(_ confirmed: [TrackedBall], at t: Double) -> TrackedBall? {
+    func pickCue(_ confirmed: [TrackedBall], at t: Double, allowSwitch: Bool = true) -> TrackedBall? {
+        // Missing evidence is neutral (0.5) everywhere: depth-only balls, scripted detections, older detectors.
+        func ev(_ b: TrackedBall) -> Double { b.cueScore ?? 0.5 }
         let cands = confirmed.filter { TargetLegality.mark(kind: $0.kind, number: $0.tentativeNumber, legal: legal) == .cue }
         if let id = cueID, let c = cands.first(where: { $0.id == id }) {
             cueLostAt = nil
             // Continuity alone can lock onto a white false positive that was there first. A rival with clearly
             // stronger detector cue evidence (whiteness × sphere shading, or the trained cue-class score) for
             // `rivalHoldFrames` frames takes over.
-            let rival = cands.filter { $0.id != id && $0.measured && $0.cueScore != nil }
-                .max { ($0.cueScore ?? 0) < ($1.cueScore ?? 0) }
-            if let r = rival, let rs = r.cueScore, rs >= (c.cueScore ?? 0) + Self.rivalMargin {
+            let rival = allowSwitch ? cands.filter { $0.id != id && $0.measured && $0.cueScore != nil }.max { ev($0) < ev($1) } : nil
+            if let r = rival, ev(r) >= ev(c) + Self.rivalMargin {
                 let n = rivalFrames?.id == r.id ? rivalFrames!.n + 1 : 1
                 rivalFrames = (r.id, n)
                 if n >= Self.rivalHoldFrames { cueID = r.id; rivalFrames = nil; return r }
@@ -245,13 +247,14 @@ extension PerceptionPipeline {
             }
             return c
         }
+        rivalFrames = nil   // the hold counts consecutive frames with the established cue in view
         if cueID != nil {
             if cueLostAt == nil { cueLostAt = t }
             // While the cue ball is briefly gone (behind the shooter) there is no cue ball rather than a stand-in.
             if let l = cueLostAt, t - l > cueHoldSeconds { cueID = nil; cueLostAt = nil } else { return nil }
         }
         let best = cands.max { a, b in
-            let sa = (a.cueScore ?? 1) * a.kindShare * (a.measured ? 1 : 0.5), sb = (b.cueScore ?? 1) * b.kindShare * (b.measured ? 1 : 0.5)
+            let sa = ev(a) * a.kindShare * (a.measured ? 1 : 0.5), sb = ev(b) * b.kindShare * (b.measured ? 1 : 0.5)
             return sa != sb ? sa < sb : a.id > b.id
         }
         if cueID == nil, let b = best { cueID = b.id }
@@ -315,10 +318,11 @@ enum BallScale {
 }
 
 /// ARKit relocalization shows up as a camera-pose jump between consecutive frames that no hand-held motion
-/// makes (> 2.5 m/s, or > 3 rad/s, sustained over the frame gap; tiny gaps are judged over at least 1/60 s).
+/// makes (> 2.5 m/s, or > 8 rad/s, over the frame gap; tiny gaps are judged over at least 1/60 s). A quick
+/// hand-held flick reaches ~5 rad/s; a fast walk ~1.5 m/s.
 enum PoseJump {
     static func isJump(from a: simd_double4x4, to b: simd_double4x4, dt: Double,
-                       maxSpeed: Double = 2.5, maxTurnRate: Double = 3.0) -> Bool {
+                       maxSpeed: Double = 2.5, maxTurnRate: Double = 8.0) -> Bool {
         let gap = max(1.0 / 60, min(0.5, dt))
         let ta = SIMD3(a.columns.3.x, a.columns.3.y, a.columns.3.z), tb = SIMD3(b.columns.3.x, b.columns.3.y, b.columns.3.z)
         let moved = simd_length(tb - ta)

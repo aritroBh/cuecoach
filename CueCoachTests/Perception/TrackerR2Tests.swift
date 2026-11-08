@@ -42,6 +42,77 @@ struct TrackerR2Tests {
         #expect(aim.cue.distance(to: cue) < 0.02, "aim from \(aim.cue)")
     }
 
+    /// Codex r3: only cue-class detections carry cue evidence; a few frames misread as a solid don't drag the mean.
+    @Test func classicalDetectorGivesCueEvidenceOnlyToCueDetections() throws {
+        let scene = SyntheticTableScene.demo()
+        let dets = ClassicalBallDetector().detect(in: try Stress.image(scene), geometry: FrameGeometry(frame: scene.frame, camera: scene.camera))
+        let cue = try #require(dets.first { $0.kind == .cue })
+        #expect((cue.cueScore ?? 0) > 0.5, "cue score \(cue.cueScore ?? -1)")
+        #expect(dets.filter { $0.kind != .cue }.allSatisfy { $0.cueScore == nil })
+    }
+
+    @Test func cueEvidenceIgnoresNonCueFrames() {
+        var tr = KalmanBallTracker()
+        var out: [TrackedBall] = []
+        for f in 0..<15 {
+            let d = f % 3 == 0 ? Self.det(Vec2(1, 0.5), .solid, 1, cueScore: nil) : Self.det(Vec2(1, 0.5), .cue, 0, cueScore: 0.9)
+            out = tr.update([d], at: Double(f) / 30)
+        }
+        #expect(abs((out.first?.cueScore ?? 0) - 0.9) < 1e-9)
+    }
+
+    /// Codex r3: the cue ball is never re-chosen while balls are moving (a rival can't steal it mid-shot).
+    @Test func noCueTakeoverWhileBallsMove() async throws {
+        let d = ScriptedDetector()
+        let p = PerceptionPipeline(detector: d)
+        let scene = SyntheticTableScene.demo()
+        await p.setTable(scene.frame)
+        let white = Vec2(1.9, 0.08)
+        let objs = [Stress.det(Vec2(1.2, 0.45), .solid, 3)]
+        var whiteID: Int?
+        var stolenWhileMoving = 0
+        for i in 0..<70 {
+            var f = objs + [Self.det(white, .cue, 0, cueScore: 0.4)]
+            // A strongly cue-like ball rolls across from frame 30 (never at rest).
+            if i >= 30 { f.insert(Self.det(Vec2(0.3 + 0.02 * Double(i - 30), 0.5), .cue, 0, cueScore: 0.95), at: 0) }
+            d.push(f)
+            guard let r = await p.process(PerceptionFrame(image: Stress.blankImage(), camera: scene.camera, timestamp: Double(i) / 30)) else { continue }
+            if i == 29 { whiteID = r.confirmed.first { r.marks[$0.id] == .cue }?.id }
+            if i > 30, let w = whiteID, r.marks[w] != .cue { stolenWhileMoving += 1 }
+        }
+        #expect(whiteID != nil)
+        #expect(stolenWhileMoving == 0)
+    }
+
+    /// Codex r3: a frame shift while a ball rolls moves its track with the frame; it does not read as a speed jump.
+    @Test func frameShiftDuringMotionKeepsTheVelocity() {
+        var tr = KalmanBallTracker()
+        var speedAfter: [Double] = []
+        for f in 0..<60 {
+            let t = Double(f) / 30
+            var p = Vec2(0.4 + 1.0 * t, 0.5)
+            if f >= 40 { p += Vec2(0.1, 0.03) }
+            if f == 40 { tr.noteFrameShift() }
+            let out = tr.update([Stress.det(p, .cue, 0)], at: t)
+            if f >= 40 && f < 46, let b = out.first { speedAfter.append(b.speed) }
+        }
+        #expect(speedAfter.count == 6)
+        #expect(speedAfter.allSatisfy { abs($0 - 1.0) < 0.3 }, "speeds after the shift \(speedAfter)")
+    }
+
+    /// Codex r3: fast hand-held motion is not a relocalization; a one-frame teleport is.
+    @Test func poseJumpIgnoresFastHandMotion() {
+        let a = matrix_identity_double4x4
+        var turned = a   // 5 rad/s yaw for one 30 Hz frame (a quick flick)
+        let ang = 5.0 / 30
+        turned.columns.0 = SIMD4(cos(ang), 0, -sin(ang), 0); turned.columns.2 = SIMD4(sin(ang), 0, cos(ang), 0)
+        #expect(!PoseJump.isJump(from: a, to: turned, dt: 1.0 / 30))
+        var walked = a; walked.columns.3 = SIMD4(0.05, 0, 0, 1)   // 1.5 m/s
+        #expect(!PoseJump.isJump(from: a, to: walked, dt: 1.0 / 30))
+        var teleported = a; teleported.columns.3 = SIMD4(0.15, 0, 0.05, 1)
+        #expect(PoseJump.isJump(from: a, to: teleported, dt: 1.0 / 30))
+    }
+
     // MARK: 2. A lone ball's relocalization jump
 
     /// The tracker is told the frame moved (camera-pose jump): a lone ball shifted 10 cm is re-anchored, no shot.

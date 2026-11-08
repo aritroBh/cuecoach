@@ -132,7 +132,9 @@ struct ClassicalBallDetector: BallDetector {
             if (cls.kind == .eight || cls.kind == .unknown) && pocketDist < 0.11 { continue }
             accepted.append((cx, cy, r))
             let conf = min(1, max(0, (fill - 0.6) / 0.4)) * (cls.kind == .unknown ? 0.6 : 1)
-            let cueScore = cls.kind == .cue ? Self.cueEvidence(img, cx: cx, cy: cy, r: 0.8 * r, gains: gains, whiteV: max(0.15, feltHSV.v * 1.25)) : 0
+            // Cue evidence only for cue-class detections: a ball misread for a frame is no opinion, not "not cue".
+            let cueScore: Double? = cls.kind == .cue
+                ? Self.cueEvidence(img, cx: cx, cy: cy, r: 0.8 * r, gains: gains, whiteV: max(0.15, feltHSV.v * 1.25)) : nil
             out.append(BallDetection(imagePoint: Vec2(sx, sy), tablePoint: t, radiusPx: r * img.scale,
                                      confidence: conf, kind: cls.kind, tentativeNumber: cls.number, cueScore: cueScore))
             if out.count >= 24 { break }
