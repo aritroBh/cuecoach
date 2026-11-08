@@ -321,23 +321,16 @@ public final class SettingsViewModel {
     func importCancelled() { importState = .idle }
 }
 
-/// Production adapter over the shared persistence stack.
+/// Production adapter over the shared persistence stack. Recognition lives in its own backup-excluded store; the
+/// Undo window is the stack's staged delete (in-memory snapshot + pending-delete marker + galleries cleared).
 @MainActor
 final class PersistenceSettingsStore: SettingsStore {
     private let stack: PersistenceStack
-    /// The Undo window's in-memory copy of what a one-tap delete removed. Never written anywhere.
-    private struct Snapshot {
-        var ownerID: PersistentIdentifier
-        var ownerUpdatedAt: Date
-        var face: Data?, appearance: Data?, optedInAt: Date, version: Int, updatedAt: Date
-    }
-    private var snapshot: [Snapshot]?
+    private var pending: RecognitionUndo?
 
     init(stack: PersistenceStack) { self.stack = stack }
 
-    var hasRecognitionData: Bool {
-        Self.recognitionPresent { try stack.competitiveContext.fetch(SAFetch.localOwners()).map { $0.recognition != nil } }
-    }
+    var hasRecognitionData: Bool { Self.recognitionPresent { [try stack.hasRecognitionData] } }
 
     /// Fails safe: if the store can't be read, assume data may exist so Delete stays available.
     nonisolated static func recognitionPresent(_ ownersHaveRecognition: () throws -> [Bool]) -> Bool {
@@ -346,38 +339,22 @@ final class PersistenceSettingsStore: SettingsStore {
     }
 
     func stageRecognitionDeletion() throws {
-        let ctx = stack.competitiveContext
-        var taken: [Snapshot] = snapshot ?? []
-        for owner in try ctx.fetch(SAFetch.localOwners()) {
-            guard let r = owner.recognition else { continue }
-            taken.append(Snapshot(ownerID: owner.persistentModelID, ownerUpdatedAt: owner.updatedAt,
-                                  face: r.faceEmbedding, appearance: r.appearanceEmbedding, optedInAt: r.optedInAt,
-                                  version: r.version, updatedAt: r.updatedAt))
-            owner.recognition = nil
-            ctx.delete(r)   // unsaved: the commit (or any later save) writes it
-        }
-        snapshot = taken
+        let undo = try stack.beginRecognitionDeletion()
+        // A second tap inside the window keeps the first snapshot too.
+        pending = RecognitionUndo(records: (pending?.records ?? []) + undo.records)
     }
 
     func undoRecognitionDeletion() throws {
-        guard let taken = snapshot else { return }
-        snapshot = nil
-        let ctx = stack.competitiveContext
-        for s in taken {
-            guard let owner = ctx.model(for: s.ownerID) as? PlayerProfile else { continue }
-            let r = RecognitionData(faceEmbedding: s.face, appearanceEmbedding: s.appearance, optedInAt: s.optedInAt,
-                                    version: s.version, updatedAt: s.updatedAt)
-            ctx.insert(r)
-            owner.recognition = r
-            owner.updatedAt = s.ownerUpdatedAt   // restoring isn't a profile edit
-        }
-        try ctx.save()
+        guard let undo = pending else { return }
+        pending = nil
+        try stack.undoRecognitionDeletion(undo)
     }
 
     func deleteMyRecognitionData() throws {
-        snapshot = nil
+        pending = nil
         try stack.deleteMyRecognitionData()
     }
+
     func exportBackup() throws -> Data { try stack.exportBackup() }
     func importBackup(_ data: Data) throws { try stack.importBackup(data) }
 }

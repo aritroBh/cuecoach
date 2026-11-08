@@ -301,35 +301,50 @@ struct Boom: Error {}
         #expect(m.deleteState == .idle)
     }
 
-    /// The production adapter: one tap removes the owner's row from the store context (unsaved), Undo puts the
-    /// same templates back, and the commit saves the delete.
+    /// The production adapter: one tap stages the delete in the recognition store (unsaved, galleries cleared),
+    /// Undo puts the same templates back, and the commit empties the store.
     @Test func persistenceStoreStagesUndoesAndCommits() throws {
         let stack = try PersistenceStack(inMemory: true)
         let owner = PlayerProfile(name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: true)
-        owner.recognition = RecognitionData(faceEmbedding: Data([1, 2, 3]), appearanceEmbedding: Data([4]),
-                                            optedInAt: .now, version: 2)
         stack.competitiveContext.insert(owner)
         try stack.competitiveContext.save()
+        try stack.storeRecognition(profileID: owner.id, faceEmbedding: Data([1, 2, 3]), appearanceEmbedding: Data([4]),
+                                   optedInAt: .now, version: 2)
         let store = PersistenceSettingsStore(stack: stack)
         #expect(store.hasRecognitionData)
 
         try store.stageRecognitionDeletion()
         #expect(!store.hasRecognitionData)
-        #expect(owner.recognition == nil)
-        #expect(try stack.competitiveContext.fetchCount(FetchDescriptor<RecognitionData>()) == 0)
+        #expect(try stack.recognition(for: owner.id) == nil)
         // Nothing reached the persistent store yet.
-        #expect(try ModelContext(stack.competitiveContainer).fetchCount(FetchDescriptor<RecognitionData>()) == 1)
+        #expect(try ModelContext(stack.recognitionContainer).fetchCount(FetchDescriptor<RecognitionData>()) == 1)
 
         try store.undoRecognitionDeletion()
         #expect(store.hasRecognitionData)
-        #expect(owner.recognition?.faceEmbedding == Data([1, 2, 3]))
-        #expect(owner.recognition?.appearanceEmbedding == Data([4]))
-        #expect(owner.recognition?.version == 2)
+        let back = try #require(try stack.recognition(for: owner.id))
+        #expect(back.faceEmbedding == Data([1, 2, 3]))
+        #expect(back.appearanceEmbedding == Data([4]))
+        #expect(back.version == 2)
 
         try store.stageRecognitionDeletion()
         try store.deleteMyRecognitionData()
         #expect(!store.hasRecognitionData)
-        #expect(try ModelContext(stack.competitiveContainer).fetchCount(FetchDescriptor<RecognitionData>()) == 0)
+        #expect(try ModelContext(stack.recognitionContainer).fetchCount(FetchDescriptor<RecognitionData>()) == 0)
+    }
+
+    /// A second tap inside the Undo window must not lose the first snapshot (Undo restores everything).
+    @Test func persistenceStoreUndoAfterRepeatedStageRestores() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let owner = PlayerProfile(name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: true)
+        stack.competitiveContext.insert(owner)
+        try stack.competitiveContext.save()
+        try stack.storeRecognition(profileID: owner.id, faceEmbedding: Data([9]), appearanceEmbedding: nil,
+                                   optedInAt: .now, version: 1)
+        let store = PersistenceSettingsStore(stack: stack)
+        try store.stageRecognitionDeletion()
+        try store.stageRecognitionDeletion()
+        try store.undoRecognitionDeletion()
+        #expect(try stack.recognition(for: owner.id)?.faceEmbedding == Data([9]))
     }
 
     @Test func turningToggleOffDoesNotDelete() {
@@ -501,6 +516,8 @@ struct Boom: Error {}
         let stack = try PersistenceStack(inMemory: true)
         _ = Fixture.populateCompetitive(stack.competitiveContext)
         try stack.competitiveContext.save()
+        try stack.storeRecognition(profileID: Fixture.ownerID, faceEmbedding: Data([1]), appearanceEmbedding: nil,
+                                   optedInAt: .now, version: 1)
         let store = PersistenceSettingsStore(stack: stack)
         #expect(store.hasRecognitionData)
         try store.deleteMyRecognitionData()
