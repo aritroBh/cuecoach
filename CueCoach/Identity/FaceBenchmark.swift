@@ -182,10 +182,12 @@ enum FaceBenchmark {
         let tarB = bootstrapRate(r.genuine.map { g in (g.filter { $0 > threshold }.count, g.count) })
         let fpirB = bootstrapRate(groups(unknownProbes) { ($0.best?.score ?? -1) > threshold })
         let misB = bootstrapRate(groups(enrolled, wrong))
+        let farB = bootstrapRate(r.impostor.map { m in (m.filter { $0 > threshold }.count, m.count) })
         return .pass(FaceShipGateRecord(
             modelID: modelID, threshold: threshold, tar: tar,
             tarLower95: min(tarB.0, wilsonLower(successes: tarHits, n: gen.count)),
-            far: far, farObserved: farObserved, fpir: fpir,
+            far: far, farObserved: farObserved,
+            farUpper95: max(farB.1, wilsonUpper(successes: fa, n: imp.count)), fpir: fpir,
             fpirUpper95: max(fpirB.1, wilsonUpper(successes: fp, n: unknownProbes.count)),
             misidentifications: misID,
             misidentificationUpper95: max(misB.1, wilsonUpper(successes: misID, n: enrolled.count)),
@@ -203,6 +205,8 @@ struct FaceShipGateRecord: Codable, Hashable, Sendable {
     var far: Double
     /// FAR measured on the report half's impostor pairs at `threshold`.
     var farObserved: Double
+    /// 95 % upper bound on the held-out FAR (subject bootstrap vs Wilson, the larger).
+    var farUpper95: Double
     var fpir: Double
     var fpirUpper95: Double
     var misidentifications: Int
@@ -286,8 +290,10 @@ final class FaceBenchmarkSession {
         expireIfNeeded(now: now)
         guard let consent, FaceBenchConsentFlow.isGranted(consent),
               now.timeIntervalSince(startedAt) <= Self.maxAge else { return nil }
-        let code = UUID()
-        subjects[code] = embeddings.filter { $0.modelID == modelID }.compactMap(\.normalised)
+        // One grant = one volunteer: a repeat capture under the same grant joins that volunteer, so nobody can appear
+        // as two pseudo-volunteers on both sides of the calibration/report split (r5).
+        let code = consent.id
+        subjects[code, default: []] += embeddings.filter { $0.modelID == modelID }.compactMap(\.normalised)
         return code
     }
 

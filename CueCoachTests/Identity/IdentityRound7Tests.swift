@@ -41,3 +41,22 @@ import Testing
         #expect(bench.heldEmbeddingCount == 1)
     }
 }
+
+// Codex r5: one grant = one volunteer (no pseudo-subjects across calibration/report); FAR gets a bound too.
+@MainActor @Suite struct Round5FollowUpTests {
+    @Test func oneGrantIsOneVolunteerEvenAcrossCaptures() {
+        let bench = FaceBenchmarkSession(modelID: "m")
+        let g = FaceBenchConsentFlow.grant()
+        let first = bench.addSubject([Synth.axis(1, model: "m")], consent: g)
+        let again = bench.addSubject([Synth.axis(1, model: "m")], consent: g)
+        #expect(first != nil && again == first)        // same volunteer code, appended
+        #expect(bench.subjectCount == 1 && bench.embeddingCount == 2)
+    }
+
+    @Test func passRecordsAHeldOutFARBound() {
+        guard case .pass(let r) = FaceBenchmark.evaluate(subjects: HeldOutShipGateTests.subjects(20, spread: 0.05), modelID: "m") else {
+            Issue.record("expected pass"); return
+        }
+        #expect(r.farUpper95 >= r.farObserved && r.farUpper95 <= 1)
+    }
+}
