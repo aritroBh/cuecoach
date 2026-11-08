@@ -315,7 +315,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
     /// `allConsented`: C, D consent too. Otherwise C, D are unmodelled, and (S1) nobody may be auto-picked over them.
     private func synthSession(outOfTurnRate: Double, genuine: Double = 0.92, n: Int = 800,
                               allConsented: Bool = true) -> SynthResult {
-        var rng = SplitMix(seed: 42)
+        var rng = IdentitySplitMix(seed: 42)
         let players = [Synth.a, Synth.b, Synth.c, Synth.d]
         let cd: RecognitionConsent = allConsented ? .init(clothes: true, face: false) : .none
         let r = roster([(Synth.a, .init(clothes: true, face: false)), (Synth.b, .init(clothes: true, face: false)),
@@ -419,7 +419,7 @@ private func person(_ track: Int, pose: Double, dist: Double,
 }
 
 /// Deterministic RNG for synthetic sessions.
-struct SplitMix {
+struct IdentitySplitMix {
     var state: UInt64
     init(seed: UInt64) { state = seed }
     mutating func next() -> UInt64 {

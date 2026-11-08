@@ -28,4 +28,24 @@ import Testing
         let p = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
         #expect(ProfileEntryModel(store: InMemoryOwnerStore(owner: p)).owner == p)
     }
+
+    /// screens-a's rename writes the owner's PlayerProfile row (integration: OwnerOnlyStats lacked updateProfile).
+    @Test func renamingFromTheProfileWritesTheOwnerRow() async throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let store = PersistenceOwnerStore(stack: stack)
+        let owner = try store.createOwner(name: "Ari", symbol: "hare.fill", colorName: "teal")
+        let stats = OwnerOnlyStats(owner: owner, store: store)
+        try await stats.updateProfile(owner.id, name: "Aritro", avatarSymbol: "tortoise.fill")
+        #expect(store.owner?.name == "Aritro")
+        #expect(store.owner?.symbol == "tortoise.fill")
+        #expect(try await stats.profile(owner.id).name == "Aritro")
+    }
+
+    @Test func renamingSomeoneElseIsRefused() async throws {
+        let store = InMemoryOwnerStore(owner: ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal"))
+        let stats = OwnerOnlyStats(owner: store.owner!, store: store)
+        await #expect(throws: SetupError.self) { try await stats.updateProfile(UUID(), name: "X", avatarSymbol: "s") }
+        await #expect(throws: SetupError.blankName) { try await stats.updateProfile(store.owner!.id, name: "  ", avatarSymbol: "s") }
+        #expect(store.owner?.name == "Ari")
+    }
 }

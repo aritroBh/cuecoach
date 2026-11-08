@@ -105,7 +105,7 @@ struct FixedCropper: FaceCropping {
         await #expect(throws: RegistrationError.consentOutdated) {
             try await RecognitionRegistrar(stack: stack, face: nil, body: body).register(owner, decision: d, capture: capture)
         }
-        #expect(body.calls == 0 && (try stack.recognition(for: owner.id)) == nil)
+        #expect(try body.calls == 0 && stack.recognition(for: owner.id) == nil)
     }
 
     @Test func futureTermsVersionAlsoNeedsReconsent() {

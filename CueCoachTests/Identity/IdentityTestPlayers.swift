@@ -18,3 +18,7 @@ extension IdentitySession {
                   faceModelID: faceModelID, bodyModelID: bodyModelID)
     }
 }
+
+extension IdentitySession {
+    func addPlayer(_ p: TestPlayer) { addPlayer(id: p.id, stored: p.recognition) }
+}

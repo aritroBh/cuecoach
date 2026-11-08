@@ -101,7 +101,7 @@ struct ProfileSheet: View {
 
     var body: some View {
         if let owner = model.owner {
-            PlayerProfileView(model: PlayerProfileViewModel(playerID: owner.id, stats: OwnerOnlyStats(owner: owner),
+            PlayerProfileView(model: PlayerProfileViewModel(playerID: owner.id, stats: OwnerOnlyStats(owner: owner, store: model.ownerStore),
                                                             training: SampleTrainingSource(drills: [], bias: nil)))
         } else {
             ZStack {

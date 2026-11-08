@@ -55,7 +55,7 @@ struct SetupDefaults: Equatable, Sendable {
     }
 }
 
-enum SetupError: Error, Equatable { case blankName }
+enum SetupError: Error, Equatable { case blankName, notOwner }
 
 /// Colours for avatars, in the order guests and new players take them.
 enum ShellPalette {
