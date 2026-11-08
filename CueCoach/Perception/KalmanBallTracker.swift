@@ -369,9 +369,11 @@ struct KalmanBallTracker: BallTracker {
         }
         let out = snapshot()
         // At rest: every confirmed, good-quality track is still. Flickering or jittering junk is ignored.
+        // A flicker (seen in < 70 % of recent frames) counts only on frames it is actually seen, so a real ball
+        // coming out from behind an arm or a pocket's dead zone still holds the table out of rest.
         let counted = tracks.filter { tr in
             tr.hits >= params.confirmHits && !tr.lowQuality
-                && Double(tr.hitBits.nonzeroBitCount) / Double(min(16, tr.age)) >= params.minHitRatio
+                && (tr.misses == 0 || Double(tr.hitBits.nonzeroBitCount) / Double(min(16, tr.age)) >= params.minHitRatio)
         }
         if !counted.isEmpty && counted.allSatisfy(\.still) {
             stillFrames += 1
@@ -406,7 +408,12 @@ struct KalmanBallTracker: BallTracker {
         let last = tr.recent[n - 1]
         let jumped = last.p.distance(to: pm + v * (last.t - tm)) > max(params.onsetJump, 5 * sigma)
         let still = !jumped && v.length < max(params.restSpeed, min(params.maxStillSpeed, 3 * se))
-        let low = sigma > params.jitterSigma && v.length < 0.2
+        // Jitter = scatter that goes nowhere: the first and last thirds of the window sit on top of each other.
+        // (A decelerating or turning ball also fits a line badly, but it travels.)
+        let k = max(1, n / 3)
+        let head = tr.recent.prefix(k).reduce(Vec2.zero) { $0 + $1.p } / Double(k)
+        let tail = tr.recent.suffix(k).reduce(Vec2.zero) { $0 + $1.p } / Double(k)
+        let low = sigma > params.jitterSigma && v.length < 0.2 && head.distance(to: tail) < 2 * sigma
         return (still, low, sigma, pm)
     }
 
