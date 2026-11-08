@@ -257,7 +257,8 @@ final class ScreensAUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Badges"].exists)
         shot(app, "profile-badges-all")
         app.buttons["profile.badges.done"].tap()
-        XCTAssertFalse(app.descendants(matching: .any)["profile.badges.sheet"].waitForExistence(timeout: 2))
+        // Dismissal: wait for it to leave (waitForExistence is true while the sheet animates out; slower on device).
+        XCTAssertTrue(app.descendants(matching: .any)["profile.badges.sheet"].waitForNonExistence(timeout: 5))
     }
 
     // MARK: Screenshot matrix
