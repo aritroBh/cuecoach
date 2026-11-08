@@ -76,6 +76,13 @@ struct AutoTableR4Tests {
         let pose = try #require(run.estimate.pose)
         #expect(run.estimate.state == .locked)
         #expect(pose.snappedSize == size)
+        // The visible-length estimate the second-look rule uses is honest: close to the truth, never above it.
+        let W = scene.spec.width
+        let truth = max(Self.railVisible(scene, cam, y: 0), Self.railVisible(scene, cam, y: W))
+        for v in run.perFrame.compactMap(\.frame.visibleLengthFraction) {
+            #expect(v <= truth + 0.03, "visible \(v) > true \(truth)")
+            #expect(v >= truth - 0.08, "visible \(v) ≪ true \(truth)")
+        }
         #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.02)
     }
 

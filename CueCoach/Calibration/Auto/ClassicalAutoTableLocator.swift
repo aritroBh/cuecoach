@@ -696,6 +696,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         guard runs.count >= 2 else { diag.rejection = "partial: < 2 rails"; return nil }
         // 2. Sub-pixel edges on each visible rail, lifted to the felt boundary height.
         var rails: [(edge: AutoRailEdge, lifted: [AutoP2], outward: AutoP2, dir: AutoP2)] = []
+        var runEnds: [(AutoP2, AutoP2)] = []   // the outline run each rail came from (image), for its visible extent
         for r in runs {
             guard let e = AutoRailDetector.refineSegment(img, model: seed.model, from: r.a, to: r.b, outward: r.outward,
                                                          radius: max(6, 2.5 * st), rng: &s.rng) else { continue }
@@ -708,6 +709,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             var nrm = l3.n
             if simd_dot(nrm, p1 - p0) < 0 { nrm = -nrm }
             rails.append((e, lifted, nrm, l3.direction))
+            runEnds.append((r.a, r.b))
         }
         // 3. A perpendicular pair gives a felt corner.
         var pair: (Int, Int)?
@@ -794,10 +796,15 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         }
         // Visible fraction of the length: the long rails' lifted extent along the axis.
         var visible = 0.0
-        for r in rails where abs(simd_dot(r.dir, rect.u)) > 0.9 {
-            let t = r.lifted.map { simd_dot($0 - rect.center, rect.u) }
-            // Samples lie on the outer felt edge (−c…L+c): count only what can be playing length.
-            visible = max(visible, ((t.max() ?? 0) - (t.min() ?? 0) - 2 * c) / spec.length)
+        for (k, r) in rails.enumerated() where abs(simd_dot(r.dir, rect.u)) > 0.9 {
+            // The rail's visible extent is its whole outline run (the sub-pixel samples skip 6 % at each end),
+            // clipped to the playing length −L/2…L/2 of the fitted table.
+            var t = r.lifted.map { simd_dot($0 - rect.center, rect.u) }
+            for e in [runEnds[k].0, runEnds[k].1] {
+                if let w = plane.lift(e, camera: camera, height: prof.railTopHeight) { t.append(simd_dot(w - rect.center, rect.u)) }
+            }
+            let lo = max(-spec.length / 2, t.min() ?? 0), hi = min(spec.length / 2, t.max() ?? 0)
+            visible = max(visible, max(0, hi - lo) / spec.length)
         }
         diag.visibleLengthFraction = min(1, visible)
         diag.railTopHeight = prof.railTopHeight
