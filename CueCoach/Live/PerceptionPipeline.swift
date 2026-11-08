@@ -285,8 +285,10 @@ enum BallIdentity {
         var out: [Int: BallID] = [:]
         if let c = cueID { out[c] = .cue }
         let counts = Dictionary(grouping: tracks.compactMap(\.tentativeNumber), by: { $0 }).mapValues(\.count)
+        // D29: only a settled identity (kind and number votes both ≥ 0.8) has rules consequences.
         for t in tracks where out[t.id] == nil {
-            if let n = t.tentativeNumber, n > 0, counts[n] == 1, let id = BallID(n) { out[t.id] = id }
+            if let n = t.tentativeNumber, n > 0, counts[n] == 1, let id = BallID(n),
+               t.kindShare >= PerceptionPipeline.minTargetShare, t.numberShare >= PerceptionPipeline.minTargetShare { out[t.id] = id }
         }
         return out
     }
@@ -330,7 +332,12 @@ struct ShotIdentities: Sendable {
 
     mutating func update(known: [Int: BallID], inShot: Bool, ended: Bool = false) -> [Int: BallID] {
         guard inShot || ended else { held = known; return known }
-        for (k, v) in known where held[k] == nil && !held.values.contains(v) { held[k] = v }
+        // A new track may take a ball held by a *retired* track (the ball re-acquired after an occlusion): both ids
+        // then map to it, so a pocket recorded under either reaches Rules. Two live tracks never share a ball.
+        for (k, v) in known where held[k] == nil {
+            let liveHolder = held.contains { $0.value == v && $0.key != k && known[$0.key] != nil }
+            if !liveHolder { held[k] = v }
+        }
         let out = held
         if ended { held = known }
         return out

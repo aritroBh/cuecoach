@@ -89,14 +89,24 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             tracking: f.trackingNormal ? .normal : .limited)
         mouthCounter?.beginFrame(timestamp: f.timestamp)   // this frame's count only; ≤ 10 Hz of frame time
         let e = auto.process(frame)
+        let matched = e.pose.map { p in
+            Self.matchedMouths(mouthCounter?.lastMouthPixels ?? [], pocketPixels: Self.pocketPixels(p, camera: f.camera, image: img),
+                               tolerance: max(12, 0.04 * Double(img.width)))
+        } ?? 0
         state.withLock { s in
             s.lastAuto = e
-            if let p = e.pose, !p.corners.isEmpty {
-                let c = p.corners.reduce(SIMD3<Double>(), +) / Double(p.corners.count)
-                if let a = s.evidenceAnchor, simd_distance(a, c) > evidenceAnchorRadius { s.pocketEvidence = 0 }
-                s.evidenceAnchor = c
+            // Evidence belongs to the candidate it was seen on: only mouths at *this* pose's pockets count, the
+            // anchor is the pose where the streak began, and a candidate that moves past the radius from it (a jump
+            // or a slow pan onto another surface) starts the count over. No candidate, no evidence.
+            if let p = e.pose {
+                if let a = s.evidenceAnchor, simd_distance(a, p.center) > evidenceAnchorRadius {
+                    s.pocketEvidence = 0; s.evidenceAnchor = nil
+                }
+                if Self.hasPocketEvidence(e.frame, mouthKeypoints: matched) {
+                    s.pocketEvidence += 1
+                    if s.evidenceAnchor == nil { s.evidenceAnchor = p.center }
+                }
             }
-            if Self.hasPocketEvidence(e.frame, mouthKeypoints: mouthCounter?.lastMouths ?? 0) { s.pocketEvidence += 1 }
             s.lastVisibleFraction = e.frame.visibleLengthFraction
         }
         return map(e, frame: f, plane: hint)
@@ -107,6 +117,17 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
     static func sizeIsTrusted(_ p: AutoTablePose) -> Bool {
         let est = (p.measuredLength + 2 * p.measuredWidth) / 2
         return !SizeAmbiguity.isAmbiguous(measuredLength: est, snapped: p.snappedSize)
+    }
+
+    /// The candidate's six pocket centres in working-image pixels (where the keypoint model's mouths land).
+    static func pocketPixels(_ p: AutoTablePose, camera: CameraModel, image: PixelImage) -> [SIMD2<Double>] {
+        let sx = Double(image.width) / camera.intrinsics.width, sy = Double(image.height) / camera.intrinsics.height
+        return p.spec.pockets.compactMap { camera.project(p.world(p.spec.pocketCenter($0), height: 0)) }.map { SIMD2($0.x * sx, $0.y * sy) }
+    }
+
+    /// Mouth keypoints that sit on one of the candidate's pockets (each pocket counted once).
+    static func matchedMouths(_ mouths: [SIMD2<Double>], pocketPixels: [SIMD2<Double>], tolerance: Double) -> Int {
+        pocketPixels.filter { pk in mouths.contains { simd_distance($0, pk) <= tolerance } }.count
     }
 
     /// Pockets are what make a table a table: ≥ 2 keypoint mouths, or ≥ 4 fitted pocket positions that look dark.
@@ -200,17 +221,19 @@ enum TableKeypointModel {
 /// keypoints (corner/side pocket mouths) it returned on this frame.
 final class MouthCountingProvider: TableKeypointProvider, @unchecked Sendable {
     private let inner: any TableKeypointProvider
-    private let state = Mutex((mouths: 0, due: true, lastRun: Double?.none))
+    private let state = Mutex((mouths: 0, pixels: [SIMD2<Double>](), due: true, lastRun: Double?.none))
     /// Seconds of frame time between model runs (≤ 10 Hz on the ANE).
     var minInterval = 0.1
     init(wrapping inner: any TableKeypointProvider) { self.inner = inner }
 
     var lastMouths: Int { state.withLock { $0.mouths } }
+    /// This frame's confident mouth keypoints (working-image pixels).
+    var lastMouthPixels: [SIMD2<Double>] { state.withLock { $0.pixels } }
     /// Call before each locator frame: resets the count (a frame that skips inference reports 0, not the previous
     /// count) and decides whether the model is due on this frame. A timestamp going backwards (new view) runs.
     func beginFrame(timestamp t: Double) {
         state.withLock { s in
-            s.mouths = 0
+            s.mouths = 0; s.pixels = []
             if let l = s.lastRun, t >= l, t - l < minInterval * 0.9 { s.due = false } else { s.due = true; s.lastRun = t }
         }
     }
@@ -219,7 +242,8 @@ final class MouthCountingProvider: TableKeypointProvider, @unchecked Sendable {
         // Once per due frame: Auto may ask more than once per frame.
         guard state.withLock({ s -> Bool in defer { s.due = false }; return s.due }) else { return [] }
         let k = inner.keypoints(in: image, intrinsics: intrinsics)
-        state.withLock { $0.mouths = Self.mouths(in: k) }
+        let px = k.filter { ($0.kind == .cornerMouth || $0.kind == .sideMouth) && $0.confidence >= 0.5 }.map(\.pixel)
+        state.withLock { $0.mouths = px.count; $0.pixels = px }
         return k
     }
 

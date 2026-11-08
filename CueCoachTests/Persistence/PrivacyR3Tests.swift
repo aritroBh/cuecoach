@@ -69,3 +69,60 @@ import Testing
         #expect(try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == false)
     }
 }
+
+/// Codex integ-privacy-r3 rerun MAJORs.
+@MainActor
+@Suite struct PrivacyR3RerunTests {
+    final class Gallery: RecognitionGallery {
+        var changes: [RecognitionChange] = []
+        func recognitionDidChange(_ change: RecognitionChange) { changes.append(change) }
+    }
+
+    func stack(guest: Bool = false) throws -> (PersistenceStack, PlayerProfile) {
+        let stack = try PersistenceStack(inMemory: true)
+        let p = PlayerProfile(name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: !guest, isSessionGuest: guest)
+        stack.competitiveContext.insert(p)
+        try stack.competitiveContext.save()
+        try stack.storeRecognition(profileID: p.id, faceEmbedding: nil, appearanceEmbedding: Data([1]),
+                                   optedInAt: Date(timeIntervalSince1970: 1_000), version: 1)
+        return (stack, p)
+    }
+
+    /// Backup.swift:210: importing a later revocation purges the row and tells registered galleries at once.
+    @Test func importedTombstonePurgesTheRowAndTheGalleries() throws {
+        let (local, p) = try stack()
+        let g = Gallery()
+        local.register(g)
+        // The same profile on another phone, revoked later.
+        let other = try PersistenceStack(inMemory: true)
+        let q = PlayerProfile(id: p.id, name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: true)
+        q.recognitionRevokedAt = Date(timeIntervalSince1970: 5_000)
+        q.updatedAt = .now.addingTimeInterval(60)
+        other.competitiveContext.insert(q)
+        try other.competitiveContext.save()
+        try local.importBackup(other.exportBackup())
+        #expect(try local.recognitionContext.fetchCount(FetchDescriptor<RecognitionData>()) == 0)
+        #expect(g.changes.contains(.purged([p.id])))
+    }
+
+    /// Backup.swift:108: no import while a one-tap delete is inside its Undo window (it would commit or race it).
+    @Test func importIsRefusedDuringAStagedDelete() throws {
+        let (local, _) = try stack()
+        let data = try local.exportBackup()
+        let undo = try local.beginRecognitionDeletion()
+        #expect(throws: BackupError.pendingChanges) { try local.importBackup(data) }
+        try local.undoRecognitionDeletion(undo)
+    }
+
+    /// Undo never brings back templates of a profile fenced inside the window (e.g. a guest promoted without consent).
+    @Test func undoSkipsProfilesFencedDuringTheWindow() throws {
+        let (local, guest) = try stack(guest: true)
+        let g = Gallery()
+        local.register(g)
+        let undo = try local.beginRecognitionDeletion()
+        try local.promoteSessionGuest(guest.id, keepRecognition: false)
+        try local.undoRecognitionDeletion(undo)
+        #expect(try local.recognitionContext.fetchCount(FetchDescriptor<RecognitionData>()) == 0)
+        #expect(!g.changes.contains(.restored([guest.id])))
+    }
+}

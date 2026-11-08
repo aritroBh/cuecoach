@@ -105,7 +105,9 @@ extension PersistenceStack {
     /// import rolls the contexts back and would otherwise discard that unrelated work (audit F9).
     func importBackup(_ data: Data, keepingRecognitionOf consented: Set<UUID> = []) throws {
         let c = competitiveContext, t = trainingContext
-        guard !c.hasChanges, !t.hasChanges else { throw BackupError.pendingChanges }
+        // Also refused inside a one-tap delete's Undo window: the recognition context then holds the staged
+        // deletes, which this import's saves would commit or race (Codex privacy-r3).
+        guard !c.hasChanges, !t.hasChanges, !recognitionContext.hasChanges else { throw BackupError.pendingChanges }
         let backup = try BackupV1.decode(data)
         try validateParents(backup)
         let backupIDs = Set(backup.competitive.profiles.map(\.id))
@@ -132,6 +134,20 @@ extension PersistenceStack {
             try compensateTraining(before: trainingSnapshot, imported: backup.training)
             throw error
         }
+        try purgeRevokedTemplates(of: backupIDs)
+    }
+
+    /// Templates opted in at or before their profile's (possibly just imported) revocation tombstone are removed
+    /// and the galleries told, so a restored revocation takes effect in a running session too.
+    func purgeRevokedTemplates(of ids: Set<UUID>) throws {
+        var revoked: Set<UUID> = []
+        for p in try competitiveContext.fetch(FetchDescriptor<PlayerProfile>()) where ids.contains(p.id) {
+            guard let r = p.recognitionRevokedAt else { continue }
+            let pid = p.id
+            let rows = try recognitionContext.fetch(FetchDescriptor<RecognitionData>(predicate: #Predicate { $0.profileID == pid }))
+            if rows.contains(where: { BackupV1.millis($0.optedInAt) <= BackupV1.millis(r) }) { revoked.insert(pid) }
+        }
+        try dropRecognition(of: revoked)
     }
 
     /// Rejects the backup if any child points at a parent that is neither in the backup nor on this device.

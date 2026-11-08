@@ -162,14 +162,6 @@ struct LockR5Tests {
     /// seen), then pan without a pause to a table-sized cloth elsewhere with no pockets: the old evidence must
     /// not authorise a lock on it.
     @Test func pocketEvidenceDoesNotCarryToAnotherSurface() async throws {
-        final class Switchable: TableKeypointProvider, @unchecked Sendable {
-            var mouths = true
-            func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
-                guard mouths else { return [] }
-                return [AutoTableKeypoint(kind: .cornerMouth, pixel: SIMD2(10, 10), confidence: 0.9),
-                        AutoTableKeypoint(kind: .sideMouth, pixel: SIMD2(20, 10), confidence: 0.9)]
-            }
-        }
         let table = SyntheticTableScene.demo()
         var rug = SyntheticTableScene.demo()
         rug.hasRailsAndPockets = false
@@ -184,7 +176,7 @@ struct LockR5Tests {
         let ti = try #require(PixelImage(cgImage: tcg))
         let ri = try #require(PixelImage(cgImage: rcg))
         let td = table.renderDepth(width: 256, height: 144), rd = rug.renderDepth(width: 256, height: 144)
-        let kp = Switchable()
+        let kp = MouthsAtPockets(Self.pocketPixels(table))
         let loc = AutoTableLocating(keypoints: kp)
         var t = 0.0, lockedTable = false
         for _ in 0..<60 where !lockedTable {
@@ -193,7 +185,7 @@ struct LockR5Tests {
             t += 1.0 / 15
         }
         #expect(lockedTable)
-        kp.mouths = false
+        kp.pixels = []
         let rugCorners = rug.frame.corners.map { rug.frame.world($0) }
         var lockedRug = false
         for _ in 0..<90 {
@@ -202,6 +194,63 @@ struct LockR5Tests {
             t += 1.0 / 15
         }
         #expect(!lockedRug)
+    }
+
+    /// Pixels of a scene's six pocket centres (the keypoint model's mouths), in the rendered image.
+    static func pocketPixels(_ s: SyntheticTableScene) -> [SIMD2<Double>] {
+        s.frame.spec.pockets.compactMap { s.camera.project(s.frame.world(s.frame.spec.pocketCenter($0))) }.map { SIMD2($0.x, $0.y) }
+    }
+
+    /// Codex rerun MAJOR: a slow pan (each step < 0.3 m) must not drag the evidence along to another surface.
+    @Test func pocketEvidenceDoesNotDriftToAnotherSurface() async throws {
+        let table = SyntheticTableScene.demo()
+        let tcg = try #require(table.render())
+        let ti = try #require(PixelImage(cgImage: tcg))
+        let kp = MouthsAtPockets(Self.pocketPixels(table))
+        let loc = AutoTableLocating(keypoints: kp)
+        var t = 0.0, lockedTable = false
+        for _ in 0..<60 where !lockedTable {
+            let e = await loc.ingest(LocatorFrame(image: ti, camera: table.camera, planes: [], timestamp: t,
+                                                  depth: table.renderDepth(width: 256, height: 144)))
+            lockedTable = e?.locked == true
+            t += 1.0 / 15
+        }
+        #expect(lockedTable)
+        kp.pixels = []
+        let tableCentre = table.frame.world(Vec2(table.frame.spec.length / 2, table.frame.spec.width / 2))
+        var badLock = false
+        for step in 1...12 {
+            var rug = SyntheticTableScene.demo()
+            rug.hasRailsAndPockets = false
+            rug.balls = []
+            let shift = SIMD3<Double>(0.1 * Double(step), 0, 0)
+            var m = rug.frame.tableToWorld
+            m.columns.3 += SIMD4(shift, 0)
+            rug.frame = TableFrame(tableToWorld: m, spec: rug.frame.spec)
+            rug.camera = CameraModel.lookAt(eye: SIMD3(0.1, 2.15, 2.45) + shift, target: SIMD3(0, 0.76, -0.25) + shift,
+                                            intrinsics: table.camera.intrinsics)
+            let rcg = try #require(rug.render())
+            let ri = try #require(PixelImage(cgImage: rcg))
+            let rd = rug.renderDepth(width: 256, height: 144)
+            for _ in 0..<4 {
+                let e = await loc.ingest(LocatorFrame(image: ri, camera: rug.camera, planes: [], timestamp: t, depth: rd))
+                if let e, e.locked {
+                    let c = e.corners.reduce(SIMD3<Double>(), +) / Double(max(1, e.corners.count))
+                    if simd_distance(c, tableCentre) > 0.4 { badLock = true }
+                }
+                t += 1.0 / 15
+            }
+        }
+        #expect(!badLock)
+    }
+
+    /// Codex autocal rerun: mouths count only where the candidate pose has pockets (mouths of another table in view
+    /// are not evidence for this one).
+    @Test func onlyMouthsAtTheCandidatesPocketsCount() {
+        let pockets: [SIMD2<Double>] = [SIMD2(100, 100), SIMD2(500, 100)]
+        #expect(AutoTableLocating.matchedMouths([SIMD2(104, 98), SIMD2(900, 900)], pocketPixels: pockets, tolerance: 20) == 1)
+        #expect(AutoTableLocating.matchedMouths([SIMD2(104, 98), SIMD2(102, 101)], pocketPixels: pockets, tolerance: 20) == 1)
+        #expect(AutoTableLocating.matchedMouths([], pocketPixels: pockets, tolerance: 20) == 0)
     }
 
     @Test func twoTapsFillTheTable() throws {
@@ -249,5 +298,14 @@ struct SizeAmbiguityTests {
         #expect(!SizeAmbiguity.isAmbiguous(measuredLength: 2.2, snapped: nil))
         // A short 76" bar box is still clearly a 7 ft, not an 8 ft.
         #expect(!SizeAmbiguity.isAmbiguous(measuredLength: 76 * 0.0254, snapped: .sevenFoot))
+    }
+}
+
+/// Keypoint fake: mouths at given pixels (none when empty).
+final class MouthsAtPockets: TableKeypointProvider, @unchecked Sendable {
+    var pixels: [SIMD2<Double>]
+    init(_ p: [SIMD2<Double>]) { pixels = p }
+    func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+        pixels.enumerated().map { AutoTableKeypoint(kind: $0.offset % 3 == 0 ? .sideMouth : .cornerMouth, pixel: $0.element, confidence: 0.9) }
     }
 }

@@ -309,7 +309,11 @@ enum FaceBenchConsentFlow {
         return c
     }
 
-    static func withdraw(_ c: FaceBenchConsent) { granted.remove(c.id) }
+    /// Withdrawal also purges that volunteer's embeddings from every live benchmark run, now.
+    static func withdraw(_ c: FaceBenchConsent) {
+        granted.remove(c.id)
+        FaceBenchmarkLifecycle.withdrawEverywhere(c.id)
+    }
     static func isGranted(_ c: FaceBenchConsent) -> Bool { granted.contains(c.id) && c.version == FaceBenchConsent.currentVersion }
 }
 
@@ -386,6 +390,11 @@ enum FaceBenchmarkLifecycle {
         installObservers()
         sessions.removeAll { $0.session == nil }
         sessions.append(Weak(s))
+    }
+
+    static func withdrawEverywhere(_ code: UUID) {
+        sessions.removeAll { $0.session == nil }
+        for w in sessions { w.session?.withdraw(code) }
     }
 
     static func purgeExpired(now: Date = .now) {

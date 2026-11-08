@@ -106,3 +106,19 @@ import Testing
         #expect(try stack.recognition(for: owner.id) == nil)
     }
 }
+
+/// Codex integ-wiring rerun MAJOR: withdrawing benchmark consent purges that volunteer's held embeddings at once.
+@MainActor
+@Suite struct BenchmarkWithdrawalTests {
+    @Test func withdrawingConsentPurgesHeldEmbeddings() {
+        let s = FaceBenchmarkSession(modelID: "m")
+        let keep = FaceBenchConsentFlow.grant(), gone = FaceBenchConsentFlow.grant()
+        let e = Embedding(modelID: "m", vector: [1, 0, 0]).normalised!
+        s.addSubject([e, e], consent: keep)
+        s.addSubject([e, e, e], consent: gone)
+        #expect(s.heldEmbeddingCount == 5)
+        FaceBenchConsentFlow.withdraw(gone)
+        #expect(s.heldEmbeddingCount == 2)
+        FaceBenchConsentFlow.withdraw(keep)
+    }
+}

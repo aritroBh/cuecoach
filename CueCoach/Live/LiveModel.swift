@@ -57,9 +57,16 @@ final class LiveModel {
     /// Perception was reset (revalidation, recalibration, a new table): no shot can settle any more, so an open
     /// aim or shot is closed for the shell (its menu would otherwise stay locked).
     func perceptionReset() {
-        if aimEvents.phase != .idle { hooks.aimCancelled() }
+        switch aimEvents.phase {
+        case .aiming: hooks.aimCancelled()
+        case .moving: lostShot = true   // balls were moving: keep the shell gated until they are at rest again
+        case .idle: break
+        }
         aimEvents = AimEvents()
     }
+
+    /// A shot in flight was lost to a perception reset: it closes unrated once the balls are seen at rest.
+    private var lostShot = false
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
 
@@ -94,6 +101,12 @@ final class LiveModel {
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
         if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
+        if lostShot {
+            guard r.atRest, !r.confirmed.isEmpty else { return }
+            lostShot = false
+            hooks.ballsSettled()
+            return
+        }
         // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
         for e in aimEvents.update(cueVisible: r.liveAim != nil || r.shooterAddressing, atRest: r.atRest, shotStarted: r.shotStarted,
                                   shotEnded: r.shot != nil, at: r.timestamp) {

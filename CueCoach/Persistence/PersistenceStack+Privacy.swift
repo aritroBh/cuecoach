@@ -92,11 +92,21 @@ extension PersistenceStack {
         }
         let ctx = recognitionContext
         ctx.rollback()
+        // Never restore a profile fenced (promoted without consent, deleted, revoked) inside the window.
+        var fences: [UUID: Date?] = [:]
+        for p in try competitiveContext.fetch(FetchDescriptor<PlayerProfile>()) { fences.updateValue(p.recognitionRevokedAt, forKey: p.id) }
+        func allowed(_ profileID: UUID, _ optedInAt: Date) -> Bool {
+            guard let f = fences[profileID] else { return false }   // profile gone
+            guard let revoked = f else { return true }
+            return BackupV1.millis(optedInAt) > BackupV1.millis(revoked)
+        }
+        for row in try ctx.fetch(FetchDescriptor<RecognitionData>()) where !allowed(row.profileID, row.optedInAt) { ctx.delete(row) }
         let present = Set(try ctx.fetch(FetchDescriptor<RecognitionData>()).map(\.id))
-        for r in undo.records where !present.contains(r.id) { ctx.insert(RecognitionData(r)) }
+        let restore = undo.records.filter { allowed($0.profileID, $0.optedInAt) }
+        for r in restore where !present.contains(r.id) { ctx.insert(RecognitionData(r)) }
         if ctx.hasChanges { try ctx.save() }
         try protectRecognitionFiles()
-        notifyGalleries(.restored(Set(undo.records.map(\.profileID))))
+        notifyGalleries(.restored(Set(restore.map(\.profileID))))
     }
 
     /// The commit (and the direct one-call delete): empties the whole recognition store, destroying its files so

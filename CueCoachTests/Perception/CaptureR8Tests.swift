@@ -120,3 +120,55 @@ struct CaptureR8LiveTests {
         #expect(box.s == expected)
     }
 }
+
+/// Codex reruns (capture-r8 / wiring) MAJORs.
+struct ShotIdentityRerunTests {
+    /// A ball re-acquired under a new track id mid-shot (occlusion) keeps reaching Rules under the new id.
+    @Test func reacquiredTrackAliasesTheRetiredOne() {
+        var s = ShotIdentities()
+        _ = s.update(known: [1: .cue, 2: BallID(3)!], inShot: false)
+        _ = s.update(known: [1: .cue], inShot: true)                       // track 2 lost
+        let m = s.update(known: [1: .cue, 5: BallID(3)!], inShot: true)    // same ball, track 5
+        #expect(m[5] == BallID(3)! && m[2] == BallID(3)!)
+        // Two *live* tracks never share a ball.
+        let n = s.update(known: [1: .cue, 5: BallID(3)!, 7: BallID(3)!], inShot: true)
+        #expect(n[7] == nil)
+    }
+
+    /// D29: an unsettled identity has no rules consequences: it never enters the rule-id map.
+    @Test func unstableVotesAreNotKnownIdentities() {
+        func t(_ id: Int, _ n: Int, kind: Double = 1, number: Double = 1) -> TrackedBall {
+            TrackedBall(id: id, position: .zero, velocity: .zero, kind: n == 8 ? .eight : .solid, tentativeNumber: n,
+                        confirmed: true, kindShare: kind, numberShare: number)
+        }
+        let known = BallIdentity.known([t(2, 8, number: 0.67), t(3, 4, kind: 0.6), t(4, 5)], cueID: nil)
+        #expect(known[2] == nil && known[3] == nil)
+        #expect(known[4] == BallID(5)!)
+    }
+}
+
+@MainActor
+struct CaptureR8RerunLiveTests {
+    @MainActor final class Log { var events: [String] = [] }
+
+    /// A perception reset during a *moving* shot is not an abandoned aim: the shell stays gated (no aimCancelled)
+    /// until perception sees the balls at rest again, then the shot closes unrated (ballsSettled).
+    @Test func lostMovingShotKeepsTheShellGatedUntilRest() {
+        let m = LiveModel(mode: .game)
+        let log = Log()
+        m.hooks = LiveHooks(aimStarted: { log.events.append("start") }, aimEnded: { log.events.append("end") },
+                            aimCancelled: { log.events.append("cancel") }, ballsSettled: { log.events.append("settled") },
+                            settled: { _, _ in log.events.append("rated") })
+        var moving = PerceptionResult(timestamp: 0, detections: [], tracks: [], marks: [:], atRest: false, aim: nil, detectMs: 0)
+        moving.shotStarted = true
+        m.drive(moving)
+        #expect(log.events == ["start", "end"])
+        m.perceptionReset()
+        #expect(!log.events.contains("cancel"))
+        let ball = TrackedBall(id: 1, position: Vec2(0.5, 0.5), velocity: .zero, kind: .cue, tentativeNumber: 0, confirmed: true)
+        m.drive(PerceptionResult(timestamp: 1, detections: [], tracks: [ball], marks: [:], atRest: false, aim: nil, detectMs: 0))
+        #expect(!log.events.contains("settled"))
+        m.drive(PerceptionResult(timestamp: 2, detections: [], tracks: [ball], marks: [:], atRest: true, aim: nil, detectMs: 0))
+        #expect(log.events == ["start", "end", "settled"])
+    }
+}
