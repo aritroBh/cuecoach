@@ -33,7 +33,8 @@ def main() -> None:
                                 stream=True, verbose=False, conf=0.001)
     errors, normalized, detected = [], [], 0
     for image_path, result in zip(images, predictions):
-        values = np.fromstring(image_path.with_suffix(".txt").read_text(), sep=" ", dtype=float)
+        label_path = image_path.parent.parent.parent / "labels" / image_path.parent.name / (image_path.stem + ".txt")
+        values = np.fromstring(label_path.read_text(), sep=" ", dtype=float)
         truth = values[5:].reshape(10, 3)
         visible = truth[:, 2] > 0
         nose = truth[6:, :2] * 640
