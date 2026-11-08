@@ -66,6 +66,6 @@ import Testing
         let t = Task { try await reg.register(owner, decision: ConsentDecision(consent: .init(clothes: true, face: false), agreedAt: .now),
                                               capture: capture) }
         await #expect(throws: CancellationError.self) { try await t.value }
-        #expect(owner.recognition == nil)
+        #expect(try stack.recognition(for: owner.id) == nil)
     }
 }
