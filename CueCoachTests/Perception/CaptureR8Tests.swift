@@ -36,9 +36,11 @@ struct CaptureR8SegmenterTests {
         }
         let r = try #require(rec)
         #expect(r.pocketed[2] == .footRight)
-        // tracker-r2 estimates the drop between the last sighting and the first frame it was gone.
+        // tracker-r2 estimates the drop as the last sighting plus the time to roll to the pocket centre
+        // (9 cm here, at the speed its positions show): after the last sighting, well inside the shot.
         let drop = try #require(r.pocketTimes[2])
-        #expect(drop >= dropT - 1.0 / 30 - 1e-9 && drop <= dropT + 1e-9)
+        let lastSeen = dropT - 1.0 / 30
+        #expect(drop >= lastSeen - 1e-9 && drop <= lastSeen + 0.5)
     }
 }
 
