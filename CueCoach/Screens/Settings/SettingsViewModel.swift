@@ -4,13 +4,21 @@ import Geometry
 import Observation
 import Rules
 import SwiftData
+import UIKit
 
 /// What Settings needs from persistence. Backed by `PersistenceStack` in the app (`PersistenceSettingsStore`)
 /// and by in-memory fakes in previews and tests.
 @MainActor public protocol SettingsStore: AnyObject {
     var hasRecognitionData: Bool { get }
+    /// One tap: removes every template from the store in memory and keeps a short-lived in-memory snapshot.
+    /// Nothing is written until `deleteMyRecognitionData` (commit) or `undoRecognitionDeletion`.
+    func stageRecognitionDeletion() throws
+    /// Puts the snapshot back. No-op when nothing is staged.
+    func undoRecognitionDeletion() throws
+    /// Commit: the delete reaches disk and the snapshot is dropped; gone for good.
     func deleteMyRecognitionData() throws
-    func exportBackup(includeRecognition: Bool) throws -> Data
+    /// Recognition templates are never exported (SPEC §2, D26).
+    func exportBackup() throws -> Data
     func importBackup(_ data: Data) throws
 }
 
@@ -34,7 +42,8 @@ enum SettingsKeys {
 /// Public so the Home owner can construct it; members stay internal (same app module).
 @MainActor @Observable
 public final class SettingsViewModel {
-    enum DeleteState: Equatable { case idle, deleting, deleted, failed }
+    /// `undoable`: deleted in one tap, Undo offered, commit pending. `deleted`: committed (transient).
+    enum DeleteState: Equatable { case idle, undoable, deleted, failed }
     enum ExportState: Equatable { case idle, exporting, failed }
     enum ImportState: Equatable { case idle, importing, done }
     enum TableNote: Equatable { case autoMeasured, manual }
@@ -57,13 +66,20 @@ public final class SettingsViewModel {
     @ObservationIgnored private let exportDirectory: URL
     /// Identity owns the opt-in flow; Settings only reports that the user turned it on.
     @ObservationIgnored var onOptIn: (() -> Void)?
+    @ObservationIgnored private let undoWindow: Duration
+    @ObservationIgnored private let announce: @MainActor (String) -> Void
+    @ObservationIgnored private var undoTask: Task<Void, Never>?
+    @ObservationIgnored private var optInBeforeDelete = false
+    /// A commit failed: the templates are still hidden (staged); tapping Delete again retries the commit.
+    @ObservationIgnored private var commitFailed = false
+    @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private let notificationCenter: NotificationCenter
 
     private(set) var hasRecognitionData: Bool
     private(set) var deleteState: DeleteState = .idle
     private(set) var exportState: ExportState = .idle
     private(set) var importState: ImportState = .idle
     var importAlert: ImportAlert?
-    var includeFaceInExport = false
 
     var recognitionOptIn: Bool {
         didSet {
@@ -81,8 +97,13 @@ public final class SettingsViewModel {
     public nonisolated static let defaultExportDirectory = FileManager.default.temporaryDirectory.appending(path: "cc-export")
 
     public init(store: SettingsStore, measurement: TableMeasurementSource = NoTableMeasurement(),
-                defaults: UserDefaults = .standard, exportDirectory: URL = SettingsViewModel.defaultExportDirectory) {
+                defaults: UserDefaults = .standard, exportDirectory: URL = SettingsViewModel.defaultExportDirectory,
+                undoWindow: Duration = .seconds(5), notificationCenter: NotificationCenter = .default,
+                announce: @escaping @MainActor (String) -> Void = SettingsViewModel.postAnnouncement) {
         self.store = store
+        self.undoWindow = undoWindow
+        self.announce = announce
+        self.notificationCenter = notificationCenter
         self.measurement = measurement
         self.defaults = defaults
         self.exportDirectory = exportDirectory
@@ -93,6 +114,19 @@ public final class SettingsViewModel {
         threeBallRule = defaults.object(forKey: SettingsKeys.threeBall) as? Bool ?? true
         debugHUD = defaults.bool(forKey: SettingsKeys.debugHUD)
         manualTable = defaults.string(forKey: SettingsKeys.tableSize).flatMap(TableSize.init(rawValue:))
+        // Backgrounding closes the Undo window at once: a suspended app must not keep templates restorable.
+        backgroundObserver = notificationCenter.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                                            object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.commitPendingDelete() }
+        }
+    }
+
+    deinit {
+        if let backgroundObserver { notificationCenter.removeObserver(backgroundObserver) }
+    }
+
+    public nonisolated static func postAnnouncement(_ text: String) {
+        Task { @MainActor in UIAccessibility.post(notification: .announcement, argument: text) }
     }
 
     // MARK: Rules
@@ -141,28 +175,72 @@ public final class SettingsViewModel {
     // MARK: Privacy
 
     nonisolated static let deleteRowTitle = "Delete recognition data"
-    nonisolated static let deleteDialogTitle = "Delete recognition data?"
+    nonisolated static let undoTitle = "Undo"
+    nonisolated static let deletedAnnouncement = "Recognition data deleted, Undo available"
 
-    var canDelete: Bool { hasRecognitionData && deleteState != .deleting }
+    var canDelete: Bool { deleteState != .undoable && (hasRecognitionData || commitFailed) }
     /// Export/Import tiles are usable unless a picked file is being read or just finished.
     var backupEnabled: Bool { importState == .idle && exportState != .exporting }
-    var showsIncludeFaceToggle: Bool { hasRecognitionData }
 
-    /// SwiftData contexts are main-actor bound, so the store call stays here; the yield lets the
-    /// spinner render before the (synchronous) delete runs.
-    func confirmDelete() async {
-        deleteState = .deleting
-        await Task.yield()
+    /// One tap, no dialog (SPEC §2). The templates leave the store immediately (in memory), Undo is offered for
+    /// `undoWindow`, then the delete is committed. Backgrounding or leaving Settings commits at once.
+    func deleteTapped() {
+        guard canDelete else { return }
+        if commitFailed {
+            deleteState = .undoable
+            commitPendingDelete()
+            return
+        }
         do {
-            try store.deleteMyRecognitionData()
-            Self.removeExports(at: exportDirectory)
-            hasRecognitionData = store.hasRecognitionData
-            recognitionOptIn = false
-            includeFaceInExport = false
-            deleteState = .deleted
+            try store.stageRecognitionDeletion()
         } catch {
             deleteState = .failed
+            return
         }
+        Self.removeExports(at: exportDirectory)
+        optInBeforeDelete = recognitionOptIn
+        hasRecognitionData = store.hasRecognitionData
+        recognitionOptIn = false
+        deleteState = .undoable
+        announce(Self.deletedAnnouncement)
+        undoTask?.cancel()
+        let window = undoWindow
+        undoTask = Task { [weak self] in
+            try? await Task.sleep(for: window)
+            guard !Task.isCancelled else { return }
+            self?.commitPendingDelete()
+        }
+    }
+
+    /// Inside the window only; afterwards the snapshot is gone and this does nothing.
+    func undoDelete() {
+        guard deleteState == .undoable else { return }
+        undoTask?.cancel()
+        undoTask = nil
+        do {
+            try store.undoRecognitionDeletion()
+            hasRecognitionData = store.hasRecognitionData
+            recognitionOptIn = optInBeforeDelete
+            deleteState = .idle
+        } catch {
+            commitPendingDelete()   // can't restore: never leave a half state, finish the delete
+        }
+    }
+
+    /// Closes the Undo window: window expiry, app backgrounded, Settings left. Idempotent.
+    func commitPendingDelete() {
+        guard deleteState == .undoable else { return }
+        undoTask?.cancel()
+        undoTask = nil
+        do {
+            try store.deleteMyRecognitionData()
+            commitFailed = false
+            deleteState = .deleted
+        } catch {
+            commitFailed = true
+            deleteState = .failed
+        }
+        hasRecognitionData = store.hasRecognitionData
     }
 
     /// Ends the transient "done" states (the view calls it ~1.5 s later).
@@ -185,7 +263,7 @@ public final class SettingsViewModel {
         exportState = .exporting
         await Task.yield()
         do {
-            let data = try store.exportBackup(includeRecognition: includeFaceInExport && hasRecognitionData)
+            let data = try store.exportBackup()
             let name = Self.backupFilename(now)
             let dir = exportDirectory
             let url = try await Task.detached(priority: .userInitiated) {
@@ -243,10 +321,18 @@ public final class SettingsViewModel {
     func importCancelled() { importState = .idle }
 }
 
-/// Production adapter over the shared persistence stack (read-only use of its public API).
+/// Production adapter over the shared persistence stack.
 @MainActor
 final class PersistenceSettingsStore: SettingsStore {
     private let stack: PersistenceStack
+    /// The Undo window's in-memory copy of what a one-tap delete removed. Never written anywhere.
+    private struct Snapshot {
+        var ownerID: PersistentIdentifier
+        var ownerUpdatedAt: Date
+        var face: Data?, appearance: Data?, optedInAt: Date, version: Int, updatedAt: Date
+    }
+    private var snapshot: [Snapshot]?
+
     init(stack: PersistenceStack) { self.stack = stack }
 
     var hasRecognitionData: Bool {
@@ -258,10 +344,41 @@ final class PersistenceSettingsStore: SettingsStore {
         guard let flags = try? ownersHaveRecognition() else { return true }
         return flags.contains(true)
     }
-    func deleteMyRecognitionData() throws { try stack.deleteMyRecognitionData() }
-    func exportBackup(includeRecognition: Bool) throws -> Data {
-        try stack.exportBackup(includeRecognition: includeRecognition)
+
+    func stageRecognitionDeletion() throws {
+        let ctx = stack.competitiveContext
+        var taken: [Snapshot] = snapshot ?? []
+        for owner in try ctx.fetch(SAFetch.localOwners()) {
+            guard let r = owner.recognition else { continue }
+            taken.append(Snapshot(ownerID: owner.persistentModelID, ownerUpdatedAt: owner.updatedAt,
+                                  face: r.faceEmbedding, appearance: r.appearanceEmbedding, optedInAt: r.optedInAt,
+                                  version: r.version, updatedAt: r.updatedAt))
+            owner.recognition = nil
+            ctx.delete(r)   // unsaved: the commit (or any later save) writes it
+        }
+        snapshot = taken
     }
+
+    func undoRecognitionDeletion() throws {
+        guard let taken = snapshot else { return }
+        snapshot = nil
+        let ctx = stack.competitiveContext
+        for s in taken {
+            guard let owner = ctx.model(for: s.ownerID) as? PlayerProfile else { continue }
+            let r = RecognitionData(faceEmbedding: s.face, appearanceEmbedding: s.appearance, optedInAt: s.optedInAt,
+                                    version: s.version, updatedAt: s.updatedAt)
+            ctx.insert(r)
+            owner.recognition = r
+            owner.updatedAt = s.ownerUpdatedAt   // restoring isn't a profile edit
+        }
+        try ctx.save()
+    }
+
+    func deleteMyRecognitionData() throws {
+        snapshot = nil
+        try stack.deleteMyRecognitionData()
+    }
+    func exportBackup() throws -> Data { try stack.exportBackup() }
     func importBackup(_ data: Data) throws { try stack.importBackup(data) }
 }
 
@@ -274,14 +391,22 @@ enum SAFetch {
 /// In-memory store for previews and the debug router.
 @MainActor
 final class InMemorySettingsStore: SettingsStore {
-    var hasRecognitionData: Bool
+    private var stored: Bool
+    private var staged = false
     var failDelete = false
-    init(hasRecognitionData: Bool) { self.hasRecognitionData = hasRecognitionData }
-    func deleteMyRecognitionData() throws {
-        struct Failed: Error {}
+    var hasRecognitionData: Bool { stored && !staged }
+    init(hasRecognitionData: Bool) { stored = hasRecognitionData }
+    struct Failed: Error {}
+    func stageRecognitionDeletion() throws {
         if failDelete { throw Failed() }
-        hasRecognitionData = false
+        staged = true
     }
-    func exportBackup(includeRecognition: Bool) throws -> Data { Data("{\"version\":1}".utf8) }
+    func undoRecognitionDeletion() throws { staged = false }
+    func deleteMyRecognitionData() throws {
+        if failDelete { throw Failed() }
+        stored = false
+        staged = false
+    }
+    func exportBackup() throws -> Data { Data("{\"version\":1}".utf8) }
     func importBackup(_ data: Data) throws { _ = try BackupV1.decode(data) }
 }

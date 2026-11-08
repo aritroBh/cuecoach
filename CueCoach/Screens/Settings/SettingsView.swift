@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 /// Settings (SPEC §11, design-system/cuecoach/pages/screens-a.md §1). Pushed from Home by its owner.
 public struct SettingsView: View {
     @State private var model: SettingsViewModel
-    @State private var confirmingDelete = false
     @State private var importing = false
     @State private var shareURL: SAShareItem?
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -14,6 +13,7 @@ public struct SettingsView: View {
     private var reduceMotion: Bool { systemReduceMotion || forceReduceMotion }
     @Environment(\.verticalSizeClass) private var vSize
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.scenePhase) private var scenePhase
 
     public init(model: SettingsViewModel) { _model = State(initialValue: model) }
 
@@ -41,11 +41,9 @@ public struct SettingsView: View {
         .toolbarBackground(SA.bg, for: .navigationBar)
         .preferredColorScheme(.dark)
         .tint(SA.legal)
-        .confirmationDialog(SettingsViewModel.deleteDialogTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { delete() }
-                .accessibilityIdentifier("settings.delete.confirm")
-            Button("Cancel", role: .cancel) {}
-        }
+        // The Undo window closes as soon as the app leaves the foreground or Settings is left.
+        .onChange(of: scenePhase) { _, phase in if phase == .background { model.commitPendingDelete() } }
+        .onDisappear { model.commitPendingDelete() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json], allowsMultipleSelection: false,
                       onCompletion: handleImport, onCancellation: { model.importCancelled() })
         .alert("Can't import", isPresented: Binding(get: { model.importAlert != nil },
@@ -86,33 +84,47 @@ public struct SettingsView: View {
 
     private var deleteRow: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { confirmingDelete = true } label: {
-                HStack(spacing: 16) {
-                    ZStack {
-                        Circle().fill(SA.danger.opacity(0.15)).frame(width: 28, height: 28)
-                        switch model.deleteState {
-                        case .deleting: ProgressView().controlSize(.small)
-                        case .deleted:
-                            Image(systemName: "checkmark").font(.footnote.weight(.semibold)).foregroundStyle(SA.legal)
-                                .transition(.opacity)
-                        default:
-                            Image(systemName: "trash").font(.footnote).foregroundStyle(SA.danger)
+            HStack(spacing: 0) {
+                Button { delete() } label: {
+                    HStack(spacing: 16) {
+                        ZStack {
+                            Circle().fill(SA.danger.opacity(0.15)).frame(width: 28, height: 28)
+                            switch model.deleteState {
+                            case .undoable, .deleted:
+                                Image(systemName: "checkmark").font(.footnote.weight(.semibold)).foregroundStyle(SA.legal)
+                                    .transition(.opacity)
+                            default:
+                                Image(systemName: "trash").font(.footnote).foregroundStyle(SA.danger)
+                            }
                         }
+                        Text(SettingsViewModel.deleteRowTitle).font(.body).foregroundStyle(SA.danger)
+                        Spacer(minLength: 8)
                     }
-                    Text(SettingsViewModel.deleteRowTitle).font(.body).foregroundStyle(SA.danger)
-                    Spacer()
+                    .padding(16)
+                    .frame(minHeight: 56)
+                    .contentShape(Rectangle())
                 }
-                .padding(16)
-                .frame(minHeight: 56)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .disabled(!model.canDelete)
+                .opacity(model.canDelete || model.deleteState == .undoable || model.deleteState == .deleted ? 1 : 0.4)
+                .accessibilityHint("Removes face and look data from this phone.")
+                .accessibilityIdentifier("settings.delete")
+                if model.deleteState == .undoable {
+                    // Non-modal: the rest of Settings stays usable; the window closes on its own after ~5 s.
+                    Button { model.undoDelete(); SA.selection() } label: {
+                        Text(SettingsViewModel.undoTitle).font(.body.weight(.semibold)).foregroundStyle(SA.legal)
+                            .padding(.horizontal, 16)
+                            .frame(minWidth: 64, minHeight: 56)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Restores face and look data.")
+                    .accessibilityIdentifier("settings.delete.undo")
+                    .transition(.opacity)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(!model.canDelete)
-            .opacity(model.canDelete || model.deleteState == .deleted ? 1 : 0.4)
-            .accessibilityHint("Removes face and look data from this phone.")
-            .accessibilityIdentifier("settings.delete")
             // Outside the dimmed button so the only explanation for the disabled row stays readable.
-            if !model.hasRecognitionData && model.deleteState != .deleted {
+            if !model.hasRecognitionData && model.deleteState == .idle {
                 Text("Nothing stored.").font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
                     .padding(.leading, 60).padding(.trailing, 16).padding(.top, -12).padding(.bottom, 14)
                     .accessibilityIdentifier("settings.delete.helper")
@@ -126,10 +138,12 @@ public struct SettingsView: View {
         }
     }
 
+    /// One tap deletes (SPEC §2): no confirmation step; Undo stands in for it.
     private func delete() {
+        model.deleteTapped()
+        SA.haptic(model.deleteState == .undoable ? .success : .error)
         Task {
-            await model.confirmDelete()
-            SA.haptic(model.deleteState == .deleted ? .success : .error)
+            while model.deleteState == .undoable { try? await Task.sleep(for: .milliseconds(200)) }
             if model.deleteState == .deleted {
                 try? await Task.sleep(for: .seconds(1.5)); model.settle()
             }
@@ -160,14 +174,6 @@ public struct SettingsView: View {
             if model.exportState == .failed {
                 Text("Export failed.").font(.footnote.weight(.semibold)).foregroundStyle(SA.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if model.showsIncludeFaceToggle {
-                Toggle(isOn: $model.includeFaceInExport) {
-                    SARowLabel(symbol: "faceid", title: "Include face data", helper: nil)
-                }
-                .padding(.horizontal, 16)
-                .frame(minHeight: 52)
-                .accessibilityIdentifier("settings.includeFace")
             }
         }
     }

@@ -43,7 +43,8 @@ final class ScreensAUITests: XCTestCase {
 
     // MARK: Settings flows
 
-    @MainActor func testDeleteRecognitionDataFlow() {
+    /// SPEC §2: one tap deletes. No alert, sheet or confirmation dialog appears; a non-modal Undo does.
+    @MainActor func testDeleteRecognitionDataIsOneTapWithUndo() {
         let app = launch("settings")
         let toggle = app.switches["settings.recognition"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
@@ -51,26 +52,43 @@ final class ScreensAUITests: XCTestCase {
         let delete = app.buttons["settings.delete"]
         XCTAssertTrue(delete.isEnabled)
         delete.tap()
-        let confirm = app.buttons["settings.delete.confirm"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Delete recognition data?"].exists)
-        shot(app, "settings-delete-confirm")
-        confirm.tap()
-        let off = NSPredicate(format: "value == '0'")
-        expectation(for: off, evaluatedWith: toggle)
+        let undo = app.buttons["settings.delete.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertEqual(app.alerts.count, 0)
+        XCTAssertEqual(app.sheets.count, 0)
+        XCTAssertFalse(app.buttons["settings.delete.confirm"].exists)
+        XCTAssertFalse(app.staticTexts["Delete recognition data?"].exists)
+        XCTAssertEqual(toggle.value as? String, "0")
+        XCTAssertGreaterThanOrEqual(undo.frame.height, 44)
+        shot(app, "settings-delete-undo")
+        undo.tap()
+        let on = NSPredicate(format: "value == '1'")
+        expectation(for: on, evaluatedWith: toggle)
         waitForExpectations(timeout: 5)
-        XCTAssertTrue(app.staticTexts["Nothing stored."].waitForExistence(timeout: 5))
-        XCTAssertFalse(delete.isEnabled)
-        XCTAssertFalse(app.switches["settings.includeFace"].exists)
+        XCTAssertTrue(delete.isEnabled)
+        XCTAssertFalse(undo.exists)
+        XCTAssertFalse(app.staticTexts["Nothing stored."].exists)
+    }
+
+    /// Without Undo the window closes on its own and the data is gone for good.
+    @MainActor func testDeleteCommitsWhenUndoWindowCloses() {
+        let app = launch("settings")
+        app.buttons["settings.delete"].tap()
+        let undo = app.buttons["settings.delete.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Nothing stored."].waitForExistence(timeout: 12))
+        XCTAssertFalse(undo.exists)
+        XCTAssertFalse(app.buttons["settings.delete"].isEnabled)
+        XCTAssertEqual(app.alerts.count, 0)
         shot(app, "settings-deleted")
     }
 
     @MainActor func testDeleteFailureShowsInlineError() {
         let app = launch("settings", fixture: "deleteFail")
         app.buttons["settings.delete"].tap()
-        app.buttons["settings.delete.confirm"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Couldn't delete. Try again."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.delete"].isEnabled)
+        XCTAssertEqual(app.alerts.count, 0)
         shot(app, "settings-delete-failed")
     }
 
@@ -128,7 +146,7 @@ final class ScreensAUITests: XCTestCase {
         shot(app, "settings-import-cancelled")
     }
 
-    @MainActor func testDeleteRowCopyMatchesDialog() {
+    @MainActor func testDeleteRowCopy() {
         let app = launch("settings")
         XCTAssertTrue(app.buttons["settings.delete"].label.contains("Delete recognition data"))
         XCTAssertFalse(app.staticTexts["Delete my data"].exists)

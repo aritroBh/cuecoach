@@ -43,7 +43,7 @@ navigation wiring).
 │ │ Recognize me             [  ●]   │ │  Toggle, opt-in, default OFF
 │ │ Stays on this phone.     (13 mut)│ │  one line of helper text, max
 │ ├──────────────────────────────────┤ │
-│ │ (trash)  Delete my data      ›   │ │  danger tint, opens confirmation
+│ │ (trash)  Delete recognition data │ │  danger tint, ONE tap deletes; Undo ~5 s
 │ └──────────────────────────────────┘ │
 │                                      │
 │ BACKUP                               │
@@ -52,7 +52,6 @@ navigation wiring).
 │ │  arrow.up      ││  arrow.down    │ │
 │ │  Export        ││  Import        │ │
 │ └────────────────┘└────────────────┘ │
-│   Include face data        [●  ]     │  shown only when recognition data exists
 │                                      │
 │ RULES                                │
 │ ┌──────────────────────────────────┐ │
@@ -88,7 +87,7 @@ with 24 pt gutters.
 | `SettingsSection` | `Form` with `.formStyle(.grouped)`, `Section` header 22 sb, `listRowBackground(surface)` | `surface`, `ink` |
 | Recognition toggle | `Toggle`, tint `legal`; turning it on starts the Identity opt-in flow through a protocol callback (not built here) | `person.crop.circle.badge.checkmark` |
 | Delete row | `Button(role: .destructive)`, glyph and label in `danger`; hidden when there is no data (see States) | `trash` |
-| Delete confirm | `.confirmationDialog` with one destructive button "Delete" and Cancel. Title: "Delete recognition data?" | `danger` |
+| Undo (after delete) | Non-modal trailing "Undo" button in the same row (≥44 pt), shown ~5 s. No dialog: SPEC §2 requires one tap. | `legal` |
 | Backup tiles | 2 × 88 pt square buttons, radius 14, `surface`, glyph 28 pt `ink` | `square.and.arrow.up`, `square.and.arrow.down` |
 | Export | `ShareLink` (or a `UIActivityViewController` sheet) for a `BackupDocument: Transferable` that wraps `exportBackup(includeRecognition:)` data, filename `CueCoach-YYYY-MM-DD.json` | — |
 | Import | `.fileImporter(allowedContentTypes: [.json])` → `importBackup(_:)` | — |
@@ -103,8 +102,8 @@ with 24 pt gutters.
 | State | Treatment |
 |---|---|
 | No recognition data | Toggle OFF. The delete row is still visible but disabled at 40% with the helper "Nothing stored." This keeps the action discoverable without inviting a no-op tap. |
-| Deleting | Row glyph becomes a `ProgressView`; the row is disabled. |
-| Deleted | `.success` haptic, the glyph morphs to `checkmark` (`.contentTransition(.symbolEffect)`) for 1.5 s, then the row returns to its disabled state. The toggle flips OFF. |
+| Undo window | One tap: `.success` haptic, data leaves the store at once (in memory; a short-lived in-memory snapshot backs Undo), glyph → `checkmark`, toggle OFF, trailing "Undo" button, VoiceOver announces "Recognition data deleted, Undo available". Nothing is written until the window closes (~5 s, app backgrounded, or Settings left); then the delete is committed and is final. |
+| Deleted | After the commit the `checkmark` stays 1.5 s, then the row returns to its disabled state. Undo pressed instead: data and toggle come back, row enabled. |
 | Delete failed | `.error` haptic, an inline `danger` line under the row ("Couldn't delete. Try again."), and the row stays enabled. |
 | Exporting | The Export tile shows a spinner in place of its glyph and is disabled until the share sheet appears. |
 | Export failed / cancelled | Cancel: nothing happens. Failure: inline line under the tiles ("Export failed."). |
@@ -114,8 +113,8 @@ with 24 pt gutters.
 | No measurement yet | No auto-measured note; the 7 ft tile is selected. |
 
 ### Gestures
-Tap for everything, plus the system back swipe. No swipe actions; destructive actions always go through the
-confirmation dialog.
+Tap for everything, plus the system back swipe. No swipe actions. "Delete recognition data" is one tap with a
+timed Undo instead of a confirmation dialog (SPEC §2).
 
 ### Accessibility
 - Rule tiles: label "8-ball bar rules", "8-ball WPA", "9-ball WPA" (spoken in full even though the visible text is short).
@@ -128,8 +127,10 @@ confirmation dialog.
 ```swift
 @MainActor protocol SettingsStore: AnyObject {            // backed by PersistenceStack in the app
     var hasRecognitionData: Bool { get }
-    func deleteMyRecognitionData() throws
-    func exportBackup(includeRecognition: Bool) throws -> Data
+    func stageRecognitionDeletion() throws     // one tap: out of the store in memory, snapshot kept
+    func undoRecognitionDeletion() throws      // Undo inside the window
+    func deleteMyRecognitionData() throws      // commit: window closed / backgrounded / Settings left
+    func exportBackup() throws -> Data         // recognition is never exported (D26)
     func importBackup(_ data: Data) throws
 }
 protocol TableMeasurementSource { var measured: TableSize? { get } }   // Calibration owns the real one

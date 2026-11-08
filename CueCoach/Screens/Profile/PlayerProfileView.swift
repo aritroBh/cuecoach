@@ -501,6 +501,8 @@ private struct ProCompDetail: View {
         .padding(.horizontal, SA.gutter)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SA.bg)
+        // `.contain` keeps the radar's own identifier: without it the container's id overwrites every child's.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("profile.procomp.detail")
     }
 
