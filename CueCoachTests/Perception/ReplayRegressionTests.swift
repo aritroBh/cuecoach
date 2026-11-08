@@ -1,0 +1,31 @@
+import Foundation
+import Geometry
+import Testing
+@testable import CueCoach
+
+/// UI QA regression (LiveReplayUITests.testPlayLocksTableWithoutTapsAndShowsBallsAndAim): after the replay locks,
+/// the six demo balls must be tracked within 10 s of replay frames (15 Hz, no depth), with the app's detector.
+struct ReplayRegressionTests {
+    func confirmedAfterReplay(_ detector: any BallDetector, frames: Int = 30) async throws -> PerceptionResult {
+        let scene = SyntheticTableScene.demo()
+        let cg = try #require(scene.render())
+        let px = try #require(PixelImage(cgImage: cg))
+        let p = PerceptionPipeline(detector: detector)
+        await p.setTable(scene.frame)
+        var last: PerceptionResult?
+        for i in 1...frames { last = await p.process(PerceptionFrame(image: px, camera: scene.camera, timestamp: Double(i) / 15)) }
+        return try #require(last)
+    }
+
+    @Test func classicalReplaySeesAllSixBalls() async throws {
+        let r = try await confirmedAfterReplay(ClassicalBallDetector())
+        #expect(r.confirmed.count == 6, "confirmed \(r.confirmed.count), detections \(r.detections.count)")
+        #expect(r.aim != nil)
+    }
+
+    @Test func appDetectorReplaySeesAllSixBalls() async throws {
+        let r = try await confirmedAfterReplay(PerceptionPipeline.defaultDetector())
+        #expect(r.confirmed.count == 6, "confirmed \(r.confirmed.count), detections \(r.detections.count) \(r.detections.map { "\($0.kind)\($0.tentativeNumber ?? -1)" })")
+        #expect(r.aim != nil)
+    }
+}
