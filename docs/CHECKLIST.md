@@ -82,3 +82,15 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [ ] Two phones join one real game (mesh merged; needs app shell Join nearby)
 - [~] Table-lock virtual QA workflow: synthetic-table simulator matrix (felt colour × lighting × clutter × distance), Codex/Antigravity/OmniRoute root-cause, UI QA on 15/17 Pro Max simulators
 - [~] Table-keypoint model training (restarted) · ball detector training epoch 4/30
+
+## Round 2026-11-08 (orchestrator QA while the user is away)
+- [x] Stats merged (Codex review → Claude verify → fix → reverify APPROVE) · Training merged (same). CueCore 585 tests green
+- [x] Table-keypoint model trained: YOLO26n-pose 25 ep, synthetic test 400/400 detected, median 5.3 px (0.96% diag), Core ML 5.6 MB (wt/tablekp a223399). Real-table accuracy unmeasured
+- [~] Ball detector training resumed from checkpoint (epoch ~5/30)
+- [x] Virtual table simulator (wt/virtual-qa): 27 conditions × 20 seeds; FeltQuad 0% accurate → Auto 55% accurate, p50 1.0 s, 0 false locks (wt/autocal 44fd4ed)
+- [~] Lock: Auto + keypoint model + 2-tap+drag fallback (user) + wait-for-second-look partial (user) + Codex r5 fixes + app-shell hooks — capture worker. Gate ≥95% / <1.5 s / 0 false
+- [~] Tracker/shot detection: stress BLOCKERs A0 (≈15.8k phantom shots/h) + A3 (pockets never recorded) + A1–A8, B1–B2, C1–C3, E1, Codex M3/M6/M7 — tracker worker (wt/tracker)
+- [x] App shell approved (Codex code 6 rounds + UX 5 rounds): Home → Game/Training → New game / Join nearby → Live → badge → Review. Real phones: join + lineup sync worked; Start→mesh not yet verified
+- [~] Recognition: 30 findings real → fixed (open-set "someone else", shooter gate, tap relearning, no recognition in backups, delete beats in-flight registration); Codex re-review r2 running
+- [~] Privacy: one-tap delete + Undo; recognition in its own backup-excluded store; guest promotion drops session data — privacy worker
+- [ ] User: face model (AuraFace-v1, Apache-2.0) yes/no · clothing templates on disk vs session-only · recognition expiry · pro profiles era/game split
