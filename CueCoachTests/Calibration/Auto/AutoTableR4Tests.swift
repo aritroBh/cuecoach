@@ -37,8 +37,8 @@ struct AutoTableR4Tests {
             let v0 = railVisible(scene, m, y: 0), v1 = railVisible(scene, m, y: W)
             let corners = [scene.world(0, 0, 0), scene.world(L, 0, 0), scene.world(0, W, 0), scene.world(L, W, 0)]
             let sides = [scene.world(L / 2, -0.04, 0.03), scene.world(L / 2, W + 0.04, 0.03)]
-            // At least the two near corners out of frame (no rail corner to fit), both side pockets in.
-            if corners.filter({ !inFrame(scene, m, $0) }).count >= 2, sides.allSatisfy({ inFrame(scene, m, $0) }),
+            // No corner in frame (the corner fit can't apply), both side pockets in.
+            if corners.allSatisfy({ !inFrame(scene, m, $0) }), sides.allSatisfy({ inFrame(scene, m, $0) }),
                min(v0, v1) >= 0.62, max(v0, v1) <= 0.85 { return (m, min(v0, v1)) }
         } }
         return nil
@@ -75,31 +75,50 @@ struct AutoTableR4Tests {
         print("[autocal] steep \(size) (\(Int(vis * 100)) % of the length in view): \(run.estimate.state), rejections \(Set(run.perFrame.compactMap(\.frame.rejection)))")
         let pose = try #require(run.estimate.pose)
         #expect(run.estimate.state == .locked)
+        #expect(run.perFrame.contains { $0.frame.partialAnchor == "sidePockets" }, "the side-pocket fit never ran")
+        #expect(!run.perFrame.contains { $0.frame.partialAnchor == "corner" })
         #expect(pose.snappedSize == size)
         // The visible-length estimate the second-look rule uses is honest: close to the truth, never above it.
         let W = scene.spec.width
         let truth = max(Self.railVisible(scene, cam, y: 0), Self.railVisible(scene, cam, y: W))
-        for v in run.perFrame.compactMap(\.frame.visibleLengthFraction) {
+        let fractions = run.perFrame.compactMap(\.frame.visibleLengthFraction)
+        #expect(!fractions.isEmpty)
+        for v in fractions {
             #expect(v <= truth + 0.03, "visible \(v) > true \(truth)")
             #expect(v >= truth - 0.08, "visible \(v) ≪ true \(truth)")
         }
         #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.02)
     }
 
-    @Test func steepViewWithMostOfTheLengthHiddenDoesNotLock() throws {
-        // Same fit, but < 60 % of the length in view and a static camera: the second-look rule holds it back.
-        let scene = AutoSyntheticScene()
-        var cam: simd_double4x4?
-        for elevation in [65.0, 75, 85, 89] { for closer in stride(from: 0.3, through: 3.5, by: 0.05) where cam == nil {
-            let m = Self.closeCamera(scene, elevation: elevation, closer: closer)
-            let W = scene.spec.width, L = scene.spec.length
-            if max(Self.railVisible(scene, m, y: 0), Self.railVisible(scene, m, y: W)) < 0.55,
-               Self.inFrame(scene, m, scene.world(L / 2, -0.04, 0.03)), Self.inFrame(scene, m, scene.world(L / 2, W + 0.04, 0.03)) {
-                cam = m
-            }
-        } }
-        let c = try #require(cam)
-        let run = Self.run(scene, c, frames: 16)
-        #expect(run.estimate.state != .locked)
+    /// The second-look rule at its boundary: one static view of a partial fit locks at ≥ 60 % of the length
+    /// seen and never below it (the steep-view fit feeds fusion exactly these measurements).
+    @Test(arguments: [(0.58, false), (0.62, true)])
+    func staticPartialViewLocksOnlyFromSixtyPercent(visible: Double, locks: Bool) {
+        var f = AutoTableFusion()
+        for i in 0..<30 {
+            var m = AutoTableMeasurement(center: SIMD3(0.001 * Double(i % 3), 0.79, 0), axis: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0),
+                                         measuredLength: TableSize.nineFoot.playingLength,
+                                         measuredWidth: TableSize.nineFoot.playingLength / 2, snapped: .nineFoot,
+                                         cameraPosition: SIMD3(0, 2.2, -0.6))
+            m.visibleLengthFraction = visible
+            f.add(m)
+        }
+        #expect(f.locked == locks, "visible \(visible)")
+    }
+}
+
+/// Dark marks that are not pockets must not anchor the table along its length (Codex r4).
+struct AutoTableFakeSidePocketTests {
+    @Test func darkBallsOnTheClothBesideBothRailsAreNotSidePockets() throws {
+        var scene = AutoSyntheticScene()
+        let L = scene.spec.length, W = scene.spec.width
+        // Two black discs on the cloth hugging both cushions, 60 cm off the true middle (aligned across).
+        scene.balls = []
+        scene.occluders = [(L / 2 + 0.55, L / 2 + 0.66, 0.0, 0.05, 0.0, 0.004), (L / 2 + 0.55, L / 2 + 0.66, W - 0.05, W, 0.0, 0.004)]
+        let (cam, _) = try #require(AutoTableR4Tests.steepView(scene))
+        let run = AutoTableR4Tests.run(scene, cam, frames: 16)
+        if let pose = run.estimate.pose, run.estimate.state == .locked {
+            #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.05, "locked on a fake pocket")
+        }
     }
 }

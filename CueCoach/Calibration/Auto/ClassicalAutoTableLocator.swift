@@ -755,6 +755,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             guard let best = hyps.first, best.iou >= 0.75 else { diag.rejection = "partial: mask disagrees"; return nil }
             if hyps.count > 1, hyps[1].iou > best.iou - 0.05 { diag.rejection = "partial: ambiguous size"; return nil }
             chosen = (best.rect, best.size)
+            diag.partialAnchor = "corner"
         } else {
             // No corner in view (steep, close: VirtualTable elev-45/60): both long rails and a side pocket on each.
             guard let sp = sidePocketFit(rails: rails, image: img, camera: camera, plane: plane, profile: prof,
@@ -852,6 +853,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         func mouths(_ k: Int, _ line: AutoLine) -> (runs: [Double], tMin: Double, tMax: Double) {
             let pts = rails[k].lifted
             let foot = line.n * -line.c
+            let out = rails[k].outward
             let ts = pts.map { simd_dot($0 - foot, u) }
             let t0 = (ts.min() ?? 0) - 0.3, t1 = (ts.max() ?? 0) + 0.3
             var runs: [Double] = []
@@ -871,7 +873,18 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                         }
                     }
                     if isDark { if start == nil { start = t } } else {
-                        if let s0 = start, inside, (0.06...0.22).contains(t - s0) { runs.append((s0 + t - 0.01) / 2) }
+                        if let s0 = start, inside, (0.06...0.22).contains(t - s0) {
+                            // A pocket mouth is a hole cut into the rail: dark 3 cm outward of the felt line too
+                            // (a ball or a mark on the cloth is inside the cushion; the rail cap beside it is wood).
+                            let tc = (s0 + t - 0.01) / 2
+                            if let q = camera.project(plane.to3D(foot + u * tc + out * 0.03, height: prof.railTopHeight)) {
+                                let x = Int(q.x.rounded()), y = Int(q.y.rounded())
+                                if x > 1, y > 1, x < img.width - 2, y < img.height - 2 {
+                                    let (r, g, b) = autoBox3(px, img.width, img.height, x, y)
+                                    if (r + g + b) / 3 < dark { runs.append(tc) }
+                                }
+                            }
+                        }
                         start = nil   // a run cut by the frame edge is not a mouth
                     }
                 }
@@ -893,6 +906,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         for t in ri + rj where abs(t - tSide) > 0.06 && abs(abs(t - tSide) - L / 2) > 0.08 {
             _ = t; diag.rejection = "partial: stray pocket"; return nil
         }
+        diag.partialAnchor = "sidePockets"
         // 3. Centre: midway between the felt lines, at the side pockets.
         let pI = footI + u * tSide
         let across = (footJ + u * (tSide - offJ)) - pI
