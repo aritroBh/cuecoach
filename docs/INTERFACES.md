@@ -243,7 +243,9 @@ enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShap
 - **Planes**: an ARKit anchor is an infinite plane at its height (no extent test); without one, Auto takes a
   provisional LiDAR plane. A level > 1.4 m below the camera is the floor, never the table.
 - **History** expires after a > 1 s timestamp gap or 5 consecutive rejections.
-- **Keypoints**: `TableKeypointModel.provider()` → `TableKeypointProvider` (nil until the tablekp .mlpackage ships).
+- **Keypoints**: `TableKeypointModel.provider()` → `TableKeypointProvider` (tablekp .mlpackage, ANE). Paced at ≤ 10 Hz of
+  *frame* time by `MouthCountingProvider.beginFrame(timestamp:)` (not wall clock), so replays and the VirtualTable
+  harness see the phone's cadence.
 - **Live screen (D24)**: `LiveScreen(mode: LiveMode, drill: DrillID?, hooks: LiveHooks, onClose: (() -> Void)?)`
   with `.game` | `.training(level: Int)`; visibility per `OverlayVisibility.of(mode)`.
   `LiveHooks` (closures, all `@MainActor`) is how Live drives the shell's `LiveSession`:
@@ -252,7 +254,8 @@ enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShap
   the moment the next aim starts or any ball moves). Ratings: `RuleRating` (RulesEngine; any foul ≤ Mistake,
   a game-losing foul = Blunder) until a live ShotEngine evaluation is wired.
 - **Measured size**: on lock Live writes `UserDefaults "cc.table.measured"` (TableSize raw value).
-- **Lock safety**: a lock needs pocket evidence (≥ 2 keypoint mouths or ≥ 4 dark fitted mouths, 3 frames) and a
+- **Lock safety**: a lock needs pocket evidence (≥ 2 keypoint mouths or ≥ 4 dark fitted mouths, 3 frames, all on the
+  surface being locked: a candidate pose > 0.3 m from the one the evidence was seen on starts the count over) and a
   measured length that isn't ambiguous between two presets; keypoints come from `CoreMLTableKeypointProvider`
   (tablekp YOLO26n-pose, ANE, ≤ 10 Hz).
 - **Manual fallback**: tap the 2 nearest corner pockets (any order) → `TwoTapTable` fills the table from the plane +
@@ -296,3 +299,29 @@ Measured table size: Live writes `UserDefaults "cc.table.measured"` (TableSize r
 `@MainActor protocol RecognitionGallery: AnyObject { func recognitionDidChange(_: RecognitionChange) }`,
 `RecognitionChange = .purgedAll | .purged(Set<UUID>) | .restored(Set<UUID>)`. Identity's in-memory galleries
 (`IdentitySession` face/appearance) register so a delete, purge or promotion clears them synchronously.
+
+## Integration wiring (wt/integration, 2026-11-08)
+```swift
+protocol BallDetector { … func detect(in:geometry:feltReference:timestamp:) -> [BallDetection] }   // pipeline passes frame time
+final class HybridBallDetector: BallDetector   // shipped: trained YOLO26n (BallDetector.mlpackage) when due (≤ 30 Hz of frame
+                                               // time), classical v0 otherwise; UserDefaults "cc.detector.classical" forces classical
+enum BallDetectorOutput { decode(confidence:columns:coordinates:count:letterbox:minConfidence:)   // only columns 0..<16
+                          kind(forClass:) /* 0 cue, 8 eight, 1–7 solid, 9–15 stripe */; detections(_:image:geometry:) }
+static func PerceptionPipeline.defaultDetector() -> any BallDetector   // the app's call sites; init default stays classical
+struct TrackedBall { … var numberShare: Double }                       // share of number votes held by tentativeNumber
+struct ShotRecord { … var pocketTimes: [Int: Double] }                 // → RuleRating pocket order
+struct ShotIdentities                                                  // track → rule ids held across a shot
+struct LiveHooks { … var gameAdvanced: @MainActor (GameState) -> Void } // rules state after each settled shot
+func LiveModel.perceptionReset()                                       // closes an open aim/shot for the shell
+static func TargetLegality.startingGame(_ ruleSet:teams:)              // post-break start (8-ball .open, 9-ball .inPlay)
+GameSessionModel.rules: (RulesEngine, GameState)   // injected via LiveHooks.currentGame (shooter = chrome's turn)
+static func IdentitySession.registered(on: PersistenceStack, players:guests:faceModelID:bodyModelID:) -> IdentitySession
+extension IdentitySession: RecognitionGallery      // purgedAll / purged(ids) revoke; restored(ids) reloads from the store
+struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backup-excluded recognition store; delete fences
+```
+- D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
+  balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
+  addressing the cue ball (wrists) also opens the aim for the shell.
+- `PersistenceStack.recognition(for:)` never returns a row opted in at/before the profile's revocation tombstone.
+- No text in Live/Perception/Calibration: standalone Live shows `PostShotRatingBadge` (Screens/PostShot); `BadgeStyle` is
+  `RatingBadgeStyle`.
