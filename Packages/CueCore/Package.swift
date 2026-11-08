@@ -13,7 +13,7 @@ let package = Package(
         .target(name: "Rules", dependencies: ["Geometry"]),
         .target(name: "Engine", dependencies: ["Geometry", "Physics", "Rules"]),
         .target(name: "Stats", dependencies: ["Geometry", "Rules"]),
-        .target(name: "Training", dependencies: ["Geometry", "Physics"]),
+        .target(name: "Training", dependencies: ["Geometry"]),
         .testTarget(name: "GeometryTests", dependencies: ["Geometry"]),
         .testTarget(name: "PhysicsTests", dependencies: ["Physics"], resources: [.copy("Fixtures")]),
         .testTarget(name: "RulesTests", dependencies: ["Rules"]),
