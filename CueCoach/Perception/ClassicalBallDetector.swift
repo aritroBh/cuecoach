@@ -132,15 +132,17 @@ struct ClassicalBallDetector: BallDetector {
             if (cls.kind == .eight || cls.kind == .unknown) && pocketDist < 0.11 { continue }
             accepted.append((cx, cy, r))
             let conf = min(1, max(0, (fill - 0.6) / 0.4)) * (cls.kind == .unknown ? 0.6 : 1)
+            let cueScore = cls.kind == .cue ? Self.cueEvidence(img, cx: cx, cy: cy, r: 0.8 * r, gains: gains, whiteV: max(0.15, feltHSV.v * 1.25)) : 0
             out.append(BallDetection(imagePoint: Vec2(sx, sy), tablePoint: t, radiusPx: r * img.scale,
-                                     confidence: conf, kind: cls.kind, tentativeNumber: cls.number))
+                                     confidence: conf, kind: cls.kind, tentativeNumber: cls.number, cueScore: cueScore))
             if out.count >= 24 { break }
         }
         return out
     }
 
     /// Classify a ball found by another cue (LiDAR) at a source-image point: felt reference from a ring around it.
-    static func classify(_ img: PixelImage, sourcePoint p: Vec2, radiusPx: Double) -> (kind: BallKind, number: Int?) {
+    static func classify(_ img: PixelImage, sourcePoint p: Vec2, radiusPx: Double,
+                         feltReference: RGB8? = nil) -> (kind: BallKind, number: Int?) {
         let (cx, cy) = img.toWorking(p.x, p.y)
         let r = radiusPx / img.scale
         var hs: [(UInt8, UInt8, UInt8)] = []
@@ -153,8 +155,12 @@ struct ClassicalBallDetector: BallDetector {
         }
         guard !hs.isEmpty, cx >= 0, cy >= 0, cx < Double(img.width), cy < Double(img.height) else { return (.unknown, nil) }
         func med(_ f: ((UInt8, UInt8, UInt8)) -> UInt8) -> UInt8 { hs.map(f).sorted()[hs.count / 2] }
-        let felt = ColorMath.hsv(med { $0.0 }, med { $0.1 }, med { $0.2 })
-        return ClassicalBallDetector().classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: felt)
+        // White balance against the lock-time cloth, from this ball's own ring of cloth.
+        let ring = (med { $0.0 }, med { $0.1 }, med { $0.2 })
+        let gains = whiteBalance(felt: ring, reference: feltReference)
+        let fb = apply(gains, ring)
+        let felt = ColorMath.hsv(fb.0, fb.1, fb.2)
+        return ClassicalBallDetector().classify(img, cx: cx, cy: cy, r: 0.8 * r, feltHSV: felt, gains: gains)
     }
 
     /// A lit sphere shows a brightness spread (highlight + shadowed lower part); a flat mark doesn't.
@@ -176,6 +182,33 @@ struct ClassicalBallDetector: BallDetector {
         // Spread relative to brightness (18 levels at a full-brightness white ball): a dimmer scales shading down.
         let hi = Double(vs[vs.count * 9 / 10])
         return hi - Double(vs[vs.count / 4]) >= max(6, minSpread * hi / 240)
+    }
+
+    /// 0…1 evidence that a white blob is the cue ball: the white share of the disc (after white balance) times
+    /// a lit-sphere term (highlight-to-shadow spread). A flat white mark scores ~0.4, a real cue ball ~0.8-1.
+    static func cueEvidence(_ img: PixelImage, cx: Double, cy: Double, r: Double, gains: (Double, Double, Double),
+                            whiteV: Double) -> Double {
+        let ri = Int(r.rounded(.up)), r2 = r * r
+        let ix = Int(cx.rounded()), iy = Int(cy.rounded())
+        var white = 0.0, all = 0.0
+        var vs: [Double] = []
+        for y in max(0, iy - ri)...min(img.height - 1, iy + ri) {
+            for x in max(0, ix - ri)...min(img.width - 1, ix + ri) {
+                let dx = Double(x) - cx, dy = Double(y) - cy
+                guard dx * dx + dy * dy <= r2 else { continue }
+                let q = apply(gains, img.pixel(x, y))
+                let c = ColorMath.hsv(q.0, q.1, q.2)
+                all += 1
+                vs.append(c.v)
+                if c.s < 0.3 && c.v > whiteV { white += 1 }
+            }
+        }
+        guard all >= 6 else { return 0 }
+        vs.sort()
+        let hi = vs[vs.count * 9 / 10], lo = vs[vs.count / 4]
+        let shade = min(1, max(0, (hi - lo) / max(0.05, hi) / 0.15))
+        let fw = white / all
+        return min(1, max(0, (fw - 0.5) / 0.4)) * (0.4 + 0.6 * shade)
     }
 
     // MARK: - Helpers
