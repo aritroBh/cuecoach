@@ -189,9 +189,8 @@ private func near(_ a: CGPoint, _ b: CGPoint, _ tol: Double = 1e-6) -> Bool {
 
     @MainActor @Test func benchmarkHoldsOnlyRAMAndForgetsOnWithdrawAndEnd() {
         let bench = FaceBenchmarkSession(modelID: "m")
-        let ok = FaceBenchConsent(agreedAt: .now)
-        let s1 = bench.addSubject([Synth.axis(1, model: "m"), Synth.axis(1, model: "m")], consent: ok)!
-        _ = bench.addSubject([Synth.axis(2, model: "m"), Synth.axis(2, model: "wrong.model")], consent: ok)
+        let s1 = bench.addSubject([Synth.axis(1, model: "m"), Synth.axis(1, model: "m")], consent: FaceBenchConsentFlow.grant())!
+        _ = bench.addSubject([Synth.axis(2, model: "m"), Synth.axis(2, model: "wrong.model")], consent: FaceBenchConsentFlow.grant())
         #expect(bench.subjectCount == 2 && bench.embeddingCount == 3)   // other models are never mixed in
         bench.withdraw(s1)
         #expect(bench.subjectCount == 1)
@@ -238,7 +237,7 @@ func brightCentroid(_ img: CGImage) -> CGPoint? {
 extension FaceShipGateRecord {
     /// Test-only passing record (never in the app target).
     static func testPass(modelID: String) -> FaceShipGateRecord {
-        FaceShipGateRecord(modelID: modelID, threshold: 0.4, tar: 0.95, tarLower95: 0.93, far: 1e-3, farObserved: 0, fpir: 0, fpirUpper95: 0.01,
+        FaceShipGateRecord(modelID: modelID, threshold: 0.4, tar: 0.95, tarLower95: 0.93, far: 1e-3, farObserved: 0, farUpper95: 5e-4, fpir: 0, fpirUpper95: 0.01,
                            misidentifications: 0, misidentificationUpper95: 0.01, coverage: 0.95, folds: 3,
                            calibrationSubjects: 10, reportSubjects: 10, subjectCount: 20, passedAt: Date(timeIntervalSince1970: 0))
     }
