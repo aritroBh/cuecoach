@@ -36,7 +36,9 @@ struct CaptureR8SegmenterTests {
         }
         let r = try #require(rec)
         #expect(r.pocketed[2] == .footRight)
-        #expect(r.pocketTimes[2] == dropT)
+        // tracker-r2 estimates the drop between the last sighting and the first frame it was gone.
+        let drop = try #require(r.pocketTimes[2])
+        #expect(drop >= dropT - 1.0 / 30 - 1e-9 && drop <= dropT + 1e-9)
     }
 }
 
@@ -102,6 +104,17 @@ struct CaptureR8LiveTests {
         #expect(log.events == ["start", "cancel"])
         m.perceptionReset()   // idle: nothing more
         #expect(log.events == ["start", "cancel"])
+    }
+
+    /// Lead: the record's pocket times give Rules the observed order (and a tie stays unknown).
+    @Test func pocketTimesBecomeThePocketOrder() {
+        var rec = ShotRecord(start: 0, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [],
+                             pocketed: [2: .footLeft, 3: .footRight])
+        let ids: [Int: BallID] = [1: .cue, 2: BallID(3)!, 3: BallID(11)!]
+        rec.pocketTimes = [2: 1.5, 3: 1.0]
+        #expect(RuleRating.outcome(rec, ids: ids, pocketTimes: rec.pocketTimes).pocketOrder == [BallID(11)!, BallID(3)!])
+        rec.pocketTimes = [2: 1.0, 3: 1.0]
+        #expect(RuleRating.outcome(rec, ids: ids, pocketTimes: rec.pocketTimes).pocketOrder.isEmpty)
     }
 
     /// MAJOR: Live passes the observed pocket times to Rules.

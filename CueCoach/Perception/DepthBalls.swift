@@ -119,12 +119,12 @@ extension DepthFusion {
 /// classified from the image at that spot (colour may still say "unknown").
 enum DepthFusion {
     static func merge(_ dets: [BallDetection], depthBalls: [Vec2], image: PixelImage, geometry: FrameGeometry,
-                      radius: Double = 0.04) -> [BallDetection] {
+                      radius: Double = 0.04, feltReference: (UInt8, UInt8, UInt8)? = nil) -> [BallDetection] {
         var out = dets
         for b in depthBalls where !dets.contains(where: { $0.tablePoint.distance(to: b) < radius }) {
             guard let px = geometry.ball.apply(b) else { continue }
             let rpx = TableSpec.ballRadius * geometry.ball.maxScale(at: b)
-            let cls = ClassicalBallDetector.classify(image, sourcePoint: px, radiusPx: rpx)
+            let cls = ClassicalBallDetector.classify(image, sourcePoint: px, radiusPx: rpx, feltReference: feltReference)
             out.append(BallDetection(imagePoint: px, tablePoint: b, radiusPx: rpx, confidence: 0.55,
                                      kind: cls.kind, tentativeNumber: cls.number))
         }

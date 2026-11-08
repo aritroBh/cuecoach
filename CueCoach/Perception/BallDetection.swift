@@ -17,6 +17,9 @@ struct BallDetection: Sendable, Equatable {
     var kind: BallKind
     /// Best-effort number guess (1–15) from hue + stripe; nil when unsure.
     var tentativeNumber: Int?
+    /// 0…1: the detector's evidence that this is the cue ball (whiteness × sphere shading for the classical
+    /// detector; the cue-class score for a trained one). nil = no opinion (non-cue classes, depth-only balls).
+    var cueScore: Double? = nil
 }
 
 /// Swappable detector: `HybridBallDetector` (trained Core ML model + classical fallback) ships; the classical v0

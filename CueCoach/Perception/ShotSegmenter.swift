@@ -16,14 +16,17 @@ struct ShotRecord: Sendable, Equatable {
     var pocketed: [Int: Pocket]
     /// Balls that vanished away from any pocket and never came back before the hard cap.
     var missing: Set<Int> = []
-    /// When each pocketed ball was last seen heading in (for the Rules pocket order; ties = unknown).
+    /// Balls last seen rolling slowly into a pocket's jaws that may still be hanging there (the detector can't
+    /// see inside the jaws): neither pocketed nor missing.
+    var uncertainPockets: [Int: Pocket] = [:]
+    /// Estimated drop time of each pocketed ball (s, same clock as start/end), for the pocketing order.
     var pocketTimes: [Int: Double] = [:]
 
     static func == (a: ShotRecord, b: ShotRecord) -> Bool {
         a.start == b.start && a.end == b.end && a.preState == b.preState && a.finalState == b.finalState
             && a.cueID == b.cueID && a.firstContact == b.firstContact && a.pocketed == b.pocketed
             && a.rails.map(\.id) == b.rails.map(\.id) && a.rails.map(\.rail) == b.rails.map(\.rail)
-            && a.missing == b.missing
+            && a.missing == b.missing && a.uncertainPockets == b.uncertainPockets && a.pocketTimes == b.pocketTimes
     }
 }
 
@@ -70,6 +73,15 @@ struct ShotSegmenter: ShotSegmenting {
     var maxDepartTime = 0.15
     /// m: a confirmed-pocketed id seen again farther than this from its pocket is another object, not the ball.
     var pocketReturnRadius = 0.15
+    /// s a confirmed-pocketed ball must stay in view near its pocket before it is un-pocketed (a reflection or a
+    /// false positive in the jaws flickers; a ball that was only hidden stays).
+    var pocketReturnHold = 0.5
+    /// m/s²: rolling deceleration (CueCore Physics: μ_roll 0.01 × g).
+    var rollingDecel = 0.01 * 9.81
+    /// s a ball lost slowly in a pocket's jaws is waited for before it is recorded as uncertain.
+    var jawsSettle = 1.0
+    /// m: a ball this close to a pocket centre when lost at crawling speed may be hanging in the jaws.
+    var jawsRadius = 0.10
     static let maxRails = 64
     /// Per-shot bookkeeping for balls that are neither pre-shot nor still around is dropped after this.
     var forgetAfter = 2.0
@@ -86,7 +98,11 @@ struct ShotSegmenter: ShotSegmenting {
     private var lastVel: [Int: Vec2] = [:]
     private var moved: Set<Int> = []
     private var vanishedAt: [Int: Double] = [:]
-    private var pendingPocket: [Int: (pocket: Pocket, t: Double)] = [:]
+    private var pendingPocket: [Int: (pocket: Pocket, t: Double, certain: Bool, drop: Double)] = [:]
+    /// Last few measured positions per id (speed from positions, not the filter).
+    private var hist: [Int: [(p: Vec2, t: Double)]] = [:]
+    /// When a confirmed-pocketed id started being seen again near its pocket.
+    private var returnSince: [Int: Double] = [:]
     private var sawUnrest = false
 
     init(spec: TableSpec) { self.spec = spec }
@@ -121,7 +137,7 @@ struct ShotSegmenter: ShotSegmenting {
             fastFrames = 0; farFrames = 0; leftAt = nil; farAt = nil
             record = ShotRecord(start: start, end: start, preState: lastRest, finalState: [:], cueID: cueID, firstContact: nil,
                                 rails: [], pocketed: [:])
-            lastSeen = [:]; lastVel = [:]; moved = []; vanishedAt = [:]; pendingPocket = [:]
+            lastSeen = [:]; lastVel = [:]; moved = []; vanishedAt = [:]; pendingPocket = [:]; hist = [:]; returnSince = [:]
             sawUnrest = !atRest
         }
         guard var rec = record else { return nil }
@@ -130,11 +146,17 @@ struct ShotSegmenter: ShotSegmenting {
         // Visible = confirmed and measured this frame; coasting predictions are never evidence.
         // A confirmed-pocketed id that turns up far from its pocket is an impostor (another ball or a false
         // positive that inherited the id): ignored for this shot. Near the pocket it was in the jaws: un-pocket.
-        let visible = confirmed.filter { b in
-            guard b.measured else { return false }
-            if let pk = rec.pocketed[b.id] { return b.measuredPosition.distance(to: spec.pocketCenter(pk)) <= pocketReturnRadius }
-            return true
+        // A confirmed-pocketed id seen again counts only after it has stayed in view near its pocket (it was in the
+        // jaws, hidden) for `pocketReturnHold`; farther away, or flickering, it is an impostor: ignored this shot.
+        var visible: [TrackedBall] = []
+        for b in confirmed where b.measured {
+            guard let pk = rec.pocketed[b.id] else { visible.append(b); continue }
+            guard b.measuredPosition.distance(to: spec.pocketCenter(pk)) <= pocketReturnRadius else { returnSince[b.id] = nil; continue }
+            let since = returnSince[b.id] ?? t
+            returnSince[b.id] = since
+            if t - since >= pocketReturnHold { visible.append(b) }
         }
+        for id in returnSince.keys where !confirmed.contains(where: { $0.id == id && $0.measured }) { returnSince[id] = nil }
         let byID = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // First contact: an object ball near the cue ball starts moving.
         if rec.firstContact == nil, let cue = byID[rec.cueID] {
@@ -162,28 +184,40 @@ struct ShotSegmenter: ShotSegmenting {
             }
             lastVel[b.id] = b.velocity
             lastSeen[b.id] = (p, t)
+            hist[b.id, default: []].append((p, t))
+            if hist[b.id]!.count > 4 { hist[b.id]!.removeFirst() }
             if b.speed > movingSpeed { moved.insert(b.id) }
             vanishedAt[b.id] = nil
             // Came back: it was not pocketed after all (a hand over the corner, one missed frame).
             pendingPocket[b.id] = nil
             rec.pocketed[b.id] = nil
             rec.pocketTimes[b.id] = nil
+            rec.uncertainPockets[b.id] = nil
+            returnSince[b.id] = nil
         }
         // Gone: a ball whose last measured path runs into a pocket mouth is a pocket candidate, confirmed once
         // it stays gone; any other absence (pre-shot balls never seen this shot included) is a vanish.
         let watched = Set(rec.preState.keys).union(lastSeen.keys)
         let alive = Set(tracks.map(\.id))   // includes coasting tracks the tracker hasn't given up on
         for id in watched where byID[id] == nil {
-            if rec.pocketed[id] != nil { continue }
+            if rec.pocketed[id] != nil || rec.uncertainPockets[id] != nil { continue }
             if let pend = pendingPocket[id] {
-                if t - pend.t >= pocketConfirm || !alive.contains(id) {
-                    rec.pocketed[id] = pend.pocket; rec.pocketTimes[id] = pend.t; pendingPocket[id] = nil
+                if pend.certain {
+                    if t - pend.t >= pocketConfirm || !alive.contains(id) {
+                        rec.pocketed[id] = pend.pocket; rec.pocketTimes[id] = pend.drop; pendingPocket[id] = nil
+                    }
+                } else if t - pend.t >= jawsSettle {
+                    // Stayed gone through the settle window, but it was too slow to be sure it dropped.
+                    rec.uncertainPockets[id] = pend.pocket; pendingPocket[id] = nil
                 }
                 continue
             }
             if vanishedAt[id] == nil {
-                if let seen = lastSeen[id], let pk = pocketEntered(from: seen.pos, velocity: lastVel[id] ?? .zero) {
-                    if alive.contains(id) { pendingPocket[id] = (pk, t) } else { rec.pocketed[id] = pk; rec.pocketTimes[id] = t }
+                if let seen = lastSeen[id], let verdict = pocketVerdict(id, from: seen.pos, at: seen.t) {
+                    pendingPocket[id] = (verdict.pocket, t, verdict.certain, verdict.drop)
+                    if verdict.certain && !alive.contains(id) {
+                        rec.pocketed[id] = verdict.pocket; rec.pocketTimes[id] = verdict.drop; pendingPocket[id] = nil
+                    }
                 } else {
                     vanishedAt[id] = lastSeen[id] == nil ? rec.start : t
                 }
@@ -191,13 +225,13 @@ struct ShotSegmenter: ShotSegmenting {
         }
         // E1: forget short-lived tracks (false positives) that are neither pre-shot balls nor still around.
         for (id, seen) in lastSeen where rec.preState[id] == nil && byID[id] == nil && t - seen.t > forgetAfter {
-            lastSeen[id] = nil; lastVel[id] = nil; vanishedAt[id] = nil; moved.remove(id); pendingPocket[id] = nil
+            lastSeen[id] = nil; lastVel[id] = nil; vanishedAt[id] = nil; moved.remove(id); pendingPocket[id] = nil; hist[id] = nil
         }
         record = rec
         // The tracker's at-rest only covers balls it still sees. A pre-shot ball (or one that moved) that is
         // gone blocks the end until it is back, pocketed, or the timeout passes.
         let mustAccount = Set(rec.preState.keys).union(moved)
-        let gone = mustAccount.filter { byID[$0] == nil && rec.pocketed[$0] == nil }
+        let gone = mustAccount.filter { byID[$0] == nil && rec.pocketed[$0] == nil && rec.uncertainPockets[$0] == nil }
         let unresolved = gone.contains { id in
             if pendingPocket[id] != nil { return true }
             return t - (vanishedAt[id] ?? t) < vanishTimeout
@@ -210,8 +244,31 @@ struct ShotSegmenter: ShotSegmenting {
         record = nil
         lastRest = rec.finalState
         lastRestT = t
-        lastSeen = [:]; lastVel = [:]; moved = []; vanishedAt = [:]; pendingPocket = [:]
+        lastSeen = [:]; lastVel = [:]; moved = []; vanishedAt = [:]; pendingPocket = [:]; hist = [:]; returnSince = [:]
         return rec
+    }
+
+    /// Pocket verdict for a ball that just went out of view: heading through a mouth fast enough to roll past
+    /// the pocket centre = certain (with an estimated drop time); too slow to get there, or crawling within
+    /// `jawsRadius` of a pocket, = may be hanging in the jaws (uncertain).
+    func pocketVerdict(_ id: Int, from p: Vec2, at seenT: Double) -> (pocket: Pocket, certain: Bool, drop: Double)? {
+        let v = lastVel[id] ?? .zero
+        var speed = v.length
+        if let h = hist[id], h.count >= 2, let a = h.first, let b = h.last, b.t > a.t {
+            speed = min(speed, b.p.distance(to: a.p) / (b.t - a.t))   // positions, not filter lag
+        }
+        if let pk = pocketEntered(from: p, velocity: v) {
+            let along = max(0, (spec.pocketCenter(pk) - p).dot(v.normalized))
+            let rolls = speed * speed / (2 * rollingDecel)
+            let certain = rolls >= along + 0.03
+            return (pk, certain, seenT + (speed > 0 ? along / speed : 0))
+        }
+        // Crawling into the jaws (not rolling away from the pocket: a nudge out, then an arm over it, is a vanish).
+        if let pk = spec.pockets.first(where: { p.distance(to: spec.pocketCenter($0)) < jawsRadius }), speed <= pocketEntrySpeed,
+           v.dot(spec.pocketCenter(pk) - p) >= 0 {
+            return (pk, false, seenT)
+        }
+        return nil
     }
 
     /// The pocket whose mouth the ball's last measured path runs into (segment from the last measurement along
