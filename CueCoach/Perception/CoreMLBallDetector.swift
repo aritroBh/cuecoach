@@ -100,6 +100,7 @@ final class CoreMLBallInference: BallInference, @unchecked Sendable {
     var lastInferenceMs: Double { state.withLock { $0 } }
 
     func infer(_ image: PixelImage) -> [BallDetectorOutput.Raw]? {
+        guard image.width >= 8, image.height >= 8, image.rgb.count == image.width * image.height * 3 else { return nil }
         let lb = AutoTableKeypointModel.Letterbox(imageWidth: Double(image.width), imageHeight: Double(image.height),
                                                   inputSize: BallDetectorOutput.inputSize)
         guard let pb = CoreMLTableKeypointProvider.letterboxed(AutoRGBImage(width: image.width, height: image.height,

@@ -44,8 +44,9 @@ enum LockGate {
         let app = results.filter { $0.locator == .app }
         guard !app.isEmpty else { return }
         for (cond, runs) in Dictionary(grouping: app, by: \.condition) {
-            let falseLocks = runs.filter(\.falseLock).count
-            #expect(falseLocks == 0, "\(cond): \(falseLocks) false lock(s) — must be 0")
+            // A lock at the wrong size preset is false too, even under the 20 cm corner cut-off (Codex autocal-r4).
+            let falseLocks = runs.filter { $0.falseLock || ($0.locked && $0.sizeOK == false) }.count
+            #expect(falseLocks == 0, "\(cond): \(falseLocks) false lock(s) (pose or size) — must be 0")
             guard inScope.contains(cond) else { continue }
             let floor = floors[cond] ?? defaultFloor
             let acc = Double(runs.filter(\.accurate).count) / Double(runs.count) * 100

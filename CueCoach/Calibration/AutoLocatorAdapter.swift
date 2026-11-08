@@ -21,6 +21,8 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         var lastFailure: LockFailure?
         /// Pocket evidence seen since the last reset (keypoint mouths, or dark mouths at the fitted pockets).
         var pocketEvidence = 0
+        /// Centre of the pose the evidence belongs to: a pose elsewhere (another surface) starts the count over.
+        var evidenceAnchor: SIMD3<Double>?
         var lastVisibleFraction: Double?
         var lastAuto: AutoTableEstimate?
     }
@@ -30,6 +32,9 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
 
     /// A lock needs this many frames with pocket evidence (Codex r5: a table-sized green rug must not lock).
     var minPocketEvidenceFrames = 3
+    /// m: a candidate pose whose centre is this far from the one the evidence was gathered on is another surface
+    /// (Codex autocal-r4: evidence from a real table must not authorise a lock after panning to a rug).
+    var evidenceAnchorRadius = 0.3
 
     private let keypoints: (any TableKeypointProvider)?
 
@@ -63,7 +68,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             guard let t = s.lastT else { return false }
             return f.timestamp - t > expireAfterGap
         }
-        if gap { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0 } }
+        if gap { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0; $0.evidenceAnchor = nil } }
 
         // Plane hint: an ARKit anchor (infinite plane at its height) or nothing — Auto then takes a provisional
         // plane from LiDAR. Either way the floor (> 1.4 m under the camera) is never the table.
@@ -86,6 +91,11 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         let e = auto.process(frame)
         state.withLock { s in
             s.lastAuto = e
+            if let p = e.pose, !p.corners.isEmpty {
+                let c = p.corners.reduce(SIMD3<Double>(), +) / Double(p.corners.count)
+                if let a = s.evidenceAnchor, simd_distance(a, c) > evidenceAnchorRadius { s.pocketEvidence = 0 }
+                s.evidenceAnchor = c
+            }
             if Self.hasPocketEvidence(e.frame, mouthKeypoints: mouthCounter?.lastMouths ?? 0) { s.pocketEvidence += 1 }
             s.lastVisibleFraction = e.frame.visibleLengthFraction
         }
@@ -138,7 +148,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
                 s.lastFailure = why
                 return s.consecutiveFailures >= expireAfterFailures
             }
-            if expire { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0 } }
+            if expire { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0; $0.evidenceAnchor = nil } }
             return failing(why, seed: ghost(f, plane: plane))
         }
     }

@@ -121,6 +121,14 @@ struct CoreMLBallDetectorTests {
         #expect(CoreMLBallInference.shared != nil, "BallDetector.mlpackage missing from the bundle")
     }
 
+    /// Stress: an empty or tiny frame (camera hiccup) must not reach the letterbox (0-size scale → crash).
+    @Test func hybridSurvivesAnEmptyFrame() {
+        let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
+        let empty = PixelImage(width: 0, height: 0, rgb: [], sourceWidth: 1920, sourceHeight: 1080)
+        #expect(CoreMLBallInference.shared?.infer(empty) == nil)
+        #expect(HybridBallDetector().detect(in: empty, geometry: geo, feltReference: nil, timestamp: 0).isEmpty)
+    }
+
     @Test func bundledModelRunsAndEveryDetectionIsOnTheTable() throws {
         let model = try #require(CoreMLBallInference.shared)
         let cg = try #require(scene.render())

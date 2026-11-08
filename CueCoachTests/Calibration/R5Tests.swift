@@ -158,6 +158,52 @@ struct LockR5Tests {
         #expect(!locked)
     }
 
+    /// Codex autocal-r4 MAJOR: pocket evidence belongs to the surface it was seen on. Lock a real table (mouths
+    /// seen), then pan without a pause to a table-sized cloth elsewhere with no pockets: the old evidence must
+    /// not authorise a lock on it.
+    @Test func pocketEvidenceDoesNotCarryToAnotherSurface() async throws {
+        final class Switchable: TableKeypointProvider, @unchecked Sendable {
+            var mouths = true
+            func keypoints(in image: AutoRGBImage, intrinsics: AutoIntrinsics) -> [AutoTableKeypoint] {
+                guard mouths else { return [] }
+                return [AutoTableKeypoint(kind: .cornerMouth, pixel: SIMD2(10, 10), confidence: 0.9),
+                        AutoTableKeypoint(kind: .sideMouth, pixel: SIMD2(20, 10), confidence: 0.9)]
+            }
+        }
+        let table = SyntheticTableScene.demo()
+        var rug = SyntheticTableScene.demo()
+        rug.hasRailsAndPockets = false
+        rug.balls = []
+        let shift = SIMD3<Double>(2.5, 0, 0)   // another cloth at table height, 2.5 m to the side
+        var m = rug.frame.tableToWorld
+        m.columns.3 += SIMD4(shift, 0)
+        rug.frame = TableFrame(tableToWorld: m, spec: rug.frame.spec)
+        rug.camera = CameraModel.lookAt(eye: SIMD3(0.1, 2.15, 2.45) + shift, target: SIMD3(0, 0.76, -0.25) + shift,
+                                        intrinsics: table.camera.intrinsics)
+        let tcg = try #require(table.render()), rcg = try #require(rug.render())
+        let ti = try #require(PixelImage(cgImage: tcg))
+        let ri = try #require(PixelImage(cgImage: rcg))
+        let td = table.renderDepth(width: 256, height: 144), rd = rug.renderDepth(width: 256, height: 144)
+        let kp = Switchable()
+        let loc = AutoTableLocating(keypoints: kp)
+        var t = 0.0, lockedTable = false
+        for _ in 0..<60 where !lockedTable {
+            let e = await loc.ingest(LocatorFrame(image: ti, camera: table.camera, planes: [], timestamp: t, depth: td))
+            lockedTable = e?.locked == true
+            t += 1.0 / 15
+        }
+        #expect(lockedTable)
+        kp.mouths = false
+        let rugCorners = rug.frame.corners.map { rug.frame.world($0) }
+        var lockedRug = false
+        for _ in 0..<90 {
+            let e = await loc.ingest(LocatorFrame(image: ri, camera: rug.camera, planes: [], timestamp: t, depth: rd))
+            if let e, e.locked, e.corners.allSatisfy({ c in rugCorners.contains { simd_distance($0, c) < 0.3 } }) { lockedRug = true }
+            t += 1.0 / 15
+        }
+        #expect(!lockedRug)
+    }
+
     @Test func twoTapsFillTheTable() throws {
         let truth = SyntheticRig.frame(.eightFoot)
         let headL = truth.world(Vec2(0, 0)), headR = truth.world(Vec2(0, truth.spec.width))
