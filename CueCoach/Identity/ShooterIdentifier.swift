@@ -72,7 +72,7 @@ struct VisionShooterIdentifier: ShooterIdentifier {
         var attributor = attributor
         attributor.parameters.clothes = calibrations.clothes(clothesGallery.values.first?.first?.modelID)
         let faceModelID = faceGallery.values.first?.first?.modelID
-        let gateOpen = faceModelID != nil && faceGate?.modelID == faceModelID
+        let gateOpen = faceModelID != nil && faceGate?.modelID == faceModelID && (faceGate?.meetsD28 ?? false)
         var calibrations = calibrations
         if gateOpen, let id = faceModelID, calibrations.face[id] == nil, let g = faceGate { calibrations.face[id] = g.cueModel }
         attributor.parameters.face = calibrations.face(faceModelID)
