@@ -43,7 +43,8 @@ final class ScreensAUITests: XCTestCase {
 
     // MARK: Settings flows
 
-    @MainActor func testDeleteRecognitionDataFlow() {
+    /// SPEC §2: one tap deletes. No alert, sheet or confirmation dialog appears; a non-modal Undo does.
+    @MainActor func testDeleteRecognitionDataIsOneTapWithUndo() {
         let app = launch("settings")
         let toggle = app.switches["settings.recognition"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
@@ -51,26 +52,43 @@ final class ScreensAUITests: XCTestCase {
         let delete = app.buttons["settings.delete"]
         XCTAssertTrue(delete.isEnabled)
         delete.tap()
-        let confirm = app.buttons["settings.delete.confirm"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Delete recognition data?"].exists)
-        shot(app, "settings-delete-confirm")
-        confirm.tap()
-        let off = NSPredicate(format: "value == '0'")
-        expectation(for: off, evaluatedWith: toggle)
+        let undo = app.buttons["settings.delete.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertEqual(app.alerts.count, 0)
+        XCTAssertEqual(app.sheets.count, 0)
+        XCTAssertFalse(app.buttons["settings.delete.confirm"].exists)
+        XCTAssertFalse(app.staticTexts["Delete recognition data?"].exists)
+        XCTAssertEqual(toggle.value as? String, "0")
+        XCTAssertGreaterThanOrEqual(undo.frame.height, 44)
+        shot(app, "settings-delete-undo")
+        undo.tap()
+        let on = NSPredicate(format: "value == '1'")
+        expectation(for: on, evaluatedWith: toggle)
         waitForExpectations(timeout: 5)
-        XCTAssertTrue(app.staticTexts["Nothing stored."].waitForExistence(timeout: 5))
-        XCTAssertFalse(delete.isEnabled)
-        XCTAssertFalse(app.switches["settings.includeFace"].exists)
+        XCTAssertTrue(delete.isEnabled)
+        XCTAssertFalse(undo.exists)
+        XCTAssertFalse(app.staticTexts["Nothing stored."].exists)
+    }
+
+    /// Without Undo the window closes on its own and the data is gone for good.
+    @MainActor func testDeleteCommitsWhenUndoWindowCloses() {
+        let app = launch("settings")
+        app.buttons["settings.delete"].tap()
+        let undo = app.buttons["settings.delete.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Nothing stored."].waitForExistence(timeout: 12))
+        XCTAssertFalse(undo.exists)
+        XCTAssertFalse(app.buttons["settings.delete"].isEnabled)
+        XCTAssertEqual(app.alerts.count, 0)
         shot(app, "settings-deleted")
     }
 
     @MainActor func testDeleteFailureShowsInlineError() {
         let app = launch("settings", fixture: "deleteFail")
         app.buttons["settings.delete"].tap()
-        app.buttons["settings.delete.confirm"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Couldn't delete. Try again."].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.delete"].isEnabled)
+        XCTAssertEqual(app.alerts.count, 0)
         shot(app, "settings-delete-failed")
     }
 
@@ -128,7 +146,7 @@ final class ScreensAUITests: XCTestCase {
         shot(app, "settings-import-cancelled")
     }
 
-    @MainActor func testDeleteRowCopyMatchesDialog() {
+    @MainActor func testDeleteRowCopy() {
         let app = launch("settings")
         XCTAssertTrue(app.buttons["settings.delete"].label.contains("Delete recognition data"))
         XCTAssertFalse(app.staticTexts["Delete my data"].exists)
@@ -196,6 +214,31 @@ final class ScreensAUITests: XCTestCase {
         shot(app, "profile-error-training")
     }
 
+    /// C10: Retry must actually reload once the store recovers.
+    @MainActor func testRetryLoadsProfileOnceStoreRecovers() {
+        let app = launch("profile", fixture: "errorOnce")
+        XCTAssertTrue(app.staticTexts["Couldn't load stats."].waitForExistence(timeout: 5))
+        app.buttons["profile.retry"].tap()
+        XCTAssertTrue(app.staticTexts["Sam"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Couldn't load stats."].exists)
+        XCTAssertFalse(app.buttons["profile.retry"].exists)
+    }
+
+    /// C8: the comparison sheet draws the player over the pro and gives VoiceOver both shapes.
+    @MainActor func testProComparisonShowsBothShapes() {
+        let app = launch("profile", fixture: "veteran")
+        let card = app.descendants(matching: .any)["profile.procomp"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.tap()
+        let radar = app.descendants(matching: .any)["profile.procomp.radar"]
+        XCTAssertTrue(radar.waitForExistence(timeout: 5))
+        XCTAssertEqual(radar.label, "Archetype shape compared with Efren Reyes")
+        let value = radar.value as? String ?? ""
+        XCTAssertTrue(value.hasPrefix("Sam: "), value)
+        XCTAssertTrue(value.contains("Efren Reyes: "), value)
+        shot(app, "profile-procomp-detail")
+    }
+
     @MainActor func testBadgeSheet() {
         let app = launch("profile", fixture: "veteran")
         app.swipeUp()
@@ -232,6 +275,7 @@ final class ScreensAUITests: XCTestCase {
             ("profile", "newPlayer", "history", "profile-history-empty"),
             ("profile", "newPlayer", "training", "profile-training-empty"),
             ("profile", "error", nil, "profile-error"),
+            ("profile", "errorOnce", nil, "profile-error-once"),
             ("profile", "guest", "stats", "profile-guest"),
         ]
         for mode in Mode.allCases {

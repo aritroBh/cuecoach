@@ -4,13 +4,28 @@ import SwiftUI
 /// it never shows make %, WPA, win rate, archetypes or pro comps (SPEC §2, §10).
 struct TrainingTabView: View {
     let content: TrainingContent?
+    /// The Training store couldn't be read: show an error with Retry, never the empty state.
+    var failed = false
+    var retry: () -> Void = {}
 
     var body: some View {
         VStack(spacing: SA.section) {
             Rectangle().fill(SA.brilliant.opacity(0.15)).frame(height: 4)
                 .clipShape(Capsule())
                 .accessibilityHidden(true)
-            if let content, !content.drills.isEmpty || content.bias != nil {
+            if failed {
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(SA.caution)
+                        .accessibilityHidden(true)
+                    Text("Couldn't load drills.").font(.body).foregroundStyle(SA.ink)
+                    Button("Retry", action: retry)
+                        .buttonStyle(.borderedProminent).tint(SA.surface).controlSize(.large)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("profile.training.retry")
+                }
+                .frame(maxWidth: .infinity, minHeight: 280)
+                .accessibilityIdentifier("profile.training.error")
+            } else if let content, !content.drills.isEmpty || content.bias != nil {
                 if !content.drills.isEmpty {
                     VStack(spacing: 8) {
                         HStack(spacing: 8) {

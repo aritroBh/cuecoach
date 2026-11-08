@@ -1,31 +1,48 @@
 import Foundation
 import Geometry
 import Rules
+import SwiftData
 import Testing
+import UIKit
 @testable import CueCoach
 
 @MainActor
 final class FakeSettingsStore: SettingsStore {
-    var hasRecognitionData: Bool
+    /// What is "on disk": only a commit changes it.
+    var committedData: Bool
+    /// Removed in memory, waiting for the Undo window to close.
+    var staged = false
+    var hasRecognitionData: Bool { committedData && !staged }
+    var stageError: Error?
     var deleteError: Error?
     var exportError: Error?
     var importError: Error?
+    var stageCalls = 0
+    var undoCalls = 0
     var deleteCalls = 0
-    var exportedWith: [Bool] = []
+    var exportCalls = 0
     var imported: [Data] = []
-    var onDelete: (() -> Void)?
     var onExport: (() -> Void)?
 
-    init(hasRecognitionData: Bool = true) { self.hasRecognitionData = hasRecognitionData }
+    init(hasRecognitionData: Bool = true) { committedData = hasRecognitionData }
 
+    func stageRecognitionDeletion() throws {
+        stageCalls += 1
+        if let stageError { throw stageError }
+        staged = true
+    }
+    func undoRecognitionDeletion() throws {
+        undoCalls += 1
+        staged = false
+    }
     func deleteMyRecognitionData() throws {
         deleteCalls += 1
-        onDelete?()
         if let deleteError { throw deleteError }
-        hasRecognitionData = false
+        committedData = false
+        staged = false
     }
-    func exportBackup(includeRecognition: Bool) throws -> Data {
-        exportedWith.append(includeRecognition)
+    func exportBackup() throws -> Data {
+        exportCalls += 1
         onExport?()
         if let exportError { throw exportError }
         return Data("{\"version\":1}".utf8)
@@ -48,11 +65,22 @@ struct Boom: Error {}
         return d
     }
 
-    func model(store: FakeSettingsStore = .init(), measured: TableSize? = nil,
-               defaults: UserDefaults? = nil) -> SettingsViewModel {
-        SettingsViewModel(store: store, measurement: FixedMeasurement(measured: measured),
-                          defaults: defaults ?? freshDefaults())
+    func freshExportDir() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "cc-tests-export-\(UUID().uuidString)")
     }
+
+    func model(store: FakeSettingsStore = .init(), measured: TableSize? = nil,
+               defaults: UserDefaults? = nil, exportDirectory: URL? = nil,
+               undoWindow: Duration = .seconds(60), center: NotificationCenter = NotificationCenter(),
+               announcements: Announcements? = nil) -> SettingsViewModel {
+        let sink = announcements ?? Announcements()
+        return SettingsViewModel(store: store, measurement: FixedMeasurement(measured: measured),
+                                 defaults: defaults ?? freshDefaults(), exportDirectory: exportDirectory ?? freshExportDir(),
+                                 undoWindow: undoWindow, notificationCenter: center,
+                                 announce: { sink.said.append($0) })
+    }
+
+    @MainActor final class Announcements { var said: [String] = [] }
 
     // MARK: defaults
 
@@ -63,7 +91,6 @@ struct Boom: Error {}
         #expect(m.threeBallRule == true)           // D13
         #expect(m.tableSize == .sevenFoot)         // D14
         #expect(m.debugHUD == false)
-        #expect(m.includeFaceInExport == false)    // SCHEMA: never exported unless ticked
     }
 
     @Test func settingsPersistAcrossInstances() {
@@ -136,9 +163,10 @@ struct Boom: Error {}
                 < SettingsViewModel.silhouetteRect(.eightFoot, in: box).height)
     }
 
-    @Test func deleteRowCopyMatchesDialog() {
+    @Test func deleteRowCopy() {
         #expect(SettingsViewModel.deleteRowTitle == "Delete recognition data")
-        #expect(SettingsViewModel.deleteDialogTitle == "Delete recognition data?")
+        #expect(SettingsViewModel.undoTitle == "Undo")
+        #expect(SettingsViewModel.deletedAnnouncement == "Recognition data deleted, Undo available")
     }
 
     @Test func accessibilityLabels() {
@@ -158,41 +186,150 @@ struct Boom: Error {}
 
     // MARK: privacy
 
-    @Test func deleteClearsDataAndOptIn() async {
+    // One tap (SPEC §2): no dialog step. The data leaves the store at once; the commit waits for the window.
+    @Test func oneTapRemovesDataAndOffersUndo() {
         let store = FakeSettingsStore(hasRecognitionData: true)
-        let m = model(store: store)
+        let said = Announcements()
+        let m = model(store: store, announcements: said)
         m.recognitionOptIn = true
         #expect(m.canDelete)
-        await m.confirmDelete()
-        #expect(store.deleteCalls == 1)
-        #expect(m.deleteState == .deleted)
-        #expect(m.recognitionOptIn == false)
+        m.deleteTapped()
+        #expect(store.stageCalls == 1)
+        #expect(!store.hasRecognitionData)
+        #expect(store.deleteCalls == 0)              // nothing committed while Undo is offered
+        #expect(m.deleteState == .undoable)
         #expect(m.hasRecognitionData == false)
+        #expect(m.recognitionOptIn == false)
         #expect(!m.canDelete)
+        #expect(said.said == ["Recognition data deleted, Undo available"])
     }
 
-    @Test func deleteFailureKeepsRowEnabled() async {
+    @Test func undoRestoresDataAndOptIn() {
         let store = FakeSettingsStore(hasRecognitionData: true)
-        store.deleteError = Boom()
         let m = model(store: store)
         m.recognitionOptIn = true
-        await m.confirmDelete()
+        m.deleteTapped()
+        m.undoDelete()
+        #expect(store.undoCalls == 1)
+        #expect(store.deleteCalls == 0)
+        #expect(store.hasRecognitionData)
+        #expect(m.hasRecognitionData)
+        #expect(m.recognitionOptIn)
+        #expect(m.deleteState == .idle)
+    }
+
+    @Test func windowClosingCommitsTheDelete() async throws {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let m = model(store: store, undoWindow: .milliseconds(50))
+        m.deleteTapped()
+        for _ in 0..<100 where store.deleteCalls == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(store.deleteCalls == 1)
+        #expect(!store.committedData)
+        #expect(m.deleteState == .deleted)
+        m.undoDelete()                                // too late: gone for good
+        #expect(store.undoCalls == 0)
+        #expect(!store.committedData)
+    }
+
+    @Test func backgroundingCommitsImmediately() {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let center = NotificationCenter()
+        let m = model(store: store, center: center)
+        m.deleteTapped()
+        center.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        #expect(store.deleteCalls == 1)
+        #expect(!store.committedData)
+        #expect(m.deleteState == .deleted)
+        m.undoDelete()
+        #expect(store.undoCalls == 0)
+    }
+
+    @Test func backgroundingWithoutPendingDeleteDoesNothing() {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let center = NotificationCenter()
+        _ = model(store: store, center: center)
+        center.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        #expect(store.deleteCalls == 0)
+        #expect(store.committedData)
+    }
+
+    @Test func leavingSettingsCommits() {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let m = model(store: store)
+        m.deleteTapped()
+        m.commitPendingDelete()
+        #expect(store.deleteCalls == 1)
+        m.commitPendingDelete()
+        #expect(store.deleteCalls == 1)              // idempotent
+    }
+
+    @Test func stageFailureKeepsRowEnabled() {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        store.stageError = Boom()
+        let m = model(store: store)
+        m.recognitionOptIn = true
+        m.deleteTapped()
         #expect(m.deleteState == .failed)
         #expect(m.canDelete)
         #expect(m.recognitionOptIn == true)
     }
 
+    @Test func commitFailureShowsErrorAndAllowsRetry() {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        store.deleteError = Boom()
+        let m = model(store: store)
+        m.deleteTapped()
+        m.commitPendingDelete()
+        #expect(m.deleteState == .failed)
+        store.deleteError = nil
+        m.deleteTapped()
+        m.commitPendingDelete()
+        #expect(m.deleteState == .deleted)
+        #expect(!store.committedData)
+    }
+
     @Test func nothingStoredDisablesDelete() {
         let m = model(store: .init(hasRecognitionData: false))
         #expect(!m.canDelete)
-        #expect(!m.showsIncludeFaceToggle)
     }
 
-    @Test func deletedStateSettlesBackToIdle() async {
+    @Test func deletedStateSettlesBackToIdle() {
         let m = model()
-        await m.confirmDelete()
+        m.deleteTapped()
+        m.commitPendingDelete()
         m.settle()
         #expect(m.deleteState == .idle)
+    }
+
+    /// The production adapter: one tap removes the owner's row from the store context (unsaved), Undo puts the
+    /// same templates back, and the commit saves the delete.
+    @Test func persistenceStoreStagesUndoesAndCommits() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let owner = PlayerProfile(name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: true)
+        owner.recognition = RecognitionData(faceEmbedding: Data([1, 2, 3]), appearanceEmbedding: Data([4]),
+                                            optedInAt: .now, version: 2)
+        stack.competitiveContext.insert(owner)
+        try stack.competitiveContext.save()
+        let store = PersistenceSettingsStore(stack: stack)
+        #expect(store.hasRecognitionData)
+
+        try store.stageRecognitionDeletion()
+        #expect(!store.hasRecognitionData)
+        #expect(owner.recognition == nil)
+        #expect(try stack.competitiveContext.fetchCount(FetchDescriptor<RecognitionData>()) == 0)
+        // Nothing reached the persistent store yet.
+        #expect(try ModelContext(stack.competitiveContainer).fetchCount(FetchDescriptor<RecognitionData>()) == 1)
+
+        try store.undoRecognitionDeletion()
+        #expect(store.hasRecognitionData)
+        #expect(owner.recognition?.faceEmbedding == Data([1, 2, 3]))
+        #expect(owner.recognition?.appearanceEmbedding == Data([4]))
+        #expect(owner.recognition?.version == 2)
+
+        try store.stageRecognitionDeletion()
+        try store.deleteMyRecognitionData()
+        #expect(!store.hasRecognitionData)
+        #expect(try ModelContext(stack.competitiveContainer).fetchCount(FetchDescriptor<RecognitionData>()) == 0)
     }
 
     @Test func turningToggleOffDoesNotDelete() {
@@ -215,25 +352,62 @@ struct Boom: Error {}
 
     // MARK: backup
 
-    @Test func exportWritesDatedFileAndHonoursFaceToggle() async throws {
+    @Test func exportWritesDatedFile() async throws {
         let store = FakeSettingsStore(hasRecognitionData: true)
         let m = model(store: store)
         let date = ISO8601DateFormatter().date(from: "2026-11-06T12:00:00Z")!
         let url = try #require(await m.export(now: date))
         #expect(url.lastPathComponent == "CueCoach-2026-11-06.json")
         #expect(try Data(contentsOf: url) == Data("{\"version\":1}".utf8))
-        m.includeFaceInExport = true
-        _ = await m.export(now: date)
-        #expect(store.exportedWith == [false, true])
+        #expect(store.exportCalls == 1)
         #expect(m.exportState == .idle)
     }
 
-    @Test func faceToggleIgnoredWhenNoRecognitionData() async {
-        let store = FakeSettingsStore(hasRecognitionData: false)
-        let m = model(store: store)
-        m.includeFaceInExport = true
-        _ = await m.export(now: .now)
-        #expect(store.exportedWith == [false])
+    // MARK: export copies (C4)
+
+    @Test func exportsLiveInTheOneExportDirectory() async throws {
+        let dir = freshExportDir()
+        let m = model(exportDirectory: dir)
+        let url = try #require(await m.export(now: .now))
+        #expect(url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL)
+    }
+
+    @Test func deletingRecognitionRemovesExportedCopies() async throws {
+        let store = FakeSettingsStore(hasRecognitionData: true)
+        let dir = freshExportDir()
+        let m = model(store: store, exportDirectory: dir)
+        let url = try #require(await m.export(now: .now))
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        m.deleteTapped()
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    @Test func finishingShareRemovesExport() async throws {
+        let dir = freshExportDir()
+        let m = model(exportDirectory: dir)
+        let url = try #require(await m.export(now: .now))
+        m.shareFinished()
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func newExportReplacesTheOldCopy() async throws {
+        let dir = freshExportDir()
+        let m = model(exportDirectory: dir)
+        let fmt = ISO8601DateFormatter()
+        let first = try #require(await m.export(now: fmt.date(from: "2026-11-05T12:00:00Z")!))
+        let second = try #require(await m.export(now: fmt.date(from: "2026-11-06T12:00:00Z")!))
+        #expect(!FileManager.default.fileExists(atPath: first.path))
+        #expect(FileManager.default.fileExists(atPath: second.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["CueCoach-2026-11-06.json"])
+    }
+
+    @Test func staleExportsAreSweptOnLaunch() throws {
+        let dir = freshExportDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: dir.appending(path: "CueCoach-2026-01-01.json"))
+        _ = model(exportDirectory: dir)
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
     }
 
     @Test func exportFailureShowsInlineError() async {
@@ -269,15 +443,6 @@ struct Boom: Error {}
         m.importBackup(Data())
         #expect(m.importAlert == .notABackup)
         #expect(m.importState == .idle)
-    }
-
-    @Test func deleteShowsSpinnerStateWhileWorking() async {
-        let store = FakeSettingsStore(hasRecognitionData: true)
-        let m = model(store: store)
-        var seen: [SettingsViewModel.DeleteState] = []
-        store.onDelete = { seen.append(m.deleteState) }
-        await m.confirmDelete()
-        #expect(seen == [.deleting])
     }
 
     @Test func exportShowsSpinnerStateWhileWorking() async {
@@ -324,7 +489,7 @@ struct Boom: Error {}
     @Test func importRefreshesRecognitionPresence() {
         let store = FakeSettingsStore(hasRecognitionData: false)
         let m = model(store: store)
-        store.hasRecognitionData = true
+        store.committedData = true
         m.importBackup(Data())
         #expect(m.hasRecognitionData)
     }
@@ -342,11 +507,19 @@ struct Boom: Error {}
         #expect(!store.hasRecognitionData)
     }
 
+    /// C3: a failed fetch must not claim "Nothing stored" and lock the delete button.
+    @Test func recognitionProbeFailsSafeWhenFetchThrows() {
+        #expect(PersistenceSettingsStore.recognitionPresent { throw Boom() } == true)
+        #expect(PersistenceSettingsStore.recognitionPresent { [false, true] } == true)
+        #expect(PersistenceSettingsStore.recognitionPresent { [false] } == false)
+        #expect(PersistenceSettingsStore.recognitionPresent { [] } == false)
+    }
+
     @Test func exportImportRoundTrip() throws {
         let stack = try PersistenceStack(inMemory: true)
         _ = Fixture.populateCompetitive(stack.competitiveContext)
         try stack.competitiveContext.save()
-        let data = try PersistenceSettingsStore(stack: stack).exportBackup(includeRecognition: false)
+        let data = try PersistenceSettingsStore(stack: stack).exportBackup()
         let other = try PersistenceStack(inMemory: true)
         try PersistenceSettingsStore(stack: other).importBackup(data)
         #expect(try Fixture.count(Session.self, other.competitiveContext) == 1)

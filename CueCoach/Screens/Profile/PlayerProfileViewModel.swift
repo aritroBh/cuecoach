@@ -129,6 +129,8 @@ struct ProfileContent: Equatable, Sendable {
     var topArchetype: ArchetypeTagInfo?
     var heat: [HeatCellView]
     var proComp: ProCompView?
+    /// The pro's shape on the player's radar axes, for the comparison sheet; nil if any axis is unsourced.
+    var proRadar: [RadarAxis]?
     var badges: [EarnedBadge]
     var history: [HistoryGroup]
 
@@ -162,11 +164,14 @@ public final class PlayerProfileViewModel {
     @ObservationIgnored private let stats: ProfileStatsSource
     @ObservationIgnored private let trainingSource: TrainingProfileSource?
     @ObservationIgnored var onOpenGame: ((UUID) -> Void)?
-    @ObservationIgnored var onRename: ((String, String) -> Void)?
 
     private(set) var phase: Phase = .loading
     private(set) var content: ProfileContent?
     private(set) var training: TrainingContent?
+    /// The Training store couldn't be read. Distinct from an empty `training` ("No drills yet").
+    private(set) var trainingFailed = false
+    /// The last profile edit couldn't be saved and was rolled back.
+    private(set) var renameFailed = false
     var tab: ProfileTab = .stats
     private(set) var expanded: Set<UUID> = []
 
@@ -197,12 +202,25 @@ public final class PlayerProfileViewModel {
             content = nil
             phase = .failed
         }
-        if let trainingSource {
-            let drills = (try? await trainingSource.drills(id)) ?? []
-            let bias = try? await trainingSource.activeBias(id)
-            training = TrainingContent(drills: drills, bias: bias ?? nil)
-        } else {
+        await loadTraining()
+    }
+
+    /// Reads the Training store on its own, so Training can fail or retry without touching competitive stats.
+    func loadTraining() async {
+        guard let trainingSource else {
             training = nil
+            trainingFailed = false
+            return
+        }
+        do {
+            let id = playerID
+            async let drills = trainingSource.drills(id)
+            async let bias = trainingSource.activeBias(id)
+            training = try await TrainingContent(drills: drills, bias: bias)
+            trainingFailed = false
+        } catch {
+            training = nil
+            trainingFailed = true
         }
     }
 
@@ -215,13 +233,21 @@ public final class PlayerProfileViewModel {
         if expanded.contains(session) { expanded.remove(session) } else { expanded.insert(session) }
     }
 
-    func rename(_ raw: String, symbol: String? = nil) {
+    /// Shows the edit at once, writes it through the stats source, and rolls back if the write fails.
+    func rename(_ raw: String, symbol: String? = nil) async {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canEdit, !name.isEmpty, var c = content else { return }
+        let before = c.summary
         c.summary.name = name
         if let symbol { c.summary.avatarSymbol = symbol }
         content = c
-        onRename?(name, c.summary.avatarSymbol)
+        renameFailed = false
+        do {
+            try await stats.updateProfile(playerID, name: name, avatarSymbol: c.summary.avatarSymbol)
+        } catch {
+            if content?.summary.name == name { content?.summary = before }
+            renameFailed = true
+        }
     }
 
     // MARK: Pure helpers (unit-tested)
@@ -239,6 +265,7 @@ public final class PlayerProfileViewModel {
             topArchetype: unlocked ? archetype?.tags.lazy.compactMap(ArchetypeTagInfo.init).first : nil,
             heat: fullGrid(grid),
             proComp: unlocked ? pro : nil,
+            proRadar: unlocked ? pro.flatMap { proOverlay(radar, proVector: $0.proVector) } : nil,
             badges: badges.sorted { $0.earnedAt > $1.earnedAt },
             history: groupHistory(history))
     }
@@ -273,6 +300,18 @@ public final class PlayerProfileViewModel {
     nonisolated static func radarAxes(_ vector: [String: Double]) -> [RadarAxis] {
         let strongest = vector.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(8)
         return strongest.map { RadarAxis(key: $0.key, value: min(1, max(0, $0.value))) }.sorted { $0.key < $1.key }
+    }
+
+    /// The pro's values on exactly the player's axes (same order), clamped to 0...1. nil when the pro has no
+    /// sourced value for any of those axes: a shape is never drawn from invented data (SPEC §8).
+    nonisolated static func proOverlay(_ axes: [RadarAxis], proVector: [String: Double]) -> [RadarAxis]? {
+        guard !axes.isEmpty else { return nil }
+        var out: [RadarAxis] = []
+        for a in axes {
+            guard let v = proVector[a.key] else { return nil }
+            out.append(RadarAxis(key: a.key, value: min(1, max(0, v))))
+        }
+        return out
     }
 
     nonisolated static func level(_ v: Double) -> String { v >= 0.67 ? "high" : v >= 0.34 ? "medium" : "low" }

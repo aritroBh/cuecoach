@@ -1,7 +1,35 @@
 import Foundation
 import Rules
+import Synchronization
 import Testing
 @testable import CueCoach
+
+struct TrainingReadError: Error {}
+
+/// Training store that throws for the first `failures` reads of each kind, then returns `drills`/`bias`.
+final class FlakyTrainingSource: TrainingProfileSource {
+    let failures: Mutex<Int>
+    let biasFails: Bool
+    let drills: [DrillLevel]
+    init(failures: Int = .max, biasFails: Bool = false,
+         drills: [DrillLevel] = [.init(drill: "cuts", name: "Cuts", level: 2)]) {
+        self.failures = Mutex(failures)
+        self.biasFails = biasFails
+        self.drills = drills
+    }
+    func drills(_ playerID: UUID) async throws -> [DrillLevel] {
+        let fail = failures.withLock { n in
+            if n > 0 { n -= 1; return true }
+            return false
+        }
+        if fail { throw TrainingReadError() }
+        return drills
+    }
+    func activeBias(_ playerID: UUID) async throws -> BiasHint? {
+        if biasFails { throw TrainingReadError() }
+        return nil
+    }
+}
 
 @MainActor
 @Suite struct PlayerProfileViewModelTests {
@@ -50,12 +78,29 @@ import Testing
         #expect(c.lockedCaption == "1 more game")
     }
 
-    @Test func errorFixtureFailsThenRetries() async {
+    @Test func errorFixtureStaysFailedOnRetry() async {
         let f = SamplePlayerData.error
         let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: f.training)
         await m.load()
         #expect(m.phase == .failed)
         #expect(m.content == nil)
+        await m.load()
+        #expect(m.phase == .failed)
+        #expect(m.content == nil)
+    }
+
+    /// C10: the store recovers, so Retry must land on the loaded profile.
+    @Test func failsThenRetrySucceedsOnceStoreRecovers() async throws {
+        let f = SamplePlayerData.errorOnce
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: f.training)
+        await m.load()
+        #expect(m.phase == .failed)
+        #expect(m.content == nil)
+        await m.load()
+        #expect(m.phase == .loaded)
+        let c = try #require(m.content)
+        #expect(c.summary.name == "Sam")
+        #expect(!m.failureScope(.stats))
     }
 
     // MARK: unlock rule (SPEC §7: ≥3 games AND ≥50 shots)
@@ -170,6 +215,58 @@ import Testing
         #expect(traits.map(\.word) == ["Cut", "Banks"])
     }
 
+    // MARK: pro comparison overlay (C8)
+
+    @Test func proOverlayAlignsToPlayerAxesAndClamps() throws {
+        let axes = PlayerProfileViewModel.radarAxes(["cut": 0.8, "long": 0.5, "bank": 0.3])
+        let o = try #require(PlayerProfileViewModel.proOverlay(axes,
+                                                               proVector: ["long": 1.4, "cut": 0.6, "bank": 0.9, "x": 1]))
+        #expect(o.map(\.key) == axes.map(\.key))
+        #expect(o.map(\.value) == [0.9, 0.6, 1])
+    }
+
+    @Test func proOverlayMissingTraitIsNeverInvented() {
+        let axes = PlayerProfileViewModel.radarAxes(["cut": 0.8, "long": 0.5, "bank": 0.3])
+        #expect(PlayerProfileViewModel.proOverlay(axes, proVector: ["cut": 0.6, "bank": 0.9]) == nil)
+        #expect(PlayerProfileViewModel.proOverlay(axes, proVector: [:]) == nil)
+        #expect(PlayerProfileViewModel.proOverlay([], proVector: ["cut": 1]) == nil)
+    }
+
+    @Test func veteranComparisonHasBothShapes() async throws {
+        let m = await loaded(.veteran)
+        let c = try #require(m.content)
+        let pro = try #require(c.proRadar)
+        #expect(pro.map(\.key) == c.radar.map(\.key))
+    }
+
+    @Test func lockedProfileHasNoProShape() async throws {
+        let m = await loaded(.preUnlock)
+        #expect(try #require(m.content).proRadar == nil)
+    }
+
+    @Test func comparisonChartDescriptorHasBothSeries() {
+        let axes = [RadarAxis(key: "cut", value: 0.8), RadarAxis(key: "long", value: 0.5), RadarAxis(key: "bank", value: 0.1)]
+        let pro = [RadarAxis(key: "cut", value: 0.9), RadarAxis(key: "long", value: 0.4), RadarAxis(key: "bank", value: 0.7)]
+        let d = SARadarDescriptor(axes: axes, name: "Sam", overlay: pro, overlayName: "Efren Reyes").makeChartDescriptor()
+        #expect(d.series.map(\.name) == ["Sam", "Efren Reyes"])
+        #expect(d.series.allSatisfy { $0.dataPoints.count == 3 })
+        #expect(d.summary == "Sam: Cut high, Long medium, Banks low. Efren Reyes: Cut high, Long medium, Banks high")
+        let single = SARadarDescriptor(axes: axes).makeChartDescriptor()
+        #expect(single.series.count == 1)
+        #expect(single.summary == "Cut high, Long medium, Banks low")
+    }
+
+    // MARK: Dynamic Type (C7)
+
+    @Test func chartsNeverCapDynamicType() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        for file in ["ProfileCharts.swift", "PlayerProfileView.swift", "TrainingTabView.swift"] {
+            let src = try String(contentsOf: root.appending(path: "CueCoach/Screens/Profile/\(file)"), encoding: .utf8)
+            #expect(!src.contains(".dynamicTypeSize(..."), "\(file) caps Dynamic Type")
+        }
+    }
+
     @Test func percentHasNoDecimals() {
         #expect(PlayerProfileViewModel.percent(0.784) == "78%")
     }
@@ -254,14 +351,34 @@ import Testing
                                        GameSummary(id: UUID(), index: 1, won: false),
                                        GameSummary(id: UUID(), index: 2, won: true)])
         _ = me
-        #expect(s.won == true)
+        #expect(s.result == .won)
         #expect(PlayerProfileViewModel.sessionTitle(s) == "Bar · 2v2")
         let lost = SessionSummary(id: UUID(), startedAt: .now, ruleSet: .wpaNine, format: .oneVsOne,
                                   games: [GameSummary(id: UUID(), index: 0, won: false)])
-        #expect(lost.won == false)
+        #expect(lost.result == .lost)
         #expect(PlayerProfileViewModel.sessionTitle(lost) == "WPA 9 · 1v1")
         let empty = SessionSummary(id: UUID(), startedAt: .now, ruleSet: .wpaEight, format: .oneVsOne, games: [])
-        #expect(empty.won == nil)
+        #expect(empty.result == nil)
+    }
+
+    /// C9: an even split is a tie, never "Lost".
+    @Test func evenSessionIsATie() {
+        func s(_ results: [Bool?]) -> SessionSummary {
+            SessionSummary(id: UUID(), startedAt: .now, ruleSet: .barEight, format: .oneVsOne,
+                           games: results.enumerated().map { GameSummary(id: UUID(), index: $0.offset, won: $0.element) })
+        }
+        #expect(s([true, false]).result == .tied)
+        #expect(s([true, false, nil]).result == .tied)
+        #expect(s([true, true, false]).result == .won)
+        #expect(s([false]).result == .lost)
+        #expect(s([nil]).result == nil)
+        #expect(s([]).result == nil)
+        #expect(SessionResult.won.spoken == "Won")
+        #expect(SessionResult.lost.spoken == "Lost")
+        #expect(SessionResult.tied.spoken == "Tied")
+        #expect(SessionResult(game: true) == .won)
+        #expect(SessionResult(game: false) == .lost)
+        #expect(SessionResult(game: nil) == nil)
     }
 
     @Test func openingAGameCallsClosure() async {
@@ -295,10 +412,45 @@ import Testing
 
     @Test func editingNameTrimsAndRejectsEmpty() async {
         let m = await loaded(.veteran)
-        m.rename("  Ari  ")
+        await m.rename("  Ari  ")
         #expect(m.content?.summary.name == "Ari")
-        m.rename("   ")
+        await m.rename("   ")
         #expect(m.content?.summary.name == "Ari")
+    }
+
+    /// C5: the edit is written through the stats source, so a fresh load shows it.
+    @Test func renameAndAvatarPersistAcrossReload() async throws {
+        let f = SamplePlayerData.veteran
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: f.training)
+        await m.load()
+        await m.rename("  Ari  ", symbol: "flame.fill")
+        #expect(!m.renameFailed)
+        let again = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: f.training)
+        await again.load()
+        let s = try #require(again.content?.summary)
+        #expect(s.name == "Ari")
+        #expect(s.avatarSymbol == "flame.fill")
+    }
+
+    @Test func renameWriteFailureRevertsAndFlags() async throws {
+        var f = SamplePlayerData.veteran
+        f = SamplePlayerData(playerID: f.playerID, stats: f.stats.failingWrites(), training: f.training)
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: f.training)
+        await m.load()
+        await m.rename("Ari", symbol: "flame.fill")
+        #expect(m.renameFailed)
+        #expect(m.content?.summary.name == "Sam")
+        #expect(m.content?.summary.avatarSymbol == "person.fill")
+    }
+
+    @Test func guestRenameWritesNothing() async throws {
+        let f = SamplePlayerData.veteran
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: nil)
+        await m.load()
+        await m.rename("Ari")
+        let again = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: nil)
+        await again.load()
+        #expect(again.content?.summary.name == "Sam")
     }
 
     // MARK: training (separate store)
@@ -325,6 +477,41 @@ import Testing
         }
         #expect(BiasHint(axis: .cut, sign: 1).word == "Overcut")
         #expect(BiasHint(axis: .cut, sign: -1).word == "Undercut")
+    }
+
+    /// C6: an unreadable Training store is a failure, not "No drills yet".
+    @Test func trainingReadFailureIsNotEmpty() async {
+        let f = SamplePlayerData.veteran
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: FlakyTrainingSource())
+        await m.load()
+        #expect(m.phase == .loaded)          // competitive stats unaffected
+        #expect(m.trainingFailed)
+        #expect(m.training == nil)
+    }
+
+    @Test func biasReadFailureIsAlsoATrainingFailure() async {
+        let f = SamplePlayerData.veteran
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats,
+                                       training: FlakyTrainingSource(failures: 0, biasFails: true))
+        await m.load()
+        #expect(m.trainingFailed)
+        #expect(m.training == nil)
+    }
+
+    @Test func trainingRetryRecovers() async throws {
+        let f = SamplePlayerData.veteran
+        let m = PlayerProfileViewModel(playerID: f.playerID, stats: f.stats, training: FlakyTrainingSource(failures: 1))
+        await m.load()
+        #expect(m.trainingFailed)
+        await m.loadTraining()
+        #expect(!m.trainingFailed)
+        #expect(try #require(m.training).drills.map(\.name) == ["Cuts"])
+    }
+
+    @Test func guestNeverReportsTrainingFailure() async {
+        let m = await loaded(.veteran, guest: true)
+        #expect(!m.trainingFailed)
+        #expect(m.training == nil)
     }
 
     @Test func emptyTraining() async throws {

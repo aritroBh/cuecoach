@@ -14,6 +14,7 @@ struct ArchetypeRadar: View {
     @ScaledMetric(relativeTo: .footnote) private var labelWidth: CGFloat = 72
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(\.saForceReduceMotion) private var forceReduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
     private var reduceMotion: Bool { systemReduceMotion || forceReduceMotion }
 
     var body: some View {
@@ -54,7 +55,7 @@ struct ArchetypeRadar: View {
                         Text(a.name)
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(SA.inkMuted)
-                            .lineLimit(1).minimumScaleFactor(0.6)
+                            .lineLimit(1).minimumScaleFactor(typeSize.isAccessibilitySize ? 0.3 : 0.6)
                             .frame(width: lw)
                             // Clamp so the label box never crosses the card edge.
                             .position(x: min(max(p.x, lw / 2), geo.size.width - lw / 2),
@@ -66,9 +67,8 @@ struct ArchetypeRadar: View {
         .onAppear {
             if reduceMotion { drawn = 1 } else { withAnimation(.easeOut(duration: 0.35)) { drawn = 1 } }
         }
-        // Axis labels stop growing at AX1 so they stay outside the shape; the full values are in the
-        // accessibility chart descriptor and VoiceOver summary.
-        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        // Labels follow Dynamic Type to AX5; the label column grows with it (`labelInset`/`labelWidth`) and a
+        // long word scales to fit its column rather than crossing into the shape.
     }
 
     private func point(_ i: Int, _ n: Int, _ v: Double, _ c: CGPoint, _ r: CGFloat) -> CGPoint {
@@ -116,7 +116,7 @@ struct MakeHeatGrid: View {
                     Text(HeatCellView.cutAxisLabel(c))
                         .font(.footnote.weight(.semibold)).monospacedDigit()
                         .foregroundStyle(SA.inkMuted)
-                        .lineLimit(1).minimumScaleFactor(0.5)
+                        .lineLimit(1).minimumScaleFactor(labelScale)
                         .frame(width: cell)
                         .accessibilityHidden(true)
                 }
@@ -126,7 +126,7 @@ struct MakeHeatGrid: View {
                     Text(typeSize.isAccessibilitySize ? HeatCellView.distanceShort(d) : HeatCellView.distanceName(d))
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(SA.inkMuted)
-                        .lineLimit(1).minimumScaleFactor(0.5)
+                        .lineLimit(1).minimumScaleFactor(labelScale)
                         .frame(width: rowLabelWidth, alignment: .leading)
                         .accessibilityHidden(true)
                     ForEach(cells.filter { $0.distance == d }) { c in heatCell(c) }
@@ -139,12 +139,13 @@ struct MakeHeatGrid: View {
                 .opacity(pressedCaption == nil ? 0 : 1)
                 .accessibilityHidden(true)
         }
-        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // axis labels must fit the fixed cell columns
+        // Labels follow Dynamic Type to AX5 and scale to fit the fixed cell columns.
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Make percent by cut and distance")
     }
 
     private var rowLabelWidth: CGFloat { typeSize.isAccessibilitySize ? 44 : 48 }
+    private var labelScale: CGFloat { typeSize.isAccessibilitySize ? 0.3 : 0.5 }
 
     private var pressedCaption: String? {
         cells.first { $0.id == pressed && $0.hasData }?.valueCaption

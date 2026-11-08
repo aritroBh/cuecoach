@@ -7,7 +7,7 @@ import UIKit
 ///
 /// Launch arguments:
 ///   -screen=settings|profile
-///   -fixture=<name>       settings: default|measured|empty|deleteFail   profile: veteran|newPlayer|preUnlock|error|guest
+///   -fixture=<name>       settings: default|measured|empty|deleteFail   profile: veteran|newPlayer|preUnlock|error|errorOnce|guest
 ///   -tab=stats|history|training
 ///   -dynamicType=xxl|ax5  -reduceMotion   (ax5 = .accessibility5, exercises every AX layout branch)
 ///

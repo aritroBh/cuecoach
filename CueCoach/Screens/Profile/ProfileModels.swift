@@ -60,6 +60,9 @@ struct ProCompView: Equatable, Sendable {
     var similarity: Double
     /// Archetype vector keys shared with the pro, strongest first.
     var sharedTraits: [String]
+    /// The pro's shape on the same axes as the archetype vector (`ProProfiles.json`, SPEC §8). Keys the
+    /// pro has no sourced value for are absent, never filled in.
+    var proVector: [String: Double] = [:]
 }
 
 struct GameSummary: Equatable, Sendable, Identifiable {
@@ -76,11 +79,23 @@ struct SessionSummary: Equatable, Sendable, Identifiable {
     var format: GameFormat
     var games: [GameSummary]
 
-    /// Session result = more games won than lost; nil when no game finished.
-    var won: Bool? {
+    /// More games won than lost = won, fewer = lost, equal = tied; nil when no game finished.
+    var result: SessionResult? {
         let w = games.filter { $0.won == true }.count
         let l = games.filter { $0.won == false }.count
-        return w + l == 0 ? nil : w > l
+        if w + l == 0 { return nil }
+        return w > l ? .won : w < l ? .lost : .tied
+    }
+}
+
+enum SessionResult: Equatable, Sendable {
+    case won, lost, tied
+    init?(game won: Bool?) {
+        guard let won else { return nil }
+        self = won ? .won : .lost
+    }
+    var spoken: String {
+        switch self { case .won: "Won"; case .lost: "Lost"; case .tied: "Tied" }
     }
 }
 
@@ -91,6 +106,8 @@ protocol ProfileStatsSource: Sendable {
     func badges(_ id: UUID) async throws -> [EarnedBadge]
     func proComp(_ id: UUID) async throws -> ProCompView?
     func history(_ id: UUID) async throws -> [SessionSummary]
+    /// Writes the owner's name and avatar glyph to the competitive `PlayerProfile` row.
+    func updateProfile(_ id: UUID, name: String, avatarSymbol: String) async throws
 }
 
 // MARK: Training (separate store, never joined with the competitive types above)

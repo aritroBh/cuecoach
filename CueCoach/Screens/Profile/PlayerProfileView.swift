@@ -59,13 +59,18 @@ public struct PlayerProfileView: View {
         }
         .sheet(isPresented: $showingPro) {
             if let c = model.content, let pro = c.proComp {
-                ProCompDetail(pro: pro, axes: c.radar, accent: accent).presentationDetents([.large])
+                ProCompDetail(pro: pro, playerName: c.summary.name, axes: c.radar, proAxes: c.proRadar,
+                              accent: accent)
+                    .presentationDetents([.large])
             }
         }
         .sheet(isPresented: $editing) {
             if let s = model.content?.summary {
                 EditProfileSheet(name: s.name, symbol: s.avatarSymbol) { name, symbol in
-                    model.rename(name, symbol: symbol)
+                    Task {
+                        await model.rename(name, symbol: symbol)
+                        SA.haptic(model.renameFailed ? .error : .success)
+                    }
                 }
                 .presentationDetents([.medium])
             }
@@ -104,7 +109,9 @@ public struct PlayerProfileView: View {
     @ViewBuilder private var tabContent: some View {
         switch model.phase {
         case .failed where !model.failureScope(model.tab):
-            TrainingTabView(content: model.training)
+            TrainingTabView(content: model.training, failed: model.trainingFailed) {
+                Task { await model.loadTraining() }
+            }
         case .failed:
             VStack(spacing: 16) {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(SA.caution)
@@ -123,7 +130,9 @@ public struct PlayerProfileView: View {
                 case .stats: statsTab(c)
                 case .history: HistoryTab(groups: c.history, expanded: model.expanded,
                                           toggle: { model.toggleExpanded($0) }, open: { model.openGame($0) })
-                case .training: TrainingTabView(content: model.training)
+                case .training: TrainingTabView(content: model.training, failed: model.trainingFailed) {
+                Task { await model.loadTraining() }
+            }
                 }
             }
         }
@@ -352,7 +361,7 @@ private struct HistoryTab: View {
                         .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
                 }
                 Spacer(minLength: 8)
-                ResultMark(won: s.won)
+                ResultMark(result: s.result)
                 Image(systemName: expanded.contains(s.id) ? "chevron.up" : "chevron.down")
                     .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
             }
@@ -372,7 +381,7 @@ private struct HistoryTab: View {
             HStack(spacing: 16) {
                 Text("Game \(g.index + 1)").font(.body).monospacedDigit().foregroundStyle(SA.ink)
                 Spacer()
-                ResultMark(won: g.won)
+                ResultMark(result: SessionResult(game: g.won))
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
             }
             .padding(.leading, 68).padding(.trailing, 16)
@@ -385,17 +394,20 @@ private struct HistoryTab: View {
     }
 }
 
-/// Win = filled green check, loss = outlined red ×. Shape + color, never color alone.
+/// Win = filled green check, loss = outlined red ×, tie = outlined grey =. Shape + color, never color alone.
 private struct ResultMark: View {
-    let won: Bool?
+    let result: SessionResult?
     var body: some View {
-        switch won {
-        case true?:
+        switch result {
+        case .won?:
             Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(SA.legal)
-                .accessibilityLabel("Won")
-        case false?:
+                .accessibilityLabel(SessionResult.won.spoken)
+        case .lost?:
             Image(systemName: "xmark.circle").font(.title2).foregroundStyle(SA.danger)
-                .accessibilityLabel("Lost")
+                .accessibilityLabel(SessionResult.lost.spoken)
+        case .tied?:
+            Image(systemName: "equal.circle").font(.title2).foregroundStyle(SA.inkMuted)
+                .accessibilityLabel(SessionResult.tied.spoken)
         case nil:
             Image(systemName: "circle.dotted").font(.title2).foregroundStyle(SA.inkMuted)
                 .accessibilityLabel("Unfinished")
@@ -465,15 +477,23 @@ private struct AllBadges: View {
     }
 }
 
+/// Player's shape (accent, filled) over the pro's shape (dashed outline): max 2 datasets.
 private struct ProCompDetail: View {
     let pro: ProCompView
+    let playerName: String
     let axes: [RadarAxis]
+    let proAxes: [RadarAxis]?
     let accent: Color
     var body: some View {
         VStack(spacing: 24) {
             Text(pro.proName).font(.title2.weight(.semibold)).foregroundStyle(SA.ink).padding(.top, 24)
-            // The pro's per-axis shape isn't in the local contract yet, so the sheet shows the player's shape only.
-            ArchetypeRadar(axes: axes, accent: accent).frame(height: 320)
+            ArchetypeRadar(axes: axes, overlay: proAxes, accent: accent)
+                .frame(height: 320)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Archetype shape compared with \(pro.proName)")
+                .accessibilityValue(descriptor.summary)
+                .accessibilityChartDescriptor(descriptor)
+                .accessibilityIdentifier("profile.procomp.radar")
             Text(PlayerProfileViewModel.band(pro.similarity).capitalized + " match")
                 .font(.body.weight(.semibold)).foregroundStyle(SA.inkMuted)
             Spacer()
@@ -481,7 +501,13 @@ private struct ProCompDetail: View {
         .padding(.horizontal, SA.gutter)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SA.bg)
+        // `.contain` keeps the radar's own identifier: without it the container's id overwrites every child's.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("profile.procomp.detail")
+    }
+
+    private var descriptor: SARadarDescriptor {
+        SARadarDescriptor(axes: axes, name: playerName, overlay: proAxes, overlayName: pro.proName)
     }
 }
 
@@ -528,17 +554,31 @@ private struct EditProfileSheet: View {
 
 // MARK: - Accessibility chart
 
+/// One series (the player), or two when a comparison overlay is given (player + pro). Values speak as bands.
 struct SARadarDescriptor: AXChartDescriptorRepresentable {
     let axes: [RadarAxis]
+    var name = "Archetype"
+    var overlay: [RadarAxis]?
+    var overlayName = ""
+
+    var summary: String {
+        guard let overlay else { return PlayerProfileViewModel.radarSummary(axes) }
+        return "\(name): \(PlayerProfileViewModel.radarSummary(axes)). "
+            + "\(overlayName): \(PlayerProfileViewModel.radarSummary(overlay))"
+    }
+
     func makeChartDescriptor() -> AXChartDescriptor {
         let x = AXCategoricalDataAxisDescriptor(title: "Trait", categoryOrder: axes.map(\.name))
         let y = AXNumericDataAxisDescriptor(title: "Strength", range: 0...1, gridlinePositions: [1 / 3, 2 / 3, 1]) {
             PlayerProfileViewModel.level($0)
         }
-        let series = AXDataSeriesDescriptor(name: "Archetype", isContinuous: false,
-                                            dataPoints: axes.map { .init(x: $0.name, y: $0.value) })
-        return AXChartDescriptor(title: "Archetype shape", summary: PlayerProfileViewModel.radarSummary(axes),
-                                 xAxis: x, yAxis: y, additionalAxes: [], series: [series])
+        func series(_ name: String, _ a: [RadarAxis]) -> AXDataSeriesDescriptor {
+            AXDataSeriesDescriptor(name: name, isContinuous: false, dataPoints: a.map { .init(x: $0.name, y: $0.value) })
+        }
+        var all = [series(name, axes)]
+        if let overlay { all.append(series(overlayName, overlay)) }
+        return AXChartDescriptor(title: "Archetype shape", summary: summary,
+                                 xAxis: x, yAxis: y, additionalAxes: [], series: all)
     }
 }
 
