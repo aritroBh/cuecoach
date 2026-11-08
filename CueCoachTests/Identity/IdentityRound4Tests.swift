@@ -164,8 +164,45 @@ struct FixedCropper: FaceCropping {
         let t0 = Date(timeIntervalSince1970: 0)
         #expect(bench.addSubject([Synth.axis(1, model: "m")], consent: nil, now: t0) == nil)
         #expect(bench.addSubject([Synth.axis(1, model: "m")], consent: FaceBenchConsent(agreedAt: t0), now: t0) != nil)
-        #expect(bench.subjectCount == 1)
+        #expect(bench.subjectCount(now: t0) == 1)
         bench.expireIfNeeded(now: Date(timeIntervalSince1970: 8 * 86_400))
         #expect(bench.subjectCount == 0)
+    }
+}
+
+// Codex round-3b follow-ups.
+@MainActor @Suite struct Round3bTests {
+    @Test func facesFromDifferentPeopleAcrossFramesAreNeverEnrolled() async throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let owner = Fixture.owner(); stack.competitiveContext.insert(owner); try stack.competitiveContext.save()
+        // SpyExtractor: width → axis. Frames 3,3,3,7: the fourth face is someone else (orthogonal).
+        let mixed = RegistrationCapture(faceImages: [3, 3, 3, 7].map { testImage(width: $0) }, bodyImages: [])
+        await #expect(throws: RegistrationError.inconsistentFaces) {
+            try await RecognitionRegistrar(stack: stack, face: SpyExtractor(modelID: faceModel), body: SpyExtractor(modelID: bodyModel))
+                .register(owner, decision: ConsentDecision(consent: .init(clothes: false, face: true), agreedAt: .now), capture: mixed)
+        }
+        #expect(owner.recognition == nil)
+    }
+
+    @Test func aGuestAtTheTableAlwaysNeedsResemblanceForATapToTeach() {
+        // Guest D granted session clothes consent → everyone consented, but D is still a guest.
+        let body = try! EmbeddingCodec.encode([Synth.axis(1, model: bodyModel)])
+        let s = IdentitySession(players: [(Synth.a, StoredRecognitionTemplates(faceEmbedding: nil, appearanceEmbedding: body,
+                                                                               optedInAt: .now, version: IdentityConsentTerms.current))],
+                                guests: [Synth.d], faceModelID: faceModel, bodyModelID: bodyModel)
+        s.grantGuestClothesConsent(Synth.d)
+        let shot = UUID()
+        let unlike = Synth.axis(9, model: bodyModel)
+        s.record(shot: shot, ShooterIdentification(attribution: .unknown(suggested: Synth.a, confidence: 0.5, shooterTrackID: 1),
+                                                   shooterAppearance: unlike), expectedShooter: Synth.a)
+        _ = s.correct(shot: shot, to: Synth.a)
+        #expect(s.snapshot().appearanceGallery[Synth.a] == [Synth.axis(1, model: bodyModel)])
+    }
+
+    @Test func idleBenchmarkExpiresOnAnyRead() {
+        let t0 = Date(timeIntervalSince1970: 0)
+        let bench = FaceBenchmarkSession(modelID: "m", startedAt: t0)
+        _ = bench.addSubject([Synth.axis(1, model: "m")], consent: FaceBenchConsent(agreedAt: t0), now: t0)
+        #expect(bench.subjectCount(now: Date(timeIntervalSince1970: 8 * 86_400)) == 0)
     }
 }

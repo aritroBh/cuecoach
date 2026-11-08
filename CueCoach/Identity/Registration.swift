@@ -60,6 +60,8 @@ enum RegistrationError: Error, Equatable {
     case deletedDuringRegistration
     /// Face consent needs an identity-trained face model; none is installed (or only a generic one was offered).
     case faceModelUnavailable
+    /// The face captures are not all the same person (someone else got into a frame): nothing is enrolled.
+    case inconsistentFaces
     /// The decision was made on older (or newer) consent terms than this app's: show the current text again.
     case consentOutdated
 }
@@ -100,6 +102,7 @@ struct RecognitionRegistrar {
         let faces = c.face ? try await embed(capture.faceImages, with: face!, since: deletions) : nil
         let bodies = c.clothes ? try await embed(capture.bodyImages, with: body, since: deletions) : nil
         if let faces, faces.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
+        if let faces, !Self.samePerson(faces) { throw RegistrationError.inconsistentFaces }
         if let bodies, bodies.count < Self.minSamples { throw RegistrationError.notEnoughSamples }
 
         // Encode before touching the store, so a codec error leaves nothing dirty.
@@ -110,6 +113,15 @@ struct RecognitionRegistrar {
         try store.replaceTemplates(StoredRecognitionTemplates(faceEmbedding: faceData, appearanceEmbedding: bodyData,
                                                               optedInAt: decision.agreedAt, version: decision.termsVersion),
                                    for: owner.id)
+    }
+
+    /// Every face capture must resemble the others: a different person in one frame fails the whole registration
+    /// rather than being enrolled as the owner. Floor is an assumption (identity models put different people near 0);
+    /// the §6 benchmark tunes it.
+    static let sameFaceFloor = 0.4
+    static func samePerson(_ faces: [Embedding]) -> Bool {
+        guard let mean = Embedding.mean(faces) else { return false }
+        return faces.allSatisfy { ($0.cosine(mean) ?? -1) >= sameFaceFloor }
     }
 
     /// Stops at once (before the next image) when a delete lands or the task is cancelled (r3 MAJOR).

@@ -71,7 +71,7 @@ struct ProfileRecognitionTemplateStore: RecognitionTemplateStore {
         for id in profileIDs {
             if let p = try profile(id), let r = p.recognition { p.recognition = nil; ctx.delete(r) }
         }
-        try save(ctx)
+        do { try save(ctx) } catch { ctx.rollback(); throw error }
     }
 }
 

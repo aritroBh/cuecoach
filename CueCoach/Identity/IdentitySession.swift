@@ -222,7 +222,7 @@ final class IdentitySession {
         // A tap is a human label: it teaches the tapped player when they consented to clothes. While anyone without
         // a clothes template is at the table (guest, no consent), a mis-tap could bind *their* vector, so the sample
         // must also already resemble the tapped player's template (r3 BLOCKER).
-        let open = roster.entries.contains { !$0.consent.clothes }
+        let open = roster.entries.contains { !$0.consent.clothes || $0.isGuest }
         if let s = r.sample, r.boundTo == nil,
            !open || AppearanceLearning.resemblance(s, appearance[player] ?? []) >= AppearanceLearning.matchFloor,
            bind(player, appearance: s) { r.boundTo = player; epoch += 1 }

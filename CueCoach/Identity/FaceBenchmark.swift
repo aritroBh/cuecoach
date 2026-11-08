@@ -159,8 +159,11 @@ final class FaceBenchmarkSession {
     func deleteAll() { subjects = [:] }
     func expireIfNeeded(now: Date = .now) { if now.timeIntervalSince(startedAt) > Self.maxAge { deleteAll() } }
 
-    var subjectCount: Int { subjects.count }
-    var embeddingCount: Int { subjects.values.reduce(0) { $0 + $1.count } }
+    /// Reads expire first, so an idle run can't hold embeddings past `maxAge`.
+    func subjectCount(now: Date = .now) -> Int { expireIfNeeded(now: now); return subjects.count }
+    func embeddingCount(now: Date = .now) -> Int { expireIfNeeded(now: now); return subjects.values.reduce(0) { $0 + $1.count } }
+    var subjectCount: Int { subjectCount() }
+    var embeddingCount: Int { embeddingCount() }
 
     /// Evaluates, stores the aggregate record on a pass, and deletes every embedding either way (run over).
     func finish(store: FaceShipGateStore = FaceShipGateStore(), now: Date = .now) -> FaceBenchmark.Verdict {
