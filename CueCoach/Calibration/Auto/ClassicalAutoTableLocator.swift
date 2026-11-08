@@ -297,6 +297,14 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                                         plane: plane, profile: prof, exclude: k, diag: &diag) else {
                 diag.rejection = diag.rejection ?? "reprojection"; return nil
             }
+            // The size now comes from the one axis whose two rails remain; it must be the well-conditioned one
+            // (across the image, not along the view rays — VirtualTable light-lamp seed 6 sized a 7 ft as 8 ft from
+            // a width measured 13 % long along the rays).
+            let liftedK = rails[k].points.compactMap { plane.lift($0, camera: camera, height: prof.railTopHeight) }
+            let view2 = plane.to2D(plane.to3D(f2.rect.center) + (plane.to3D(f2.rect.center) - camera.position)) - f2.rect.center
+            guard let lk = AutoLine.fit(liftedK), simd_length(view2) > 1e-6 else { diag.rejection = "reprojection"; return nil }
+            let sizingAxis = abs(simd_dot(lk.direction, f2.rect.u)) > 0.7 ? f2.rect.u : f2.rect.v
+            guard abs(simd_dot(sizingAxis, simd_normalize(view2))) <= 0.64 else { diag.rejection = "reprojection"; return nil }
             let kept = rails.indices.filter { $0 != k }.flatMap { rails[$0].points }
             let p2 = pose(f2)
             let rms2 = Self.reprojectionRMS(kept, pose: p2, plane: plane, camera: camera, profile: prof)

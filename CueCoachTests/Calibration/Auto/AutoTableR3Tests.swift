@@ -124,7 +124,17 @@ struct AutoTableBadRailTests {
         let L = scene.spec.length, W = scene.spec.width
         // A cue lying on the cloth 3 cm inside the far long rail, most of its length.
         scene.occluders = [(0.25, L - 0.25, W - 0.05, W - 0.03, 0.0, 0.025)]
+        nonisolated(unsafe) var dump: (AutoMask, AutoMask)?
+        ClassicalAutoTableLocator.debugMaskSink = { r, c, _ in dump = (r, c) }
         let run = autoRun(scene, elevation: 35, frames: 16)
+        ClassicalAutoTableLocator.debugMaskSink = nil
+        if let (r, c) = dump, let dir = ProcessInfo.processInfo.environment["VQA_OUT"] {
+            var rgb = [UInt8](repeating: 0, count: r.width * r.height * 3)
+            for i in 0..<(r.width * r.height) { rgb[i * 3] = r.bits[i] * 255; rgb[i * 3 + 1] = c.bits[i] * 255 }
+            if let img = VTImageIO.cgImage(rgb: rgb, width: r.width, height: r.height) {
+                VTHarness.writePNG(img, to: URL(fileURLWithPath: dir).appendingPathComponent("cue-mask.png"))
+            }
+        }
         let pose = try #require(run.estimate.pose)
         let err = AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners)
         print("[autocal] cue along a rail: \(run.estimate.state), err \(err * 1000) mm, dropped \(run.perFrame.compactMap(\.frame.droppedRail).count), rejections \(Set(run.perFrame.compactMap(\.frame.rejection)))")

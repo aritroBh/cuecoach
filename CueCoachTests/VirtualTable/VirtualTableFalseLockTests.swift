@@ -36,6 +36,18 @@ extension VirtualTableFalseLockTests {
     }
 }
 
+extension VirtualTableFalseLockTests {
+    /// r3 development matrix: a three-rail fit sized a 7 ft table from a width measured 13 % long along the view
+    /// rays and fused it as 8 ft (34 cm off).
+    @Test func lampSeed6DoesNotSizeFromTheIllConditionedAxis() async throws {
+        let s = VTSetup.make(try Self.condition("light-lamp"), seed: 6)
+        var cache: [Int: VTFrame] = [:]
+        var thumb: VTFrame?
+        let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
+        #expect(!r.falseLock, "false lock, corner error \((r.cornerErr ?? 0) * 100) cm")
+    }
+}
+
 /// Per-frame Auto dump for one session (opt-in: VQA_TRACE=cond:seed).
 struct VirtualTableTrace {
     @Test func trace() async throws {
