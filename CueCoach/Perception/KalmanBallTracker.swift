@@ -19,6 +19,8 @@ struct TrackedBall: Sendable, Equatable, Identifiable {
     var measuredSince: Double = -.infinity
     /// Share of the class votes held by `kind` (1 = every detection agreed).
     var kindShare: Double = 1
+    /// Mean detector cue-ball evidence over this track's detections (nil when the detector gave none).
+    var cueScore: Double? = nil
     var speed: Double { velocity.length }
     var measuredPosition: Vec2 { lastMeasured ?? position }
 }
@@ -106,6 +108,8 @@ struct KalmanBallTracker: BallTracker {
         var graveyardCap = 32
         /// m: never inherit an id from farther away than this (a far birth is another ball or a false positive).
         var graveyardMaxReach = 1.0
+        /// m: without a matching number, a birth inherits a dead id only this close to where it was last seen.
+        var graveyardRestReach = 0.06
         /// Misses that break the measurement run (`measuredSince` restarts after a longer gap).
         var continuityMisses = 3
         /// Added to the squared Mahalanobis cost when a detection's class disagrees with the track's.
@@ -135,6 +139,8 @@ struct KalmanBallTracker: BallTracker {
         var sigma = 0.0
         /// Mean of the recent measurements (the rest point while still).
         var centre: Vec2 = .zero
+        /// Running sum / count of detector cue evidence.
+        var cue: (sum: Double, n: Double) = (0, 0)
         var pos: Vec2 { Vec2(x.p, y.p) }
         var vel: Vec2 { Vec2(x.v, y.v) }
         var kind: BallKind { votes.max { $0.value < $1.value }?.key ?? .unknown }
@@ -144,6 +150,9 @@ struct KalmanBallTracker: BallTracker {
         var id: Int
         var pos: Vec2
         var t: Double
+        /// When it was last measured (death comes `maxMisses` frames later).
+        var seenT: Double
+        var cue: (sum: Double, n: Double)
         var votes: [BallKind: Double]
         var numberVotes: [Int: Double]
         var kind: BallKind { votes.max { $0.value < $1.value }?.key ?? .unknown }
@@ -158,12 +167,17 @@ struct KalmanBallTracker: BallTracker {
     private var nextID = 1
     private var lastT: Double?
     private(set) var stillFrames = 0
+    private var pendingShift = false
 
     init(params: Params = Params()) { self.params = params }
 
     var isAtRest: Bool { stillFrames >= params.restFrames }
 
     mutating func reset() { tracks = []; graveyard = []; lastT = nil; stillFrames = 0 }
+
+    /// The table frame itself moved (camera-pose jump / relocalization): on the next update, still balls are
+    /// re-anchored where they are now seen and nothing reads the jump as motion.
+    mutating func noteFrameShift() { pendingShift = true }
 
     mutating func update(_ raw: [BallDetection], at t: Double) -> [TrackedBall] {
         let detections = raw.filter { $0.tablePoint.x.isFinite && $0.tablePoint.y.isFinite }
@@ -274,7 +288,12 @@ struct KalmanBallTracker: BallTracker {
         // Frame shift (relocalization, a small AR pose jump): several still balls jump by the same vector in
         // one frame. That is the table frame moving, not balls: re-anchor them and break their measurement run
         // so nothing reads it as a launch or a shot.
-        let shifted = isFrameShift(pairs, detections)
+        let shifted = pendingShift || isFrameShift(pairs, detections)
+        if pendingShift {
+            // Told the frame moved: every track's measurement run restarts (nothing before the jump is evidence).
+            for i in tracks.indices { tracks[i].measuredSince = t }
+            pendingShift = false
+        }
         for (ti, di) in pairs {
             let det = detections[di]
             let z = det.tablePoint
@@ -289,6 +308,7 @@ struct KalmanBallTracker: BallTracker {
                 tracks[ti].hitBits = (tracks[ti].hitBits << 1) | 1
                 tracks[ti].recent.append((z, t))
                 tracks[ti].votes[det.kind, default: 0] += det.confidence
+            if let c = det.cueScore { tracks[ti].cue.sum += c; tracks[ti].cue.n += 1 }
                 if let n = det.tentativeNumber { tracks[ti].numberVotes[n, default: 0] += det.confidence }
                 continue
             }
@@ -321,6 +341,7 @@ struct KalmanBallTracker: BallTracker {
             tracks[ti].recent.append((z, t))
             if tracks[ti].recent.count > params.stillWindow { tracks[ti].recent.removeFirst() }
             tracks[ti].votes[det.kind, default: 0] += det.confidence
+            if let c = det.cueScore { tracks[ti].cue.sum += c; tracks[ti].cue.n += 1 }
             if let n = det.tentativeNumber { tracks[ti].numberVotes[n, default: 0] += det.confidence }
         }
         for i in tracks.indices where !usedT.contains(i) {
@@ -334,7 +355,8 @@ struct KalmanBallTracker: BallTracker {
         // Dead tracks: confirmed ones go to the graveyard so their id can come back.
         let dying = tracks.filter { $0.misses > params.maxMisses || ($0.hits < params.confirmHits && $0.misses > 2) }
         for d in dying where d.hits >= params.confirmHits {
-            graveyard.append(Dead(id: d.id, pos: d.lastMeasured, t: t, votes: d.votes, numberVotes: d.numberVotes))
+            graveyard.append(Dead(id: d.id, pos: d.lastMeasured, t: t, seenT: d.recent.last?.t ?? t, cue: d.cue,
+                                  votes: d.votes, numberVotes: d.numberVotes))
         }
         tracks.removeAll { $0.misses > params.maxMisses || ($0.hits < params.confirmHits && $0.misses > 2) }
         graveyard.removeAll { t - $0.t > params.graveyardSeconds }
@@ -348,8 +370,15 @@ struct KalmanBallTracker: BallTracker {
                 let det = detections[di]
                 return graveyard.map { g in
                     guard det.kind != .unknown, g.kind == det.kind else { return 1e6 }
-                    if let n = det.tentativeNumber, let gn = g.numberVotes.max(by: { $0.value < $1.value })?.key, n != gn { return 1e6 }
-                    let reach = min(params.graveyardMaxReach, 0.04 + params.graveyardSpeed * max(0, t - g.t))
+                    let gn = g.numberVotes.max(by: { $0.value < $1.value })?.key
+                    if let n = det.tentativeNumber, let gn, n != gn { return 1e6 }
+                    // From afar only with the same number (a moving ball carried across an occlusion); otherwise
+                    // only back where it was (an occlusion at rest). Another ball of the same colour group, or a
+                    // false positive, never inherits a dead ball's id.
+                    let sameNumber = det.tentativeNumber != nil && det.tentativeNumber == gn
+                    let reach = sameNumber
+                        ? min(params.graveyardMaxReach, 0.04 + params.graveyardSpeed * max(0, t - g.seenT))
+                        : params.graveyardRestReach
                     let d = g.pos.distance(to: det.tablePoint)
                     return d <= reach ? d : 1e6
                 }
@@ -372,6 +401,8 @@ struct KalmanBallTracker: BallTracker {
                                 y: CVKalman1D(position: det.tablePoint.y, positionVar: r, velocityVar: 0.25),
                                 hits: 1, misses: 0, votes: votes, numberVotes: nv,
                                 recent: [(det.tablePoint, t)], lastMeasured: det.tablePoint, measuredSince: t))
+            tracks[tracks.count - 1].cue = old?.cue ?? (0, 0)
+            if let c = det.cueScore { tracks[tracks.count - 1].cue.sum += c; tracks[tracks.count - 1].cue.n += 1 }
         }
 
         // Still test + zero-velocity rest model.
@@ -460,7 +491,8 @@ struct KalmanBallTracker: BallTracker {
                                tentativeNumber: num, confirmed: tr.hits >= params.confirmHits,
                                measured: tr.misses == 0, lastMeasured: tr.lastMeasured,
                                measuredSince: tr.measuredSince,
-                               kindShare: total > 0 ? (tr.votes[kind] ?? 0) / total : 0)
+                               kindShare: total > 0 ? (tr.votes[kind] ?? 0) / total : 0,
+                               cueScore: tr.cue.n > 0 ? tr.cue.sum / tr.cue.n : nil)
         }
     }
 }
