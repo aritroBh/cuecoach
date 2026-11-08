@@ -6,6 +6,14 @@ struct RecognitionUndo: Sendable {
     let records: [RecognitionRecord]
 }
 
+/// Bumped by every delete of recognition data (staged one-tap delete, commit, profile/guest drop), so an
+/// in-flight registration can tell it was overtaken and never writes templates back (identity CX-3).
+@MainActor
+enum RecognitionDeletionLog {
+    private(set) static var generation = 0
+    static func recordDeletion() { generation &+= 1 }
+}
+
 extension PersistenceStack {
     // MARK: Read / write (D26: face and appearance templates persist with the profile, no expiry)
 
@@ -21,7 +29,7 @@ extension PersistenceStack {
     /// Stores (or replaces) a profile's templates. Refuses an opt-in made at or before the profile's revocation,
     /// so deleted data can't come back through a stale capture or a peer.
     func storeRecognition(profileID: UUID, faceEmbedding: Data?, appearanceEmbedding: Data?, optedInAt: Date,
-                          version: Int) throws {
+                          version: Int, save: @MainActor (ModelContext) throws -> Void = { try $0.save() }) throws {
         let profiles = try competitiveContext.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.id == profileID }))
         guard let profile = profiles.first else { throw RecognitionError.unknownProfile }
         if let revoked = profile.recognitionRevokedAt, BackupV1.millis(optedInAt) <= BackupV1.millis(revoked) {
@@ -33,7 +41,8 @@ extension PersistenceStack {
         }
         ctx.insert(RecognitionData(profileID: profileID, faceEmbedding: faceEmbedding,
                                    appearanceEmbedding: appearanceEmbedding, optedInAt: optedInAt, version: version))
-        try ctx.save()
+        // Never leave "old row deleted, new row inserted" pending for some later save to commit.
+        do { try save(ctx) } catch { ctx.rollback(); throw error }
         try protectRecognitionFiles()
     }
 
@@ -59,6 +68,7 @@ extension PersistenceStack {
                                                  contents: nil, attributes: [.protectionKey: FileProtectionType.complete])
             else { throw CocoaError(.fileWriteUnknown) }
         }
+        RecognitionDeletionLog.recordDeletion()
         for r in rows { ctx.delete(r) }
         notifyGalleries(.purgedAll)
         return undo
@@ -88,6 +98,7 @@ extension PersistenceStack {
     /// otherwise untouched. The pending-delete marker goes only once the fence is saved, so a crash in between
     /// retries the whole commit on the next launch. Safe to call twice.
     func deleteMyRecognitionData(now: Date = .now) throws {
+        RecognitionDeletionLog.recordDeletion()
         let ctx = recognitionContext
         try ctx.delete(model: RecognitionData.self)
         try ctx.save()
@@ -142,6 +153,7 @@ extension PersistenceStack {
     /// even when nothing was persisted. No-op for an empty set.
     func dropRecognition(of ids: Set<UUID>) throws {
         guard !ids.isEmpty else { return }
+        RecognitionDeletionLog.recordDeletion()
         let ctx = recognitionContext
         let rows = try ctx.fetch(FetchDescriptor<RecognitionData>()).filter { ids.contains($0.profileID) }
         if !rows.isEmpty {

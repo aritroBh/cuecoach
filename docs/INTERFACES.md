@@ -157,6 +157,63 @@ cue ball long / more spin. Units: cut rad; side m (object-ball lateral miss at t
 right +); speed ratio (actual/intended − 1); cueBallDistance m (past target +); spin ball radii
 (|tip offset| − |intended|). `typicalNoise` per axis is provisional until tuned on real training data.
 
+## Identity (Phase 5, app target `CueCoach/Identity`)
+```swift
+protocol ShooterIdentifier: Sendable {
+  func identify(_ window: StrokeWindow, snapshot: IdentitySnapshot, expectedShooter: UUID,
+                teamInTurn: Set<UUID>?) async -> ShooterIdentification }
+struct StrokeWindow { frames: [IdentityFrame] }                 // ±0.5 s around stroke start
+struct IdentityFrame { image: CGImage; cueBall: CGPoint }       // Vision normalised, origin lower-left
+struct IdentitySnapshot { roster: IdentityRoster; appearanceGallery, faceGallery: [UUID: [Embedding]];
+                          appearanceClaimCeiling, faceClaimCeiling: [UUID: Double] }   // S9 negative signal
+struct ShooterIdentification { attribution: Attribution; shooterAppearance: Embedding?; evidence: [TrackEvidence] }
+enum AttributionDecision { case auto, turnOrder, tap, unknown }
+struct Attribution { playerID: UUID? /* nil only for .unknown */; source: AttributionDecision; confidence: Double;
+                    shooterTrackID: Int?; suggestedPlayerID: UUID?
+                    var needsConfirmation: Bool /* == .unknown: card asks, nobody credited */
+                    var storedSource: AttributionSource? /* nil = don't credit */ }
+protocol PersonAnalyzing: Sendable { func people(in: CGImage, wants: AnalysisWants) async throws -> [ObservedPerson] }
+struct AnalysisWants { appearance, face: Bool; cueBall: CGPoint; gate: ShooterGate }  // embed only gate-admitted people
+struct ObservedPerson { box; joints; appearance: Embedding?; face: Embedding?; faceQuality: Double? }
+struct ShooterGate { minPose = 0.5; maxDistance = 0.15 }        // "someone is shooting here", absolute, per track
+struct CueModel { calibration; lookalikeRate; lrRange }         // per cue, per modelID (IdentityCalibrationTable)
+enum StrokeFaceMatching { case off /* default, Q10 */, shooterOnly }   // honoured only with a matching FaceShipGateRecord
+protocol FaceCropping { func faces(in: CGImage) async -> [AlignedFace] }  // Vision landmarks → 5-pt → gate → 112² warp
+struct FaceEmbeddingExtractor: EmbeddingExtracting               // AuraFace Core ML, modelID fal.auraface.v1.fp16
+protocol RecognitionTemplateStore { templates(for:) / replaceTemplates(_:for:) / deleteTemplates(for:) / deletionGeneration }
+struct StoredRecognitionTemplates { faceEmbedding, appearanceEmbedding: Data?; optedInAt: Date; version: Int }
+@MainActor final class IdentitySession {                        // RAM only; owns roster + session templates
+  init(players: [(UUID, StoredRecognitionTemplates?)], guests:, faceModelID:, bodyModelID:)
+  func snapshot() -> IdentitySnapshot
+  func identifyShot(_ shot: UUID, window:, expectedShooter:, teamInTurn:, using:) async -> Attribution
+  func correct(shot: UUID, to: UUID) -> Attribution?            // one tap: fix or confirm; the only learning path
+  func bind(_ player: UUID, appearance: Embedding) -> Bool      // AppearanceBind (clothes consent only)
+  func addPlayer(id:, stored:); func addGuest(_: UUID); func removePlayer(_: UUID)
+  var needsReconsent: Set<UUID>                                 // stored consent outdated: nothing loaded
+  func grantGuestClothesConsent(_ guest: UUID); func revoke(_ player: UUID); func end() }
+IdentityPrivacy.deleteMyRecognitionData(stack:, session:, onRevoke:)   // onRevoke required (Mesh IdentityRevoke)
+IdentityPrivacy.deleteRecognitionData(of:, store:, session:, onRevoke:)  // same, through the template store
+FaceBenchmarkSession.addSubject(_:, consent: FaceBenchConsent?) -> UUID?   // separate bench consent; RAM; ≤ 7 days
+FaceBenchmark.evaluate(subjects:modelID:) -> .pass(FaceShipGateRecord) | .fail | .insufficientData   // F6
+```
+Rules (round 3): only tracks admitted by `ShooterGate` are evidence. Competitors for `.auto` are *every* roster
+member (off-team players and guests too) plus an explicit "someone else" (unmodelled person) whenever a guest or a
+non-consenting player is at the table; the pick must beat all of them by `minEvidenceRatio` with positive evidence.
+A registered profile is never credited (neither `.auto` nor silent turn order) while a guest is at the table:
+`.unknown`, one tap. Face consent enrols only frames with exactly one admissible face. Silent
+`.turnOrder` only when no guest is present (or the guest is the expected shooter) and evidence neither contradicts
+the expected shooter nor ties them with another recognisable player. Nothing is embedded unless a consented template
+exists to compare against (no bootstrap). Nothing is learned from turn order or `.auto`: only registration and a tap.
+`shooterAppearance` is held (RAM, `tapWindow` shots) only if it resembles a clothes-consented template, or on a
+consented player's turn at an all-clothes-consented table. A correction away from W caps W's claim on that look for
+the session (numbers only). Every roster/consent change bumps the epoch; revoke/end cancel in-flight work (checked per
+frame and before each embedding); retry exhaustion → `.unknown`. Stored consent for older terms/models → nothing
+loaded, `needsReconsent`. Face consent needs an identity-trained model (`isIdentityTrained`); generic feature prints
+are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID: TAR ≥ 0.90 @ FAR 1e-3 *and* open-set FPIR ≤ 0.5 %
+with zero misidentifications on rotating held-out folds. A tap teaches only a sample that already resembles the
+tapped player's template unless everyone at the table consented to clothes. Backups never carry
+recognition data. `RecognitionData.version` = consent-terms version.
+
 ## App-side protocols (later phases; declared now so wiring compiles)
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`

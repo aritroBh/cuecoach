@@ -16,7 +16,12 @@ __pycache__/
 tools/datasets/
 tools/footage/
 *.mlpackage/
-!CueCoach/Resources/Models/*.mlpackage/
+# Face model (D25): fetched + converted by tools/faceid/fetch_auraface.sh, ~124 MB, never committed.
+CueCoach/Resources/Models/FaceEmbedding.mlpackage/
+*.mlmodelc/
+# Face benchmark captures never leave the phone (face-embedding.md §6).
+bench-captures/
+*.benchcap
 # Scratch
 scratch/
 .worktrees/
