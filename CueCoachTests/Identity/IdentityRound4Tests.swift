@@ -144,7 +144,7 @@ struct FixedCropper: FaceCropping {
     }
 
     @Test func passReportsHeldOutOpenSetMetrics() {
-        guard case .pass(let r) = FaceBenchmark.evaluate(subjects: subjects(12, spread: 0.05), modelID: "m") else {
+        guard case .pass(let r) = FaceBenchmark.evaluate(subjects: HeldOutShipGateTests.subjects(20, spread: 0.05), modelID: "m") else {
             Issue.record("expected pass"); return
         }
         #expect(r.fpir <= FaceBenchmark.maxFPIR)
@@ -154,8 +154,8 @@ struct FixedCropper: FaceCropping {
 
     @Test func aGuestLikeConfusableSetFailsTheOpenSetGateEvenIfVerificationLooksFine() {
         // Two subjects are near-identical twins: verification TAR stays high, but a held-out twin matches the other.
-        var s = subjects(12, spread: 0.05)
-        s[1] = s[0].map { e in var v = e.vector; v[1] += 0.02; return Embedding(modelID: "m", vector: v).normalised! }
+        var s = HeldOutShipGateTests.subjects(20, spread: 0.05)
+        s[3] = s[1].map { e in var v = e.vector; v[3] += 0.02; return Embedding(modelID: "m", vector: v).normalised! }
         if case .pass = FaceBenchmark.evaluate(subjects: s, modelID: "m") { Issue.record("twins must fail the open-set gate") }
     }
 

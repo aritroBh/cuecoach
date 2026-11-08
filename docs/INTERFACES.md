@@ -110,8 +110,10 @@ consented player's turn at an all-clothes-consented table. A correction away fro
 the session (numbers only). Every roster/consent change bumps the epoch; revoke/end cancel in-flight work (checked per
 frame and before each embedding); retry exhaustion → `.unknown`. Stored consent for older terms/models → nothing
 loaded, `needsReconsent`. Face consent needs an identity-trained model (`isIdentityTrained`); generic feature prints
-are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID: TAR ≥ 0.90 @ FAR 1e-3 *and* open-set FPIR ≤ 0.5 %
-with zero misidentifications on rotating held-out folds. A tap teaches only a sample that already resembles the
+are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID (D28): threshold fitted on one volunteer half,
+then TAR ≥ 0.90, open-set FPIR ≤ 0.5 % and zero misidentifications on the other, disjoint half (Wilson bounds and
+coverage recorded). With a guest at the table a tap teaches nothing unless every guest has a session template and the
+sample beats each of them by `IdentitySession.guestMargin`. A tap teaches only a sample that already resembles the
 tapped player's template unless everyone at the table consented to clothes. Backups never carry
 recognition data. `RecognitionData.version` = consent-terms version.
 

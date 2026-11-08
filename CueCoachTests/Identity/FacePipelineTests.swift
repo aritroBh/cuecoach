@@ -155,12 +155,12 @@ private func near(_ a: CGPoint, _ b: CGPoint, _ tol: Double = 1e-6) -> Bool {
                 return Embedding(modelID: "m", vector: v).normalised!
             } }
         }
-        let good = FaceBenchmark.evaluate(subjects: subjects(12, spread: 0.05), modelID: "m")
+        let good = FaceBenchmark.evaluate(subjects: HeldOutShipGateTests.subjects(20, spread: 0.05), modelID: "m")
         guard case .pass(let record) = good else { Issue.record("expected pass, got \(good)"); return }
         #expect(record.modelID == "m" && record.tar >= FaceBenchmark.requiredTAR && record.far == 1e-3)
-        #expect(FaceBenchmark.evaluate(subjects: subjects(4, spread: 0.05), modelID: "m") == .insufficientData)
+        #expect(FaceBenchmark.evaluate(subjects: HeldOutShipGateTests.subjects(4, spread: 0.05), modelID: "m") == .insufficientData)
         // Everybody looks alike → impostors score like genuines → fail.
-        let blur = FaceBenchmark.evaluate(subjects: subjects(12, spread: 2.0), modelID: "m")
+        let blur = FaceBenchmark.evaluate(subjects: HeldOutShipGateTests.subjects(20, spread: 2.0), modelID: "m")
         if case .pass = blur { Issue.record("noise must not pass") }
     }
 
@@ -238,7 +238,8 @@ func brightCentroid(_ img: CGImage) -> CGPoint? {
 extension FaceShipGateRecord {
     /// Test-only passing record (never in the app target).
     static func testPass(modelID: String) -> FaceShipGateRecord {
-        FaceShipGateRecord(modelID: modelID, threshold: 0.4, tar: 0.95, far: 1e-3, fpir: 0, misidentifications: 0, folds: 3,
-                           subjectCount: 12, passedAt: Date(timeIntervalSince1970: 0))
+        FaceShipGateRecord(modelID: modelID, threshold: 0.4, tar: 0.95, tarLower95: 0.93, far: 1e-3, fpir: 0, fpirUpper95: 0.01,
+                           misidentifications: 0, misidentificationUpper95: 0.01, coverage: 0.95, folds: 3,
+                           calibrationSubjects: 10, reportSubjects: 10, subjectCount: 20, passedAt: Date(timeIntervalSince1970: 0))
     }
 }
