@@ -114,20 +114,22 @@ final class CoreMLBallInference: BallInference, @unchecked Sendable {
               let conf = out.featureValue(for: "confidence")?.multiArrayValue,
               let coords = out.featureValue(for: "coordinates")?.multiArrayValue else { return nil }
         state.withLock { $0 = (CFAbsoluteTimeGetCurrent() - t0) * 1000 }
-        guard conf.shape.count == 2, coords.shape.count == 2 else { return nil }
-        let n = conf.shape[0].intValue, cols = conf.shape[1].intValue
-        guard coords.shape[0].intValue == n, coords.shape[1].intValue >= 4, cols >= BallDetectorOutput.classCount else { return nil }
-        // Copy only the 16 real class columns (the rest is export padding) and the 4 box values.
-        let cs0 = conf.strides[0].intValue, cs1 = conf.strides[1].intValue
-        let bs0 = coords.strides[0].intValue, bs1 = coords.strides[1].intValue
-        let k = BallDetectorOutput.classCount
-        var c = [Float](repeating: 0, count: n * k), b = [Float](repeating: 0, count: n * 4)
-        for i in 0..<n {
-            for j in 0..<k { c[i * k + j] = conf[i * cs0 + j * cs1].floatValue }
-            for j in 0..<4 { b[i * 4 + j] = coords[i * bs0 + j * bs1].floatValue }
-        }
-        return BallDetectorOutput.decode(confidence: c, columns: k, coordinates: b, count: n, letterbox: lb,
+        let n = conf.shape.first?.intValue ?? 0
+        guard let (c, b) = Self.copyRows(confidence: conf, coordinates: coords) else { return nil }
+        return BallDetectorOutput.decode(confidence: c, columns: BallDetectorOutput.classCount, coordinates: b, count: n, letterbox: lb,
                                          minConfidence: minConfidence)
+    }
+
+    /// The 16 real class columns (the rest is export padding) and the 4 box values per NMS row, read by stride
+    /// (device outputs are padded). Nil when the shapes don't match the NMS pipeline.
+    static func copyRows(confidence conf: MLMultiArray, coordinates coords: MLMultiArray) -> (conf: [Float], boxes: [Float])? {
+        guard conf.shape.count == 2, coords.shape.count == 2 else { return nil }
+        let n = conf.shape[0].intValue, k = BallDetectorOutput.classCount
+        guard coords.shape[0].intValue == n, coords.shape[1].intValue >= 4, conf.shape[1].intValue >= k else { return nil }
+        if n == 0 { return ([], []) }
+        guard let c = StridedMultiArray.with(conf, { m in (0..<n * k).map { Float(m[$0 / k, $0 % k]) } }),
+              let b = StridedMultiArray.with(coords, { m in (0..<n * 4).map { Float(m[$0 / 4, $0 % 4]) } }) else { return nil }
+        return (c, b)
     }
 }
 
