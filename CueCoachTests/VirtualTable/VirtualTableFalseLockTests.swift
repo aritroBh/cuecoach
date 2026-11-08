@@ -23,13 +23,26 @@ struct VirtualTableFalseLockTests {
     }
 }
 
+extension VirtualTableFalseLockTests {
+    /// r3 development matrix: a 1.4 × 0.7 m 2:1 patch in the bar scene locked 1.8 m away once a three-rail
+    /// refit was allowed. Too small for any table, and three-rail fits must land on a preset.
+    @Test(arguments: [UInt64(12), 19])
+    func barComboSmallPatchIsNoTable(seed: UInt64) async throws {
+        let s = VTSetup.make(try Self.condition("bar-rive-combo"), seed: seed)
+        var cache: [Int: VTFrame] = [:]
+        var thumb: VTFrame?
+        let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
+        #expect(!r.falseLock, "seed \(seed): false lock, corner error \((r.cornerErr ?? 0) * 100) cm")
+    }
+}
+
 /// Per-frame Auto dump for one session (opt-in: VQA_TRACE=cond:seed).
 struct VirtualTableTrace {
     @Test func trace() async throws {
         guard let spec = ProcessInfo.processInfo.environment["VQA_TRACE"] else { return }
         let outDir = ProcessInfo.processInfo.environment["VQA_OUT"]
         nonisolated(unsafe) var lastMask: (AutoMask, AutoMask)?
-        ClassicalAutoTableLocator.debugMaskSink = { lastMask = ($0, $1) }
+        ClassicalAutoTableLocator.debugMaskSink = { lastMask = ($0, $1); print("[trace] model m1 \($2.m1) m2 \($2.m2) s1 \($2.s1) s2 \($2.s2) mI \($2.mI) neutral \($2.neutral)") }
         defer { ClassicalAutoTableLocator.debugMaskSink = nil }
         let p = spec.split(separator: ":").map(String.init)
         let s = VTSetup.make(try VirtualTableFalseLockTests.condition(p[0]), seed: UInt64(p[1])!)

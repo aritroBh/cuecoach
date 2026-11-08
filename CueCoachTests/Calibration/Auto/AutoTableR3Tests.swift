@@ -19,6 +19,12 @@ struct AutoTableR3Tests {
         #expect(AutoRectFitter.sizeVerdict(length: 1.80, width: 0.90) == .measured)
     }
 
+    @Test func aTwoToOneThingSmallerThanABarBoxIsNoTable() {
+        // VirtualTable bar-rive-combo seeds 12/19: a 1.40 × 0.70 m 2:1 patch locked 1.8 m off.
+        #expect(AutoRectFitter.sizeVerdict(length: 1.40, width: 0.70) == .implausibleSize)
+        #expect(AutoRectFitter.sizeVerdict(length: 3.2, width: 1.6) == .implausibleSize)
+    }
+
     @Test func cueShadowShortenedNineFootIsNotASize() {
         // r5 matrix, seed 12: the shadow edge stood in for the foot rail. Free fit 2.36 × 1.255 m:
         // (L + 2W)/2 = 2.435 sits midway between 8 ft (2.337) and 9 ft (2.54), and L/W = 1.88 is not 2:1.
@@ -52,5 +58,78 @@ struct AutoAdapterSizeTrustTests {
             #expect(AutoTableLocating.sizeIsTrusted(Self.pose(measuredLength: L, measuredWidth: L / 2, snapped: s)))
         }
         #expect(AutoTableLocating.sizeIsTrusted(Self.pose(measuredLength: 1.80, measuredWidth: 0.90, snapped: nil)))
+    }
+}
+
+/// An occluder (torso, cue shadow, person) splits the cloth: the table is the largest component plus the
+/// large pieces right next to it, not the largest piece alone.
+struct AutoTableComponentTests {
+    static func mask(_ w: Int, _ h: Int, _ rects: [(Int, Int, Int, Int)]) -> AutoMask {
+        var b = [UInt8](repeating: 0, count: w * h)
+        for (x0, y0, x1, y1) in rects { for y in y0..<y1 { for x in x0..<x1 { b[y * w + x] = 1 } } }
+        return AutoMask(width: w, height: h, stride: 4, bits: b)
+    }
+
+    @Test func splitClothIsMergedAcrossAnOccluder() {
+        // Cloth 10…90 × 20…60 cut by a 6-cell occluder band at x 46…52; a far rug at 100…115.
+        let m = Self.mask(120, 80, [(10, 20, 46, 60), (52, 20, 90, 60), (100, 5, 115, 15)])
+        let (t, n) = AutoClothSegmenter.tableComponent(m, maxGap: 10, minFraction: 0.15)
+        #expect(n == 36 * 40 + 38 * 40)
+        #expect(t.bits[30 * 120 + 20] == 1 && t.bits[30 * 120 + 80] == 1)
+        #expect(t.bits[10 * 120 + 105] == 0)
+    }
+
+    @Test func smallOrDistantPiecesStayOut() {
+        let m = Self.mask(120, 80, [(10, 20, 60, 60), (63, 20, 66, 23), (90, 20, 118, 60)])
+        let (t, n) = AutoClothSegmenter.tableComponent(m, maxGap: 10, minFraction: 0.15)
+        #expect(n == 50 * 40)
+        #expect(t.bits[21 * 120 + 64] == 0)   // too small
+        #expect(t.bits[30 * 120 + 100] == 0)  // 30 cells away
+    }
+}
+
+/// ARKit often finds the floor before a low-texture cloth (VirtualTable felt-grey: the plane hint under the image
+/// centre was the floor, so the cloth model was learned from the floor). LiDAR sees the table level anyway.
+struct AutoTableFloorHintTests {
+    @Test func floorPlaneHintIsCorrectedToTheTableLevel() throws {
+        let scene = AutoSyntheticScene()
+        let run = autoRun(scene, elevation: 35, frames: 14, planeBias: -scene.clothHeight)
+        let cam = scene.camera(elevationDeg: 35)
+        let f = scene.frame(cameraToWorld: cam, seed: 3)
+        let levels = AutoPlaneRefiner.horizontalLevels(depth: f.depth!, camera: AutoCamera(intrinsics: f.intrinsics, cameraToWorld: cam),
+                                                       imageWidth: f.image.width, imageHeight: f.image.height)
+        print("[autocal] floor hint: levels \(levels.map { ($0.level, $0.share) }), rejections \(run.perFrame.map { $0.frame.rejection ?? "ok" })")
+        let pose = try #require(run.estimate.pose)
+        #expect(run.estimate.state == .locked)
+        #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.01)
+    }
+
+    @Test func greyClothWithAFloorHintLocks() throws {
+        var scene = AutoSyntheticScene()
+        scene.feltColor = (150, 150, 146)
+        scene.floorColor = (120, 120, 118)
+        let run = autoRun(scene, elevation: 35, frames: 14, planeBias: -scene.clothHeight)
+        if let pose = run.estimate.pose, run.estimate.state == .locked {
+            #expect(AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners) < 0.02)
+        }
+        #expect(run.estimate.state == .locked)
+    }
+}
+
+/// One rail edge confused (VirtualTable light-lamp: frames rejected on reprojection while the other three rails
+/// fit to ~1 cm): the frame is measured from the three good rails, never sized from the bad one.
+struct AutoTableBadRailTests {
+    @Test func aCueAlongOneRailDoesNotBlockTheLock() throws {
+        var scene = AutoSyntheticScene()
+        let L = scene.spec.length, W = scene.spec.width
+        // A cue lying on the cloth 3 cm inside the far long rail, most of its length.
+        scene.occluders = [(0.25, L - 0.25, W - 0.05, W - 0.03, 0.0, 0.025)]
+        let run = autoRun(scene, elevation: 35, frames: 16)
+        let pose = try #require(run.estimate.pose)
+        let err = AutoTestMetrics.maxCornerError(pose.corners, scene.trueCorners)
+        print("[autocal] cue along a rail: \(run.estimate.state), err \(err * 1000) mm, dropped \(run.perFrame.compactMap(\.frame.droppedRail).count), rejections \(Set(run.perFrame.compactMap(\.frame.rejection)))")
+        #expect(run.estimate.state == .locked)
+        #expect(pose.snappedSize == scene.size)
+        #expect(err < 0.015)
     }
 }

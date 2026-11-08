@@ -142,6 +142,43 @@ enum AutoClothSegmenter {
         return AutoMask(width: w, height: h, stride: m.stride, bits: out)
     }
 
+    /// The table's cloth: the largest 4-connected component plus every component of at least `minFraction` of its
+    /// size whose bounding box lies within `maxGap` cells of it (an occluder or shadow band splits the cloth;
+    /// the convex hull of the merged outline bridges it). Returns the merged mask and its pixel count.
+    static func tableComponent(_ m: AutoMask, maxGap: Int, minFraction: Double) -> (AutoMask, Int) {
+        let w = m.width, h = m.height, n = w * h
+        var label = [Int32](repeating: 0, count: n)
+        var stack = [Int32]()
+        struct Comp { var size = 0; var x0 = Int.max, y0 = Int.max, x1 = -1, y1 = -1 }
+        var comps: [Comp] = [Comp()]
+        for i in 0..<n where m.bits[i] != 0 && label[i] == 0 {
+            let id = Int32(comps.count)
+            var c = Comp()
+            label[i] = id; stack.append(Int32(i))
+            while let jj = stack.popLast() {
+                let j = Int(jj), x = j % w, y = j / w
+                c.size += 1; c.x0 = min(c.x0, x); c.x1 = max(c.x1, x); c.y0 = min(c.y0, y); c.y1 = max(c.y1, y)
+                for k in [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, y > 0 ? j - w : -1, y < h - 1 ? j + w : -1]
+                where k >= 0 && m.bits[k] != 0 && label[k] == 0 { label[k] = id; stack.append(Int32(k)) }
+            }
+            comps.append(c)
+        }
+        guard comps.count > 1, let best = comps.indices.dropFirst().max(by: { comps[$0].size < comps[$1].size }) else {
+            return (AutoMask(width: w, height: h, stride: m.stride, bits: [UInt8](repeating: 0, count: n)), 0)
+        }
+        let b = comps[best]
+        var keep = Set([best])
+        for i in comps.indices.dropFirst() where i != best && Double(comps[i].size) >= minFraction * Double(b.size) {
+            let c = comps[i]
+            let gx = max(0, max(c.x0 - b.x1, b.x0 - c.x1)), gy = max(0, max(c.y0 - b.y1, b.y0 - c.y1))
+            if gx <= maxGap && gy <= maxGap { keep.insert(i) }
+        }
+        var out = [UInt8](repeating: 0, count: n)
+        var total = 0
+        for i in 0..<n where keep.contains(Int(label[i])) && label[i] != 0 { out[i] = 1; total += 1 }
+        return (AutoMask(width: w, height: h, stride: m.stride, bits: out), total)
+    }
+
     /// Largest 4-connected component (mask with only that component set), and its pixel count.
     static func largestComponent(_ m: AutoMask) -> (AutoMask, Int) {
         let w = m.width, h = m.height, n = w * h

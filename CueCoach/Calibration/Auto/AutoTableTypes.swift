@@ -183,6 +183,8 @@ struct AutoFrameDiagnostics: Sendable {
     var measuredLength: Double?
     var measuredWidth: Double?
     var snappedSize: TableSize?
+    /// A rail left out of this frame's fit because its edge disagreed with the other three (index into railLines).
+    var droppedRail: Int?
     var processingSeconds: Double = 0
     var rejection: String?
 }

@@ -123,7 +123,10 @@ enum AutoRectFitter {
         return (r, rms)
     }
 
-    enum SizeVerdict: Equatable { case preset(TableSize), measured, ambiguous, notTwoToOne }
+    enum SizeVerdict: Equatable { case preset(TableSize), measured, ambiguous, notTwoToOne, implausibleSize }
+
+    /// Playing lengths a real table can have off-preset: a 6 ft bar box (≈ 1.68 m) up to a 10 ft / snooker-ish 2.9 m.
+    static let plausibleLength: ClosedRange<Double> = 1.6...2.9
 
     /// Size evidence of one free fit. Pool tables are 2:1 nose to nose, so a fit far off 2:1 has a false rail
     /// (a shadow or occluder edge standing in for one) and gives no size. The tolerance is loose on purpose: at
@@ -136,7 +139,7 @@ enum AutoRectFitter {
         let est = (L + 2 * W) / 2
         let e = TableSize.allCases.map { (size: $0, err: abs($0.playingLength - est) / $0.playingLength) }
             .sorted { $0.err < $1.err }
-        guard e[0].err <= 0.06 else { return .measured }
+        guard e[0].err <= 0.06 else { return plausibleLength.contains(est) ? .measured : .implausibleSize }
         if e.count > 1, e[1].err <= 0.06, e[1].err - e[0].err < ambiguityMargin { return .ambiguous }
         return .preset(e[0].size)
     }
@@ -222,6 +225,42 @@ enum AutoPlaneRefiner {
         let near = hs.filter { abs($0 - m0) < 0.01 }
         guard Double(near.count) >= 0.6 * Double(hs.count) else { return nil }
         return (autoMedian(near), near.count)
+    }
+
+    /// Horizontal surfaces LiDAR sees (world y with their share of the samples, largest share first): 1 cm
+    /// histogram peaks of trusted samples holding ≥ `minShare`. Walls and people spread over heights: no peak.
+    static func horizontalLevels(depth: AutoDepthMap, camera: AutoCamera, imageWidth: Int, imageHeight: Int,
+                                 minShare: Double = 0.06) -> [(level: Double, share: Double)] {
+        let sx = Double(imageWidth) / Double(depth.width), sy = Double(imageHeight) / Double(depth.height)
+        let top = camera.position.y - 0.15, bottom = camera.position.y - 2.5
+        let bins = Int((top - bottom) / 0.01)
+        guard bins > 4 else { return [] }
+        var hist = [Int](repeating: 0, count: bins)
+        var ys: [Double] = []
+        var n = 0
+        for v in Swift.stride(from: 0, to: depth.height, by: 3) {
+            for u in Swift.stride(from: 0, to: depth.width, by: 3) {
+                let i = v * depth.width + u
+                if let c = depth.confidence, c[i] < 1 { continue }
+                let z = Double(depth.depth[i])
+                guard z > 0.1, z < 8 else { continue }
+                let y = camera.unproject(AutoP2((Double(u) + 0.5) * sx - 0.5, (Double(v) + 0.5) * sy - 0.5), depth: z).y
+                let b = Int((y - bottom) / 0.01)
+                guard b >= 0, b < bins else { continue }
+                hist[b] += 1; ys.append(y); n += 1
+            }
+        }
+        guard n >= 100 else { return [] }
+        // 3-bin smoothing, then local maxima above the share threshold.
+        let sm = (0..<bins).map { i in (max(0, i - 1)...min(bins - 1, i + 1)).reduce(0) { $0 + hist[$1] } }
+        var levels: [(level: Double, share: Double)] = []
+        for i in 0..<bins where Double(sm[i]) >= minShare * Double(n)
+            && (i == 0 || sm[i] >= sm[i - 1]) && (i == bins - 1 || sm[i] > sm[i + 1]) {
+            let c = bottom + (Double(i) + 0.5) * 0.01
+            let near = ys.filter { abs($0 - c) < 0.02 }
+            levels.append((near.isEmpty ? c : autoMedian(near), Double(sm[i]) / Double(n)))
+        }
+        return levels.sorted { $0.share > $1.share }
     }
 
     /// Depth gate on the depth grid: 1 = within `tolerance` of the plane (or untrusted), 0 = clearly off it.
