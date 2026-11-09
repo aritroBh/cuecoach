@@ -14,7 +14,10 @@ import Testing
 ///  - the aim state machine: the exact expected aimStarted / aimEnded / aimCancelled hooks per call, in order;
 ///  - each shot's look (its own window, freezes, sightings, observed-empty frames) → verdicts, and the confirm /
 ///    answers → the FULL expected resolved ShotRecord, compared with `==`;
-///  - the expected FIFO (shots in end order, relock-lost entries).
+///  - the expected FIFO (shots in end order, relock-lost entries);
+///  - D31: the table's last quiet pre-shot rule-id state, the lost shot's look over quiet post-relock frames, and the
+///    FULL expected best-guess record (or none: no state, cut short, no anchor) for the shot in flight at a relock;
+///  - D33: a stick near the cue ball (alone, no line, no wrists) is aim evidence.
 /// Checked after every call: hooks exactly as expected; no close during a reset, physical motion or aim evidence, or
 /// before a quiet frame since the last relock; each close is the next entry, of the right kind (a recorded shot rated
 /// via settled, a lost entry unrated via ballsSettled), with exactly its
@@ -35,6 +38,9 @@ struct ShotLifecycleInvariantTests {
     }
 
     nonisolated static let ruleIDs: [Int: BallID] = [1: .cue, 2: BallID(3)!, 3: BallID(11)!, 4: BallID(5)!]
+    /// D31 table balls (never in a generated record): rule id → fixed spot. Their track ids change on every relock.
+    nonisolated static let tableBalls: [(BallID, Vec2)] = [(BallID(1)!, Vec2(0.3, 0.75)), (BallID(2)!, Vec2(1.7, 0.15)),
+                                                         (BallID(9)!, Vec2(0.95, 0.9))]
 
     // MARK: Oracle spec models
 
@@ -79,10 +85,59 @@ struct ShotLifecycleInvariantTests {
         }
     }
 
+    /// D31 spec model of a lost shot's best guess, from generated inputs only.
+    struct Guess {
+        var before: [BallID: Vec2]
+        var lastSeen: [BallID: Vec2]
+        var start: Double
+        var windowStart: Double?
+        var frames = 0
+        var covered: [BallID: Int] = [:]
+        var seen: Set<BallID> = []
+        var uncertain = false
+        var frozen = false
+        var end: Double?
+        var done: Bool { frozen || end != nil }
+
+        /// The pocket nearest where a pre-shot ball was last measured (7 ft spec, ties to the earlier Pocket case).
+        func pocket(_ id: BallID) -> Pocket {
+            let spec = TableSpec(size: .sevenFoot)
+            let at = lastSeen[id] ?? before[id]!
+            var best = Pocket.allCases[0]
+            for pk in Pocket.allCases where spec.pocketCenter(pk).distance(to: at) < spec.pocketCenter(best).distance(to: at) { best = pk }
+            return best
+        }
+        mutating func observe(_ r: PerceptionResult) {
+            if windowStart == nil { windowStart = r.timestamp }
+            frames += 1
+            for id in before.keys where r.pocketsInView.contains(pocket(id)) { covered[id, default: 0] += 1 }
+            for b in r.tracks where b.confirmed && b.measured {
+                if let id = r.ballIDs[b.id] { seen.insert(id) } else { uncertain = true }
+            }
+            if r.timestamp - windowStart! >= 1.0 { end = r.timestamp }
+        }
+        /// nil = the lost shot closes unrated.
+        var expected: ShotRecord? {
+            guard !frozen, let end, before.keys.contains(where: { seen.contains($0) }) else { return nil }
+            var pocketed: [Int: Pocket] = [:]
+            if !uncertain {
+                // Confidently gone only: never seen, and its pocket in view on >= 80 % of the look's frames.
+                for id in before.keys where !seen.contains(id) && frames > 0 && 5 * (covered[id] ?? 0) >= 4 * frames {
+                    pocketed[id.number] = pocket(id)
+                }
+            }
+            var pre: [Int: Vec2] = [:]
+            for (id, p) in before { pre[id.number] = p }
+            return ShotRecord(start: start, end: end, preState: pre, finalState: [:], cueID: 0, firstContact: nil,
+                              rails: [], pocketed: pocketed)
+        }
+    }
+
     struct Entry {
         var record: ShotRecord?        // nil = lost
         var look: Look?
         var answers: [Int: Bool] = [:]
+        var guess: Guess? = nil
         var expectedResolved: ShotRecord? {
             guard var rec = record, let look else { return nil }
             for (tid, pk) in look.candidates {
@@ -105,6 +160,9 @@ struct ShotLifecycleInvariantTests {
         var confirm: (entry: Int, tid: Int)?
         var awaiting: Bool?
         var closeAllowed = false
+        // D31 spec state
+        var tableBefore: [BallID: Vec2]?
+        var lastSeen: [BallID: Vec2] = [:]
         var violations: [String] = []
         var context = ""
         static var tally: [String: (Int, String)] = [:]
@@ -132,7 +190,7 @@ struct ShotLifecycleInvariantTests {
                 return was ? ["end"] : ["start", "end"]
             }
             switch phase {
-            case .idle: if rest && evidence { phase = .aiming; return ["start"] }
+            case .idle: if evidence { phase = .aiming; return ["start"] }      // at rest or not (Grok 4.7 finding 3)
             case .aiming:
                 if evidence { lostAt = nil }
                 else if let l = lostAt { if t - l > 1.0 { phase = .idle; lostAt = nil; return ["cancel"] } }
@@ -166,7 +224,7 @@ struct ShotLifecycleInvariantTests {
         }
     }
 
-    func frame(_ t: Double, atRest: Bool, onset: Bool, velocity: Bool, cueMeasured: Bool, evidence: (addr: Bool, live: Bool),
+    func frame(_ t: Double, atRest: Bool, onset: Bool, velocity: Bool, cueMeasured: Bool, evidence: (addr: Bool, live: Bool, stick: Bool),
                started: Bool = false, shot: ShotRecord? = nil, extra: [TrackedBall] = [], occupied: Set<Pocket> = [],
                inView: Set<Pocket> = Set(Pocket.allCases)) -> PerceptionResult {
         var cue = TrackedBall(id: 1, position: Vec2(1.2, 0.6), velocity: velocity ? Vec2(0.8, 0) : .zero, kind: .cue,
@@ -177,6 +235,7 @@ struct ShotLifecycleInvariantTests {
         r.motionOnset = onset
         r.shooterAddressing = evidence.addr
         if evidence.live { r.liveAim = LiveAimTrace(cue: .zero, end: Vec2(1, 0), hitIndex: nil, ghost: nil, objectDirection: nil) }
+        r.stickNearCue = evidence.stick
         r.shotStarted = started
         r.shot = shot
         r.ballIDs = Self.ruleIDs
@@ -192,13 +251,23 @@ struct ShotLifecycleInvariantTests {
         #expect(result.violations.isEmpty, "\(result.violations.prefix(10))")
     }
 
+    /// A second seed (Grok 4.7 review round), so the D31/D33 cases aren't tuned to one stream.
+    @Test func randomSequencesKeepTheShellContractSecondSeed() {
+        let result = Self.run(seed: 0xC0FFEE_D34, sequences: Self.sequences)
+        print(result.summary)
+        for (k, v) in result.tally.sorted(by: { $0.key < $1.key }) { print("[invariants] violation \(k): \(v.0)× first: \(v.1)") }
+        #expect(result.violations.isEmpty, "\(result.violations.prefix(10))")
+    }
+
     static func run(seed: UInt64, sequences: Int) -> (summary: String, violations: [String], tally: [String: (Int, String)]) {
         let me = ShotLifecycleInvariantTests()
         Oracle.tally = [:]
         var rng = RNG(s: seed)
         var st = (frames: 0, shots: 0, lost: 0, resets: 0, taps: 0, answered: 0, onsetOnly: 0, notAtRestOnly: 0,
                   velocityOnly: 0, dropoutOnly: 0, compared: 0, endWithOnset: 0,
-                  flicker: 0, grace: 0, runInWindow: 0, runPast: 0)
+                  flicker: 0, grace: 0, runInWindow: 0, runPast: 0,
+                  lostGuessed: 0, lostUnrated: 0, guessedPocketed: 0, guessedUncertain: 0, lostNoState: 0, stickOnly: 0,
+                  stickHoldEpisodes: 0, guessedDuringAim: 0, hiddenEpisodes: 0, notCovered: 0, creepAims: 0)
         var violations: [String] = []
         for seq in 0..<sequences {
             let m = LiveModel(mode: .game)
@@ -230,7 +299,19 @@ struct ShotLifecycleInvariantTests {
                 let e = o.entries[id]
                 o.closed += 1
                 switch (e.record, rec) {
-                case (nil, nil): if rated { o.fail("close-kind", "seq \(seq): lost entry \(id) closed rated") }
+                case (nil, let got):
+                    // D31: the shot in flight at a relock closes on its best guess, else unrated.
+                    if let want = e.guess?.expected {
+                        st.lostGuessed += 1; st.compared += 1
+                        st.guessedPocketed += want.pocketed.count
+                        if e.guess?.uncertain == true { st.guessedUncertain += 1 }
+                        if let g = e.guess, !g.uncertain { st.notCovered += g.before.keys.filter { !g.seen.contains($0) }.count - want.pocketed.count }
+                        if !rated { o.fail("close-kind", "seq \(seq): lost entry \(id) with a guess closed unrated") }
+                        if got != want { o.fail("guess-record", "seq \(seq): lost entry \(id) guessed \(String(describing: got?.pocketed)) start \(String(describing: got?.start)) end \(String(describing: got?.end)) want \(want.pocketed) start \(want.start) end \(want.end)") }
+                    } else {
+                        st.lostUnrated += 1
+                        if rated || got != nil { o.fail("close-kind", "seq \(seq): lost entry \(id) without a guess closed rated") }
+                    }
                 case (.some, let got?):
                     if !rated { o.fail("close-kind", "seq \(seq): recorded entry \(id) closed unrated") }
                     let want = e.expectedResolved
@@ -245,6 +326,29 @@ struct ShotLifecycleInvariantTests {
             var lastQuiet = true, clearSinceReset = true, resetSinceFrame = false
             var cueLastMeasuredAt: Double? = nil          // the oracle's own continuity clock (no prior measurement yet)
             var dropLeft = 0, holdAim = 0, gapLeft = 0    // generator: dropout run / sustained aim with flicker
+            // D31 generator: table balls on the table, the tracker epoch (track ids), an unidentified ball for a while.
+            var present = Set(Self.tableBalls.map(\.0)), epoch = 0
+            var unidentified: BallID? = nil, unidentifiedLeft = 0
+            // Review findings: the next shooter down on the cue ball through a lost shot's look, then a stroke (1); a
+            // pocket out of view for a while, fully or partly (2).
+            var stickHold = 0, strokeAfterHold = false
+            var hidden: Pocket? = nil, hiddenLeft = 0, hideP = 1.0
+            func occlude(_ r: inout PerceptionResult) {
+                guard hiddenLeft > 0, let h = hidden else { return }
+                hiddenLeft -= 1
+                if rng.chance(hideP) { r.pocketsInView.remove(h) }
+            }
+            func tableTracks(miss: Double) -> ([TrackedBall], [Int: BallID]) {
+                var tracks: [TrackedBall] = [], ids: [Int: BallID] = [:]
+                for (k, (id, at)) in Self.tableBalls.enumerated() where present.contains(id) && !rng.chance(miss) {
+                    let tid = 20 + 10 * epoch + k
+                    tracks.append(TrackedBall(id: tid, position: at, velocity: .zero, kind: .solid, tentativeNumber: id.number,
+                                              confirmed: true))
+                    if !(unidentified == id && unidentifiedLeft > 0) { ids[tid] = id }
+                }
+                if unidentifiedLeft > 0 { unidentifiedLeft -= 1 }
+                return (tracks, ids)
+            }
 
             func checkAim(_ want: [String], _ what: String) {
                 if o.actualAim != want { o.fail("aim-hooks", "seq \(seq) t \(String(format: "%.2f", t)) \(what): hooks \(o.actualAim) want \(want)") }
@@ -252,7 +356,8 @@ struct ShotLifecycleInvariantTests {
             }
 
             func drive(_ r: PerceptionResult, phys: Bool) {
-                let evidence = r.shooterAddressing || r.liveAim != nil
+                let evidence = r.shooterAddressing || r.liveAim != nil || r.stickNearCue
+                if r.stickNearCue && !r.shooterAddressing && r.liveAim == nil { st.stickOnly += 1 }
                 let cueMeasured = r.tracks.first { $0.id == 1 }?.measured ?? true
                 // Partial dropout: unmeasured within 0.3 s of the cue's last measurement (the oracle's own clock).
                 let dropout = !cueMeasured && (cueLastMeasuredAt.map { r.timestamp - $0 <= 0.3 } ?? false)
@@ -264,6 +369,18 @@ struct ShotLifecycleInvariantTests {
                 // Quiet AFTER the expected aim update: a retained aim (the 1 s evidence-loss grace) is not quiet.
                 let quietNow = o.phase == .idle && !evidence && !signal && clearSinceReset
                 if o.phase == .aiming && !evidence && !signal { st.grace += 1 }
+                // D31 spec: pre-shot table state, last measured spots, the lost shot's look.
+                for b in r.tracks where b.confirmed && b.measured { if let id = r.ballIDs[b.id] { o.lastSeen[id] = b.position } }
+                if o.phase != .moving && !signal && !r.shotStarted && r.shot == nil {
+                    var tb: [BallID: Vec2] = [:]
+                    for b in r.tracks where b.confirmed { if let id = r.ballIDs[b.id] { tb[id] = b.position } }
+                    o.tableBefore = tb
+                }
+                if let i = o.entries.indices.first(where: { o.entries[$0].guess.map { !$0.done } ?? false }) {
+                    if r.shotStarted || r.shot != nil { o.entries[i].guess!.frozen = true }
+                    // Every still frame with a measured ball, aim or not (Grok 4.7 finding 1).
+                    else if o.phase != .moving && !signal && r.tracks.contains(where: { $0.confirmed && $0.measured }) { o.entries[i].guess!.observe(r) }
+                }
                 o.closeAllowed = quietNow
                 o.context = phys ? (r.atRest ? "physical motion with atRest=true" : "physical motion")
                     : (evidence ? "aim evidence" : (signal ? "a motion signal" : (o.phase != .idle ? "the aim grace (\(o.phase))"
@@ -297,38 +414,54 @@ struct ShotLifecycleInvariantTests {
                     if rng.chance(0.5) { rec.uncertainPockets[4] = rng.pick(Pocket.allCases) }
                     if rng.chance(0.1) { rec.missing = [3] }
                     st.shots += 1
-                    let ev = windDown ? (false, false) : (rng.chance(0.3), false)
+                    let ev = windDown ? (false, false, false) : (rng.chance(0.3), false, rng.chance(0.1))
                     let inView = rng.chance(0.4) ? Set(Pocket.allCases).subtracting([rng.pick(Pocket.allCases)]) : Set(Pocket.allCases)
                     // Sometimes the end frame already carries the next motion's raw onset (and a ball in the jaws).
                     let onsetAtEnd = !windDown && rng.chance(0.15)
                     if onsetAtEnd { st.endWithOnset += 1 }
-                    drive(me.frame(t, atRest: true, onset: onsetAtEnd, velocity: false, cueMeasured: true, evidence: ev,
-                                   shot: rec, occupied: onsetAtEnd && rng.chance(0.5) ? Set(rec.pocketed.values) : [],
-                                   inView: inView), phys: onsetAtEnd)
+                    let (tb, tbIDs) = tableTracks(miss: 0.08)
+                    var end = me.frame(t, atRest: true, onset: onsetAtEnd, velocity: false, cueMeasured: true, evidence: ev,
+                                       shot: rec, extra: tb, occupied: onsetAtEnd && rng.chance(0.5) ? Set(rec.pocketed.values) : [],
+                                       inView: inView)
+                    end.ballIDs.merge(tbIDs) { a, _ in a }
+                    drive(end, phys: onsetAtEnd)
                     return
                 }
                 if windDown {
                     dropLeft = 0; holdAim = 0; gapLeft = 0
-                    drive(me.frame(t, atRest: true, onset: false, velocity: false, cueMeasured: true,
-                                             evidence: (false, false)), phys: false)
+                    let (tb, tbIDs) = tableTracks(miss: 0.05)
+                    var q = me.frame(t, atRest: true, onset: false, velocity: false, cueMeasured: true,
+                                     evidence: (false, false, false), extra: tb)
+                    q.ballIDs.merge(tbIDs) { a, _ in a }
+                    occlude(&q)
+                    drive(q, phys: false)
                     return
                 }
                 // Aim evidence: random, or a sustained aim (entered while the spec is aiming) with 1-3 frame flickers.
-                var evidence = (rng.chance(0.2), rng.chance(0.08))
+                var evidence = (rng.chance(0.2), rng.chance(0.08), rng.chance(0.08))
                 if holdAim > 0 {
                     holdAim -= 1
-                    if gapLeft > 0 { gapLeft -= 1; evidence = (false, false); st.flicker += 1 }
-                    else if rng.chance(0.25) { gapLeft = Int(rng.next() % 3); evidence = (false, false); st.flicker += 1 }
-                    else { evidence = (true, rng.chance(0.3)) }
+                    if gapLeft > 0 { gapLeft -= 1; evidence = (false, false, false); st.flicker += 1 }
+                    else if rng.chance(0.25) { gapLeft = Int(rng.next() % 3); evidence = (false, false, false); st.flicker += 1 }
+                    else if rng.chance(0.3) { evidence = (false, false, true) }          // D33: only the stick by the cue ball
+                    else { evidence = (true, rng.chance(0.3), rng.chance(0.3)) }
                 } else if o.phase == .aiming && rng.chance(0.4) {
                     holdAim = 5 + Int(rng.next() % 16)
                 }
+                let holding = stickHold > 0
+                if holding { stickHold -= 1; evidence = (false, false, true); if stickHold == 0 { strokeAfterHold = true } }
+                let stroke = !holding && strokeAfterHold
+                if stroke { strokeAfterHold = false }
                 let canDrop = cueLastMeasuredAt.map { t - $0 <= 0.3 } ?? false
                 // Physical motion, then which signals report it, drawn independently (with sole-signal cases).
                 // A dropout run (1-6 unmeasured frames) is motion only while within 0.3 s of the last measurement.
                 var phys: Bool
                 var onset = false, notAtRest = false, velocity = false, dropout = false
-                if dropLeft > 0 {
+                if holding {
+                    phys = false                                                   // still balls, stick down
+                } else if stroke {
+                    phys = true; onset = true                                      // the stroke
+                } else if dropLeft > 0 {
                     dropLeft -= 1
                     dropout = true
                     phys = canDrop
@@ -355,7 +488,8 @@ struct ShotLifecycleInvariantTests {
                     notAtRest = rng.chance(0.12)                                   // the rest bit lags after motion
                 }
                 }
-                let started = !inFlight && phys && rng.chance(0.25)
+                let started = !inFlight && phys && (stroke || rng.chance(0.25))
+                if evidence.0 || evidence.1 || evidence.2, o.phase == .idle, phys { st.creepAims += 1 }
                 var extra: [TrackedBall] = []
                 var occupied: Set<Pocket> = []
                 var ids: [Int: BallID] = [:]
@@ -365,11 +499,15 @@ struct ShotLifecycleInvariantTests {
                                              tentativeNumber: id == 2 ? 3 : (id == 3 ? 11 : 5), confirmed: true))
                     ids[10 + id] = ruleIDs[id]
                 }
+                let (tb, tbIDs) = tableTracks(miss: rng.chance(0.05) ? 1 : 0.08)
+                extra += tb
+                ids.merge(tbIDs) { a, _ in a }
                 if rng.chance(0.06) { occupied = [rng.pick(Pocket.allCases)] }
                 var r = me.frame(t, atRest: !notAtRest, onset: onset, velocity: velocity, cueMeasured: !dropout,
                                  evidence: evidence, started: started, extra: extra, occupied: occupied,
                                  inView: rng.chance(0.2) ? Set(Pocket.allCases).subtracting([rng.pick(Pocket.allCases)]) : Set(Pocket.allCases))
                 r.ballIDs.merge(ids) { a, _ in a }
+                occlude(&r)
                 drive(r, phys: phys)
             }
 
@@ -377,8 +515,27 @@ struct ShotLifecycleInvariantTests {
                 let u = rng.unit()
                 if u < 0.04 {
                     st.resets += 1
-                    for i in o.closed..<o.entries.count { o.entries[i] = Entry(record: nil) }
-                    if inFlight { o.entries.append(Entry(record: nil)); st.lost += 1 }
+                    for i in o.closed..<o.entries.count {
+                        if o.entries[i].record != nil { o.entries[i] = Entry(record: nil) }      // a held shot: unrated
+                        else if var g = o.entries[i].guess, !g.done {                             // look again
+                            g.windowStart = nil; g.frames = 0; g.covered = [:]; g.seen = []; g.uncertain = false; o.entries[i].guess = g
+                        }
+                    }
+                    if inFlight {
+                        let g = o.tableBefore.flatMap { $0.isEmpty ? nil : Guess(before: $0, lastSeen: o.lastSeen, start: t) }
+                        if g == nil { st.lostNoState += 1 }
+                        o.entries.append(Entry(record: nil, guess: g)); st.lost += 1
+                        // The lost shot pocketed some table balls; maybe one comes back with unsettled identity votes.
+                        for (id, _) in Self.tableBalls where present.contains(id) && rng.chance(0.35) { present.remove(id) }
+                        if rng.chance(0.3), !present.isEmpty { unidentified = rng.pick(present.sorted()); unidentifiedLeft = 3 + Int(rng.next() % 28) }
+                        if rng.chance(0.35) { stickHold = 18 + Int(rng.next() % 25); st.stickHoldEpisodes += 1 }
+                        if rng.chance(0.45), let g, let id = g.before.keys.sorted().first(where: { _ in rng.chance(0.5) }) ?? g.before.keys.sorted().last {
+                            hidden = g.pocket(id); hiddenLeft = 15 + Int(rng.next() % 40); hideP = rng.pick([1.0, 0.5, 0.15])
+                            st.hiddenEpisodes += 1
+                        }
+                    }
+                    o.tableBefore = nil; o.lastSeen = [:]
+                    epoch += 1
                     let want: [String] = o.phase == .aiming ? ["cancel"] : []
                     o.phase = .idle; o.lostAt = nil
                     o.closeAllowed = false
@@ -407,7 +564,8 @@ struct ShotLifecycleInvariantTests {
             }
             // Wind down: the segmenter model ends any started shot (≤ 8 s); quiet frames; answer every question.
             var n = 0, quietAfterEnd = 0
-            while (inFlight || quietAfterEnd < 30) && n < 300 {
+            // 50 quiet frames: the 1 s aim grace, then a D31 look's 1 s window.
+            while (inFlight || quietAfterEnd < 50) && n < 300 {
                 nextFrame(windDown: true); n += 1
                 quietAfterEnd = inFlight ? 0 : quietAfterEnd + 1
             }
@@ -431,7 +589,7 @@ struct ShotLifecycleInvariantTests {
             }
             violations += o.violations
         }
-        let summary = "[invariants] seed \(String(seed, radix: 16)) sequences \(sequences) frames \(st.frames) shots \(st.shots) lost \(st.lost) resets \(st.resets) taps \(st.taps) answers \(st.answered) records-compared \(st.compared) sole-signal frames: onset \(st.onsetOnly) not-at-rest \(st.notAtRestOnly) velocity \(st.velocityOnly) dropout \(st.dropoutOnly) shot-end-with-onset \(st.endWithOnset) aim-flicker frames \(st.flicker) grace frames \(st.grace) dropout-run frames in window \(st.runInWindow) past \(st.runPast)"
+        let summary = "[invariants] seed \(String(seed, radix: 16)) sequences \(sequences) frames \(st.frames) shots \(st.shots) lost \(st.lost) resets \(st.resets) taps \(st.taps) answers \(st.answered) records-compared \(st.compared) sole-signal frames: onset \(st.onsetOnly) not-at-rest \(st.notAtRestOnly) velocity \(st.velocityOnly) dropout \(st.dropoutOnly) shot-end-with-onset \(st.endWithOnset) aim-flicker frames \(st.flicker) grace frames \(st.grace) dropout-run frames in window \(st.runInWindow) past \(st.runPast) | D31 lost guessed-rated \(st.lostGuessed) (balls pocketed \(st.guessedPocketed), uncertain \(st.guessedUncertain)) lost unrated \(st.lostUnrated) (no pre-shot state \(st.lostNoState)) (not-covered missing balls kept on the table \(st.notCovered); stick-down-through-look episodes \(st.stickHoldEpisodes), pocket-hidden episodes \(st.hiddenEpisodes)) | D33 stick-only evidence frames \(st.stickOnly), aims opened on evidence during motion (idle) \(st.creepAims)"
         return (summary, violations, Oracle.tally)
     }
 

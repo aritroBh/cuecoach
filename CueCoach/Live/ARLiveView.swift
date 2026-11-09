@@ -459,7 +459,7 @@ final class ARLiveController: NSObject {
             return
         }
         model.noteResult(r)
-        defer { overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
+        defer { overlay?.vis = model.visibility; overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
         if let r {
             // Shot events are haptic only (no audio, no text while aiming).
             if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
@@ -755,7 +755,8 @@ final class TableOverlay {
     static let yellow = AXLive.uiCaution
     static let red = AXLive.uiDanger
 
-    private let vis: OverlayVisibility
+    /// Set from `LiveModel.visibility` every frame (D1: level 4 reveals the full overlay after the shot).
+    var vis: OverlayVisibility
 
     init(frame: TableFrame, visibility: OverlayVisibility = .of(.training(level: AssistLevel.full.rawValue))) {
         vis = visibility

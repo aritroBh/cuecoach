@@ -265,14 +265,16 @@ struct OverlayVisibility: Equatable, Sendable {
     var ratingBadge: Bool
 
     /// Training follows the Training module's policy (`AssistLevel.visibleWhileAiming(in:)`, D1: level 4 shows
-    /// nothing while aiming) with D24's Line 3 only in position play. Rings and the rules helpers always stay.
-    static func of(_ mode: LiveMode, drill: DrillID? = nil) -> OverlayVisibility {
+    /// nothing while aiming; `visibleAfterShot(in:)` once the balls have settled with no aim open: the full overlay)
+    /// with D24's Line 3 only in position play. Rings and the rules helpers always stay; Game mode never changes.
+    static func of(_ mode: LiveMode, drill: DrillID? = nil, afterShot: Bool = false) -> OverlayVisibility {
         switch mode {
         case .game:
             return OverlayVisibility(line1: false, line2: false, line3: false, suggestedGhost: false, shotDock: false,
                                      liveCueLine: false, legalRings: true, illegalWarning: true, ratingBadge: true)
         case .training(let level):
-            let e = (AssistLevel(rawValue: level) ?? .full).visibleWhileAiming(in: drill ?? .straightIn)
+            let lvl = AssistLevel(rawValue: level) ?? .full
+            let e = afterShot ? lvl.visibleAfterShot(in: drill ?? .straightIn) : lvl.visibleWhileAiming(in: drill ?? .straightIn)
             return OverlayVisibility(line1: e.contains(.cueToGhostLine), line2: e.contains(.objectToPocketLine),
                                      line3: e.contains(.cueAfterContactLine) && drill == .positionPlay,
                                      suggestedGhost: e.contains(.ghostBall),
@@ -414,7 +416,9 @@ struct AimEvents: Sendable {
         }
         switch phase {
         case .idle:
-            if atRest && cueVisible { phase = .aiming; return [.aimStarted] }
+            // Aim evidence opens the aim at once, even while a ball still creeps after a settle (Grok 4.7 review,
+            // D33): the shell's badge text and menu must hide the moment a stick is down by the cue ball.
+            if cueVisible { phase = .aiming; return [.aimStarted] }
         case .aiming:
             if cueVisible { cueLostAt = nil }
             else if let l = cueLostAt { if t - l > cancelAfter { phase = .idle; cueLostAt = nil; return [.aimCancelled] } }
@@ -593,4 +597,75 @@ struct PocketConfirm: Equatable, Sendable {
     var trackID: Int
     var pocket: Pocket
     var ball: BallID?
+}
+
+/// D31: a shot lost to a relock (tracking lost mid-shot) is closed on a best guess, never a prompt. `before` is the
+/// table's last known rule-id state (the last still pre-shot frame). After the relock, a look window (`window` s) over
+/// frames at rest with a measured ball, aim or not (closing still waits for a quiet table), records which rule ids are
+/// seen and, per pre-shot ball, how often the pocket nearest where it was last measured was in view. A ball counts
+/// as pocketed (at that pocket) only if it is confidently gone: not seen anywhere in the look, and its pocket in view
+/// on ≥ 80 % of the look's frames (D30's bar). An unidentified measured ball in the look could be any of them, so then
+/// none count (D29). No guess (unrated close) when the look was cut short by a new shot before it finished, or no
+/// pre-shot ball was seen again (not the same table, or nothing to anchor on). A finished look survives the next shot.
+struct LostShotGuess: Sendable {
+    let before: [BallID: Vec2]
+    /// The pocket nearest where each pre-shot ball was last measured (where it would have gone, and what must be seen).
+    let nearest: [BallID: Pocket]
+    let start: Double
+    var window = 1.0
+    var minCoveredShare = 0.8
+    private(set) var windowStart: Double?
+    private(set) var frames = 0
+    private(set) var covered: [BallID: Int] = [:]
+    private(set) var seen: Set<BallID> = []
+    private(set) var uncertain = false
+    private(set) var frozen = false
+    private(set) var end: Double?
+    var done: Bool { frozen || end != nil }
+
+    init(before: [BallID: Vec2], lastSeen: [BallID: Vec2], start: Double, spec: TableSpec) {
+        self.before = before; self.start = start
+        var n: [BallID: Pocket] = [:]
+        for (id, p) in before {
+            let at = lastSeen[id] ?? p
+            n[id] = spec.pockets.min { spec.pocketCenter($0).distance(to: at) < spec.pocketCenter($1).distance(to: at) }
+        }
+        nearest = n
+    }
+
+    /// One still frame of the look (the caller gates on rest and on at least one measured ball).
+    mutating func observe(_ r: PerceptionResult) {
+        guard !done else { return }
+        if windowStart == nil { windowStart = r.timestamp }
+        frames += 1
+        for b in r.confirmed where b.measured {
+            if let id = r.ballIDs[b.id] { seen.insert(id) } else { uncertain = true }
+        }
+        for (id, pk) in nearest where r.pocketsInView.contains(pk) { covered[id, default: 0] += 1 }
+        if r.timestamp - windowStart! >= window { end = r.timestamp }
+    }
+
+    /// A new shot started (or ended) before the look finished: no guess. A finished look is kept.
+    mutating func freeze() { if !done { frozen = true } }
+
+    /// Another relock before the look finished: the table hasn't been shot since, so look again from scratch.
+    mutating func restart() {
+        guard !done else { return }
+        windowStart = nil; frames = 0; covered = [:]; seen = []; uncertain = false
+    }
+
+    /// The best-guess record (keys = ball numbers, cue = 0) and its rule ids; nil = close unrated.
+    func record() -> (record: ShotRecord, ids: [Int: BallID])? {
+        guard !frozen, let end, !seen.isDisjoint(with: before.keys) else { return nil }
+        var pocketed: [Int: Pocket] = [:]
+        if !uncertain {
+            for (id, pk) in nearest where !seen.contains(id)
+                && Double(covered[id] ?? 0) >= minCoveredShare * Double(frames) && frames > 0 {
+                pocketed[id.number] = pk
+            }
+        }
+        let rec = ShotRecord(start: start, end: end, preState: Dictionary(uniqueKeysWithValues: before.map { ($0.key.number, $0.value) }),
+                             finalState: [:], cueID: BallID.cue.number, firstContact: nil, rails: [], pocketed: pocketed)
+        return (rec, Dictionary(uniqueKeysWithValues: before.keys.map { ($0.number, $0) }))
+    }
 }

@@ -32,6 +32,7 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 | 2026-11-09 | Integration rounds 2026-11-08/09: D30 look-then-ask, shot-lifecycle FIFO state machine + invariant fuzz, touch targets, relock fixes (8ede140/f046ff8/c43f44b by head) | Claude (integration worker; head for 3 relock commits) | GPT-5.3 Codex, Grok 4.7, Gemini 3.7 (Cursor), Kimi K3 (opencode/Bedrock), GPT-5.6 Sol (Cursor) across 7 rounds; final: GPT-5.6 APPROVE (4e42342), Gemini APPROVE (3590c25 code) | merged to phase/1-core 4e42342 |
 | 2026-11-09 | D34 Astryx design system: vendored Packages/Astryx (zero-network), theme bridge, every screen + Live overlays restyled (wt/astryx-ui) | Claude (UI worker) | GLM-5 (Bedrock), Kimi K2.5 (Bedrock) APPROVE; Grok 4.7 (Cursor) REJECT (light contrast) → fixed 552600a → APPROVE | merged to phase/1-core |
 | 2026-11-09 | D32 detector benchmark (wt/d32-bench): sim3d renderer, bench harness, scorer, fine-tune, DetectorChoice default | Claude (d32 worker) | Grok 4.7 (Cursor), Kimi K2.5 (Bedrock) APPROVE | merged to phase/1-core |
+| 2026-11-09 | D31 lost shot = best guess + D33 stick near the cue ball = aiming (wt/d31-d33) | Claude (d31-d33 worker) | Grok 4.7 r1 REJECT at 7d77e5b (2 BLOCKERs, 1 MAJOR, all fixed test-first, not yet re-reviewed) + coordinator D1 MAJOR (fixed) | awaiting re-review + head merge |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
 
