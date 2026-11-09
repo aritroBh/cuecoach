@@ -93,7 +93,8 @@ final class LiveModel {
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
     private func lostEntry() -> ShotEntry {
         // D31: guess from the last quiet pre-shot table (nothing known = no guess, unrated close).
-        let guess = tableBefore.flatMap { $0.isEmpty ? nil : LostShotGuess(before: $0, lastSeen: lastSeenAt, start: lastFrameAt ?? 0) }
+        let spec = TableSpec(size: tableSize ?? .sevenFoot)
+        let guess = tableBefore.flatMap { $0.isEmpty ? nil : LostShotGuess(before: $0, lastSeen: lastSeenAt, start: lastFrameAt ?? 0, spec: spec) }
         return ShotEntry(id: newID(), state: .lost, guess: guess)
     }
     /// D31: rule id → position on the last quiet, pre-shot frame (nil = nothing known since the last relock).
@@ -187,7 +188,7 @@ final class LiveModel {
                 guard quiet else { return }
                 if let g = head.guess, !g.done { return }
                 shots.removeFirst()
-                if let (rec, ids) = head.guess?.record(spec: TableSpec(size: tableSize ?? .sevenFoot)) {
+                if let (rec, ids) = head.guess?.record() {
                     onCloseForTesting?(head.id, rec, true)
                     shotSettled(rec, ids: ids)
                 } else {
@@ -301,10 +302,12 @@ final class LiveModel {
             for b in r.confirmed { if let id = r.ballIDs[b.id] { t[id] = b.position } }
             tableBefore = t
         }
-        // D31: a lost shot's look sees quiet frames with a measured ball; a new shot cuts it short (no guess).
+        // D31: a lost shot's look sees every still frame with a measured ball, aim or not (Grok 4.7 review: the next
+        // shooter may already be down on the cue ball; closing still waits for quiet). A new shot before it finished
+        // cuts it short (no guess); a finished look is kept.
         if let i = shots.firstIndex(where: { $0.guess.map { !$0.done } ?? false }) {
             if r.shotStarted || r.shot != nil { shots[i].guess?.freeze() }
-            else if quiet && r.confirmed.contains(where: \.measured) { shots[i].guess?.observe(r) }
+            else if aimEvents.phase != .moving && !movingNow && r.confirmed.contains(where: \.measured) { shots[i].guess?.observe(r) }
         }
         // 3. A shot that ended this frame joins the FIFO; its look starts with this frame.
         if let shot = r.shot {
