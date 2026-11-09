@@ -323,13 +323,24 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
   `.looking` (its own post-settle look; only the newest entry; a later `shotStarted`, any motion or a later shot
   end freezes it, unseen uncertain pockets becoming questions) → `.decided` (may ask; only the front entry asks) →
   closed. A relock cancels an open aim first, then turns every unclosed entry (and the shot in flight) into
-  `.lost` (closes unrated). Invariants (checked by `ShotLifecycleInvariantTests` over seeded random sequences):
+  `.lost`. A lost entry that had already ended (a held D30 shot) closes unrated. **D31** (best guess, no prompt): the
+  shot in flight at the relock carries a `LostShotGuess` from the table's last known rule-id state (`ballIDs` of the
+  confirmed tracks on the last frame with no shot open, nothing moving and no shot start/end). Once quiet, its look
+  takes quiet frames with ≥ 1 measured ball for 1 s (a further relock restarts the look; a new shot start/end cuts it
+  short). A pre-shot ball not seen (by rule id, among measured confirmed tracks) anywhere in the look counts as
+  pocketed, at the pocket nearest where it was last measured; an unidentified measured ball in the look could be any
+  of them, so then none count (D29). It closes **rated** through the normal settled path (Rules, rating, turn,
+  `gameAdvanced`, badge) on a record keyed by ball number (cue = 0; no first contact, rails or pocket order). It
+  closes **unrated** (`ballsSettled`) when no pre-shot state is known (e.g. a relock before any quiet table since the
+  last relock), the look was cut short, or no pre-shot ball was seen again. Invariants (checked by
+  `ShotLifecycleInvariantTests` over seeded random sequences):
   - aims started = ended + cancelled whenever no aim is open (at most one open); the aim lifecycle is always
     forwarded live, held shot or not; a shot-end frame that already shows the next shooter opens that aim;
   - exactly one close per shot (`settled` rated, or `ballsSettled` unrated), strictly in shot order, and a rated
-    close carries that shot's own record;
+    close carries that shot's own record (a lost shot: its guessed record, as computed by the oracle's own model);
   - no close, settle, badge or visible confirm while someone aims (aim phase, or physical evidence: addressing / live
-    cue line) or anything moves. Motion is ONE signal: `!atRest` OR the pipeline's raw `motionOnset` (a measured
+    cue line / **a cue stick near the cue ball, stroke or not (D33, `PerceptionResult.stickNearCue`, the cue tracker's
+    1 s hold)**) or anything moves. Motion is ONE signal: `!atRest` OR the pipeline's raw `motionOnset` (a measured
     ball's position moved > 4 mm and > 5 cm/s since its last measurement, raw positions kept across short misses; or
     a new track appearing within 20 cm of a coasting one) OR a ball's speed OR a partial dropout (a confirmed ball
     measured within the last 0.3 s but not this frame); a frame with no balls seen is not quiet either. A shot-end
