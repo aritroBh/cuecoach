@@ -65,8 +65,11 @@ enum BallDetectorOutput {
             if (kind == .eight || kind == .unknown) && pocketDist < 0.11 { continue }
             // Class-agnostic: two boxes on one ball keep the stronger.
             if out.contains(where: { $0.tablePoint.distance(to: t) < R }) { continue }
-            out.append(BallDetection(imagePoint: Vec2(sx, sy), tablePoint: t, radiusPx: r.radius * img.scale,
-                                     confidence: r.score, kind: kind, tentativeNumber: number))
+            var det = BallDetection(imagePoint: Vec2(sx, sy), tablePoint: t, radiusPx: r.radius * img.scale,
+                                    confidence: r.score, kind: kind, tentativeNumber: number)
+            // The cue-class confidence is the model's cue evidence (rival cue takeover compares it).
+            if kind == .cue { det.cueScore = r.score }
+            out.append(det)
             if out.count >= 24 { break }
         }
         return out

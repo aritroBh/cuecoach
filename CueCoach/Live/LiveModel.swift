@@ -60,6 +60,17 @@ final class LiveModel {
     /// Perception was reset (revalidation, recalibration, a new table): no shot can settle any more, so an open
     /// aim or shot is closed for the shell (its menu would otherwise stay locked).
     func perceptionReset() {
+        // D30: a held shot can't be looked at or asked about against the new table: drop it, closed unrated for
+        // the shell (like a lost shot), so its result can never apply to a later shot.
+        if !pending.isEmpty {
+            pending = []
+            pocketConfirm = nil
+            pocketConfirmPoint = nil
+            aimEvents = AimEvents()
+            aimingNow = false
+            hooks.ballsSettled()
+            return
+        }
         switch aimEvents.phase {
         case .aiming: hooks.aimCancelled()
         case .moving: lostShot = true   // balls were moving: keep the shell gated until they are at rest again
@@ -102,14 +113,16 @@ final class LiveModel {
 
     private func advancePending(_ r: PerceptionResult?) {
         while var p = pending.first, pocketConfirm == nil {
-            if p.resolver.candidates.isEmpty { finish(p); continue }
-            if p.verdicts == nil {
-                guard let r, let v = p.resolver.observe(r) else { pending[0] = p; return }
-                p.verdicts = v
-                pending[0] = p
+            if p.resolver.candidates.isEmpty || p.verdicts != nil {
+                if let ask = nextAsk(p) { pocketConfirm = ask; return }
+                // Never settle (rules, badge, turn) while anyone aims: the result lands once the aim is over.
+                guard !aimingNow else { return }
+                finish(p)
+                continue
             }
-            if let ask = nextAsk(p) { pocketConfirm = ask; return }
-            finish(p)
+            guard let r, let v = p.resolver.observe(r) else { pending[0] = p; return }
+            p.verdicts = v
+            pending[0] = p
         }
     }
 
@@ -124,11 +137,16 @@ final class LiveModel {
         guard let q = pocketConfirm, !pending.isEmpty else { return }
         pending[0].answers[q.trackID] = dropped
         pocketConfirm = nextAsk(pending[0])
-        if pocketConfirm == nil { finish(pending[0]); advancePending(nil) }
+        if pocketConfirm == nil { advancePending(nil) }   // settles now unless someone is aiming
     }
 
     private func finish(_ p: PendingShot) {
         pending.removeFirst()
+        defer {
+            // The next held shot's aim was not forwarded while this one was held: open and close it for the shell
+            // so its lifecycle stays balanced before that shot settles.
+            if !pending.isEmpty { hooks.aimStarted(); hooks.aimEnded() }
+        }
         var rec = p.record
         for (tid, pk) in p.resolver.candidates {
             let dropped = p.answers[tid] ?? (p.verdicts?[tid] == .pocketed)
@@ -178,8 +196,10 @@ final class LiveModel {
             return
         }
         // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
+        // While a shot is held (D30) the shell is still gated on it: new aims aren't forwarded until it settles.
+        let holding = !pending.isEmpty
         for e in aimEvents.update(cueVisible: r.liveAim != nil || r.shooterAddressing, atRest: r.atRest, shotStarted: r.shotStarted,
-                                  shotEnded: r.shot != nil, at: r.timestamp) {
+                                  shotEnded: r.shot != nil, at: r.timestamp) where !holding {
             switch e {
             case .aimStarted: hooks.aimStarted()
             case .aimEnded: hooks.aimEnded()

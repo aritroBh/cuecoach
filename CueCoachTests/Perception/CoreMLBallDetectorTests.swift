@@ -46,6 +46,23 @@ struct CoreMLBallDetectorTests {
         #expect(k(16).0 == .unknown && k(16).1 == nil)
     }
 
+    /// Kimi K3: the model's cue detections carry their cue-class confidence as cue evidence (rival takeover
+    /// compares it); other classes carry none.
+    @Test func modelCueDetectionsCarryCueEvidence() throws {
+        let cg = try #require(scene.render())
+        let img = try #require(PixelImage(cgImage: cg))
+        let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
+        func raw(_ b: SyntheticTableScene.Ball, cls: Int, score: Double) throws -> BallDetectorOutput.Raw {
+            let p = try #require(scene.imagePoint(b))
+            let (x, y) = img.toWorking(p.x, p.y)
+            return .init(center: Vec2(x, y), radius: 10, cls: cls, score: score)
+        }
+        let d = BallDetectorOutput.detections([try raw(scene.balls[0], cls: 0, score: 0.83), try raw(scene.balls[1], cls: 3, score: 0.9)],
+                                              image: img, geometry: geo)
+        #expect(d.first { $0.kind == .cue }?.cueScore == 0.83)
+        #expect(d.first { $0.kind == .solid }?.cueScore == nil)
+    }
+
     @Test func detectionsLandOnTheTableAndSkipPocketsAndRails() throws {
         let cg = try #require(scene.render())
         let img = try #require(PixelImage(cgImage: cg))

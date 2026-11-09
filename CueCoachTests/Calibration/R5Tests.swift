@@ -75,6 +75,8 @@ struct BadgeAndHooksTests {
         let shot = ShotRecord(start: 0, end: 1, preState: [:], finalState: [:], cueID: 1, firstContact: 2,
                               rails: [], pocketed: [2: .footLeft])
         m.noteResult(result(shot: shot))
+        // D30 review round: every pocketed ball gets the 1 s post-settle look before Rules see it.
+        for i in 1...20 { m.noteResult(result(t: Double(i) / 15)) }
         #expect(settled.count == 1 && settled[0].0 == .good && settled[0].1 == false)
         #expect(m.badge == nil)   // the shell shows it
     }

@@ -116,6 +116,9 @@ struct D30PocketTests {
         // Hidden while anyone aims.
         m.drive(result(15, inView: others, liveAim: true))
         #expect(!m.showsPocketConfirm)
+        // The aim ends (stick gone > 1 s); the confirm is back and the answer settles the shot.
+        play(m, from: 15, seconds: 2, inView: others)
+        #expect(m.showsPocketConfirm)
         m.answerPocket(dropped: true)
         #expect(spy.settled.count == 1 && spy.settled.first?.1 == false)
         #expect(spy.advanced?.onTable.contains(BallID(3)!) == false)
@@ -175,6 +178,59 @@ struct D30PocketTests {
         }
         #expect(spy.settled.isEmpty)
         #expect(m.pocketConfirm?.pocket == .footLeft)
+    }
+
+    // MARK: Kimi K3 review round
+
+    /// MAJOR: a relock while a shot is held drops it (closed unrated for the shell) and its look never resolves
+    /// against the next shot: exactly one gameAdvanced, for the new shot.
+    @Test func relockDropsTheHeldShotAndOnlyTheNewShotAdvances() {
+        let spy = Spy(), m = model(spy)
+        @MainActor final class Count { var advanced = 0; var settledUnrated = 0 }
+        let c = Count()
+        var h = m.hooks
+        h.gameAdvanced = { spy.advanced = $0; c.advanced += 1 }
+        h.ballsSettled = { c.settledUnrated += 1 }
+        m.hooks = h
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.pocketConfirm != nil)
+        m.perceptionReset()
+        #expect(m.pocketConfirm == nil && !m.showsPocketConfirm)
+        #expect(c.settledUnrated == 1, "the shell's gate is released")
+        // The next shot: a plain miss, no pockets.
+        let miss = ShotRecord(start: 10, end: 12, preState: [1: Vec2(0.5, 0.5)], finalState: [1: Vec2(1, 0.6)], cueID: 1,
+                              firstContact: 2, rails: [], pocketed: [:])
+        m.drive(result(12, shot: miss))
+        play(m, from: 12, seconds: 2)
+        #expect(c.advanced == 1)
+        #expect(spy.advanced?.onTable.contains(BallID(3)!) == true, "the dropped held shot never applied")
+    }
+
+    /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge
+    /// while anyone aims; the held result lands once the aim is over.
+    @Test func heldShotNeverSettlesDuringAnAimAndTheShellStaysBalanced() {
+        let m = LiveModel(mode: .game)
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        var h = LiveHooks(aimStarted: { log.e.append("start") }, aimEnded: { log.e.append("end") },
+                          aimCancelled: { log.e.append("cancel") }, ballsSettled: { log.e.append("unrated") },
+                          settled: { _, _ in log.e.append("rated") })
+        let game = lastSolidGame()
+        h.currentGame = { game }
+        m.hooks = h
+        var moving = result(1); moving.atRest = false; moving.shotStarted = true
+        m.drive(moving)
+        #expect(log.e == ["start", "end"])
+        m.drive(result(3, shot: slowMake()))
+        // The next shooter addresses the cue ball during the look window and stays there past it.
+        var t = 3.0
+        while t < 5.0 { t += 1.0 / 15; var r = result(t); r.shooterAddressing = true; m.drive(r) }
+        #expect(log.e == ["start", "end"], "held: no new aim forwarded, nothing settled during the aim")
+        #expect(m.badge == nil)
+        // They step away: the aim is over, the held shot settles once.
+        play(m, from: 5, seconds: 2)
+        #expect(log.e == ["start", "end", "rated"])
     }
 
     /// The confirm is icon-only: its view source has no text (the aiming-path lint covers Live; this pins it).
