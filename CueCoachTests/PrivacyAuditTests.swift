@@ -13,7 +13,8 @@ private enum Repo {
     static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 
     /// Directories that ship in the app binary.
-    static let shippedSourceDirs = ["CueCoach", "Packages/CueCore/Sources"]
+    /// D34: the vendored Astryx design system ships in the app too, so it is audited like our own code.
+    static let shippedSourceDirs = ["CueCoach", "Packages/CueCore/Sources", "Packages/Astryx/Sources"]
 
     static let skippedDirNames: Set<String> = [".build", ".git", ".worktrees", "DerivedData", "build",
                                                ".venv", "node_modules", ".swiftpm", "__pycache__"]
@@ -109,6 +110,10 @@ struct PrivacyAuditTests {
             #"https?://"#,
             #"Data\(contentsOf:\s*URL\(string:"#,
             #"\bLinkPresentation\b|\bLPMetadataProvider\b"#,
+            // D34: UI that can fetch or open a remote URL (Astryx's Avatar/Thumbnail load `src` with AsyncImage;
+            // its Button/Item/ListItem/Avatar open `href` links). The Settings deep link is the only URL we build.
+            #"\bAsyncImage\b"#, #"\bLink\s*\(\s*destination"#, #"\bOpenURLAction\b"#, #"\.openURL\b"#,
+            #"\bURL\(string:(?!\s*UIApplication\.openSettingsURLString)"#,
         ]
         // D27: sourced pro profiles cite their source URL as data (never fetched) and the validator checks the
         // "https://" prefix; the API checks still apply to these files.
@@ -162,6 +167,8 @@ struct PrivacyAuditTests {
         "Synchronization",
         // CueCore modules
         "Geometry", "Physics", "Rules", "Engine", "Stats", "Training",
+        // D34: the vendored Astryx design system (Packages/Astryx, audited above as shipped code)
+        "Astryx", "AstryxNative",
     ]
 
     @Test func everyImportInShippedCodeIsAllowListed() {
@@ -260,6 +267,12 @@ struct PrivacyAuditTests {
         let pkg = try String(contentsOf: Repo.root.appendingPathComponent("Packages/CueCore/Package.swift"),
                              encoding: .utf8)
         #expect(!pkg.contains(".package("), "CueCore declares an external package dependency")
+        let astryx = try String(contentsOf: Repo.root.appendingPathComponent("Packages/Astryx/Package.swift"),
+                                encoding: .utf8)
+        #expect(!astryx.contains(".package("), "vendored Astryx declares an external package dependency")
+        // The JavaScriptCore logic host stays out (JavaScriptCore is also off the import allow-list).
+        let host = Repo.files(under: "Packages/Astryx") { $0.lastPathComponent == "AstryxLogicHost.swift" }
+        #expect(host.isEmpty, "vendored Astryx must not ship the logic host: \(host.map(Repo.rel))")
     }
 
     /// The built app's Info.plist: only the usage strings the spec needs; no ATS holes, push or tracking keys.
