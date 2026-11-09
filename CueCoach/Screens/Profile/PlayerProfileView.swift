@@ -18,16 +18,16 @@ public struct PlayerProfileView: View {
     public init(model: PlayerProfileViewModel) { _model = State(initialValue: model) }
 
     private var accent: Color {
-        guard let s = model.content?.summary else { return SA.teamA }
-        return s.isTeamA ? SA.teamA : Color(saHex: s.avatarColor)
+        guard let s = model.content?.summary else { return AX.teamA }
+        return s.isTeamA ? AX.teamA : AX.avatar(s.avatarColor)
     }
 
     public var body: some View {
         ScrollView {
-            VStack(spacing: SA.section) {
+            VStack(spacing: AX.space.s6) {
                 header
                 Picker("Section", selection: Binding(get: { model.tab },
-                                                     set: { t in withAnimation(SAMotion(reduce: reduceMotion).smooth) { model.tab = t }; SA.selection() })) {
+                                                     set: { t in withAnimation(SAMotion(reduce: reduceMotion).smooth) { model.tab = t }; Haptics.selection() })) {
                     ForEach(model.tabs, id: \.self) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -36,10 +36,10 @@ public struct PlayerProfileView: View {
                 .accessibilityIdentifier("profile.tabs")
                 tabContent
             }
-            .padding(.horizontal, SA.gutter)
+            .padding(.horizontal, AX.space.s4)
             .padding(.bottom, 32)
         }
-        .background(SA.bg.ignoresSafeArea())
+        .background(AX.page.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if model.canEdit && model.phase == .loaded {
@@ -50,8 +50,7 @@ public struct PlayerProfileView: View {
                 }
             }
         }
-        .toolbarBackground(SA.bg, for: .navigationBar)
-        .preferredColorScheme(.dark)
+        .toolbarBackground(AX.page, for: .navigationBar)
         .task { if model.content == nil { await model.load() } }
         .sheet(item: $badge) { BadgeDetail(badge: $0).presentationDetents([.medium]) }
         .sheet(isPresented: $showingAllBadges) {
@@ -69,7 +68,7 @@ public struct PlayerProfileView: View {
                 EditProfileSheet(name: s.name, symbol: s.avatarSymbol) { name, symbol in
                     Task {
                         await model.rename(name, symbol: symbol)
-                        SA.haptic(model.renameFailed ? .error : .success)
+                        Haptics.notify(model.renameFailed ? .error : .success)
                     }
                 }
                 .presentationDetents([.medium])
@@ -83,20 +82,20 @@ public struct PlayerProfileView: View {
     @ViewBuilder private var header: some View {
         VStack(spacing: 8) {
             ZStack {
-                Circle().fill(model.content.map { Color(saHex: $0.summary.avatarColor) } ?? SA.surface)
+                Circle().fill(model.content.map { AX.avatar($0.summary.avatarColor) } ?? AX.surface)
                 if let symbol = model.content?.summary.avatarSymbol {
-                    Image(systemName: symbol).font(.system(size: 44, weight: .semibold)).foregroundStyle(SA.ink)
+                    Image(systemName: symbol).font(.system(size: 44, weight: .semibold)).foregroundStyle(AX.ink)
                 }
             }
             .frame(width: 96, height: 96)
             .accessibilityHidden(true)
             Text(model.content?.summary.name ?? "Player")
-                .font(.largeTitle.bold()).foregroundStyle(SA.ink)
+                .axFont(.display, weight: .bold).foregroundStyle(AX.ink)
                 .redacted(reason: model.phase == .loaded ? [] : .placeholder)
                 .accessibilityIdentifier("profile.name")
             if let top = model.content?.topArchetype {
                 Label(top.name, systemImage: top.symbol)
-                    .font(.body.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                    .axFont(.headline).foregroundStyle(AX.inkMuted)
                     .accessibilityLabel("Archetype \(top.name)")
                     .accessibilityIdentifier("profile.archetype")
             }
@@ -114,10 +113,10 @@ public struct PlayerProfileView: View {
             }
         case .failed:
             VStack(spacing: 16) {
-                Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(SA.caution)
-                Text("Couldn't load stats.").font(.body).foregroundStyle(SA.ink)
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(AX.caution)
+                Text("Couldn't load stats.").axFont(.body).foregroundStyle(AX.ink)
                 Button("Retry") { Task { await model.load() } }
-                    .buttonStyle(.borderedProminent).tint(SA.surface).controlSize(.large)
+                    .buttonStyle(.borderedProminent).tint(AX.surface).controlSize(.large)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("profile.retry")
             }
@@ -148,11 +147,11 @@ public struct PlayerProfileView: View {
     // MARK: Stats tab
 
     private func statsTab(_ c: ProfileContent) -> some View {
-        VStack(spacing: SA.section) {
+        VStack(spacing: AX.space.s6) {
             radarCard(c)
             SACard {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Make %").font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
+                    Text("Make %").axFont(.title).foregroundStyle(AX.ink)
                         .accessibilityAddTraits(.isHeader)
                     MakeHeatGrid(cells: c.heat).frame(maxWidth: .infinity)
                 }
@@ -170,10 +169,10 @@ public struct PlayerProfileView: View {
                     VStack(spacing: 16) {
                         ZStack {
                             ArchetypeRadar(axes: [], accent: accent, showsLabels: false)
-                            Image(systemName: "8.circle").font(.system(size: 44)).foregroundStyle(SA.inkMuted)
+                            Image(systemName: "8.circle").font(.system(size: 44)).foregroundStyle(AX.inkMuted)
                         }
                         .frame(height: 200)
-                        Text("Play a game to start.").font(.body).foregroundStyle(SA.inkMuted)
+                        Text("Play a game to start.").axFont(.body).foregroundStyle(AX.inkMuted)
                     }
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .combine)
@@ -190,7 +189,7 @@ public struct PlayerProfileView: View {
                         .accessibilityChartDescriptor(SARadarDescriptor(axes: c.radar))
                         .accessibilityIdentifier("profile.radar")
                     if c.unlock != .unlocked {
-                        Image(systemName: "lock.fill").font(.body.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                        Image(systemName: "lock.fill").axFont(.headline).foregroundStyle(AX.inkMuted)
                             .accessibilityLabel("Draft shape, locked")
                     }
                 }
@@ -207,7 +206,7 @@ public struct PlayerProfileView: View {
         return layout {
             ring().frame(width: side, height: side)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Plays like").font(.headline).foregroundStyle(SA.inkMuted)
+                Text("Plays like").axFont(.headline).foregroundStyle(AX.inkMuted)
                 detail()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -226,10 +225,10 @@ public struct PlayerProfileView: View {
                                 .font(.system(.body, design: .rounded).weight(.bold)).monospacedDigit()
                                 .lineLimit(1).minimumScaleFactor(0.5)
                                 .padding(10)
-                                .foregroundStyle(SA.ink)
+                                .foregroundStyle(AX.ink)
                         }
                     } detail: {
-                        Text(pro.proName).font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
+                        Text(pro.proName).axFont(.title).foregroundStyle(AX.ink)
                         ViewThatFits(in: .horizontal) {
                             HStack(spacing: 16) { traitLabels(c) }
                             VStack(alignment: .leading, spacing: 4) { traitLabels(c) }
@@ -246,12 +245,12 @@ public struct PlayerProfileView: View {
             SACard {
                 proLayout {
                     ZStack {
-                        SARing(progress: c.lockProgress, color: SA.inkMuted)
-                        Image(systemName: "lock.fill").font(.title3).foregroundStyle(SA.inkMuted)
+                        SARing(progress: c.lockProgress, color: AX.inkMuted)
+                        Image(systemName: "lock.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.inkMuted)
                     }
                 } detail: {
                     if let cap = c.lockedCaption {
-                        Text(cap).font(.title2.weight(.semibold)).monospacedDigit().foregroundStyle(SA.ink)
+                        Text(cap).axFont(.title).monospacedDigit().foregroundStyle(AX.ink)
                     }
                 }
             }
@@ -263,17 +262,17 @@ public struct PlayerProfileView: View {
 
     @ViewBuilder private func traitLabels(_ c: ProfileContent) -> some View {
         ForEach(c.proTraits) { t in
-            Label(t.word, systemImage: t.symbol).font(.body).foregroundStyle(SA.inkMuted).fixedSize()
+            Label(t.word, systemImage: t.symbol).axFont(.body).foregroundStyle(AX.inkMuted).fixedSize()
         }
     }
 
     private func badgeShelf(_ c: ProfileContent) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                SA.sectionHeader("Badges")
+                AXSectionHeader("Badges")
                 if c.hasMoreBadges {
                     Button { showingAllBadges = true } label: {
-                        Text("All").font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                        Text("All").axFont(.headline).foregroundStyle(AX.ink)
                             .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     }
                         .accessibilityLabel("All badges")
@@ -284,10 +283,10 @@ public struct PlayerProfileView: View {
                 ForEach(c.visibleBadges) { b in
                     Button { badge = b } label: {
                         ZStack {
-                            Circle().fill(SA.surface)
+                            Circle().fill(AX.surface)
                             Circle().stroke(accent.opacity(0.5), lineWidth: 1.5)
                             Image(systemName: b.symbol).font(.system(size: 26, weight: .semibold))
-                                .foregroundStyle(SA.ink)
+                                .foregroundStyle(AX.ink)
                         }
                         .frame(width: 56, height: 56)
                     }
@@ -303,8 +302,8 @@ public struct PlayerProfileView: View {
             ForEach(c.totals) { t in
                 VStack(spacing: 4) {
                     Text(t.value).font(.system(.title, design: .rounded, weight: .bold)).monospacedDigit()
-                        .foregroundStyle(SA.ink)
-                    Text(t.caption).font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                        .foregroundStyle(AX.ink)
+                    Text(t.caption).axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                 }
                 .frame(maxWidth: .infinity, minHeight: 72)
                 .accessibilityElement(children: .combine)
@@ -324,22 +323,22 @@ private struct HistoryTab: View {
     var body: some View {
         if groups.isEmpty {
             ContentUnavailableView("No games yet", systemImage: "clock")
-                .foregroundStyle(SA.inkMuted)
+                .foregroundStyle(AX.inkMuted)
                 .frame(minHeight: 280)
                 .accessibilityIdentifier("profile.history.empty")
         } else {
-            VStack(spacing: SA.section) {
+            VStack(spacing: AX.space.s6) {
                 ForEach(groups) { g in
                     VStack(spacing: 8) {
-                        SA.sectionHeader(g.title)
+                        AXSectionHeader(g.title)
                         SACard(padding: 0) {
                             VStack(spacing: 0) {
                                 ForEach(Array(g.sessions.enumerated()), id: \.element.id) { i, s in
-                                    if i > 0 { Divider().overlay(SA.inkMuted.opacity(0.3)).padding(.leading, 68) }
+                                    if i > 0 { Divider().overlay(AX.inkMuted.opacity(0.3)).padding(.leading, 68) }
                                     sessionRow(s)
                                     if expanded.contains(s.id) {
                                         ForEach(s.games) { game in
-                                            Divider().overlay(SA.inkMuted.opacity(0.2)).padding(.leading, 68)
+                                            Divider().overlay(AX.inkMuted.opacity(0.2)).padding(.leading, 68)
                                             gameRow(game)
                                         }
                                     }
@@ -357,14 +356,14 @@ private struct HistoryTab: View {
             HStack(spacing: 16) {
                 SARuleBall(number: SettingsViewModel.ruleBall(s.ruleSet), size: 36)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(PlayerProfileViewModel.sessionTitle(s)).font(.body).foregroundStyle(SA.ink)
+                    Text(PlayerProfileViewModel.sessionTitle(s)).axFont(.body).foregroundStyle(AX.ink)
                     Text(PlayerProfileViewModel.sessionSubtitle(s))
-                        .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                        .axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                 }
                 Spacer(minLength: 8)
                 ResultMark(result: s.result)
                 Image(systemName: expanded.contains(s.id) ? "chevron.up" : "chevron.down")
-                    .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                    .axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
             }
             .padding(.horizontal, 16)
             .frame(minHeight: 64)
@@ -380,10 +379,10 @@ private struct HistoryTab: View {
     private func gameRow(_ g: GameSummary) -> some View {
         Button { open(g.id) } label: {
             HStack(spacing: 16) {
-                Text("Game \(g.index + 1)").font(.body).monospacedDigit().foregroundStyle(SA.ink)
+                Text("Game \(g.index + 1)").axFont(.body).monospacedDigit().foregroundStyle(AX.ink)
                 Spacer()
                 ResultMark(result: SessionResult(game: g.won))
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                Image(systemName: "chevron.right").axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
             }
             .padding(.leading, 68).padding(.trailing, 16)
             .frame(minHeight: 52)
@@ -401,16 +400,16 @@ private struct ResultMark: View {
     var body: some View {
         switch result {
         case .won?:
-            Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(SA.legal)
+            Image(systemName: "checkmark.circle.fill").axFont(.title, weight: .regular).foregroundStyle(AX.legal)
                 .accessibilityLabel(SessionResult.won.spoken)
         case .lost?:
-            Image(systemName: "xmark.circle").font(.title2).foregroundStyle(SA.danger)
+            Image(systemName: "xmark.circle").axFont(.title, weight: .regular).foregroundStyle(AX.danger)
                 .accessibilityLabel(SessionResult.lost.spoken)
         case .tied?:
-            Image(systemName: "equal.circle").font(.title2).foregroundStyle(SA.inkMuted)
+            Image(systemName: "equal.circle").axFont(.title, weight: .regular).foregroundStyle(AX.inkMuted)
                 .accessibilityLabel(SessionResult.tied.spoken)
         case nil:
-            Image(systemName: "circle.dotted").font(.title2).foregroundStyle(SA.inkMuted)
+            Image(systemName: "circle.dotted").axFont(.title, weight: .regular).foregroundStyle(AX.inkMuted)
                 .accessibilityLabel("Unfinished")
         }
     }
@@ -422,17 +421,17 @@ private struct BadgeDetail: View {
     let badge: BadgeGroup
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: badge.symbol).font(.system(size: 72, weight: .semibold)).foregroundStyle(SA.ink)
-            Text(badge.name).font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
+            Image(systemName: badge.symbol).font(.system(size: 72, weight: .semibold)).foregroundStyle(AX.ink)
+            Text(badge.name).axFont(.title).foregroundStyle(AX.ink)
             if let count = badge.countCaption {
-                Text(count).font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                Text(count).axFont(.headline).foregroundStyle(AX.ink)
             }
             Text(badge.latest, format: .dateTime.day().month(.wide).year())
-                .font(.body).foregroundStyle(SA.inkMuted)
+                .axFont(.body).foregroundStyle(AX.inkMuted)
         }
-        .padding(SA.gutter)
+        .padding(AX.space.s4)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(SA.bg)
+        .background(AX.page)
         .presentationDragIndicator(.visible)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("profile.badge.detail")
@@ -449,23 +448,23 @@ private struct AllBadges: View {
                     ForEach(groups) { g in
                         VStack(spacing: 8) {
                             Image(systemName: g.symbol).font(.system(size: 26, weight: .semibold))
-                                .foregroundStyle(SA.ink)
-                                .frame(width: 56, height: 56).background(Circle().fill(SA.surface))
-                            Text(g.name).font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                                .foregroundStyle(AX.ink)
+                                .frame(width: 56, height: 56).background(Circle().fill(AX.surface))
+                            Text(g.name).axFont(.headline).foregroundStyle(AX.ink)
                                 .multilineTextAlignment(.center)
                             Text(g.countCaption ?? PlayerProfileViewModel.dayMonth(g.latest))
-                                .font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                                .axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                         }
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(PlayerProfileViewModel.badgeSpoken(g))
                     }
                 }
-                .padding(SA.gutter)
+                .padding(AX.space.s4)
             }
-            .background(SA.bg)
+            .background(AX.page)
             .navigationTitle("Badges")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(SA.bg, for: .navigationBar)
+            .toolbarBackground(AX.page, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }.accessibilityIdentifier("profile.badges.done")
@@ -473,7 +472,6 @@ private struct AllBadges: View {
             }
         }
         .presentationDragIndicator(.visible)
-        .preferredColorScheme(.dark)
         .accessibilityIdentifier("profile.badges.sheet")
     }
 }
@@ -487,7 +485,7 @@ private struct ProCompDetail: View {
     let accent: Color
     var body: some View {
         VStack(spacing: 24) {
-            Text(pro.proName).font(.title2.weight(.semibold)).foregroundStyle(SA.ink).padding(.top, 24)
+            Text(pro.proName).axFont(.title).foregroundStyle(AX.ink).padding(.top, 24)
             ArchetypeRadar(axes: axes, overlay: proAxes, accent: accent)
                 .frame(height: 320)
                 .accessibilityElement(children: .ignore)
@@ -496,12 +494,12 @@ private struct ProCompDetail: View {
                 .accessibilityChartDescriptor(descriptor)
                 .accessibilityIdentifier("profile.procomp.radar")
             Text(PlayerProfileViewModel.band(pro.similarity).capitalized + " match")
-                .font(.body.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                .axFont(.headline).foregroundStyle(AX.inkMuted)
             Spacer()
         }
-        .padding(.horizontal, SA.gutter)
+        .padding(.horizontal, AX.space.s4)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(SA.bg)
+        .background(AX.page)
         // `.contain` keeps the radar's own identifier: without it the container's id overwrites every child's.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("profile.procomp.detail")
@@ -521,17 +519,17 @@ private struct EditProfileSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: SA.section) {
+            VStack(spacing: AX.space.s6) {
                 TextField("Name", text: $name)
-                    .font(.title2).padding(16).frame(minHeight: 56)
-                    .background(SA.surface, in: RoundedRectangle(cornerRadius: SA.buttonRadius))
+                    .axFont(.title, weight: .regular).padding(16).frame(minHeight: 56)
+                    .background(AX.surface, in: RoundedRectangle(cornerRadius: AX.radius.element))
                     .accessibilityIdentifier("profile.edit.name")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6)) {
                     ForEach(symbols, id: \.self) { s in
                         Button { symbol = s } label: {
-                            Image(systemName: s).font(.title2).frame(width: 52, height: 52)
-                                .background(Circle().fill(symbol == s ? SA.surface : .clear))
-                                .overlay(Circle().stroke(symbol == s ? SA.ink : .clear, lineWidth: 2))
+                            Image(systemName: s).axFont(.title, weight: .regular).frame(width: 52, height: 52)
+                                .background(Circle().fill(symbol == s ? AX.surface : .clear))
+                                .overlay(Circle().stroke(symbol == s ? AX.ink : .clear, lineWidth: 2))
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(symbol == s ? .isSelected : [])
@@ -539,8 +537,8 @@ private struct EditProfileSheet: View {
                 }
                 Spacer()
             }
-            .padding(SA.gutter)
-            .background(SA.bg)
+            .padding(AX.space.s4)
+            .background(AX.page)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -549,7 +547,6 @@ private struct EditProfileSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 

@@ -29,15 +29,15 @@ struct ArchetypeRadar: View {
                     let n = max(axes.count, 3)
                     for ring in 1...3 {
                         ctx.stroke(polygon(Array(repeating: Double(ring) / 3, count: n), center, radius),
-                                   with: .color(SA.inkMuted.opacity(0.2)), lineWidth: 1)
+                                   with: .color(AX.inkMuted.opacity(0.2)), lineWidth: 1)
                     }
                     for i in 0..<n {
                         var p = Path(); p.move(to: center); p.addLine(to: point(i, n, 1, center, radius))
-                        ctx.stroke(p, with: .color(SA.inkMuted.opacity(0.15)), lineWidth: 1)
+                        ctx.stroke(p, with: .color(AX.inkMuted.opacity(0.15)), lineWidth: 1)
                     }
                     if let overlay, overlay.count == axes.count {
                         ctx.stroke(polygon(overlay.map(\.value), center, radius),
-                                   with: .color(.white.opacity(0.45)),
+                                   with: .color(AX.onDark.opacity(0.45)),
                                    style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
                     }
                 }
@@ -53,8 +53,8 @@ struct ArchetypeRadar: View {
                     ForEach(Array(axes.enumerated()), id: \.element.id) { i, a in
                         let p = point(i, axes.count, 1, center, radius + inset * 0.6)
                         Text(a.name)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(SA.inkMuted)
+                            .axFont(.label, weight: .semibold)
+                            .foregroundStyle(AX.inkMuted)
                             .lineLimit(1).minimumScaleFactor(typeSize.isAccessibilitySize ? 0.3 : 0.6)
                             .frame(width: lw)
                             // Clamp so the label box never crosses the card edge.
@@ -114,8 +114,8 @@ struct MakeHeatGrid: View {
                 Color.clear.frame(width: rowLabelWidth, height: 1)
                 ForEach(CutBucket.allCases, id: \.self) { c in
                     Text(HeatCellView.cutAxisLabel(c))
-                        .font(.footnote.weight(.semibold)).monospacedDigit()
-                        .foregroundStyle(SA.inkMuted)
+                        .axFont(.label, weight: .semibold).monospacedDigit()
+                        .foregroundStyle(AX.inkMuted)
                         .lineLimit(1).minimumScaleFactor(labelScale)
                         .frame(width: cell)
                         .accessibilityHidden(true)
@@ -124,8 +124,8 @@ struct MakeHeatGrid: View {
             ForEach(DistanceBucket.allCases, id: \.self) { d in
                 HStack(spacing: 4) {
                     Text(typeSize.isAccessibilitySize ? HeatCellView.distanceShort(d) : HeatCellView.distanceName(d))
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(SA.inkMuted)
+                        .axFont(.label, weight: .semibold)
+                        .foregroundStyle(AX.inkMuted)
                         .lineLimit(1).minimumScaleFactor(labelScale)
                         .frame(width: rowLabelWidth, alignment: .leading)
                         .accessibilityHidden(true)
@@ -133,8 +133,8 @@ struct MakeHeatGrid: View {
                 }
             }
             Text(pressedCaption ?? " ")
-                .font(.footnote.weight(.semibold)).monospacedDigit()
-                .foregroundStyle(SA.ink)
+                .axFont(.label, weight: .semibold).monospacedDigit()
+                .foregroundStyle(AX.ink)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .opacity(pressedCaption == nil ? 0 : 1)
                 .accessibilityHidden(true)
@@ -154,14 +154,14 @@ struct MakeHeatGrid: View {
     private func heatCell(_ c: HeatCellView) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(c.hasData ? SA.legal.opacity(c.fillOpacity) : SA.bg.opacity(0.5))
+                .fill(c.hasData ? AX.legal.opacity(c.fillOpacity) : AX.page.opacity(0.5))
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(pressed == c.id ? SA.ink : SA.inkMuted.opacity(0.15), lineWidth: pressed == c.id ? 2 : 1)
+                .stroke(pressed == c.id ? AX.ink : AX.inkMuted.opacity(0.15), lineWidth: pressed == c.id ? 2 : 1)
             if let fill = c.glyphFill {
-                SAPieGlyph(fill: fill, color: c.glyphInkIsDark ? SA.bg : SA.ink)
+                SAPieGlyph(fill: fill, color: c.glyphInkIsDark ? AX.page : AX.ink)
                     .frame(width: cell * 0.36, height: cell * 0.36)
             } else {
-                Circle().fill(SA.inkMuted).frame(width: 5, height: 5)
+                Circle().fill(AX.inkMuted).frame(width: 5, height: 5)
             }
         }
         .frame(width: cell, height: cell)
@@ -181,7 +181,7 @@ struct SARing: View {
     var lineWidth: CGFloat = 8
     var body: some View {
         ZStack {
-            Circle().stroke(SA.inkMuted.opacity(0.2), lineWidth: lineWidth)
+            Circle().stroke(AX.inkMuted.opacity(0.2), lineWidth: lineWidth)
             Circle().trim(from: 0, to: max(0, min(1, progress)))
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))

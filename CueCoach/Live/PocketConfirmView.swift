@@ -11,15 +11,15 @@ struct PocketConfirmView: View {
             if model.showsPocketConfirm {
                 let at = model.pocketConfirmPoint ?? CGPoint(x: geo.size.width / 2, y: geo.size.height - 140)
                 HStack(spacing: 14) {
-                    answer(symbol: "xmark", tint: Color(red: 0.97, green: 0.44, blue: 0.44), id: "live.pocket.no", dropped: false)
+                    answer(symbol: "xmark", tint: AXLive.danger, id: "live.pocket.no", dropped: false)
                     Image(systemName: "circle.fill")
                         .font(.system(size: 30, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AXLive.aim)
                         .frame(width: 56, height: 56)
-                        .background(Circle().fill(.black.opacity(0.55)))
-                        .overlay(Circle().stroke(.white.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
+                        .background(Circle().fill(AXLive.chip.opacity(0.8)))
+                        .overlay(Circle().stroke(AXLive.aim.opacity(0.7), style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
                         .accessibilityHidden(true)
-                    answer(symbol: "checkmark", tint: Color(red: 0.29, green: 0.87, blue: 0.5), id: "live.pocket.yes", dropped: true)
+                    answer(symbol: "checkmark", tint: AXLive.legal, id: "live.pocket.yes", dropped: true)
                 }
                 .position(x: min(max(at.x, 110), geo.size.width - 110), y: min(max(at.y, 60), geo.size.height - 60))
                 .transition(.opacity)
@@ -35,7 +35,7 @@ struct PocketConfirmView: View {
                 .font(.system(size: 24, weight: .bold))
                 .foregroundStyle(tint)
                 .frame(minWidth: 56, minHeight: 56)
-                .background(Circle().fill(.black.opacity(0.55)))
+                .background(Circle().fill(AXLive.chip.opacity(0.8)))
                 .overlay(Circle().stroke(tint, lineWidth: 3))
                 .contentShape(Circle())
         }

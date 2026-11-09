@@ -13,7 +13,7 @@ struct AppShellRoot: View {
             HomeScreen(router: router)
                 .navigationDestination(for: ShellRoute.self) { route in destination(route) }
         }
-        .tint(SBColor.ink)
+        .tint(AX.accent)
         .fullScreenCover(isPresented: coverBinding, onDismiss: {
             coverDismissing = false
             router.liveClosed()   // game → review (re-presents); training → back to the picker
@@ -22,13 +22,12 @@ struct AppShellRoot: View {
         }
         .sheet(item: $router.sheet) { sheet in
             NavigationStack { sheetContent(sheet) }
-                .preferredColorScheme(.dark)
                 .environment(\.saForceReduceMotion, env.reduceMotion)
         }
         .environment(\.shellForceReduceMotion, env.reduceMotion)
         .environment(\.shellNoLoops, env.noLoops)
         .environment(\.sbForceReduceMotion, env.reduceMotion)
-        .preferredColorScheme(.dark)
+        .cueCoachTheme()
         .onAppear { router.meshFactory = env.meshFactory }
         #if DEBUG
         .task { await ShellAutopilot.run(env: env, router: router) }
@@ -69,6 +68,8 @@ struct AppShellRoot: View {
         case .live(let s)?:
             LiveHost(session: s, router: router)
                 .environment(\.shellForceReduceMotion, env.reduceMotion)
+                // The camera is the ground: Live always draws in Astryx dark (D34 design call).
+                .preferredColorScheme(.dark)
         case .review(let data)?:
             GameReviewView(model: {
                 let m = GameReviewModel(data: data)
@@ -76,9 +77,8 @@ struct AppShellRoot: View {
                 return m
             }())
             .environment(\.sbForceReduceMotion, env.reduceMotion)
-            .preferredColorScheme(.dark)
         case nil:
-            Color.black
+            AXLive.stage
         }
     }
 
@@ -110,12 +110,12 @@ struct ProfileSheet: View {
                     SBAvatar(symbol: ShellPalette.symbols[0], colorName: ShellPalette.names[1], size: 96)
                         .accessibilityHidden(true)
                     TextField("Your name", text: $name)
-                        .font(.title3)
+                        .axFont(.subtitle, weight: .regular)
                         .textInputAutocapitalization(.words)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 16)
                         .frame(minHeight: 56)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.surface))
+                        .background(RoundedRectangle(cornerRadius: 14).fill(AX.surface))
                         .accessibilityIdentifier("shell.profile.nameField")
                         .onSubmit(save)
                     ShellStartButton(title: "Save", symbol: "checkmark", enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty,

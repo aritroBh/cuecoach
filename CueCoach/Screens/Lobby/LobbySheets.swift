@@ -18,11 +18,11 @@ struct JoinHostSheet: View {
             }
             // ui-QA-10: the mode toggle above, the tappable nearby hosts below a divider.
             if !model.nearbyHosts.isEmpty || model.meshAvailability == .discovering {
-                Divider().overlay(SBColor.ink.opacity(0.15))
+                Divider().overlay(AX.ink.opacity(0.15))
             }
             if model.nearbyHosts.isEmpty && model.meshAvailability == .discovering {
                 HStack(spacing: 16) {
-                    ForEach(0..<3, id: \.self) { _ in Circle().fill(SBColor.ink.opacity(0.08)).frame(width: 64, height: 64) }
+                    ForEach(0..<3, id: \.self) { _ in Circle().fill(AX.ink.opacity(0.08)).frame(width: 64, height: 64) }
                 }
                 .accessibilityLabel("Looking for nearby phones")
             } else {
@@ -31,8 +31,8 @@ struct JoinHostSheet: View {
                         Button { model.join(h.id); done() } label: {
                             VStack(spacing: 8) {
                                 SBAvatar(symbol: h.player?.symbol ?? "iphone", colorName: h.player?.colorName ?? "", size: 64)
-                                Text(h.player?.name ?? h.deviceName).font(SBFont.caption)
-                                    .foregroundStyle(SBColor.inkMuted).lineLimit(1).frame(maxWidth: 80)
+                                Text(h.player?.name ?? h.deviceName).axFont(.label, weight: .semibold)
+                                    .foregroundStyle(AX.inkMuted).lineLimit(1).frame(maxWidth: 80)
                             }
                         }
                         .buttonStyle(.plain)
@@ -51,12 +51,12 @@ struct JoinHostSheet: View {
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
-                Image(systemName: symbol).font(SBFont.glyph(28, .semibold))
-                    .foregroundStyle(SBColor.ink)
+                Image(systemName: symbol).font(AXGlyph.font(28, .semibold))
+                    .foregroundStyle(AX.ink)
                     .frame(width: 64, height: 64)
-                    .background(Circle().fill(SBColor.ink.opacity(active ? 0.2 : 0.1)))
-                    .overlay { if active { Circle().strokeBorder(SBColor.legal, lineWidth: 3) } }
-                Text(word).font(SBFont.headline).foregroundStyle(SBColor.ink)
+                    .background(Circle().fill(AX.ink.opacity(active ? 0.2 : 0.1)))
+                    .overlay { if active { Circle().strokeBorder(AX.legal, lineWidth: 3) } }
+                Text(word).axFont(.headline).foregroundStyle(AX.ink)
             }
         }
         .buttonStyle(.plain)
@@ -93,7 +93,7 @@ struct IdentitySheet: View {
     private var picker: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 3), spacing: 24) {
             if model.isLoadingProfiles {
-                ForEach(0..<3, id: \.self) { _ in Circle().fill(SBColor.ink.opacity(0.08)).frame(width: 64, height: 64) }
+                ForEach(0..<3, id: \.self) { _ in Circle().fill(AX.ink.opacity(0.08)).frame(width: 64, height: 64) }
             } else {
                 ForEach(model.identityChoices(for: seat)) { p in
                     cell(name: p.id == model.localPlayer.id && !model.canCreatePlayers ? "You" : p.name) {
@@ -118,26 +118,26 @@ struct IdentitySheet: View {
         VStack(spacing: 24) {
             SBAvatar(symbol: symbol, colorName: colorName, size: 80)
             TextField("Name", text: $name)
-                .font(SBFont.body)
+                .axFont(.body)
                 .textInputAutocapitalization(.words)
                 .padding(.horizontal, 16)
                 .frame(minHeight: 52)
-                .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.ink.opacity(0.08)))
+                .background(RoundedRectangle(cornerRadius: 14).fill(AX.ink.opacity(0.08)))
                 .accessibilityIdentifier("lobby.identity.name")
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
                 ForEach(Self.symbols, id: \.self) { s in
                     Button { symbol = s } label: {
-                        Image(systemName: s).font(SBFont.glyph(22, .semibold))
-                            .foregroundStyle(SBColor.ink)
+                        Image(systemName: s).font(AXGlyph.font(22, .semibold))
+                            .foregroundStyle(AX.ink)
                             .frame(width: 52, height: 52)
-                            .background(Circle().fill(SBColor.ink.opacity(symbol == s ? 0.2 : 0.06)))
+                            .background(Circle().fill(AX.ink.opacity(symbol == s ? 0.2 : 0.06)))
                     }
                     .buttonStyle(.plain)
                 }
-                ForEach(SBColor.avatarNames, id: \.self) { c in
+                ForEach(AX.avatarNames, id: \.self) { c in
                     Button { colorName = c } label: {
-                        Circle().fill(SBColor.avatar(c)).frame(width: 44, height: 44)
-                            .overlay { if colorName == c { Circle().strokeBorder(SBColor.ink, lineWidth: 3).padding(-4) } }
+                        Circle().fill(AX.avatar(c)).frame(width: 44, height: 44)
+                            .overlay { if colorName == c { Circle().strokeBorder(AX.ink, lineWidth: 3).padding(-4) } }
                             .frame(width: 52, height: 52)
                     }
                     .buttonStyle(.plain)
@@ -149,10 +149,10 @@ struct IdentitySheet: View {
                 finish((try? model.registerAndAssign(name: name, symbol: symbol, colorName: colorName, to: seat)) != nil)
             } label: {
                 Label("Save", systemImage: "checkmark")
-                    .font(SBFont.headline)
-                    .foregroundStyle(SBColor.bg)
+                    .axFont(.headline)
+                    .foregroundStyle(AX.page)
                     .frame(maxWidth: .infinity, minHeight: 56)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.legal))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(AX.legal))
                     .opacity(name.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
             }
             .buttonStyle(.plain)
@@ -167,16 +167,16 @@ struct IdentitySheet: View {
     }
 
     private func glyph(_ s: String) -> some View {
-        Image(systemName: s).font(SBFont.glyph(26, .semibold)).foregroundStyle(SBColor.ink)
+        Image(systemName: s).font(AXGlyph.font(26, .semibold)).foregroundStyle(AX.ink)
             .frame(width: 64, height: 64)
-            .background(Circle().strokeBorder(SBColor.inkMuted, style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
+            .background(Circle().strokeBorder(AX.inkMuted, style: StrokeStyle(lineWidth: 2, dash: [5, 4])))
     }
 
     private func cell<V: View>(name: String, @ViewBuilder _ icon: () -> V, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
                 icon()
-                Text(name).font(SBFont.caption).foregroundStyle(SBColor.inkMuted)
+                Text(name).axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                     .lineLimit(1).truncationMode(.tail)
                     .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             }
@@ -192,18 +192,18 @@ struct MeshDeniedSheet: View {
     var done: () -> Void
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "exclamationmark.triangle").font(SBFont.glyph(40, .regular))
-                .foregroundStyle(SBColor.caution)
+            Image(systemName: "exclamationmark.triangle").font(AXGlyph.font(40, .regular))
+                .foregroundStyle(AX.caution)
             Text("Allow Local Network to link phones.")
-                .font(SBFont.body).foregroundStyle(SBColor.ink).multilineTextAlignment(.center)
+                .axFont(.body).foregroundStyle(AX.ink).multilineTextAlignment(.center)
             Button {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 done()
             } label: {
                 Label("Settings", systemImage: "gear")
-                    .font(SBFont.headline).foregroundStyle(SBColor.bg)
+                    .axFont(.headline).foregroundStyle(AX.page)
                     .frame(maxWidth: .infinity, minHeight: 56)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.ink))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(AX.ink))
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("lobby.meshDenied.settings")

@@ -24,23 +24,22 @@ public struct SettingsView: View {
             Group {
                 if vSize == .compact {
                     HStack(alignment: .top, spacing: 24) {
-                        VStack(spacing: SA.section) { privacy; backup }
-                        VStack(spacing: SA.section) { rules; table; developer }
+                        VStack(spacing: AX.space.s6) { privacy; backup }
+                        VStack(spacing: AX.space.s6) { rules; table; developer }
                     }
                 } else {
-                    VStack(spacing: SA.section) { privacy; backup; rules; table; developer }
+                    VStack(spacing: AX.space.s6) { privacy; backup; rules; table; developer }
                 }
             }
-            .padding(.horizontal, vSize == .compact ? 24 : SA.gutter)
+            .padding(.horizontal, vSize == .compact ? 24 : AX.space.s4)
             .padding(.vertical, 8)
         }
-        .background(SA.bg.ignoresSafeArea())
+        .background(AX.page.ignoresSafeArea())
         .scrollContentBackground(.hidden)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
-        .toolbarBackground(SA.bg, for: .navigationBar)
-        .preferredColorScheme(.dark)
-        .tint(SA.legal)
+        .toolbarBackground(AX.page, for: .navigationBar)
+        .tint(AX.accent)
         // The Undo window closes as soon as the app leaves the foreground or Settings is left.
         .onChange(of: scenePhase) { _, phase in if phase == .background { model.commitPendingDelete() } }
         .onDisappear { model.commitPendingDelete() }
@@ -64,18 +63,18 @@ public struct SettingsView: View {
 
     private var privacy: some View {
         VStack(spacing: 8) {
-            SA.sectionHeader("Privacy")
+            AXSectionHeader("Privacy")
             SACard(padding: 0) {
                 VStack(spacing: 0) {
                     Toggle(isOn: Binding(get: { model.recognitionOptIn },
-                                         set: { model.recognitionOptIn = $0; SA.selection() })) {
+                                         set: { model.recognitionOptIn = $0; Haptics.selection() })) {
                         SARowLabel(symbol: "person.crop.circle.badge.checkmark", title: "Recognize me",
                                  helper: "Stays on this phone.")
                     }
                     .padding(16)
                     .frame(minHeight: 60)
                     .accessibilityIdentifier("settings.recognition")
-                    Divider().overlay(SA.inkMuted.opacity(0.3)).padding(.leading, 60)
+                    Divider().overlay(AX.inkMuted.opacity(0.3)).padding(.leading, 60)
                     deleteRow
                 }
             }
@@ -88,16 +87,16 @@ public struct SettingsView: View {
                 Button { delete() } label: {
                     HStack(spacing: 16) {
                         ZStack {
-                            Circle().fill(SA.danger.opacity(0.15)).frame(width: 28, height: 28)
+                            Circle().fill(AX.danger.opacity(0.15)).frame(width: 28, height: 28)
                             switch model.deleteState {
                             case .undoable, .deleted:
-                                Image(systemName: "checkmark").font(.footnote.weight(.semibold)).foregroundStyle(SA.legal)
+                                Image(systemName: "checkmark").axFont(.label, weight: .semibold).foregroundStyle(AX.legal)
                                     .transition(.opacity)
                             default:
-                                Image(systemName: "trash").font(.footnote).foregroundStyle(SA.danger)
+                                Image(systemName: "trash").axFont(.label, weight: .regular).foregroundStyle(AX.danger)
                             }
                         }
-                        Text(SettingsViewModel.deleteRowTitle).font(.body).foregroundStyle(SA.danger)
+                        Text(SettingsViewModel.deleteRowTitle).axFont(.body).foregroundStyle(AX.danger)
                         Spacer(minLength: 8)
                     }
                     .padding(16)
@@ -111,8 +110,8 @@ public struct SettingsView: View {
                 .accessibilityIdentifier("settings.delete")
                 if model.deleteState == .undoable {
                     // Non-modal: the rest of Settings stays usable; the window closes on its own after ~5 s.
-                    Button { model.undoDelete(); SA.selection() } label: {
-                        Text(SettingsViewModel.undoTitle).font(.body.weight(.semibold)).foregroundStyle(SA.legal)
+                    Button { model.undoDelete(); Haptics.selection() } label: {
+                        Text(SettingsViewModel.undoTitle).axFont(.headline).foregroundStyle(AX.legal)
                             .padding(.horizontal, 16)
                             .frame(minWidth: 64, minHeight: 56)
                             .contentShape(Rectangle())
@@ -125,13 +124,13 @@ public struct SettingsView: View {
             }
             // Outside the dimmed button so the only explanation for the disabled row stays readable.
             if !model.hasRecognitionData && model.deleteState == .idle {
-                Text("Nothing stored.").font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                Text("Nothing stored.").axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                     .padding(.leading, 60).padding(.trailing, 16).padding(.top, -12).padding(.bottom, 14)
                     .accessibilityIdentifier("settings.delete.helper")
             }
             if model.deleteState == .failed {
                 Text("Couldn't delete. Try again.")
-                    .font(.footnote.weight(.semibold)).foregroundStyle(SA.danger)
+                    .axFont(.label, weight: .semibold).foregroundStyle(AX.danger)
                     .padding(.horizontal, 16).padding(.bottom, 12)
                     .accessibilityIdentifier("settings.delete.error")
             }
@@ -141,7 +140,7 @@ public struct SettingsView: View {
     /// One tap deletes (SPEC §2): no confirmation step; Undo stands in for it.
     private func delete() {
         model.deleteTapped()
-        SA.haptic(model.deleteState == .undoable ? .success : .error)
+        Haptics.notify(model.deleteState == .undoable ? .success : .error)
         Task {
             while model.deleteState == .undoable { try? await Task.sleep(for: .milliseconds(200)) }
             if model.deleteState == .deleted {
@@ -154,13 +153,13 @@ public struct SettingsView: View {
 
     private var backup: some View {
         VStack(spacing: 8) {
-            SA.sectionHeader("Backup")
+            AXSectionHeader("Backup")
             SAAdaptiveStack(spacing: 12) {
                 BackupTile(symbol: "square.and.arrow.up", title: "Export",
                            busy: model.exportState == .exporting, done: false) {
                     Task {
-                        if let url = await model.export() { shareURL = SAShareItem(url: url); SA.haptic(.success) }
-                        else { SA.haptic(.error) }
+                        if let url = await model.export() { shareURL = SAShareItem(url: url); Haptics.notify(.success) }
+                        else { Haptics.notify(.error) }
                     }
                 }
                 .accessibilityIdentifier("settings.export")
@@ -172,7 +171,7 @@ public struct SettingsView: View {
             }
             .disabled(!model.backupEnabled)
             if model.exportState == .failed {
-                Text("Export failed.").font(.footnote.weight(.semibold)).foregroundStyle(SA.danger)
+                Text("Export failed.").axFont(.label, weight: .semibold).foregroundStyle(AX.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -181,7 +180,7 @@ public struct SettingsView: View {
     private func handleImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { model.importCancelled(); return }
         model.importFile(at: url)
-        SA.haptic(model.importState == .done ? .success : .error)
+        Haptics.notify(model.importState == .done ? .success : .error)
         if model.importState == .done {
             Task { try? await Task.sleep(for: .seconds(1.5)); model.settle() }
         }
@@ -191,20 +190,20 @@ public struct SettingsView: View {
 
     private var rules: some View {
         VStack(spacing: 8) {
-            SA.sectionHeader("Rules")
+            AXSectionHeader("Rules")
             SACard(padding: 12) {
                 VStack(spacing: 8) {
                     SAAdaptiveStack(spacing: 8) {
                         ForEach(RuleSetID.allCases, id: \.self) { r in
                             RuleTile(rule: r, selected: model.ruleSet == r) {
-                                model.ruleSet = r; SA.selection()
+                                model.ruleSet = r; Haptics.selection()
                             }
                         }
                     }
                     if model.showsThreeBallToggle {
-                        Divider().overlay(SA.inkMuted.opacity(0.3))
+                        Divider().overlay(AX.inkMuted.opacity(0.3))
                         Toggle(isOn: Binding(get: { model.threeBallRule },
-                                             set: { model.threeBallRule = $0; SA.selection() })) {
+                                             set: { model.threeBallRule = $0; Haptics.selection() })) {
                             SARowLabel(symbol: "3.circle", title: "Three-ball rule", helper: "Soft breaks re-rack.")
                         }
                         .padding(.horizontal, 4)
@@ -221,22 +220,22 @@ public struct SettingsView: View {
 
     private var table: some View {
         VStack(spacing: 8) {
-            SA.sectionHeader("Table")
+            AXSectionHeader("Table")
             SACard(padding: 12) {
                 VStack(alignment: .leading, spacing: 8) {
                     SAAdaptiveStack(spacing: 8) {
                         ForEach(TableSize.allCases, id: \.self) { size in
                             TableTile(size: size, selected: model.tableSize == size,
                                       label: model.tableAccessibilityLabel(size)) {
-                                model.selectTable(size); SA.selection()
+                                model.selectTable(size); Haptics.selection()
                             }
                         }
                     }
                     if let note = model.tableNote {
                         Label(note == .autoMeasured ? "Auto-measured" : "Manual",
                               systemImage: note == .autoMeasured ? "sensor.fill" : "hand.tap")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(SA.inkMuted)
+                            .axFont(.label, weight: .semibold)
+                            .foregroundStyle(AX.inkMuted)
                             .padding(.horizontal, 4)
                             .accessibilityIdentifier("settings.tableNote")
                     }
@@ -249,8 +248,8 @@ public struct SettingsView: View {
 
     private var developer: some View {
         VStack(spacing: 8) {
-            SA.sectionHeader("Developer").foregroundStyle(SA.inkMuted)
-            Toggle(isOn: Binding(get: { model.debugHUD }, set: { model.debugHUD = $0; SA.selection() })) {
+            AXSectionHeader("Developer").foregroundStyle(AX.inkMuted)
+            Toggle(isOn: Binding(get: { model.debugHUD }, set: { model.debugHUD = $0; Haptics.selection() })) {
                 SARowLabel(symbol: "gauge.with.dots.needle.33percent", title: "Debug HUD", helper: nil, muted: true)
             }
             .padding(.horizontal, 16)
@@ -270,14 +269,14 @@ struct SARowLabel: View {
     var body: some View {
         HStack(spacing: 16) {
             ZStack {
-                Circle().fill(SA.inkMuted.opacity(0.15)).frame(width: 28, height: 28)
-                Image(systemName: symbol).font(.footnote).foregroundStyle(SA.inkMuted)
+                Circle().fill(AX.inkMuted.opacity(0.15)).frame(width: 28, height: 28)
+                Image(systemName: symbol).axFont(.label, weight: .regular).foregroundStyle(AX.inkMuted)
             }
             .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.body).foregroundStyle(muted ? SA.inkMuted : SA.ink)
+                Text(title).axFont(.body).foregroundStyle(muted ? AX.inkMuted : AX.ink)
                 if let helper {
-                    Text(helper).font(.footnote.weight(.semibold)).foregroundStyle(SA.inkMuted)
+                    Text(helper).axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                 }
             }
         }
@@ -311,16 +310,16 @@ private struct BackupTile: View {
                     else {
                         Image(systemName: done ? "checkmark" : symbol)
                             .font(.system(size: glyph, weight: .semibold))
-                            .foregroundStyle(done ? SA.legal : SA.ink)
+                            .foregroundStyle(done ? AX.legal : AX.ink)
                             .contentTransition(.symbolEffect(.replace))
                     }
                 }
                 .frame(minHeight: glyph + 6)
-                Text(title).font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                Text(title).axFont(.headline).foregroundStyle(AX.ink)
             }
             .frame(maxWidth: .infinity, minHeight: 88)
-            .background(SA.surface, in: RoundedRectangle(cornerRadius: SA.buttonRadius, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: SA.buttonRadius))
+            .background(AX.surface, in: RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.element))
         }
         .buttonStyle(.plain)
         .disabled(busy)
@@ -338,21 +337,21 @@ struct SARuleBall: View {
     }
     var body: some View {
         ZStack {
-            Circle().fill(number == 9 ? Color(saHex: "#FACC15") : Color(saHex: "#111111"))
+            Circle().fill(AX.ball(number))
             if number == 9 {
-                Circle().fill(Color.white).mask(
+                Circle().fill(AX.ballWhite).mask(
                     VStack(spacing: 0) {
                         Rectangle().frame(height: size * 0.22)
                         Spacer(minLength: 0)
                         Rectangle().frame(height: size * 0.22)
                     })
             }
-            Circle().fill(Color.white).frame(width: size * 0.52)
+            Circle().fill(AX.ballWhite).frame(width: size * 0.52)
             Text("\(number)").font(.system(size: size * 0.32, weight: .bold, design: .rounded))
-                .monospacedDigit().foregroundStyle(Color.black)
+                .monospacedDigit().foregroundStyle(AX.pocket)
         }
         .frame(width: size, height: size)
-        .overlay(Circle().stroke(SA.inkMuted.opacity(0.4), lineWidth: 1))
+        .overlay(Circle().stroke(AX.inkMuted.opacity(0.4), lineWidth: 1))
         .accessibilityHidden(true)
     }
 }
@@ -366,14 +365,14 @@ private struct RuleTile: View {
             VStack(spacing: 8) {
                 SARuleBall(number: SettingsViewModel.ruleBall(rule))
                 Text(SettingsViewModel.ruleShortLabel(rule))
-                    .font(.body.weight(.semibold)).foregroundStyle(selected ? SA.ink : SA.inkMuted)
+                    .axFont(.headline).foregroundStyle(selected ? AX.ink : AX.inkMuted)
             }
             .frame(maxWidth: .infinity, minHeight: 96)
-            .background(RoundedRectangle(cornerRadius: SA.buttonRadius).fill(SA.bg.opacity(selected ? 0.6 : 0.25)))
-            .overlay(RoundedRectangle(cornerRadius: SA.buttonRadius).stroke(selected ? SA.ink : .clear, lineWidth: 2))
+            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.page.opacity(selected ? 0.6 : 0.25)))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).stroke(selected ? AX.ink : .clear, lineWidth: 2))
             .overlay(alignment: .topTrailing) {
                 if selected {
-                    Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(SA.ink).padding(6)
+                    Image(systemName: "checkmark.circle.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.ink).padding(6)
                 }
             }
             .contentShape(Rectangle())
@@ -393,15 +392,15 @@ struct SATableSilhouette: View {
             let rect = SettingsViewModel.silhouetteRect(size, in: box)
             let h = rect.height
             let rail = max(3, h * 0.12)
-            ctx.fill(Path(roundedRect: rect, cornerRadius: rail), with: .color(SA.rail))
-            ctx.stroke(Path(roundedRect: rect, cornerRadius: rail), with: .color(SA.railHi), lineWidth: 1)
+            ctx.fill(Path(roundedRect: rect, cornerRadius: rail), with: .color(AX.rail))
+            ctx.stroke(Path(roundedRect: rect, cornerRadius: rail), with: .color(AX.railHighlight), lineWidth: 1)
             let felt = rect.insetBy(dx: rail, dy: rail)
-            ctx.fill(Path(felt), with: .color(SA.felt))
+            ctx.fill(Path(felt), with: .color(AX.felt))
             let r = max(2, rail * 0.45)
             for x in [felt.minX, felt.midX, felt.maxX] {
                 for y in [felt.minY, felt.maxY] {
                     ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)),
-                             with: .color(.black))
+                             with: .color(AX.pocket))
                 }
             }
         }
@@ -419,16 +418,16 @@ private struct TableTile: View {
             VStack(spacing: 8) {
                 SATableSilhouette(size: size).frame(height: 44)
                 Text("\(SettingsViewModel.feet(size)) ft")
-                    .font(.body.weight(.semibold)).monospacedDigit()
-                    .foregroundStyle(selected ? SA.ink : SA.inkMuted)
+                    .axFont(.headline).monospacedDigit()
+                    .foregroundStyle(selected ? AX.ink : AX.inkMuted)
             }
             .padding(8)
             .frame(maxWidth: .infinity, minHeight: 96)
-            .background(RoundedRectangle(cornerRadius: SA.buttonRadius).fill(SA.bg.opacity(selected ? 0.6 : 0.25)))
-            .overlay(RoundedRectangle(cornerRadius: SA.buttonRadius).stroke(selected ? SA.ink : .clear, lineWidth: 2))
+            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.page.opacity(selected ? 0.6 : 0.25)))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).stroke(selected ? AX.ink : .clear, lineWidth: 2))
             .overlay(alignment: .topTrailing) {
                 if selected {
-                    Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(SA.ink).padding(6)
+                    Image(systemName: "checkmark.circle.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.ink).padding(6)
                 }
             }
             .contentShape(Rectangle())

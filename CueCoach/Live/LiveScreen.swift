@@ -35,7 +35,7 @@ struct LiveScreen: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            AXLive.stage.ignoresSafeArea()
             content.ignoresSafeArea().accessibilityIdentifier("live.view")
             HandlesLayer(model: model).ignoresSafeArea()
             LoupeView(model: model).ignoresSafeArea().allowsHitTesting(false)
@@ -80,7 +80,7 @@ struct LiveScreen: View {
             if showHUD { DebugHUD(model: model).frame(maxWidth: .infinity, alignment: .trailing) }
             Spacer()
             if st.showsRecalibratePulse {
-                PulsingButton(symbol: "scope", tint: Color(red: 0.98, green: 0.8, blue: 0.08), id: "live.recalibratePulse") {
+                PulsingButton(symbol: "scope", tint: AXLive.caution, id: "live.recalibratePulse") {
                     model.recalibrate()
                 }
                 Spacer()
@@ -91,7 +91,7 @@ struct LiveScreen: View {
                 } else if model.tapMode && !model.editor.corners.isEmpty {
                     CircleButton(symbol: "arrow.uturn.backward", id: "live.undo") { model.undo() }
                 } else if model.showTapFallback && !model.tapMode {
-                    PulsingButton(symbol: "hand.tap", tint: .white, id: "live.tapMode", size: 64) { model.startTapMode() }
+                    PulsingButton(symbol: "hand.tap", tint: AXLive.aim, id: "live.tapMode", size: 64) { model.startTapMode() }
                 } else if !model.tapMode && !model.manualCorrection {
                     // Always-available manual path (small, calm) before the automatic offer.
                     SmallButton(symbol: "hand.tap", id: "live.manual") { model.startTapMode() }
@@ -129,27 +129,29 @@ struct CoachingGlyph: View {
     var shake: Int
     var failure: LockFailure? = nil
     @State private var sweep = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.shellForceReduceMotion) private var forcedReduceMotion
     @State private var shakeOffset: CGFloat = 0
 
-    private let green = Color(red: 0.29, green: 0.87, blue: 0.5)
+    private let green = AXLive.legal
 
     var body: some View {
         let w: CGFloat = 112, h: CGFloat = 56
         ZStack {
             RoundedRectangle(cornerRadius: 6)
-                .stroke(status == .searching ? Color.white.opacity(0.4) : green.opacity(0.4 + 0.6 * confidence), lineWidth: 2)
+                .stroke(status == .searching ? AXLive.aim.opacity(0.4) : green.opacity(0.4 + 0.6 * confidence), lineWidth: 2)
                 .frame(width: w, height: h)
             if status == .searching {
                 Image(systemName: "iphone.gen3")
                     .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AXLive.aim)
                     .rotationEffect(.degrees(-20))
                     .offset(x: sweep ? 40 : -40)
             } else if tapMode {
                 // Two-tap fallback: the two near corner pockets (bottom of the glyph = nearest the user).
                 ForEach(0..<2, id: \.self) { i in
                     let pos = [CGPoint(x: 0, y: h), CGPoint(x: w, y: h)][i]
-                    Circle().fill(i < placed ? green : Color.white.opacity(0.2))
+                    Circle().fill(i < placed ? green : AXLive.aim.opacity(0.2))
                         .frame(width: 16, height: 16)
                         .position(x: pos.x + 8, y: pos.y + 8)
                 }
@@ -161,7 +163,7 @@ struct CoachingGlyph: View {
                 let symbol = CoachingSymbol.of(failure: failure, locked: false)
                 Image(systemName: symbol)
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(failure == nil ? green : Color.white)
+                    .foregroundStyle(failure == nil ? green : AXLive.aim)
                     .symbolEffect(.pulse, isActive: confidence < 1)
                     .accessibilityIdentifier("live.lockHint")
                     .accessibilityValue(failure?.rawValue ?? "converging")
@@ -169,9 +171,9 @@ struct CoachingGlyph: View {
         }
         .frame(width: w + 16, height: h + 16)
         .padding(10)
-        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 20))
+        .background(AXLive.chip.opacity(0.72), in: RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous))
         .offset(x: shakeOffset)
-        .onAppear { withAnimation(.easeInOut(duration: 1.1).repeatForever()) { sweep = true } }
+        .onAppear { if !(reduceMotion || forcedReduceMotion) { withAnimation(.easeInOut(duration: 1.1).repeatForever()) { sweep = true } } }
         .onChange(of: shake) {
             withAnimation(.spring(response: 0.12, dampingFraction: 0.2)) { shakeOffset = 14 }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.4).delay(0.12)) { shakeOffset = 0 }
@@ -184,13 +186,15 @@ struct HandlesLayer: View {
     let model: LiveModel
     @State private var dragStart: [Int: CGPoint] = [:]
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.shellForceReduceMotion) private var forcedReduceMotion
 
     var body: some View {
         ZStack {
             ForEach(Array(model.handles.enumerated()), id: \.offset) { i, p in
                 if let p, !model.calibrated {
                     let bad = model.editor.outlier == i
-                    let color = bad ? Color(red: 0.97, green: 0.44, blue: 0.44) : Color(red: 0.29, green: 0.87, blue: 0.5)
+                    let color = bad ? AXLive.danger : AXLive.legal
                     ZStack {
                         Circle().stroke(color, lineWidth: 3).frame(width: 44, height: 44)
                         Circle().fill(color).frame(width: 6, height: 6)
@@ -216,7 +220,7 @@ struct HandlesLayer: View {
                 }
             }
         }
-        .onAppear { withAnimation(.easeInOut(duration: 0.5).repeatForever()) { pulse = true } }
+        .onAppear { if !(reduceMotion || forcedReduceMotion) { withAnimation(.easeInOut(duration: 0.5).repeatForever()) { pulse = true } } }
     }
 }
 
@@ -228,9 +232,9 @@ struct ShotDock: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 12) {
             ZStack {
-                Circle().fill(.white.opacity(0.92))
-                Circle().stroke(.black.opacity(0.15), lineWidth: 1)
-                Circle().fill(Color(red: 0.97, green: 0.44, blue: 0.44))
+                Circle().fill(AXLive.aim.opacity(0.92))
+                Circle().stroke(AXLive.stage.opacity(0.15), lineWidth: 1)
+                Circle().fill(AXLive.danger)
                     .frame(width: 12, height: 12)
                     .offset(x: CGFloat(spin.tip.x) * 52, y: CGFloat(-spin.tip.y) * 52)
             }
@@ -238,13 +242,13 @@ struct ShotDock: View {
             VStack(spacing: 4) {
                 ForEach((1...5).reversed(), id: \.self) { step in
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(step <= power ? Color.white : Color.white.opacity(0.2))
+                        .fill(step <= power ? AXLive.aim : AXLive.aim.opacity(0.2))
                         .frame(width: 20, height: 9)
                 }
             }
         }
         .padding(10)
-        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 20))
+        .background(AXLive.chip.opacity(0.72), in: RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous))
         .accessibilityIdentifier("live.shotDock")
     }
 }
@@ -262,11 +266,11 @@ struct LoupeView: View {
                                                              width: crop.width * img.scale, height: crop.height * img.scale)) {
                     ZStack {
                         Image(decorative: cg, scale: 1).resizable().interpolation(.none)
-                        Image(systemName: "plus").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+                        Image(systemName: "plus").font(.system(size: 18, weight: .bold)).foregroundStyle(AXLive.aim)
                     }
                     .frame(width: d, height: d)
                     .clipShape(Circle())
-                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                    .overlay(Circle().stroke(AXLive.aim, lineWidth: 2))
                     .position(x: c.x, y: max(d / 2 + 8, c.y - d))
                     .accessibilityIdentifier("live.loupe")
                 }
@@ -278,13 +282,15 @@ struct LoupeView: View {
 /// After the lock: a pulsing cue ball says "now aim" (no text). Hidden at the first aim.
 struct AimHintGlyph: View {
     @State private var on = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.shellForceReduceMotion) private var forcedReduceMotion
     var body: some View {
-        Circle().fill(.white)
+        Circle().fill(AXLive.aim)
             .frame(width: 30, height: 30)
-            .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 2).scaleEffect(on ? 1.9 : 1).opacity(on ? 0 : 1))
+            .overlay(Circle().stroke(AXLive.aim.opacity(0.6), lineWidth: 2).scaleEffect(on ? 1.9 : 1).opacity(on ? 0 : 1))
             .frame(width: 64, height: 64)
-            .background(.ultraThinMaterial.opacity(0.5), in: Circle())
-            .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { on = true } }
+            .background(AXLive.chip.opacity(0.72), in: Circle())
+            .onAppear { if !(reduceMotion || forcedReduceMotion) { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { on = true } } }
     }
 }
 
@@ -296,9 +302,9 @@ struct SmallButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(AXLive.aim.opacity(0.7))
                 .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial.opacity(0.5), in: Circle())
+                .background(AXLive.chip.opacity(0.72), in: Circle())
         }
         .accessibilityIdentifier(id)
     }
@@ -310,9 +316,9 @@ struct ConfirmButton: View {
         Button(action: action) {
             Image(systemName: "checkmark")
                 .font(.system(size: 30, weight: .bold))
-                .foregroundStyle(.black)
+                .foregroundStyle(AXLive.stage)
                 .frame(width: 72, height: 72)
-                .background(Circle().fill(Color(red: 0.29, green: 0.87, blue: 0.5)))
+                .background(Circle().fill(AXLive.legal))
         }
         .accessibilityIdentifier("calib.confirm")
     }
@@ -325,24 +331,26 @@ struct PulsingButton: View {
     var size: CGFloat = 96
     var action: () -> Void
     @State private var on = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.shellForceReduceMotion) private var forcedReduceMotion
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: size * 0.35, weight: .semibold))
                 .foregroundStyle(tint)
                 .frame(width: size, height: size)
-                .background(.ultraThinMaterial.opacity(0.7), in: Circle())
+                .background(AXLive.chip.opacity(0.72), in: Circle())
                 .overlay(Circle().stroke(tint, lineWidth: 3).scaleEffect(on ? 1.3 : 1).opacity(on ? 0 : 0.9))
         }
         .accessibilityIdentifier(id)
-        .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true } }
+        .onAppear { if !(reduceMotion || forcedReduceMotion) { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true } } }
     }
 }
 
 struct CircleButton: View {
     var symbol: String
     var id: String
-    var tint: Color = .white
+    var tint: Color = AXLive.aim
     var dim = false
     var action: () -> Void
 
@@ -352,7 +360,7 @@ struct CircleButton: View {
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(tint.opacity(dim ? 0.55 : 1))
                 .frame(width: 60, height: 60)
-                .background(.ultraThinMaterial.opacity(0.7), in: Circle())
+                .background(AXLive.chip.opacity(0.72), in: Circle())
         }
         .accessibilityIdentifier(id)
     }
@@ -372,9 +380,9 @@ struct DebugHUD: View {
             Text("ball scale \(model.ballScale.map { String(format: "%.2f", $0) } ?? "–") · thermal \(model.thermal.rawValue) · \(model.tableSize?.rawValue ?? "–") · \(String(describing: model.status))")
         }
         .font(.system(size: 13, weight: .semibold, design: .monospaced))
-        .foregroundStyle(.white)
-        .padding(8)
-        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+        .foregroundStyle(AXLive.ink)
+        .padding(AX.space.s2)
+        .background(AXLive.chip.opacity(0.85), in: RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous))
         .accessibilityIdentifier("live.hud")
     }
 }
@@ -525,14 +533,14 @@ struct ReplayLiveView: View {
     }
 
     private func draw(_ ctx: inout GraphicsContext, _ map: AspectFill) {
-        let green = Color(red: 0.29, green: 0.87, blue: 0.5), red = Color(red: 0.97, green: 0.44, blue: 0.44)
+        let green = AXLive.legal, red = AXLive.danger
         guard let table else {
             // Ghost outline growing between placed / estimated corners.
             let pts = model.editor.perimeter.compactMap { scene.camera.project($0).map { map.toView($0) } }
             if pts.count >= 2 {
                 var p = Path(); p.addLines(pts); if pts.count == 4 { p.closeSubpath() }
                 let a = model.manualCorrection || model.tapMode ? 0.9 : 0.25 + 0.65 * model.ghostConfidence
-                ctx.stroke(p, with: .color(.white.opacity(a)), lineWidth: 2)
+                ctx.stroke(p, with: .color(AXLive.aim.opacity(a)), lineWidth: 2)
             }
             return
         }
@@ -541,14 +549,14 @@ struct ReplayLiveView: View {
         var outline = Path()
         let pts = table.corners.compactMap { v($0) }
         if pts.count == 4 { outline.addLines(pts); outline.closeSubpath() }
-        ctx.stroke(outline, with: .color(.white.opacity(0.55)), lineWidth: 2)
+        ctx.stroke(outline, with: .color(AXLive.aim.opacity(0.55)), lineWidth: 2)
         for p in table.spec.pockets {
             let r = (p.isSide ? table.spec.sideMouth : table.spec.cornerMouth) / 2
-            ctx.stroke(circle(table.spec.pocketCenter(p), r, geo.cloth, map), with: .color(.white.opacity(0.7)), lineWidth: 2)
+            ctx.stroke(circle(table.spec.pocketCenter(p), r, geo.cloth, map), with: .color(AXLive.aim.opacity(0.7)), lineWidth: 2)
         }
         for t in result?.confirmed ?? [] {
             let mark = result?.marks[t.id] ?? .unknown
-            let c: Color = switch mark { case .cue: .white; case .legal: green; case .illegal: red; case .unknown: .white.opacity(0.4) }
+            let c: Color = switch mark { case .cue: AXLive.aim; case .legal: green; case .illegal: red; case .unknown: AXLive.aim.opacity(0.4) }
             let st = RingStyle.of(mark, turnAge: 5, time: Date().timeIntervalSinceReferenceDate)
             ctx.stroke(circle(t.position, TableSpec.ballRadius * 1.25, geo.cloth, map), with: .color(c.opacity(st.alpha)),
                        style: StrokeStyle(lineWidth: mark == .cue ? 3 : 2, dash: st.shape == .dashed ? [5, 4] : []))
@@ -557,15 +565,15 @@ struct ReplayLiveView: View {
         if vis.line1, let aim = result?.aim, let a = v(aim.cue, ball: true), let g = v(aim.ghost, ball: true),
            let o = v(aim.object, ball: true), let pk = v(aim.pocketPoint, ball: true) {
             var l1 = Path(); l1.move(to: a); l1.addLine(to: g)
-            ctx.stroke(l1, with: .color(.white.opacity(0.9)), lineWidth: 2)
-            ctx.stroke(circle(aim.ghost, TableSpec.ballRadius, geo.ball, map), with: .color(.white.opacity(0.9)), lineWidth: 2)
+            ctx.stroke(l1, with: .color(AXLive.aim.opacity(0.9)), lineWidth: 2)
+            ctx.stroke(circle(aim.ghost, TableSpec.ballRadius, geo.ball, map), with: .color(AXLive.aim.opacity(0.9)), lineWidth: 2)
             var l2 = Path(); l2.move(to: o); l2.addLine(to: pk)
             if aim.objectPath.count >= 2 { l2 = Path(); l2.addLines(aim.objectPath.compactMap { v($0, ball: true) }) }
-            let c: Color = aim.ease > 0.35 ? green : aim.ease > 0.15 ? Color(red: 0.98, green: 0.8, blue: 0.08) : red
+            let c: Color = aim.ease > 0.35 ? green : aim.ease > 0.15 ? AXLive.caution : red
             ctx.stroke(l2, with: .color(c.opacity(0.85)), lineWidth: 2)
             if vis.line3, aim.cuePath.count >= 2 {
                 var l3 = Path(); l3.addLines(aim.cuePath.compactMap { v($0, ball: true) })
-                ctx.stroke(l3, with: .color(.white.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+                ctx.stroke(l3, with: .color(AXLive.aim.opacity(0.5)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
             }
         }
     }

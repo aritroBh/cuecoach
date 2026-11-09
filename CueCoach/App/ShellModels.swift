@@ -59,7 +59,7 @@ enum SetupError: Error, Equatable { case blankName, notOwner }
 
 /// Colours for avatars, in the order guests and new players take them.
 enum ShellPalette {
-    static let names = SBColor.avatarNames
+    static let names = AX.avatarNames
     static let symbols = ["hare.fill", "bolt.fill", "leaf.fill", "flame.fill", "star.fill", "moon.fill",
                           "tortoise.fill", "bird.fill"]
 }

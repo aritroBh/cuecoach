@@ -718,7 +718,7 @@ final class CornerMarkers {
         for i in 0..<n {
             let a = ring[i], b = ring[(i + 1) % ring.count]
             anchor.addChild(OverlayMesh.segment3D(from: a.f + [0, 0.004, 0], to: b.f + [0, 0.004, 0], width: 0.008,
-                                                  material: OverlayMesh.material(.white, alpha * 0.85)))
+                                                  material: OverlayMesh.material(AXLive.uiAim, alpha * 0.85)))
         }
     }
 }
@@ -750,9 +750,10 @@ final class TableOverlay {
     /// Set by the controller from the convergence latch + legality.
     var liveStyle: LiveAimStyle = .neutral
 
-    static let green = UIColor(red: 0.29, green: 0.87, blue: 0.5, alpha: 1)    // #4ADE80
-    static let yellow = UIColor(red: 0.98, green: 0.8, blue: 0.08, alpha: 1)   // #FACC15
-    static let red = UIColor(red: 0.97, green: 0.44, blue: 0.44, alpha: 1)     // #F87171
+    // D34: Astryx dark-mode tokens (the overlay sits on the camera in every appearance).
+    static let green = AXLive.uiLegal
+    static let yellow = AXLive.uiCaution
+    static let red = AXLive.uiDanger
 
     private let vis: OverlayVisibility
 
@@ -764,13 +765,13 @@ final class TableOverlay {
         let L = Float(spec.length), W = Float(spec.width)
         let edges: [(SIMD2<Float>, SIMD2<Float>)] = [([0, 0], [L, 0]), ([L, 0], [L, W]), ([L, W], [0, W]), ([0, W], [0, 0])]
         for (a, b) in edges {
-            let e = OverlayMesh.segment(from: a, to: b, z: 0.002, width: 0.006, material: OverlayMesh.material(.white, 0.55))
+            let e = OverlayMesh.segment(from: a, to: b, z: 0.002, width: 0.006, material: OverlayMesh.material(AXLive.uiAim, 0.55))
             outline.append(e); root.addChild(e)
         }
         for p in spec.pockets {
             let c = spec.pocketCenter(p)
             let r = Float((p.isSide ? spec.sideMouth : spec.cornerMouth) / 2)
-            let e = ModelEntity(mesh: OverlayMesh.ring(inner: r - 0.008, outer: r), materials: [OverlayMesh.material(.white, 0.9)])
+            let e = ModelEntity(mesh: OverlayMesh.ring(inner: r - 0.008, outer: r), materials: [OverlayMesh.material(AXLive.uiAim, 0.9)])
             e.position = [Float(c.x), Float(c.y), 0.003]
             outline.append(e); root.addChild(e)
             // Soft glow in the pocket mouth.
@@ -782,25 +783,25 @@ final class TableOverlay {
         solidRing = solid
         dashedRing = OverlayMesh.dashedRing(inner: R * 1.12, outer: R * 1.42, dashes: 10)
         for _ in 0..<16 {
-            let e = ModelEntity(mesh: solid, materials: [OverlayMesh.material(.white, 0.45)])
+            let e = ModelEntity(mesh: solid, materials: [OverlayMesh.material(AXLive.uiAim, 0.45)])
             e.isEnabled = false
             root.addChild(e); ballRings.append(e); ringShape.append(.solid)
         }
-        cueLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.9))
-        objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
-        ghost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.9, outer: R), materials: [OverlayMesh.material(.white, 0.9)])
+        cueLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(AXLive.uiAim, 0.9))
+        objectLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(AXLive.uiAim, 0.7))
+        ghost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.9, outer: R), materials: [OverlayMesh.material(AXLive.uiAim, 0.9)])
         for e in [cueLine, objectLine, ghost] { e.isEnabled = false; root.addChild(e) }
-        liveLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.006, material: OverlayMesh.material(.white, 1))
-        liveObject = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.7))
-        liveGhost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.88, outer: R), materials: [OverlayMesh.material(.white, 1)])
+        liveLine = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.006, material: OverlayMesh.material(AXLive.uiAim, 1))
+        liveObject = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(AXLive.uiAim, 0.7))
+        liveGhost = ModelEntity(mesh: OverlayMesh.ring(inner: R * 0.88, outer: R), materials: [OverlayMesh.material(AXLive.uiAim, 1)])
         for e in [liveLine, liveObject, liveGhost] { e.isEnabled = false; root.addChild(e) }
         for _ in 0..<16 {
-            let e = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(.white, 0.7))
+            let e = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.005, material: OverlayMesh.material(AXLive.uiAim, 0.7))
             e.isEnabled = false
             root.addChild(e); objectSegs.append(e)
         }
         for _ in 0..<14 {
-            let d = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(.white, 0.45))
+            let d = OverlayMesh.segment(from: [0, 0], to: [1, 0], z: R, width: 0.004, material: OverlayMesh.material(AXLive.uiAim, 0.45))
             d.isEnabled = false
             root.addChild(d); dashes.append(d)
         }
@@ -817,7 +818,7 @@ final class TableOverlay {
 
     func setDimmed(_ d: Bool) {
         dimmed = d
-        for e in outline { e.model?.materials = [OverlayMesh.material(.white, d ? 0.2 : 0.6)] }
+        for e in outline { e.model?.materials = [OverlayMesh.material(AXLive.uiAim, d ? 0.2 : 0.6)] }
         if d { for e in ballRings + dashes + objectSegs + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost] { e.isEnabled = false } }
     }
 
@@ -840,14 +841,14 @@ final class TableOverlay {
             }
             ring.isEnabled = true
             ring.position = [Float(t.position.x), Float(t.position.y), 0.004]
-            let color: UIColor = switch mark { case .cue, .unknown: .white; case .legal: Self.green; case .illegal: Self.red }
+            let color: UIColor = switch mark { case .cue, .unknown: AXLive.uiAim; case .legal: Self.green; case .illegal: Self.red }
             ring.model?.materials = [OverlayMesh.material(color, st.alpha)]
             ring.scale = [Float(st.scale), Float(st.scale), 1]
         }
         // Live aim from the cue stick: bright, turns green as it merges with the suggestion.
         let live = vis.liveCueLine ? r?.liveAim : nil
         if let live {
-            let c: UIColor = switch liveStyle { case .illegal: Self.red; case .merged: Self.green; case .neutral: .white }
+            let c: UIColor = switch liveStyle { case .illegal: Self.red; case .merged: Self.green; case .neutral: AXLive.uiAim }
             OverlayMesh.place(liveLine, from: live.cue.f, to: live.end.f, z: R)
             liveLine.model?.materials = [OverlayMesh.material(c, 0.95)]
             liveLine.isEnabled = true
@@ -871,8 +872,8 @@ final class TableOverlay {
         let guide = live == nil ? 1.0 : 0.3
         let color = aim.ease > 0.35 ? Self.green : aim.ease > 0.15 ? Self.yellow : Self.red
         OverlayMesh.place(cueLine, from: aim.cue.f, to: aim.ghost.f, z: R)                 // Line 1
-        cueLine.model?.materials = [OverlayMesh.material(.white, 0.9 * guide)]
-        ghost.model?.materials = [OverlayMesh.material(.white, 0.9 * guide)]
+        cueLine.model?.materials = [OverlayMesh.material(AXLive.uiAim, 0.9 * guide)]
+        ghost.model?.materials = [OverlayMesh.material(AXLive.uiAim, 0.9 * guide)]
         // Line 2: object-ball path (simulated with throw when Physics previewed it).
         objectLine.isEnabled = false
         let line2 = OverlayPath.segments(aim.objectPath.count >= 2 ? aim.objectPath : [aim.object, aim.pocketPoint],
@@ -891,7 +892,7 @@ final class TableOverlay {
         // Line 3: dashed cue path after contact (follows cushions when simulated).
         let segs = !vis.line3 ? [] : OverlayPath.dashes(aim.cuePath, dash: 0.04, gap: 0.03, skip: TableSpec.ballRadius, max: dashes.count)
             .map { ($0.0.f, $0.1.f) }
-        let dashMat = OverlayMesh.material(.white, 0.45 * guide)
+        let dashMat = OverlayMesh.material(AXLive.uiAim, 0.45 * guide)
         for (i, d) in dashes.enumerated() {
             if i < segs.count {
                 OverlayMesh.place(d, from: segs[i].0, to: segs[i].1, z: R)

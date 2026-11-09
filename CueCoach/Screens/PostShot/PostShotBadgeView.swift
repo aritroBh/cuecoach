@@ -61,24 +61,24 @@ public struct PostShotBadgeView: View {
                 RatingBadgeCircle(style: style, diameter: 72, symbolSize: 32)
                 // Points at the shooting team's avatar corner (A top-left, B top-right); B dashed.
                 TeamArc.pointing(team: rating.team)
-                    .stroke(SBColor.team(rating.team), style: SBColor.teamStroke(rating.team))
+                    .stroke(AX.team(rating.team), style: AX.teamStroke(rating.team))
                     .frame(width: 84, height: 84)
             }
             // Footnote scales with Dynamic Type, clamped at xxLarge (13 → 17 pt). A soft dark halo gives contrast
             // over the camera without a chip shape.
             Text(style.words)
-                .font(SBFont.caption)
+                .axFont(.label, weight: .semibold)
                 .dynamicTypeSize(...DynamicTypeSize.xxLarge)
-                .foregroundStyle(SBColor.ink)
+                .foregroundStyle(AX.ink)
                 .lineLimit(1)
                 .fixedSize()
-                .shadow(color: .black.opacity(0.85), radius: 3)
-                .shadow(color: .black.opacity(0.85), radius: 6)
+                .shadow(color: AXLive.stage.opacity(0.85), radius: 3)
+                .shadow(color: AXLive.stage.opacity(0.85), radius: 6)
         }
         .overlay(alignment: .topTrailing) {
             if model.isPinned {
-                Image(systemName: "pin.fill").font(SBFont.glyph(13, .semibold))
-                    .foregroundStyle(SBColor.inkMuted).offset(x: 6, y: -2)
+                Image(systemName: "pin.fill").font(AXGlyph.font(13, .semibold))
+                    .foregroundStyle(AX.inkMuted).offset(x: 6, y: -2)
             }
         }
         .frame(minWidth: 110, minHeight: 110)
@@ -97,7 +97,7 @@ public struct PostShotBadgeView: View {
 
 #Preview("Badge") {
     ZStack {
-        SBColor.feltCenter.ignoresSafeArea()
+        AX.felt.ignoresSafeArea()
         PostShotBadgeView(model: {
             let m = PostShotBadgeModel()
             m.receive(.rated(PostShotRating(shotID: UUID(), rating: .brilliant, shooterName: "Sam", team: 0)))

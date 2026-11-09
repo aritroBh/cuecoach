@@ -17,7 +17,7 @@ public struct GameReviewView: View {
 
     public var body: some View {
         ZStack {
-            SBColor.bg.ignoresSafeArea()
+            AX.page.ignoresSafeArea()
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 32) {
@@ -30,15 +30,14 @@ public struct GameReviewView: View {
                 doneBar.padding(.horizontal, wide ? 24 : 16).padding(.bottom, 8)
                     // Content fades out above the bar instead of being chopped at its edge.
                     .background(alignment: .top) {
-                        LinearGradient(colors: [SBColor.bg.opacity(0), SBColor.bg], startPoint: .top, endPoint: .bottom)
+                        LinearGradient(colors: [AX.page.opacity(0), AX.page], startPoint: .top, endPoint: .bottom)
                             .frame(height: 24)
                             .offset(y: -24)
                             .allowsHitTesting(false)
                     }
-                    .background(SBColor.bg)
+                    .background(AX.page)
             }
         }
-        .preferredColorScheme(.dark)
         .task { await model.load() }
         .sensoryFeedback(.selection, trigger: model.selectedShotID)
     }
@@ -49,15 +48,15 @@ public struct GameReviewView: View {
         switch model.phase {
         case .failed:
             VStack(spacing: 24) {
-                centered("exclamationmark.triangle", "Unavailable", tint: SBColor.caution, id: "review.failed")
+                centered("exclamationmark.triangle", "Unavailable", tint: AX.caution, id: "review.failed")
                 if model.canRetry {
                     Button { Task { await model.retry() } } label: {
                         Image(systemName: "arrow.clockwise")
-                            .font(SBFont.glyph(28, .semibold))
-                            .foregroundStyle(SBColor.ink)
+                            .font(AXGlyph.font(28, .semibold))
+                            .foregroundStyle(AX.ink)
                             .frame(width: 72, height: 72)
-                            .background(Circle().fill(SBColor.surface))
-                            .overlay(Circle().strokeBorder(SBColor.ink.opacity(0.2), lineWidth: 1))
+                            .background(Circle().fill(AX.surface))
+                            .overlay(Circle().strokeBorder(AX.ink.opacity(0.2), lineWidth: 1))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -77,7 +76,7 @@ public struct GameReviewView: View {
             .accessibilityIdentifier("review.loading")
         case .loaded:
             if model.isEmpty {
-                centered("circle.slash", "No shots", tint: SBColor.inkMuted, id: "review.empty")
+                centered("circle.slash", "No shots", tint: AX.inkMuted, id: "review.empty")
             } else if wide {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard }
@@ -94,8 +93,8 @@ public struct GameReviewView: View {
 
     private func centered(_ symbol: String, _ word: String, tint: Color, id: String) -> some View {
         VStack(spacing: 16) {
-            Image(systemName: symbol).font(SBFont.glyph(64, .regular)).foregroundStyle(tint)
-            Text(word).font(SBFont.headline).foregroundStyle(SBColor.inkMuted)
+            Image(systemName: symbol).font(AXGlyph.font(64, .regular)).foregroundStyle(tint)
+            Text(word).axFont(.headline).foregroundStyle(AX.inkMuted)
         }
         .frame(maxWidth: .infinity, minHeight: 320)
         .accessibilityElement(children: .combine)
@@ -108,13 +107,13 @@ public struct GameReviewView: View {
         VStack(alignment: .leading, spacing: 16) {
             if let d = model.data {
                 Text("Game \(d.gameIndex + 1)")
-                    .font(SBFont.largeTitle).foregroundStyle(SBColor.ink)
+                    .axFont(.display).foregroundStyle(AX.ink)
                     .accessibilityAddTraits(.isHeader)
             } else if model.phase == .loading {
                 // Title-sized placeholder: no made-up game number while loading.
-                Text("Game 0").font(SBFont.largeTitle).hidden()
+                Text("Game 0").axFont(.display).hidden()
                     .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 10).fill(SBColor.surface).opacity(0.8)
+                        RoundedRectangle(cornerRadius: 10).fill(AX.surface).opacity(0.8)
                     }
                     .accessibilityHidden(true)
             }
@@ -125,8 +124,8 @@ public struct GameReviewView: View {
                     teamCluster(d.teams.first ?? [], team: 0, winner: d.winnerTeam == 0)
                     Spacer(minLength: 0)
                     Text("\(d.score.first ?? 0) – \(d.score.last ?? 0)")
-                        .font(SBFont.score)
-                        .foregroundStyle(SBColor.ink)
+                        .axFont(.display, weight: .bold, monospacedDigits: true)
+                        .foregroundStyle(AX.ink)
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
@@ -145,12 +144,12 @@ public struct GameReviewView: View {
     /// Same footprint as the loaded header row (two 40-pt avatars per side + score), so nothing jumps.
     private var headerSkeleton: some View {
         HStack(spacing: 16) {
-            HStack(spacing: -12) { ForEach(0..<2, id: \.self) { _ in Circle().fill(SBColor.surface).frame(width: 40, height: 40) } }
+            HStack(spacing: -12) { ForEach(0..<2, id: \.self) { _ in Circle().fill(AX.surface).frame(width: 40, height: 40) } }
                 .padding(4)
             Spacer(minLength: 0)
-            RoundedRectangle(cornerRadius: 10).fill(SBColor.surface).frame(width: 96, height: 40)
+            RoundedRectangle(cornerRadius: 10).fill(AX.surface).frame(width: 96, height: 40)
             Spacer(minLength: 0)
-            HStack(spacing: -12) { ForEach(0..<2, id: \.self) { _ in Circle().fill(SBColor.surface).frame(width: 40, height: 40) } }
+            HStack(spacing: -12) { ForEach(0..<2, id: \.self) { _ in Circle().fill(AX.surface).frame(width: 40, height: 40) } }
                 .padding(4)
         }
         .opacity(0.8)
@@ -163,9 +162,9 @@ public struct GameReviewView: View {
         HStack(spacing: -12) {
             ForEach(players) { p in
                 SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 40)
-                    .overlay(Circle().strokeBorder(SBColor.bg, lineWidth: 2))
+                    .overlay(Circle().strokeBorder(AX.page, lineWidth: 2))
                     .overlay {
-                        Circle().strokeBorder(winner ? SBColor.legal : SBColor.team(team),
+                        Circle().strokeBorder(winner ? AX.legal : AX.team(team),
                                               style: StrokeStyle(lineWidth: 3, dash: team == 0 ? [] : [4, 3]))
                             .padding(-4)
                     }
@@ -174,8 +173,8 @@ public struct GameReviewView: View {
         .padding(4)
         .overlay(alignment: .top) {
             if winner {
-                Image(systemName: "crown.fill").font(SBFont.glyph(16, .semibold))
-                    .foregroundStyle(SBColor.legal).offset(y: -18)
+                Image(systemName: "crown.fill").font(AXGlyph.font(16, .semibold))
+                    .foregroundStyle(AX.legal).offset(y: -18)
             }
         }
         .opacity(winner || model.data?.winnerTeam == nil ? 1 : 0.6)
@@ -225,7 +224,7 @@ public struct GameReviewView: View {
                                 VStack(spacing: 2) {
                                     RatingBadgeCircle(style: style, diameter: selected ? 56 : 44, symbolSize: 20,
                                                       selected: selected, showGlow: false)
-                                    TeamArc().stroke(SBColor.team(s.team), style: SBColor.teamStroke(s.team))
+                                    TeamArc().stroke(AX.team(s.team), style: AX.teamStroke(s.team))
                                         .frame(width: 30, height: 12)
                                         .offset(y: -14)
                                 }
@@ -259,7 +258,7 @@ public struct GameReviewView: View {
                 HStack {
                     sectionTitle("Replay")
                     Spacer()
-                    Text("Shot \(s.index + 1)").font(SBFont.body).foregroundStyle(SBColor.inkMuted)
+                    Text("Shot \(s.index + 1)").axFont(.body).foregroundStyle(AX.inkMuted)
                 }
                 Group {
                     if model.isReplayAvailable(s) {
@@ -272,12 +271,12 @@ public struct GameReviewView: View {
                             .accessibilityIdentifier("review.replay")
                     } else {
                         VStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle").font(SBFont.glyph(32, .regular)).foregroundStyle(SBColor.caution)
-                            Text("Unavailable").font(SBFont.headline).foregroundStyle(SBColor.inkMuted)
+                            Image(systemName: "exclamationmark.triangle").font(AXGlyph.font(32, .regular)).foregroundStyle(AX.caution)
+                            Text("Unavailable").axFont(.headline).foregroundStyle(AX.inkMuted)
                         }
                         .frame(maxWidth: .infinity)
                         .aspectRatio(ReplayLayout.aspect(TableSpec(size: model.data?.tableSize ?? .sevenFoot)), contentMode: .fit)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.feltEdge.opacity(0.4)))
+                        .background(RoundedRectangle(cornerRadius: 14).fill(AX.feltEdge.opacity(0.4)))
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("review.replay.unavailable")
                     }
@@ -308,16 +307,16 @@ public struct GameReviewView: View {
                 }
             }
             .padding(16)
-            .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
+            .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
         }
     }
 
     private func legend(dashed: Bool, _ word: String) -> some View {
         HStack(spacing: 8) {
             Path { p in p.move(to: CGPoint(x: 0, y: 6)); p.addLine(to: CGPoint(x: 24, y: 6)) }
-                .stroke(dashed ? SBColor.predict : SBColor.ink, style: StrokeStyle(lineWidth: 2, dash: dashed ? [6, 6] : []))
+                .stroke(dashed ? AX.onDark.opacity(0.5) : AX.ink, style: StrokeStyle(lineWidth: 2, dash: dashed ? [6, 6] : []))
                 .frame(width: 24, height: 12)
-            Text(word).font(SBFont.caption).foregroundStyle(SBColor.inkMuted)
+            Text(word).axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
         }
         .accessibilityElement(children: .combine)
     }
@@ -333,8 +332,8 @@ public struct GameReviewView: View {
                 if model.canPlayShotOfGameClip {
                     Button { model.playShotOfGameClip() } label: {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 14).fill(SBColor.feltEdge)
-                            Image(systemName: "play.circle.fill").font(SBFont.glyph(64)).foregroundStyle(SBColor.ink)
+                            RoundedRectangle(cornerRadius: 14).fill(AX.feltEdge)
+                            Image(systemName: "play.circle.fill").font(AXGlyph.font(64)).foregroundStyle(AX.ink)
                         }
                         .aspectRatio(16 / 9, contentMode: .fit)
                         .contentShape(RoundedRectangle(cornerRadius: 14))
@@ -345,8 +344,8 @@ public struct GameReviewView: View {
                 } else {
                     // No clip yet: nothing that looks tappable.
                     ZStack {
-                        RoundedRectangle(cornerRadius: 14).fill(SBColor.feltEdge.opacity(0.6))
-                        Image(systemName: "film").font(SBFont.glyph(40)).foregroundStyle(SBColor.inkMuted)
+                        RoundedRectangle(cornerRadius: 14).fill(AX.feltEdge.opacity(0.6))
+                        Image(systemName: "film").font(AXGlyph.font(40)).foregroundStyle(AX.inkMuted)
                     }
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .accessibilityElement(children: .ignore)
@@ -354,12 +353,12 @@ public struct GameReviewView: View {
                 }
                 HStack(spacing: 12) {
                     RatingBadgeCircle(style: .of(s.rating), diameter: 44, symbolSize: 20)
-                    Text(h.label).font(SBFont.headline).foregroundStyle(SBColor.ink).lineLimit(2)
+                    Text(h.label).axFont(.headline).foregroundStyle(AX.ink).lineLimit(2)
                     Spacer()
                 }
                 HStack(spacing: 12) {
                     EvalBar(p: model.winProbBefore(s))
-                    Image(systemName: "arrow.right").font(SBFont.headline).foregroundStyle(SBColor.inkMuted)
+                    Image(systemName: "arrow.right").axFont(.headline).foregroundStyle(AX.inkMuted)
                     EvalBar(p: model.winProbAfter(s))
                 }
                 .accessibilityElement(children: .ignore)
@@ -368,7 +367,7 @@ public struct GameReviewView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
+        .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("review.sotg")
     }
@@ -384,8 +383,8 @@ public struct GameReviewView: View {
                 HStack(spacing: 16) {
                     SBAvatar(symbol: mvp.player.symbol, colorName: mvp.player.colorName, size: 80, team: mvp.team)
                         .padding(5)
-                    Text(mvp.player.name).font(SBFont.title).foregroundStyle(SBColor.ink).lineLimit(2)
-                    Image(systemName: "crown.fill").font(SBFont.title).foregroundStyle(SBColor.ink)
+                    Text(mvp.player.name).axFont(.title).foregroundStyle(AX.ink).lineLimit(2)
+                    Image(systemName: "crown.fill").axFont(.title).foregroundStyle(AX.ink)
                     Spacer(minLength: 0)
                 }
                 .accessibilityElement(children: .combine)
@@ -404,32 +403,32 @@ public struct GameReviewView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
+        .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("review.mvp")
     }
 
     private var lockedBody: some View {
         HStack(spacing: 12) {
-            Image(systemName: "lock.fill").font(SBFont.glyph(24, .semibold)).foregroundStyle(SBColor.inkMuted)
-            Text("After game").font(SBFont.headline).foregroundStyle(SBColor.inkMuted)
+            Image(systemName: "lock.fill").font(AXGlyph.font(24, .semibold)).foregroundStyle(AX.inkMuted)
+            Text("After game").axFont(.headline).foregroundStyle(AX.inkMuted)
         }
         .frame(maxWidth: .infinity, minHeight: 88)
         .accessibilityElement(children: .combine)
     }
 
     private func sectionTitle(_ s: String) -> some View {
-        Text(s).font(SBFont.title).foregroundStyle(SBColor.ink)
+        Text(s).axFont(.title).foregroundStyle(AX.ink)
             .dynamicTypeSize(...DynamicTypeSize.accessibility2)   // ui-QA-3: headings don't crowd out the hero
             .accessibilityAddTraits(.isHeader)
     }
 
     private var doneBar: some View {
         Button { model.onDone?() } label: {
-            Text("Done").font(SBFont.headline).foregroundStyle(SBColor.ink)
+            Text("Done").axFont(.headline).foregroundStyle(AX.ink)
                 .frame(maxWidth: .infinity, minHeight: 56)
-                .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.surface))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(SBColor.ink.opacity(0.12), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 14).fill(AX.surface))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AX.ink.opacity(0.12), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("review.done")
@@ -449,18 +448,18 @@ struct EvalBar: View {
             let x = w * min(max(p, 0), 1)
             ZStack(alignment: .leading) {
                 HStack(spacing: 0) {
-                    Rectangle().fill(SBColor.teamA).frame(width: x)
-                    Rectangle().fill(SBColor.teamB.opacity(0.85))
+                    Rectangle().fill(AX.teamA).frame(width: x)
+                    Rectangle().fill(AX.teamB.opacity(0.85))
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 if let d = delta {
                     let x0 = w * min(max(d, 0), 1)
                     RoundedRectangle(cornerRadius: 3)
-                        .strokeBorder(SBColor.ink, lineWidth: 2)
+                        .strokeBorder(AX.ink, lineWidth: 2)
                         .frame(width: max(abs(x - x0), 4), height: 20)
                         .offset(x: min(x, x0))
                 }
-                Rectangle().fill(SBColor.ink).frame(width: 2, height: 20).offset(x: x - 1)
+                Rectangle().fill(AX.ink).frame(width: 2, height: 20).offset(x: x - 1)
             }
             .frame(height: 20)
         }
@@ -474,7 +473,7 @@ struct TeamRing: View {
     var team: Int
     var size: CGFloat = 20
     var body: some View {
-        Circle().stroke(SBColor.team(team), style: SBColor.teamStroke(team, width: 3))
+        Circle().stroke(AX.team(team), style: AX.teamStroke(team, width: 3))
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
@@ -485,7 +484,7 @@ private struct Skeleton: View {
     var reduceMotion: Bool
     @State private var dim = false
     var body: some View {
-        RoundedRectangle(cornerRadius: 20).fill(SBColor.surface)
+        RoundedRectangle(cornerRadius: 20).fill(AX.surface)
             .frame(height: height)
             .opacity(reduceMotion ? 0.5 : (dim ? 0.5 : 1))
             .onAppear {
@@ -504,25 +503,25 @@ private struct WinChanceChart: View {
             ForEach(pts, id: \.x) { p in
                 AreaMark(x: .value("Shot", p.x), yStart: .value("Even", 0.5), yEnd: .value("A", max(p.y, 0.5)),
                          series: .value("Side", "A"))
-                    .foregroundStyle(SBColor.teamA.opacity(0.18))
+                    .foregroundStyle(AX.teamA.opacity(0.18))
                 AreaMark(x: .value("Shot", p.x), yStart: .value("B", min(p.y, 0.5)), yEnd: .value("Even", 0.5),
                          series: .value("Side", "B"))
-                    .foregroundStyle(SBColor.teamB.opacity(0.18))
+                    .foregroundStyle(AX.teamB.opacity(0.18))
                 LineMark(x: .value("Shot", p.x), y: .value("Team A", p.y))
-                    .foregroundStyle(SBColor.ink)
+                    .foregroundStyle(AX.ink)
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
             RuleMark(y: .value("Even", 0.5))
-                .foregroundStyle(SBColor.inkMuted)
+                .foregroundStyle(AX.inkMuted)
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
             ForEach(model.chartMarkers) { s in
                 PointMark(x: .value("Shot", model.chartX(s)), y: .value("Team A", model.winProbAfter(s)))
-                    .foregroundStyle(SBColor.ink)
+                    .foregroundStyle(AX.ink)
                     .symbolSize(28)
             }
             if let sel = model.selectedShot {
                 RuleMark(x: .value("Shot", model.chartX(sel)), yStart: .value("Low", 0), yEnd: .value("High", 1))
-                    .foregroundStyle(SBColor.ink.opacity(0.5))
+                    .foregroundStyle(AX.ink.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1))
             }
         }
@@ -530,7 +529,7 @@ private struct WinChanceChart: View {
         .chartXAxis(.hidden)
         .chartYAxis {
             AxisMarks(values: [0.5]) { _ in
-                AxisValueLabel("50%").font(SBFont.caption).foregroundStyle(SBColor.inkMuted)
+                AxisValueLabel("50%").font(.footnote.weight(.semibold))   // Charts takes a Font, not a view modifier.foregroundStyle(AX.inkMuted)
             }
         }
         .chartLegend(.hidden)

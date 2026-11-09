@@ -23,7 +23,7 @@ struct TrainingPickerView: View {
                                     model.drill = d
                                 } content: {
                                     Image(systemName: TrainingPickerModel.symbol(d)).font(.system(size: 28, weight: .semibold))
-                                    Text(TrainingPickerModel.name(d)).font(.body.weight(.semibold))
+                                    Text(TrainingPickerModel.name(d)).axFont(.headline)
                                 }
                             }
                         }
@@ -37,12 +37,12 @@ struct TrainingPickerView: View {
                                     model.level = l
                                 } content: {
                                     LevelSketch(elements: model.sketch(for: l)).frame(width: 56, height: 40)
-                                    Text("\(l.rawValue)").font(.title3.weight(.bold)).monospacedDigit()
+                                    Text("\(l.rawValue)").axFont(.subtitle, weight: .bold).monospacedDigit()
                                 }
                             }
                         }
                         Text(TrainingPickerModel.levelName(model.level))
-                            .font(.body.weight(.semibold)).foregroundStyle(SBColor.ink)
+                            .axFont(.headline).foregroundStyle(AX.ink)
                             .accessibilityIdentifier("training.levelName")
                     }
                 }
@@ -52,7 +52,7 @@ struct TrainingPickerView: View {
         .safeAreaInset(edge: .bottom) {
             ShellStartButton(enabled: true, id: "training.start") { model.start() }
                 .padding(.horizontal, 16).padding(.bottom, 8)
-                .background(SBColor.bg.opacity(0.9))
+                .background(AX.page.opacity(0.9))
         }
         .navigationTitle("Training")
         .navigationBarTitleDisplayMode(.inline)
@@ -70,30 +70,30 @@ struct LevelSketch: View {
             let ghost = CGPoint(x: obj.x - 6, y: obj.y + 4)
             if elements.contains(.cueToGhostLine) {
                 var p = Path(); p.move(to: cue); p.addLine(to: ghost)
-                ctx.stroke(p, with: .color(.white.opacity(0.9)), lineWidth: 2)
+                ctx.stroke(p, with: .color(AX.onDark.opacity(0.9)), lineWidth: 2)
             }
             if elements.contains(.objectToPocketLine) {
                 var p = Path(); p.move(to: obj); p.addLine(to: pocket)
-                ctx.stroke(p, with: .color(.white.opacity(0.6)), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                ctx.stroke(p, with: .color(AX.onDark.opacity(0.6)), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
             }
             if elements.contains(.ghostBall) {
                 ctx.stroke(Path(ellipseIn: CGRect(x: ghost.x - 5, y: ghost.y - 5, width: 10, height: 10)),
-                           with: .color(.white.opacity(0.9)), lineWidth: 1.5)
+                           with: .color(AX.onDark.opacity(0.9)), lineWidth: 1.5)
             }
             if elements.contains(.positionZone) {
                 let zone = CGRect(x: w * 0.22, y: h * 0.12, width: w * 0.26, height: h * 0.3)
-                ctx.fill(Path(ellipseIn: zone), with: .color(SBColor.legal.opacity(0.35)))
-                ctx.stroke(Path(ellipseIn: zone), with: .color(SBColor.legal), lineWidth: 1)
+                ctx.fill(Path(ellipseIn: zone), with: .color(AX.legal.opacity(0.35)))
+                ctx.stroke(Path(ellipseIn: zone), with: .color(AX.legal), lineWidth: 1)
             }
             if elements.contains(.cueAfterContactLine) {
                 var p = Path(); p.move(to: ghost); p.addLine(to: CGPoint(x: w * 0.35, y: h * 0.27))
-                ctx.stroke(p, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+                ctx.stroke(p, with: .color(AX.onDark.opacity(0.45)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
             }
-            ctx.fill(Path(ellipseIn: CGRect(x: pocket.x - 4, y: pocket.y - 4, width: 8, height: 8)), with: .color(.black))
-            ctx.fill(Path(ellipseIn: CGRect(x: obj.x - 5, y: obj.y - 5, width: 10, height: 10)), with: .color(SBColor.caution))
-            ctx.fill(Path(ellipseIn: CGRect(x: cue.x - 5, y: cue.y - 5, width: 10, height: 10)), with: .color(.white))
+            ctx.fill(Path(ellipseIn: CGRect(x: pocket.x - 4, y: pocket.y - 4, width: 8, height: 8)), with: .color(AX.pocket))
+            ctx.fill(Path(ellipseIn: CGRect(x: obj.x - 5, y: obj.y - 5, width: 10, height: 10)), with: .color(AX.caution))
+            ctx.fill(Path(ellipseIn: CGRect(x: cue.x - 5, y: cue.y - 5, width: 10, height: 10)), with: .color(AX.ballWhite))
         }
-        .background(RoundedRectangle(cornerRadius: 6).fill(SBColor.feltCenter))
+        .background(RoundedRectangle(cornerRadius: 6).fill(AX.felt))
         .accessibilityHidden(true)
     }
 }

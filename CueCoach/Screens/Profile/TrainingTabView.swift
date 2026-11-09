@@ -9,17 +9,17 @@ struct TrainingTabView: View {
     var retry: () -> Void = {}
 
     var body: some View {
-        VStack(spacing: SA.section) {
-            Rectangle().fill(SA.brilliant.opacity(0.15)).frame(height: 4)
+        VStack(spacing: AX.space.s6) {
+            Rectangle().fill(AX.brilliant.opacity(0.15)).frame(height: 4)
                 .clipShape(Capsule())
                 .accessibilityHidden(true)
             if failed {
                 VStack(spacing: 16) {
-                    Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(SA.caution)
+                    Image(systemName: "exclamationmark.triangle").font(.system(size: 44)).foregroundStyle(AX.caution)
                         .accessibilityHidden(true)
-                    Text("Couldn't load drills.").font(.body).foregroundStyle(SA.ink)
+                    Text("Couldn't load drills.").axFont(.body).foregroundStyle(AX.ink)
                     Button("Retry", action: retry)
-                        .buttonStyle(.borderedProminent).tint(SA.surface).controlSize(.large)
+                        .buttonStyle(.borderedProminent).tint(AX.surface).controlSize(.large)
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("profile.training.retry")
                 }
@@ -29,8 +29,8 @@ struct TrainingTabView: View {
                 if !content.drills.isEmpty {
                     VStack(spacing: 8) {
                         HStack(spacing: 8) {
-                            Image(systemName: "graduationcap").foregroundStyle(SA.brilliant)
-                            Text("Training only").font(.title2.weight(.semibold)).foregroundStyle(SA.ink)
+                            Image(systemName: "graduationcap").foregroundStyle(AX.brilliant)
+                            Text("Training only").axFont(.title).foregroundStyle(AX.ink)
                             Spacer()
                         }
                         .accessibilityElement(children: .combine)
@@ -38,7 +38,7 @@ struct TrainingTabView: View {
                         SACard(padding: 0) {
                             VStack(spacing: 0) {
                                 ForEach(Array(content.drills.enumerated()), id: \.element.id) { i, d in
-                                    if i > 0 { Divider().overlay(SA.inkMuted.opacity(0.3)).padding(.leading, 16) }
+                                    if i > 0 { Divider().overlay(AX.inkMuted.opacity(0.3)).padding(.leading, 16) }
                                     DrillRow(drill: d)
                                 }
                             }
@@ -47,13 +47,13 @@ struct TrainingTabView: View {
                 }
                 if let bias = content.bias {
                     VStack(spacing: 8) {
-                        SA.sectionHeader("Tendency")
+                        AXSectionHeader("Tendency")
                         TendencyCard(bias: bias)
                     }
                 }
             } else {
                 ContentUnavailableView("No drills yet", systemImage: "graduationcap")
-                    .foregroundStyle(SA.inkMuted)
+                    .foregroundStyle(AX.inkMuted)
                     .frame(minHeight: 280)
                     .accessibilityIdentifier("profile.training.empty")
             }
@@ -65,19 +65,19 @@ private struct DrillRow: View {
     let drill: DrillLevel
     var body: some View {
         HStack(spacing: 12) {
-            Text(drill.name).font(.body).foregroundStyle(SA.ink)
+            Text(drill.name).axFont(.body).foregroundStyle(AX.ink)
             Spacer(minLength: 8)
             HStack(spacing: 6) {
                 ForEach(1...4, id: \.self) { i in
                     if i <= drill.clampedLevel {
-                        Circle().fill(SA.ink).frame(width: 12, height: 12)
+                        Circle().fill(AX.ink).frame(width: 12, height: 12)
                     } else {
-                        Circle().stroke(SA.inkMuted, lineWidth: 1.5).frame(width: 12, height: 12)
+                        Circle().stroke(AX.inkMuted, lineWidth: 1.5).frame(width: 12, height: 12)
                     }
                 }
             }
-            Text("Lv \(drill.clampedLevel)").font(.footnote.weight(.semibold)).monospacedDigit()
-                .foregroundStyle(SA.inkMuted)
+            Text("Lv \(drill.clampedLevel)").axFont(.label, weight: .semibold).monospacedDigit()
+                .foregroundStyle(AX.inkMuted)
         }
         .padding(.horizontal, 16)
         .frame(minHeight: 56)
@@ -98,27 +98,27 @@ private struct TendencyCard: View {
                     let off = CGFloat(bias.sign >= 0 ? 1 : -1) * size.width * 0.16
                     let habit = CGPoint(x: correct.x + off, y: correct.y + 6)
                     var a = Path(); a.move(to: start); a.addLine(to: correct)
-                    ctx.stroke(a, with: .color(.white.opacity(0.9)), lineWidth: 2)
+                    ctx.stroke(a, with: .color(AX.onDark.opacity(0.9)), lineWidth: 2)
                     var b = Path(); b.move(to: start); b.addLine(to: habit)
-                    ctx.stroke(b, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+                    ctx.stroke(b, with: .color(AX.onDark.opacity(0.45)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
                     var arrow = Path()
                     let from = CGPoint(x: habit.x, y: habit.y + 18), to = CGPoint(x: correct.x, y: correct.y + 18)
                     arrow.move(to: from); arrow.addLine(to: to)
                     let dir: CGFloat = to.x > from.x ? -1 : 1
                     arrow.move(to: to); arrow.addLine(to: CGPoint(x: to.x + dir * 8, y: to.y - 6))
                     arrow.move(to: to); arrow.addLine(to: CGPoint(x: to.x + dir * 8, y: to.y + 6))
-                    ctx.stroke(arrow, with: .color(SA.caution), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    ctx.stroke(arrow, with: .color(AX.caution), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     for p in [correct] {
                         ctx.stroke(Path(ellipseIn: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20)),
-                                   with: .color(.white.opacity(0.9)), lineWidth: 2)
+                                   with: .color(AX.onDark.opacity(0.9)), lineWidth: 2)
                     }
                     ctx.fill(Path(ellipseIn: CGRect(x: start.x - 10, y: start.y - 10, width: 20, height: 20)),
-                             with: .color(.white))
+                             with: .color(AX.ballWhite))
                 }
                 .frame(height: 140)
                 .accessibilityHidden(true)
                 Label(bias.word, systemImage: bias.symbol)
-                    .font(.body.weight(.semibold)).foregroundStyle(SA.caution)
+                    .axFont(.headline).foregroundStyle(AX.caution)
             }
         }
         .accessibilityElement(children: .ignore)

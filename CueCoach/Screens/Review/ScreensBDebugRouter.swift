@@ -24,6 +24,7 @@ enum ScreensBDebugRouter {
         for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
             guard let window = scene.keyWindow ?? scene.windows.first else { continue }
             let root = ScreensBDebugScreen(name: name)
+                .cueCoachTheme()
                 .environment(\.sbForceReduceMotion, args.contains("-sbReduceMotion"))
                 .modifier(SBDynamicType(xxl: args.contains("-sbDynamicType=xxl")))
             window.rootViewController = UIHostingController(rootView: root)
@@ -99,7 +100,7 @@ private struct BadgeStage: View {
 
     var body: some View {
         ZStack {
-            RadialGradient(colors: [SBColor.feltCenter, SBColor.feltEdge, SBColor.bg], center: .center,
+            RadialGradient(colors: [AX.felt, AX.feltEdge, AX.page], center: .center,
                            startRadius: 40, endRadius: 520).ignoresSafeArea()
             VStack {
                 HStack {
@@ -120,7 +121,7 @@ private struct BadgeStage: View {
                         }
                         .accessibilityIdentifier("debug.aim")
                     }
-                    .foregroundStyle(SBColor.inkMuted)
+                    .foregroundStyle(AX.inkMuted)
                     .padding(.bottom, 24)
                 }
             }

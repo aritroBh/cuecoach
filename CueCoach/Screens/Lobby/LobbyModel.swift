@@ -85,7 +85,7 @@ public final class LobbyModel {
     }
 
     var nextFreeColorName: String {
-        SBColor.avatarNames.first { !usedColorNames.contains($0) } ?? SBColor.avatarNames[0]
+        AX.avatarNames.first { !usedColorNames.contains($0) } ?? AX.avatarNames[0]
     }
 
     subscript(seat: SeatRef) -> LobbyPlayer? {
