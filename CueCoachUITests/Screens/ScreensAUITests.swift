@@ -254,6 +254,8 @@ final class ScreensAUITests: XCTestCase {
         app.swipeDown(velocity: .fast)
         let all = app.buttons["profile.badges.all"]
         XCTAssertTrue(all.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(all.frame.height, 44)   // hit area on the label, not just the text
+        XCTAssertGreaterThanOrEqual(all.frame.width, 44)
         all.tap()
         XCTAssertTrue(app.descendants(matching: .any)["profile.badges.sheet"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["Badges"].exists)

@@ -111,12 +111,15 @@ private struct BadgeStage: View {
                 Spacer()
                 if !pinned {
                     HStack(spacing: 16) {
-                        Button("Rate") { aiming = false; model.receive(.aimEnded); fire() }
-                            .accessibilityIdentifier("debug.rate")
-                        Button("Aim") { aiming = true; model.receive(.aimStarted) }
-                            .accessibilityIdentifier("debug.aim")
+                        Button { aiming = false; model.receive(.aimEnded); fire() } label: {
+                            Text("Rate").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("debug.rate")
+                        Button { aiming = true; model.receive(.aimStarted) } label: {
+                            Text("Aim").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("debug.aim")
                     }
-                    .frame(minHeight: 44)
                     .foregroundStyle(SBColor.inkMuted)
                     .padding(.bottom, 24)
                 }

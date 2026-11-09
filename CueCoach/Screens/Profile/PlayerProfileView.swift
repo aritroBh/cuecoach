@@ -272,9 +272,10 @@ public struct PlayerProfileView: View {
             HStack {
                 SA.sectionHeader("Badges")
                 if c.hasMoreBadges {
-                    Button("All") { showingAllBadges = true }
-                        .font(.body.weight(.semibold)).foregroundStyle(SA.ink)
-                        .frame(minWidth: 44, minHeight: 44)
+                    Button { showingAllBadges = true } label: {
+                        Text("All").font(.body.weight(.semibold)).foregroundStyle(SA.ink)
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    }
                         .accessibilityLabel("All badges")
                         .accessibilityIdentifier("profile.badges.all")
                 }

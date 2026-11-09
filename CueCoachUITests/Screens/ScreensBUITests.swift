@@ -84,6 +84,8 @@ final class ScreensBUITests: XCTestCase {
         let app = launch("badge-live")
         let badge = el(app, "postshot.badge.great")
         XCTAssertTrue(app.buttons["debug.rate"].waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(app.buttons["debug.rate"].frame.height, 44)
+        XCTAssertGreaterThanOrEqual(app.buttons["debug.aim"].frame.height, 44)
         app.buttons["debug.rate"].tap()
         XCTAssertTrue(badge.waitForExistence(timeout: 3))
         // Auto-dismiss after ~1.8 s hold.
