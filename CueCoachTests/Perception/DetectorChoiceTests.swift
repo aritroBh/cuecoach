@@ -26,6 +26,15 @@ struct DetectorChoiceTests {
         #expect(DetectorChoice(of: DetectorChoice.classical.make()) == .classical)
     }
 
+    /// The bundled weights are the ones that won the benchmark (metadata written by tools/detector/export_coreml.py).
+    @Test func bundledModelIsTheBenchmarkedWeights() throws {
+        let url = try #require(Bundle.main.url(forResource: "BallDetector", withExtension: "json"))
+        let meta = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(meta["weights"] as? String == DetectorChoice.benchmarkWeights)
+        #expect(meta["benchmark"] as? String == "d32-virtual-sim-v1")
+        #expect((meta["classes"] as? [String])?.count == 16)
+    }
+
     @Test func classicalOverrideStillForcesClassicalOnly() throws {
         let suite = try #require(UserDefaults(suiteName: "DetectorChoiceTests.override"))
         suite.set(true, forKey: "cc.detector.classical")

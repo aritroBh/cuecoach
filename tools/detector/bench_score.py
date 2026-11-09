@@ -114,11 +114,11 @@ def bins(f: dict) -> dict[str, str]:
     return out
 
 
-def score(bench: Path) -> dict:
+def score(bench: Path, results_dir: Path | None = None) -> dict:
     manifest = json.loads((bench / "manifest.json").read_text())
     truth = {r["file"]: r for r in manifest["frames"]}
     results = {}
-    for path in sorted((bench / "results").glob("*.json")):
+    for path in sorted((results_dir or bench / "results").glob("*.json")):
         res = json.loads(path.read_text())
         total, by_ball = Tally(), defaultdict(Tally)
         by_factor: dict[str, dict[str, Tally]] = defaultdict(lambda: defaultdict(Tally))
@@ -200,10 +200,11 @@ def markdown(results: dict) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--bench", type=Path, default=Path(__file__).parent / "data" / "bench" / "v1")
+    p.add_argument("--results", type=Path, help="results directory (default <bench>/results)")
     p.add_argument("--markdown", type=Path)
     p.add_argument("--json", type=Path)
     a = p.parse_args()
-    results = score(a.bench)
+    results = score(a.bench, a.results)
     md = markdown(results)
     print(md)
     if a.markdown:

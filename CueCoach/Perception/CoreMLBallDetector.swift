@@ -203,6 +203,9 @@ enum DetectorChoice: String, CaseIterable, Sendable {
 
     /// Measured winner (identity F1, detection F1, false positives on empty cloth; latency relative).
     static let benchmarkWinner: DetectorChoice = .hybrid
+    /// The model weights that won it (`BallDetector.json` "weights"): YOLO26n synth30 fine-tuned on train-style 3D
+    /// renders (tools/detector/sim3d_dataset.py + finetune_mix.py, 10 epochs).
+    static let benchmarkWeights = "yolo26n-sim3d-ft"
 
     func make(model: (any BallInference)? = CoreMLBallInference.shared) -> any BallDetector {
         switch self {
