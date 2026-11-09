@@ -312,6 +312,25 @@ struct D30PocketTests {
         #expect(Array(log.e.dropFirst(before.count)) == ["start", "end", "unrated", "unrated", "rated"])
     }
 
+    /// GPT-5.6 re-review of f046ff8: a D29 impulsive launch (no aim seen) right after a motion relock still opens and
+    /// closes the shell's aim; the lost shots close before its result, never during its motion.
+    @Test func noAimLaunchAfterAMotionRelockKeepsTheShellBalanced() {
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        let m = relockedDuringMotion { log.e.append($0) }
+        let before = log.e
+        var go = result(7); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        var rolling = result(7.5); rolling.atRest = false
+        m.drive(rolling)
+        #expect(Array(log.e.dropFirst(before.count)) == ["start", "end"], "the launch reaches the shell; no close in motion")
+        let miss = ShotRecord(start: 7, end: 9, preState: [1: Vec2(0.5, 0.5)], finalState: [1: Vec2(1, 0.6)], cueID: 1,
+                              firstContact: 2, rails: [], pocketed: [:])
+        m.drive(result(9, shot: miss))
+        play(m, from: 9, seconds: 2)
+        #expect(Array(log.e.dropFirst(before.count)) == ["start", "end", "unrated", "unrated", "rated"])
+    }
+
     /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge
     /// while anyone aims; the held result lands once the aim is over.
     @Test func heldShotNeverSettlesDuringAnAimAndTheShellStaysBalanced() {

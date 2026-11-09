@@ -192,7 +192,8 @@ final class LiveModel {
         // Shots lost to a relock: ignore frames while their balls are still rolling (no aim open since the relock);
         // once at rest, keep processing the frame (it may already carry the next aim) and close them below, outside
         // any aim and before any later shot's result (GPT-5.6 re-review of 8ede140).
-        if lostShots > 0, !r.atRest, aimEvents.phase == .idle { return }
+        // A launch (D29: even with no aim seen) always gets through, so the shell sees its aim open and close.
+        if lostShots > 0, !r.atRest, aimEvents.phase == .idle, !r.shotStarted { return }
         // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
         // The shell always sees the aim lifecycle, held shot or not (its badge silencing and menu gating depend on
         // it); a held shot's settle is delivered later, only while nobody aims (GPT-5.3 re-review K2).
