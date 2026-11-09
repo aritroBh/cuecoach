@@ -121,3 +121,4 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Device UI (iPhone 17 Pro Max): AppShell + Screens 24 pass / 2 fail (both device-timing test issues, fixed in de656b7, not yet re-run: phone went unavailable)
 - [ ] Device QA on both physical phones (15 Pro Max perf gate, 17 Pro Max) at 4e42342: phones were unavailable (locked/disconnected); includes checking the 4 mm raw-motion threshold on a real table
 - [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
+- [~] D31 lost shot = best guess (rated from the post-relock table, no prompt) + D33 stick near the cue ball = aiming (wt/d31-d33)
