@@ -16,6 +16,7 @@ struct LiveScreenAdapter: View {
         let game = session.game
         h.currentGame = { game?.rules }
         h.gameAdvanced = { game?.rulesAdvanced($0) }
+        h.legalSink = { sink in game?.legalChanged = sink }
         return h
     }
 }

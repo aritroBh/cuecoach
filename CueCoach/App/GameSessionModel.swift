@@ -38,8 +38,8 @@ final class GameSessionModel {
     @ObservationIgnored let rulesEngine: RulesEngine
     @ObservationIgnored private var rulesState: GameState
     /// Ring legality changed outside a settled shot (a between-shots turn hand-over): the new shooter's legal targets.
-    /// Same payload as Live's `LiveModel.legalChanged` after a settled shot; the shell forwards it to Live's pipeline.
-    @ObservationIgnored var legalChanged: (Set<BallID>) -> Void = { _ in }
+    /// Same payload as Live's `LiveModel.legalChanged` after a settled shot; `LiveScreenAdapter.hooks` binds it to Live's sink.
+    @ObservationIgnored var legalChanged: @MainActor (Set<BallID>) -> Void = { _ in }
 
     init(config: GameConfig) {
         self.config = config
