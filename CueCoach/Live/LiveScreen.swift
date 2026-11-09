@@ -138,7 +138,7 @@ struct CoachingGlyph: View {
     var body: some View {
         let w: CGFloat = 112, h: CGFloat = 56
         ZStack {
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: AX.radius.inner)
                 .stroke(status == .searching ? AXLive.aim.opacity(0.4) : green.opacity(0.4 + 0.6 * confidence), lineWidth: 2)
                 .frame(width: w, height: h)
             if status == .searching {
@@ -157,7 +157,7 @@ struct CoachingGlyph: View {
                 }
             } else {
                 // Ghost table converging: felt fills with confidence.
-                RoundedRectangle(cornerRadius: 6).fill(green.opacity(0.35 * confidence)).frame(width: w, height: h)
+                RoundedRectangle(cornerRadius: AX.radius.inner).fill(green.opacity(0.35 * confidence)).frame(width: w, height: h)
                 // What's missing, as a glyph: step back, move closer, hold steady, point at the cloth…
                 // Never a check before the lock: the glyph only says what's missing (or that it's converging).
                 let symbol = CoachingSymbol.of(failure: failure, locked: false)
@@ -241,7 +241,7 @@ struct ShotDock: View {
             .frame(width: 64, height: 64)
             VStack(spacing: 4) {
                 ForEach((1...5).reversed(), id: \.self) { step in
-                    RoundedRectangle(cornerRadius: 3)
+                    RoundedRectangle(cornerRadius: AX.radius.inner)
                         .fill(step <= power ? AXLive.aim : AXLive.aim.opacity(0.2))
                         .frame(width: 20, height: 9)
                 }

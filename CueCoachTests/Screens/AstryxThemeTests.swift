@@ -87,6 +87,15 @@ struct AstryxThemeTests {
         for (name, token) in expected { #expect(Self.same(AX.avatar(name), token, Self.light), "\(name)") }
     }
 
+    /// Profiles saved before D34 store a hex colour; it maps to the Astryx swatch nearest in hue.
+    @Test func legacyHexAvatarColorsMapToTheNearestAstryxSwatch() {
+        #expect(AX.avatarName(forHex: "#60A5FA") == "blue")
+        #expect(AX.avatarName(forHex: "#A78BFA") == "purple")
+        #expect(AX.avatarName(forHex: "#14B8A6") == "teal")
+        #expect(AX.avatarName(forHex: "not a colour") == nil)
+        #expect(Self.same(AX.avatar("#60A5FA"), AX.avatar("blue"), Self.light))
+    }
+
     @Test func typeScaleComesFromAstryxTokens() {
         let f = Theme.default.light.font
         #expect(AXType.display.size(f) == f.display2.size)

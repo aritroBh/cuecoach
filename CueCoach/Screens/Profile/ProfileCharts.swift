@@ -37,7 +37,7 @@ struct ArchetypeRadar: View {
                     }
                     if let overlay, overlay.count == axes.count {
                         ctx.stroke(polygon(overlay.map(\.value), center, radius),
-                                   with: .color(AX.onDark.opacity(0.45)),
+                                   with: .color(AX.ink.opacity(0.45)),
                                    style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
                     }
                 }
@@ -153,9 +153,9 @@ struct MakeHeatGrid: View {
 
     private func heatCell(_ c: HeatCellView) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous)
                 .fill(c.hasData ? AX.legal.opacity(c.fillOpacity) : AX.page.opacity(0.5))
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous)
                 .stroke(pressed == c.id ? AX.ink : AX.inkMuted.opacity(0.15), lineWidth: pressed == c.id ? 2 : 1)
             if let fill = c.glyphFill {
                 SAPieGlyph(fill: fill, color: c.glyphInkIsDark ? AX.page : AX.ink)

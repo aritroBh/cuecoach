@@ -77,8 +77,25 @@ enum AX {
         case "red": token(\.dataCategoricalRed)
         case "pink": token(\.dataCategoricalPink)
         case "purple": token(\.dataCategoricalPurple)
-        default: token(\.dataNeutral)
+        default: avatarName(forHex: name).map(avatar) ?? token(\.dataNeutral)
         }
+    }
+
+    /// Profiles saved before D34 store a hex colour (`#RRGGBB`): the Astryx swatch nearest to it in hue.
+    static func avatarName(forHex hex: String) -> String? {
+        guard hex.hasPrefix("#"), hex.count == 7, let v = UInt32(hex.dropFirst(), radix: 16) else { return nil }
+        func hue(_ c: UIColor) -> CGFloat {
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            return h
+        }
+        let target = hue(UIColor(red: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                                 blue: CGFloat(v & 0xFF) / 255, alpha: 1))
+        func distance(_ name: String) -> CGFloat {
+            let d = abs(hue(UIColor(avatar(name)).resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))) - target)
+            return min(d, 1 - d)
+        }
+        return avatarNames.min { distance($0) < distance($1) }
     }
 
     /// A pool ball's colour (1 yellow, 2 blue, 3 red, 4 purple, 5 orange, 6 green, 7 maroon, 8 black; stripes repeat

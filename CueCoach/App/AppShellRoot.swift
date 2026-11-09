@@ -68,8 +68,9 @@ struct AppShellRoot: View {
         case .live(let s)?:
             LiveHost(session: s, router: router)
                 .environment(\.shellForceReduceMotion, env.reduceMotion)
-                // The camera is the ground: Live always draws in Astryx dark (D34 design call).
-                .preferredColorScheme(.dark)
+                // The camera is the ground: Live always draws in Astryx dark (D34 design call). Scoped through the
+                // environment, not `preferredColorScheme`, which would stick to the cover when it turns into Review.
+                .environment(\.colorScheme, .dark)
         case .review(let data)?:
             GameReviewView(model: {
                 let m = GameReviewModel(data: data)
@@ -115,7 +116,7 @@ struct ProfileSheet: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 16)
                         .frame(minHeight: 56)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(AX.surface))
+                        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
                         .accessibilityIdentifier("shell.profile.nameField")
                         .onSubmit(save)
                     ShellStartButton(title: "Save", symbol: "checkmark", enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty,

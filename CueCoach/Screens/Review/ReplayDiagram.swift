@@ -58,7 +58,7 @@ struct ReplayDiagram: View {
             for p in spec.pockets {
                 let c = pt(spec.pocketCenter(p))
                 ctx.fill(Path(ellipseIn: CGRect(x: c.x - pocketR, y: c.y - pocketR, width: pocketR * 2, height: pocketR * 2)),
-                         with: .color(AX.page))
+                         with: .color(AX.pocket))
             }
 
             let r = TableSpec.ballRadius * scale
@@ -76,7 +76,7 @@ struct ReplayDiagram: View {
             if shot.pathsAreTraced {
                 // Actual (traced) paths: cue in ink, object balls in their colour.
                 for (id, path) in shot.paths.sorted(by: { $0.key < $1.key }) where path.count > 1 {
-                    ctx.stroke(polyline(path.map(pt)), with: .color(id.isCue ? AX.ink : Self.ballColor(id)),
+                    ctx.stroke(polyline(path.map(pt)), with: .color(id.isCue ? AX.onDark : Self.ballColor(id)),
                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             } else {
@@ -96,7 +96,7 @@ struct ReplayDiagram: View {
                         ctx.opacity = 0.4
                         drawBall(&ctx, id, rect)
                         ctx.opacity = 1
-                        ctx.stroke(Path(ellipseIn: rect), with: .color(AX.ink.opacity(0.6)), lineWidth: 1)
+                        ctx.stroke(Path(ellipseIn: rect), with: .color(AX.onDark.opacity(0.6)), lineWidth: 1)
                     } else {
                         drawBall(&ctx, id, rect)
                     }
@@ -138,7 +138,7 @@ struct ReplayDiagram: View {
         p.move(to: CGPoint(x: e.x - ux * head - uy * head * 0.6, y: e.y - uy * head + ux * head * 0.6))
         p.addLine(to: e)
         p.addLine(to: CGPoint(x: e.x - ux * head + uy * head * 0.6, y: e.y - uy * head - ux * head * 0.6))
-        ctx.stroke(p, with: .color(AX.ink.opacity(0.35)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        ctx.stroke(p, with: .color(AX.onDark.opacity(0.35)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
     }
 
     private func polyline(_ pts: [CGPoint]) -> Path {

@@ -18,7 +18,7 @@ struct JoinHostSheet: View {
             }
             // ui-QA-10: the mode toggle above, the tappable nearby hosts below a divider.
             if !model.nearbyHosts.isEmpty || model.meshAvailability == .discovering {
-                Divider().overlay(AX.ink.opacity(0.15))
+                Divider().overlay(AX.border)
             }
             if model.nearbyHosts.isEmpty && model.meshAvailability == .discovering {
                 HStack(spacing: 16) {
@@ -122,7 +122,7 @@ struct IdentitySheet: View {
                 .textInputAutocapitalization(.words)
                 .padding(.horizontal, 16)
                 .frame(minHeight: 52)
-                .background(RoundedRectangle(cornerRadius: 14).fill(AX.ink.opacity(0.08)))
+                .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.ink.opacity(0.08)))
                 .accessibilityIdentifier("lobby.identity.name")
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
                 ForEach(Self.symbols, id: \.self) { s in
@@ -150,9 +150,9 @@ struct IdentitySheet: View {
             } label: {
                 Label("Save", systemImage: "checkmark")
                     .axFont(.headline)
-                    .foregroundStyle(AX.page)
+                    .foregroundStyle(AX.onAccent)
                     .frame(maxWidth: .infinity, minHeight: 56)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(AX.legal))
+                    .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.accent))
                     .opacity(name.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
             }
             .buttonStyle(.plain)
@@ -201,9 +201,9 @@ struct MeshDeniedSheet: View {
                 done()
             } label: {
                 Label("Settings", systemImage: "gear")
-                    .axFont(.headline).foregroundStyle(AX.page)
+                    .axFont(.headline).foregroundStyle(AX.onAccent)
                     .frame(maxWidth: .infinity, minHeight: 56)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(AX.ink))
+                    .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.accent))
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("lobby.meshDenied.settings")

@@ -211,14 +211,14 @@ struct ChoiceTile<Content: View>: View {
                 .foregroundStyle(selected ? AX.ink : AX.inkMuted)
                 .padding(8)
                 .frame(maxWidth: .infinity, minHeight: 96)
-                .background(RoundedRectangle(cornerRadius: 14).fill(AX.surface.opacity(selected ? 1 : 0.5)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? AX.ink : .clear, lineWidth: 2))
+                .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(selected ? AX.accentMuted : AX.surface))
+                .overlay(RoundedRectangle(cornerRadius: AX.radius.container).strokeBorder(selected ? AX.accent : AX.border, lineWidth: selected ? 2 : 1))
                 .overlay(alignment: .topTrailing) {
                     if selected {
-                        Image(systemName: "checkmark.circle.fill").axFont(.body).foregroundStyle(AX.ink).padding(6)
+                        Image(systemName: "checkmark.circle.fill").axFont(.body).foregroundStyle(AX.accent).padding(6)
                     }
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 14))
+                .contentShape(RoundedRectangle(cornerRadius: AX.radius.container))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityElement(children: .ignore)

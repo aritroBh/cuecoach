@@ -93,7 +93,7 @@ struct LevelSketch: View {
             ctx.fill(Path(ellipseIn: CGRect(x: obj.x - 5, y: obj.y - 5, width: 10, height: 10)), with: .color(AX.caution))
             ctx.fill(Path(ellipseIn: CGRect(x: cue.x - 5, y: cue.y - 5, width: 10, height: 10)), with: .color(AX.ballWhite))
         }
-        .background(RoundedRectangle(cornerRadius: 6).fill(AX.felt))
+        .background(RoundedRectangle(cornerRadius: AX.radius.inner).fill(AX.felt))
         .accessibilityHidden(true)
     }
 }

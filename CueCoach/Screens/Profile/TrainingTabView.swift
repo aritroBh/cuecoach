@@ -38,7 +38,7 @@ struct TrainingTabView: View {
                         SACard(padding: 0) {
                             VStack(spacing: 0) {
                                 ForEach(Array(content.drills.enumerated()), id: \.element.id) { i, d in
-                                    if i > 0 { Divider().overlay(AX.inkMuted.opacity(0.3)).padding(.leading, 16) }
+                                    if i > 0 { Divider().overlay(AX.border).padding(.leading, 16) }
                                     DrillRow(drill: d)
                                 }
                             }
@@ -98,9 +98,9 @@ private struct TendencyCard: View {
                     let off = CGFloat(bias.sign >= 0 ? 1 : -1) * size.width * 0.16
                     let habit = CGPoint(x: correct.x + off, y: correct.y + 6)
                     var a = Path(); a.move(to: start); a.addLine(to: correct)
-                    ctx.stroke(a, with: .color(AX.onDark.opacity(0.9)), lineWidth: 2)
+                    ctx.stroke(a, with: .color(AX.ink.opacity(0.9)), lineWidth: 2)
                     var b = Path(); b.move(to: start); b.addLine(to: habit)
-                    ctx.stroke(b, with: .color(AX.onDark.opacity(0.45)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+                    ctx.stroke(b, with: .color(AX.ink.opacity(0.45)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
                     var arrow = Path()
                     let from = CGPoint(x: habit.x, y: habit.y + 18), to = CGPoint(x: correct.x, y: correct.y + 18)
                     arrow.move(to: from); arrow.addLine(to: to)
@@ -110,10 +110,12 @@ private struct TendencyCard: View {
                     ctx.stroke(arrow, with: .color(AX.caution), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     for p in [correct] {
                         ctx.stroke(Path(ellipseIn: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20)),
-                                   with: .color(AX.onDark.opacity(0.9)), lineWidth: 2)
+                                   with: .color(AX.ink.opacity(0.9)), lineWidth: 2)
                     }
                     ctx.fill(Path(ellipseIn: CGRect(x: start.x - 10, y: start.y - 10, width: 20, height: 20)),
                              with: .color(AX.ballWhite))
+                    ctx.stroke(Path(ellipseIn: CGRect(x: start.x - 10, y: start.y - 10, width: 20, height: 20)),
+                               with: .color(AX.borderStrong), lineWidth: 1)
                 }
                 .frame(height: 140)
                 .accessibilityHidden(true)

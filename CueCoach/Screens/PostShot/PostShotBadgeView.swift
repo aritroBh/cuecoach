@@ -69,7 +69,7 @@ public struct PostShotBadgeView: View {
             Text(style.words)
                 .axFont(.label, weight: .semibold)
                 .dynamicTypeSize(...DynamicTypeSize.xxLarge)
-                .foregroundStyle(AX.ink)
+                .foregroundStyle(AXLive.aim)
                 .lineLimit(1)
                 .fixedSize()
                 .shadow(color: AXLive.stage.opacity(0.85), radius: 3)

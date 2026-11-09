@@ -84,7 +84,7 @@ public struct PlayerProfileView: View {
             ZStack {
                 Circle().fill(model.content.map { AX.avatar($0.summary.avatarColor) } ?? AX.surface)
                 if let symbol = model.content?.summary.avatarSymbol {
-                    Image(systemName: symbol).font(.system(size: 44, weight: .semibold)).foregroundStyle(AX.ink)
+                    Image(systemName: symbol).font(AXGlyph.font(44, .semibold)).foregroundStyle(AX.onDark)
                 }
             }
             .frame(width: 96, height: 96)
@@ -334,11 +334,11 @@ private struct HistoryTab: View {
                         SACard(padding: 0) {
                             VStack(spacing: 0) {
                                 ForEach(Array(g.sessions.enumerated()), id: \.element.id) { i, s in
-                                    if i > 0 { Divider().overlay(AX.inkMuted.opacity(0.3)).padding(.leading, 68) }
+                                    if i > 0 { Divider().overlay(AX.border).padding(.leading, 68) }
                                     sessionRow(s)
                                     if expanded.contains(s.id) {
                                         ForEach(s.games) { game in
-                                            Divider().overlay(AX.inkMuted.opacity(0.2)).padding(.leading, 68)
+                                            Divider().overlay(AX.border).padding(.leading, 68)
                                             gameRow(game)
                                         }
                                     }

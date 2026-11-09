@@ -113,7 +113,7 @@ struct SBAvatar: View {
             Circle().fill(AX.avatar(colorName))
             Image(systemName: symbol)
                 .font(AXGlyph.font(size * 0.45))
-                .foregroundStyle(AX.ink)
+                .foregroundStyle(AX.onDark)
         }
         .frame(width: size, height: size)
         .overlay {
@@ -139,7 +139,7 @@ struct PostShotRatingBadge: View {
             Text(style.words)
                 .axFont(.label, weight: .semibold)
                 .dynamicTypeSize(...DynamicTypeSize.xxLarge)
-                .foregroundStyle(AX.ink)
+                .foregroundStyle(AXLive.aim)
                 .lineLimit(1)
                 .fixedSize()
                 .shadow(color: AXLive.stage.opacity(0.85), radius: 3)

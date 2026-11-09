@@ -170,8 +170,8 @@ private struct GameRow: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: 88)
-            .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
-            .contentShape(RoundedRectangle(cornerRadius: 20))
+            .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.container))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityElement(children: .ignore)
@@ -223,7 +223,7 @@ private struct LineupStrip: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("join.lineup")
     }

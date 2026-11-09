@@ -113,7 +113,7 @@ public struct GameReviewView: View {
                 // Title-sized placeholder: no made-up game number while loading.
                 Text("Game 0").axFont(.display).hidden()
                     .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 10).fill(AX.surface).opacity(0.8)
+                        RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.surface).opacity(0.8)
                     }
                     .accessibilityHidden(true)
             }
@@ -147,7 +147,7 @@ public struct GameReviewView: View {
             HStack(spacing: -12) { ForEach(0..<2, id: \.self) { _ in Circle().fill(AX.surface).frame(width: 40, height: 40) } }
                 .padding(4)
             Spacer(minLength: 0)
-            RoundedRectangle(cornerRadius: 10).fill(AX.surface).frame(width: 96, height: 40)
+            RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.surface).frame(width: 96, height: 40)
             Spacer(minLength: 0)
             HStack(spacing: -12) { ForEach(0..<2, id: \.self) { _ in Circle().fill(AX.surface).frame(width: 40, height: 40) } }
                 .padding(4)
@@ -276,7 +276,7 @@ public struct GameReviewView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .aspectRatio(ReplayLayout.aspect(TableSpec(size: model.data?.tableSize ?? .sevenFoot)), contentMode: .fit)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(AX.feltEdge.opacity(0.4)))
+                        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.feltEdge.opacity(0.4)))
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("review.replay.unavailable")
                     }
@@ -307,7 +307,7 @@ public struct GameReviewView: View {
                 }
             }
             .padding(16)
-            .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
+            .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         }
     }
 
@@ -332,11 +332,11 @@ public struct GameReviewView: View {
                 if model.canPlayShotOfGameClip {
                     Button { model.playShotOfGameClip() } label: {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 14).fill(AX.feltEdge)
+                            RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.feltEdge)
                             Image(systemName: "play.circle.fill").font(AXGlyph.font(64)).foregroundStyle(AX.ink)
                         }
                         .aspectRatio(16 / 9, contentMode: .fit)
-                        .contentShape(RoundedRectangle(cornerRadius: 14))
+                        .contentShape(RoundedRectangle(cornerRadius: AX.radius.container))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Play clip")
@@ -344,7 +344,7 @@ public struct GameReviewView: View {
                 } else {
                     // No clip yet: nothing that looks tappable.
                     ZStack {
-                        RoundedRectangle(cornerRadius: 14).fill(AX.feltEdge.opacity(0.6))
+                        RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.feltEdge.opacity(0.6))
                         Image(systemName: "film").font(AXGlyph.font(40)).foregroundStyle(AX.inkMuted)
                     }
                     .aspectRatio(16 / 9, contentMode: .fit)
@@ -367,7 +367,7 @@ public struct GameReviewView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("review.sotg")
     }
@@ -403,7 +403,7 @@ public struct GameReviewView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("review.mvp")
     }
@@ -427,8 +427,8 @@ public struct GameReviewView: View {
         Button { model.onDone?() } label: {
             Text("Done").axFont(.headline).foregroundStyle(AX.ink)
                 .frame(maxWidth: .infinity, minHeight: 56)
-                .background(RoundedRectangle(cornerRadius: 14).fill(AX.surface))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AX.ink.opacity(0.12), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
+                .overlay(RoundedRectangle(cornerRadius: AX.radius.container).strokeBorder(AX.ink.opacity(0.12), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("review.done")
@@ -451,10 +451,10 @@ struct EvalBar: View {
                     Rectangle().fill(AX.teamA).frame(width: x)
                     Rectangle().fill(AX.teamB.opacity(0.85))
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .clipShape(RoundedRectangle(cornerRadius: AX.radius.inner))
                 if let d = delta {
                     let x0 = w * min(max(d, 0), 1)
-                    RoundedRectangle(cornerRadius: 3)
+                    RoundedRectangle(cornerRadius: AX.radius.inner)
                         .strokeBorder(AX.ink, lineWidth: 2)
                         .frame(width: max(abs(x - x0), 4), height: 20)
                         .offset(x: min(x, x0))
@@ -484,7 +484,7 @@ private struct Skeleton: View {
     var reduceMotion: Bool
     @State private var dim = false
     var body: some View {
-        RoundedRectangle(cornerRadius: 20).fill(AX.surface)
+        RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface)
             .frame(height: height)
             .opacity(reduceMotion ? 0.5 : (dim ? 0.5 : 1))
             .onAppear {

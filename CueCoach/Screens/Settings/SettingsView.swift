@@ -74,7 +74,7 @@ public struct SettingsView: View {
                     .padding(16)
                     .frame(minHeight: 60)
                     .accessibilityIdentifier("settings.recognition")
-                    Divider().overlay(AX.inkMuted.opacity(0.3)).padding(.leading, 60)
+                    Divider().overlay(AX.border).padding(.leading, 60)
                     deleteRow
                 }
             }
@@ -201,7 +201,7 @@ public struct SettingsView: View {
                         }
                     }
                     if model.showsThreeBallToggle {
-                        Divider().overlay(AX.inkMuted.opacity(0.3))
+                        Divider().overlay(AX.border)
                         Toggle(isOn: Binding(get: { model.threeBallRule },
                                              set: { model.threeBallRule = $0; Haptics.selection() })) {
                             SARowLabel(symbol: "3.circle", title: "Three-ball rule", helper: "Soft breaks re-rack.")
@@ -368,11 +368,11 @@ private struct RuleTile: View {
                     .axFont(.headline).foregroundStyle(selected ? AX.ink : AX.inkMuted)
             }
             .frame(maxWidth: .infinity, minHeight: 96)
-            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.page.opacity(selected ? 0.6 : 0.25)))
-            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).stroke(selected ? AX.ink : .clear, lineWidth: 2))
+            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(selected ? AX.accentMuted : AX.muted))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).strokeBorder(selected ? AX.accent : AX.border, lineWidth: selected ? 2 : 1))
             .overlay(alignment: .topTrailing) {
                 if selected {
-                    Image(systemName: "checkmark.circle.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.ink).padding(6)
+                    Image(systemName: "checkmark.circle.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.accent).padding(6)
                 }
             }
             .contentShape(Rectangle())
@@ -423,11 +423,11 @@ private struct TableTile: View {
             }
             .padding(8)
             .frame(maxWidth: .infinity, minHeight: 96)
-            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.page.opacity(selected ? 0.6 : 0.25)))
-            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).stroke(selected ? AX.ink : .clear, lineWidth: 2))
+            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(selected ? AX.accentMuted : AX.muted))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).strokeBorder(selected ? AX.accent : AX.border, lineWidth: selected ? 2 : 1))
             .overlay(alignment: .topTrailing) {
                 if selected {
-                    Image(systemName: "checkmark.circle.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.ink).padding(6)
+                    Image(systemName: "checkmark.circle.fill").axFont(.subtitle, weight: .regular).foregroundStyle(AX.accent).padding(6)
                 }
             }
             .contentShape(Rectangle())

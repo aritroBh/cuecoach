@@ -61,8 +61,8 @@ public struct LobbyView: View {
                 case .meshDenied: MeshDeniedSheet { sheet = nil }.presentationDetents([.height(sheetHeight(280))])
                 }
             }
-            .presentationCornerRadius(20)
-            .presentationBackground(.ultraThinMaterial)
+            .presentationCornerRadius(AX.radius.page)
+            .presentationBackground(AX.raised)
         }
         .sensoryFeedback(.error, trigger: model.blockedStartCount)
         .sensoryFeedback(.success, trigger: model.startCount)
@@ -155,7 +155,7 @@ public struct LobbyView: View {
             orderStrip
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20).fill(AX.surface))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
     }
 
     private func teamColumn(_ team: Int) -> some View {
@@ -260,7 +260,7 @@ public struct LobbyView: View {
         }
         .foregroundStyle(AX.inkMuted)
         .frame(maxWidth: .infinity, minHeight: 56)
-        .background(RoundedRectangle(cornerRadius: 14).fill(AX.surface))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Waiting for host")
         .accessibilityIdentifier("lobby.start")
@@ -278,10 +278,11 @@ public struct LobbyView: View {
                 Image(systemName: model.canStart ? "play.fill" : "lock.fill").axFont(.headline)
                 Text("Start").axFont(.headline)
             }
-            .foregroundStyle(model.canStart ? AX.page : AX.ink)
+            .foregroundStyle(model.canStart ? AX.onAccent : AX.ink)
             .frame(maxWidth: .infinity, minHeight: 56)
-            .background(RoundedRectangle(cornerRadius: 14).fill(model.canStart ? AX.legal : AX.surface))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AX.ink.opacity(model.canStart ? 0 : 0.25), lineWidth: 1))
+            // Astryx primary when ready; Astryx neutral (a secondary button's fill) while locked.
+            .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous)
+                .fill(model.canStart ? AX.accent : AX.neutral))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Start")
@@ -403,7 +404,7 @@ private struct SeatRow: View {
             }
         }
         .frame(minHeight: 66)
-        .background(RoundedRectangle(cornerRadius: 14).fill(targeted ? AX.ink.opacity(0.08) : .clear))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(targeted ? AX.ink.opacity(0.08) : .clear))
         .dropDestination(for: String.self) { items, _ in
             guard let from = items.first.flatMap(Self.parse) else { return false }
             return model.move(from: from, to: seat)
@@ -511,11 +512,11 @@ private struct TableTile: View {
             VStack(spacing: 8) {
                 let w = 96 * LobbyModel.relativeLength(size)
                 ZStack(alignment: .topTrailing) {
-                    RoundedRectangle(cornerRadius: 4)
+                    RoundedRectangle(cornerRadius: AX.radius.inner)
                         .fill(selected ? AnyShapeStyle(AX.felt) : AnyShapeStyle(Color.clear))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(AX.railHighlight, lineWidth: 4))
+                        .overlay(RoundedRectangle(cornerRadius: AX.radius.inner).strokeBorder(AX.railHighlight, lineWidth: 4))
                         .frame(width: w, height: w / 2)
-                        .overlay { if selected { RoundedRectangle(cornerRadius: 6).strokeBorder(AX.legal, lineWidth: 2).padding(-5) } }
+                        .overlay { if selected { RoundedRectangle(cornerRadius: AX.radius.inner).strokeBorder(AX.accent, lineWidth: 2).padding(-5) } }
                     if measured {
                         Image(systemName: "ruler").font(AXGlyph.font(16, .semibold))
                             .foregroundStyle(AX.ink).offset(x: 8, y: -12)
