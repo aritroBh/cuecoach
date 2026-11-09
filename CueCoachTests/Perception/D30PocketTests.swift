@@ -207,6 +207,60 @@ struct D30PocketTests {
         #expect(spy.advanced?.onTable.contains(BallID(3)!) == true, "the dropped held shot never applied")
     }
 
+    /// GPT-5.6 final re-review: a relock with a held shot AND a live aim cancels the aim for the shell (its menu
+    /// re-gates) and closes the held shot unrated, after the cancel, so the lifecycle stays balanced.
+    @Test func relockWithAHeldShotDuringAnAimCancelsTheAimThenClosesTheHeldShot() {
+        let m = LiveModel(mode: .game)
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        var h = LiveHooks(aimStarted: { log.e.append("start") }, aimEnded: { log.e.append("end") },
+                          aimCancelled: { log.e.append("cancel") }, ballsSettled: { log.e.append("unrated") },
+                          settled: { _, _ in log.e.append("rated") })
+        let game = lastSolidGame()
+        h.currentGame = { game }
+        m.hooks = h
+        var moving = result(1); moving.atRest = false; moving.shotStarted = true
+        m.drive(moving)
+        m.drive(result(3, shot: slowMake()))
+        var t = 3.0
+        while t < 5.0 { t += 1.0 / 15; var r = result(t, inView: Set(Pocket.allCases).subtracting([.footLeft])); r.shooterAddressing = true; m.drive(r) }
+        #expect(log.e == ["start", "end", "start"])
+        m.perceptionReset()
+        #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
+        play(m, from: 5, seconds: 2)
+        #expect(log.e == ["start", "end", "start", "cancel", "unrated"], "nothing else lands for the dropped shot")
+    }
+
+    /// GPT-5.6 final re-review: a relock with a held shot while the next shot's balls are still moving never reports
+    /// a settle during motion: both the held shot and the lost moving shot close once the balls are at rest.
+    @Test func relockWithAHeldShotDuringMotionClosesBothShotsOnlyAtRest() {
+        let m = LiveModel(mode: .game)
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        var h = LiveHooks(aimStarted: { log.e.append("start") }, aimEnded: { log.e.append("end") },
+                          aimCancelled: { log.e.append("cancel") }, ballsSettled: { log.e.append("unrated") },
+                          settled: { _, _ in log.e.append("rated") })
+        let game = lastSolidGame()
+        h.currentGame = { game }
+        m.hooks = h
+        var moving = result(1); moving.atRest = false; moving.shotStarted = true
+        m.drive(moving)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.pocketConfirm != nil)
+        // The next shot is played (the confirm was ignored) and its balls are rolling when the table relocks.
+        var next = result(6); next.atRest = false; next.shotStarted = true
+        m.drive(next)
+        #expect(log.e == ["start", "end", "start", "end"])
+        m.perceptionReset()
+        #expect(log.e == ["start", "end", "start", "end"], "no settle while the balls move")
+        var rolling = result(6.5); rolling.atRest = false
+        m.drive(rolling)
+        #expect(log.e == ["start", "end", "start", "end"])
+        m.drive(result(8))
+        #expect(log.e == ["start", "end", "start", "end", "unrated", "unrated"], "one close per shot, at rest")
+    }
+
     /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge
     /// while anyone aims; the held result lands once the aim is over.
     @Test func heldShotNeverSettlesDuringAnAimAndTheShellStaysBalanced() {

@@ -61,26 +61,31 @@ final class LiveModel {
     /// aim or shot is closed for the shell (its menu would otherwise stay locked).
     func perceptionReset() {
         // D30: a held shot can't be looked at or asked about against the new table: drop it, closed unrated for
-        // the shell (like a lost shot), so its result can never apply to a later shot.
-        if !pending.isEmpty {
+        // the shell (like a lost shot), so its result can never apply to a later shot. The open aim or moving shot
+        // is closed too (GPT-5.6 final re-review): an aim is cancelled first, so the shell re-gates its menu, then
+        // each dropped held shot closes; while balls move, every close waits until they are at rest.
+        let held = pending.count
+        if held > 0 {
             pending = []
             pocketConfirm = nil
             pocketConfirmPoint = nil
-            aimEvents = AimEvents()
             aimingNow = false
-            hooks.ballsSettled()
-            return
         }
         switch aimEvents.phase {
-        case .aiming: hooks.aimCancelled()
-        case .moving: lostShot = true   // balls were moving: keep the shell gated until they are at rest again
-        case .idle: break
+        case .aiming:
+            hooks.aimCancelled()
+            for _ in 0..<held { hooks.ballsSettled() }
+        case .moving:
+            lostShots += held + 1   // balls are moving: keep the shell gated until they are at rest again
+        case .idle:
+            for _ in 0..<held { hooks.ballsSettled() }
         }
         aimEvents = AimEvents()
     }
 
-    /// A shot in flight was lost to a perception reset: it closes unrated once the balls are seen at rest.
-    private var lostShot = false
+    /// Shots lost to a perception reset (held ones and the one in flight): each closes unrated once the balls are
+    /// seen at rest.
+    private var lostShots = 0
 
     // MARK: D30 "look, then ask"
 
@@ -184,10 +189,11 @@ final class LiveModel {
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
         if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
-        if lostShot {
+        if lostShots > 0 {
             guard r.atRest, !r.confirmed.isEmpty else { return }
-            lostShot = false
-            hooks.ballsSettled()
+            let n = lostShots
+            lostShots = 0
+            for _ in 0..<n { hooks.ballsSettled() }
             return
         }
         // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).

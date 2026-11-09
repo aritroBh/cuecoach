@@ -323,6 +323,8 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
   as it happens. A shot's `settled(rating, turnPasses)` (or `ballsSettled` for a held shot dropped by a relock) may
   arrive after later aims have opened and closed: always outside an aim, exactly once per shot, in shot order. The
   shell treats it as standalone (`LiveSession.settled` records the shot, shows its badge, rotates the turn).
+  On a relock (`perceptionReset`), an open aim is `aimCancelled` first, then each dropped held shot gets one
+  `ballsSettled`; if balls are moving, those closes (plus the lost moving shot's) all wait until the balls are at rest.
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
   balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
   addressing the cue ball (wrists) also opens the aim for the shell.
