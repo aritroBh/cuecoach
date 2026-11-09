@@ -22,7 +22,13 @@ final class GameSessionModel {
     var rotation: [ShellPlayer] {
         GameConfig(ruleSet: config.ruleSet, tableSize: config.tableSize, teams: teams).rotation
     }
+    /// Turn changes so far (drives the disc animation and haptic).
     private(set) var turnIndex = 0
+    /// D17 per-team cursors: the team at the table, the slot (in its current order) of the player shooting, and per
+    /// team the slot that plays its next visit. A mid-game swap moves slots, never a pending visit (review finding 2).
+    private var currentTeam = 0
+    private var currentSlot = 0
+    private var nextSlot: [Int]
     private(set) var shots: [SessionShot] = []
     var isMenuOpen = false
     /// The game's mesh session when other phones joined (nil = this phone only).
@@ -38,6 +44,8 @@ final class GameSessionModel {
     init(config: GameConfig) {
         self.config = config
         teams = config.teams
+        nextSlot = Array(repeating: 0, count: config.teams.count)
+        currentTeam = config.teams.firstIndex { !$0.isEmpty } ?? 0
         (rulesEngine, rulesState) = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count)
     }
 
@@ -55,15 +63,34 @@ final class GameSessionModel {
     var hasLineup: Bool { !rotation.isEmpty }
 
     var shooter: ShellPlayer {
-        rotation.isEmpty ? ShellPlayer(id: UUID(), name: "", symbol: "person.fill", colorName: "blue")
-                         : rotation[turnIndex % rotation.count]
+        guard hasLineup, teams[currentTeam].indices.contains(currentSlot) else {
+            return ShellPlayer(id: UUID(), name: "", symbol: "person.fill", colorName: "blue")
+        }
+        return teams[currentTeam][currentSlot]
     }
-    var shootingTeam: Int { teams.firstIndex { $0.contains(shooter) } ?? 0 }
+    var shootingTeam: Int { hasLineup ? currentTeam : 0 }
     /// The other team's next player (shown dimmed).
-    var waitingShooter: ShellPlayer? { rotation.isEmpty ? nil : rotation[(turnIndex + 1) % rotation.count] }
+    var waitingShooter: ShellPlayer? {
+        guard hasLineup else { return nil }
+        let t = team(after: currentTeam)
+        return teams[t][nextSlot[t] % teams[t].count]
+    }
 
-    /// Next player in D17 order (always the other team).
-    func passTurn() { turnIndex += 1 }
+    /// Next player in D17 order (always the other team): this team's next visit moves one slot on.
+    func passTurn() {
+        turnIndex += 1
+        guard hasLineup else { return }
+        nextSlot[currentTeam] = (currentSlot + 1) % teams[currentTeam].count
+        let t = team(after: currentTeam)
+        currentTeam = t
+        currentSlot = nextSlot[t] % teams[t].count
+    }
+
+    /// The next team with players, in team order.
+    private func team(after t: Int) -> Int {
+        let n = teams.count
+        return (1...n).lazy.map { (t + $0) % n }.first { !self.teams[$0].isEmpty } ?? t
+    }
 
     /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs.
     /// Call it through `LiveSession.handTurn`, which refuses while a shot is live. The new shooter's legal targets are
@@ -75,12 +102,14 @@ final class GameSessionModel {
         legalChanged(engine.legalTargets(state))
     }
 
-    /// Swap two players within a team; the player shooting now keeps the turn.
+    /// Swap two players within a team; the player shooting now keeps the turn, and every team's next visit stays
+    /// on its slot (so the other team's pending player still shoots next).
     func swap(team: Int, _ a: Int, _ b: Int) {
         guard teams.indices.contains(team), teams[team].indices.contains(a), teams[team].indices.contains(b), a != b else { return }
-        let current = shooter
         teams[team].swapAt(a, b)
-        if let i = rotation.firstIndex(of: current) { turnIndex = i }
+        if team == currentTeam {
+            if currentSlot == a { currentSlot = b } else if currentSlot == b { currentSlot = a }
+        }
     }
 
     func record(rating: DecisionRating) {

@@ -103,6 +103,17 @@ import Engine
         #expect(s.shooter == a1)          // next A player in the new order
     }
 
+    // Fix round (review finding 2): swapping the shooter's slot must not skip the other team's pending visit.
+    @Test func swappingTheShootersSlotKeepsTheNextVisit() {
+        let s = teams()                   // A1 shooting; order A1, B1, A2, B2
+        s.swap(team: 0, 0, 1)             // team A order becomes A2, A1
+        #expect(s.shooter == a1)          // A1 keeps the turn
+        #expect(s.waitingShooter == b1)
+        var seen: [String] = []
+        for _ in 0..<4 { s.passTurn(); seen.append(s.shooter.name) }
+        #expect(seen == ["B1", "A2", "B2", "A1"])
+    }
+
     @Test func reorderIgnoresBadIndices() {
         let s = teams()
         s.swap(team: 0, 0, 5)
