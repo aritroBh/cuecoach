@@ -76,7 +76,7 @@ final class AppShellUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(element(app, "home.settings").frame.width, 44)
         shot(app, "01-home")
         game.tap()
-        wait(app, "game.new").tap()
+        tapThrough(app, "game.new", to: "setup.start")
         let start = wait(app, "setup.start")
         XCTAssertEqual(start.value as? String, "not ready")
         start.tap()                                   // blocked: stays here
@@ -99,7 +99,7 @@ final class AppShellUITests: XCTestCase {
         XCTAssertEqual(element(app, "chrome.team.1").value as? String, "shooting")
         wait(app, "chrome.menu").tap()
         shot(app, "06-live-menu")
-        wait(app, "chrome.endGame").tap()
+        tapThrough(app, "chrome.endGame", to: "review.done")
         wait(app, "review.done", 8)
         shot(app, "07-review")
         element(app, "review.done").tap()
@@ -109,28 +109,28 @@ final class AppShellUITests: XCTestCase {
     /// LiveScreen's own ✕ dismisses the cover; the shell re-presents Review (game), then Done → Home.
     @MainActor func testLiveCloseInGameGoesToReviewThenHome() {
         let app = launch()
-        wait(app, "home.game").tap()
+        tapThrough(app, "home.game", to: "game.new")
         wait(app, "game.new").tap()
         tapSeat(app, "0.0", pick: "seat.player.Ari")
         tapSeat(app, "1.0", pick: "seat.player.Sam")
         element(app, "setup.start").tap()
         wait(app, "shell.live.game")
-        wait(app, "live.close").tap()
+        tapThrough(app, "live.close", to: "review.done")
         wait(app, "review.done", 10).tap()
         XCTAssertTrue(wait(app, "home.game").exists)
     }
 
     @MainActor func testMidGameOrderEdit() {
         let app = launch()
-        wait(app, "home.game").tap()
-        wait(app, "game.new").tap()
+        tapThrough(app, "home.game", to: "game.new")
+        tapThrough(app, "game.new", to: "setup.format.teams")
         wait(app, "setup.format.teams").tap()
         tapSeat(app, "0.0", pick: "seat.player.Ari")
         tapSeat(app, "1.0", pick: "seat.player.Sam")
         tapSeat(app, "0.1", pick: "seat.player.Ana")
         tapSeat(app, "1.1", pick: "seat.player.Bo")
         element(app, "setup.start").tap()
-        wait(app, "chrome.menu").tap()
+        tapThrough(app, "chrome.menu", to: "chrome.order.0.0")
         wait(app, "chrome.order.0.0").tap()
         element(app, "chrome.order.0.1").tap()
         XCTAssertTrue(element(app, "chrome.order.0.0").label.hasPrefix("Ana"))
@@ -141,8 +141,8 @@ final class AppShellUITests: XCTestCase {
 
     @MainActor func testTeamsShowD17OrderAndOneTapTurnCorrection() {
         let app = launch()
-        wait(app, "home.game").tap()
-        wait(app, "game.new").tap()
+        tapThrough(app, "home.game", to: "game.new")
+        tapThrough(app, "game.new", to: "setup.format.teams")
         wait(app, "setup.format.teams").tap()
         tapSeat(app, "0.0", pick: "seat.player.Ari")
         tapSeat(app, "1.0", pick: "seat.player.Sam")
@@ -168,15 +168,15 @@ final class AppShellUITests: XCTestCase {
 
     @MainActor func testTrainingToLiveAndBack() {
         let app = launch()
-        wait(app, "home.training").tap()
-        wait(app, "training.drill.banks").tap()
+        tapThrough(app, "home.training", to: "training.drill.banks")
+        tapThrough(app, "training.drill.banks", to: "training.level.4")
         wait(app, "training.level.4").tap()
         XCTAssertEqual(element(app, "training.levelName").label, "No help")
         shot(app, "08-training")
-        wait(app, "training.start").tap()
+        tapThrough(app, "training.start", to: "shell.live.training")
         wait(app, "shell.live.training")
         XCTAssertFalse(element(app, "chrome.team.0").exists)   // no turn chrome in Training
-        wait(app, "chrome.menu").tap()
+        tapThrough(app, "chrome.menu", to: "chrome.stop")
         wait(app, "chrome.stop").tap()
         XCTAssertTrue(wait(app, "training.start").exists)
         XCTAssertTrue(element(app, "training.drill.banks").isSelected)
@@ -186,8 +186,8 @@ final class AppShellUITests: XCTestCase {
 
     @MainActor func testJoinNearbySeesLineupThenHostStarts() {
         let app = launch(["-appshell.fakeMesh=games"])
-        wait(app, "home.game").tap()
-        wait(app, "game.join").tap()
+        tapThrough(app, "home.game", to: "game.join")
+        tapThrough(app, "game.join", to: "join.state")
         let state = wait(app, "join.state")
         wait(app, "join.game.g1").tap()
         waitValue(state, "joined")
@@ -202,26 +202,26 @@ final class AppShellUITests: XCTestCase {
         let app = launch(["-appshell.fakeMesh=games"])
         wait(app, "home.game").tap()
         shot(app, "02-gamehub")
-        wait(app, "game.join").tap()
+        tapThrough(app, "game.join", to: "join.game.g2")
         wait(app, "join.game.g2")
         shot(app, "09-join-list")
     }
 
     @MainActor func testJoinFullLobby() {
         let app = launch(["-appshell.fakeMesh=full"])
-        wait(app, "home.game").tap()
-        wait(app, "game.join").tap()
+        tapThrough(app, "home.game", to: "game.join")
+        tapThrough(app, "game.join", to: "join.game.g1")
         wait(app, "join.game.g1").tap()
         waitValue(element(app, "join.state"), "full")
         shot(app, "11-join-full")
-        wait(app, "join.back").tap()
+        tapThrough(app, "join.back", to: "join.game.g1")
         wait(app, "join.game.g1")
     }
 
     @MainActor func testJoinHostLeft() {
         let app = launch(["-appshell.fakeMesh=hostLeft"])
-        wait(app, "home.game").tap()
-        wait(app, "game.join").tap()
+        tapThrough(app, "home.game", to: "game.join")
+        tapThrough(app, "game.join", to: "join.game.g1")
         wait(app, "join.game.g1").tap()
         waitValue(element(app, "join.state"), "hostLeft", 10)
         shot(app, "12-join-hostleft")
@@ -229,9 +229,9 @@ final class AppShellUITests: XCTestCase {
 
     @MainActor func testSettingsAndProfileFromHome() {
         let app = launch()
-        wait(app, "home.settings").tap()
-        wait(app, "sheet.done").tap()
-        wait(app, "home.profile").tap()
+        tapThrough(app, "home.settings", to: "sheet.done")
+        tapThrough(app, "sheet.done", to: "home.profile")
+        tapThrough(app, "home.profile", to: "shell.profile.nameField")
         let name = wait(app, "shell.profile.nameField")
         name.tap()
         name.typeText("Ari")

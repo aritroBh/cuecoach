@@ -54,14 +54,16 @@ final class ScreensAUITests: XCTestCase {
         delete.tap()
         let undo = app.buttons["settings.delete.undo"]
         XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        // The Undo window is 5 s and each query is slow on a device: check what needs the window first, tap Undo,
+        // then check that no confirmation dialog ever appeared.
+        XCTAssertGreaterThanOrEqual(undo.frame.height, 44)
+        XCTAssertEqual(toggle.value as? String, "0")
+        shot(app, "settings-delete-undo")
+        undo.tap()
         XCTAssertEqual(app.alerts.count, 0)
         XCTAssertEqual(app.sheets.count, 0)
         XCTAssertFalse(app.buttons["settings.delete.confirm"].exists)
         XCTAssertFalse(app.staticTexts["Delete recognition data?"].exists)
-        XCTAssertEqual(toggle.value as? String, "0")
-        XCTAssertGreaterThanOrEqual(undo.frame.height, 44)
-        shot(app, "settings-delete-undo")
-        undo.tap()
         let on = NSPredicate(format: "value == '1'")
         expectation(for: on, evaluatedWith: toggle)
         waitForExpectations(timeout: 5)
