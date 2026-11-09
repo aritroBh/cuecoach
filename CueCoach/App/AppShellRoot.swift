@@ -13,7 +13,7 @@ struct AppShellRoot: View {
             HomeScreen(router: router)
                 .navigationDestination(for: ShellRoute.self) { route in destination(route) }
         }
-        .tint(AX.accent)
+        .tint(AX.accentText)   // Astryx text-accent: legible as words on bars in dark mode
         .fullScreenCover(isPresented: coverBinding, onDismiss: {
             coverDismissing = false
             router.liveClosed()   // game → review (re-presents); training → back to the picker

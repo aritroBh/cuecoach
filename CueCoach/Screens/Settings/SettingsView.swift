@@ -39,7 +39,7 @@ public struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
         .toolbarBackground(AX.page, for: .navigationBar)
-        .tint(AX.accent)
+        .tint(AX.accentText)   // Astryx text-accent: legible as words on bars in dark mode
         // The Undo window closes as soon as the app leaves the foreground or Settings is left.
         .onChange(of: scenePhase) { _, phase in if phase == .background { model.commitPendingDelete() } }
         .onDisappear { model.commitPendingDelete() }
