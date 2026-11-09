@@ -62,7 +62,10 @@ final class LiveModel {
     // Every shot that ends gets an entry, in shot order. An entry is
     //   .looking  - its own post-settle look is running (only the newest entry can be looking);
     //   .decided  - verdicts known; it may still be asking (an uncertain pocket not seen either way);
-    //   .lost     - dropped by a relock: it closes unrated.
+    //   .lost     - dropped by a relock. The shot in flight at the relock carries a D31 best guess (the table's last
+    //               known rule-id state): once quiet, its look runs and it closes rated on the guessed record; with no
+    //               pre-shot state (or the look cut short by a new shot) it closes unrated. Entries that had already
+    //               ended (held D30 shots) close unrated, as before.
     // Entries close strictly from the front, one close per shot (`settled` rated, or `ballsSettled` unrated), and only
     // while the table is quiet: nobody aiming and nothing moving. A later shotStarted, or any motion, freezes a look
     // that hasn't finished (unseen uncertain pockets become questions). Only the front entry may ask; a shot queued
@@ -78,6 +81,8 @@ final class LiveModel {
         var resolver: UncertainPocketResolver?
         var verdicts: [Int: UncertainPocketResolver.Verdict] = [:]
         var answers: [Int: Bool] = [:]
+        /// D31: the shot in flight at a relock.
+        var guess: LostShotGuess?
 
         var openAsk: Int? {
             verdicts.filter { $0.value == .ask && answers[$0.key] == nil }.keys.sorted().first
@@ -86,7 +91,16 @@ final class LiveModel {
     private var shots: [ShotEntry] = []
     private var nextShotID = 0
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
-    private func lostEntry() -> ShotEntry { ShotEntry(id: newID(), state: .lost) }
+    private func lostEntry() -> ShotEntry {
+        // D31: guess from the last quiet pre-shot table (nothing known = no guess, unrated close).
+        let guess = tableBefore.flatMap { $0.isEmpty ? nil : LostShotGuess(before: $0, lastSeen: lastSeenAt, start: lastFrameAt ?? 0) }
+        return ShotEntry(id: newID(), state: .lost, guess: guess)
+    }
+    /// D31: rule id → position on the last quiet, pre-shot frame (nil = nothing known since the last relock).
+    private var tableBefore: [BallID: Vec2]?
+    /// D31: rule id → where it was last measured (the pocket guess), since the last relock.
+    private var lastSeenAt: [BallID: Vec2] = [:]
+    private var lastFrameAt: Double?
     /// Test seam (the invariant oracle): every close, in order, right before its shell/rules effect: the entry's id,
     /// the resolved record that is applied (nil = unrated), and whether it is rated.
     @ObservationIgnored var onCloseForTesting: ((Int, ShotRecord?, Bool) -> Void)?
@@ -121,7 +135,11 @@ final class LiveModel {
     func perceptionReset() {
         if aimEvents.phase == .aiming { hooks.aimCancelled() }
         for i in shots.indices where shots[i].state != .lost { shots[i] = ShotEntry(id: shots[i].id, state: .lost) }
+        // A guess still looking starts its look over on the new tracker (no shot since).
+        for i in shots.indices { shots[i].guess?.restart() }
         if aimEvents.phase == .moving { shots.append(lostEntry()) }
+        tableBefore = nil
+        lastSeenAt = [:]
         aimEvents = AimEvents()
         pocketConfirm = nil
         pocketConfirmPoint = nil
@@ -167,9 +185,15 @@ final class LiveModel {
                 return
             case .lost:
                 guard quiet else { return }
+                if let g = head.guess, !g.done { return }
                 shots.removeFirst()
-                onCloseForTesting?(head.id, nil, false)
-                hooks.ballsSettled()
+                if let (rec, ids) = head.guess?.record(spec: TableSpec(size: tableSize ?? .sevenFoot)) {
+                    onCloseForTesting?(head.id, rec, true)
+                    shotSettled(rec, ids: ids)
+                } else {
+                    onCloseForTesting?(head.id, nil, false)
+                    hooks.ballsSettled()
+                }
             case .decided:
                 if let tid = head.openAsk {
                     pocketConfirm = PocketConfirm(trackID: tid, pocket: head.resolver!.candidates[tid]!, ball: head.ids[tid])
@@ -269,6 +293,19 @@ final class LiveModel {
         // Nothing seen to judge by (e.g. right after a relock) is not quiet either.
         movingNow = moving || r.confirmed.isEmpty
         if !clearSinceReset, !evidence, !movingNow { clearSinceReset = true }
+        // D31: the table's rule-id state before a shot, and where each ball was last measured.
+        lastFrameAt = r.timestamp
+        for b in r.confirmed where b.measured { if let id = r.ballIDs[b.id] { lastSeenAt[id] = b.position } }
+        if aimEvents.phase != .moving && !movingNow && !r.shotStarted && r.shot == nil {
+            var t: [BallID: Vec2] = [:]
+            for b in r.confirmed { if let id = r.ballIDs[b.id] { t[id] = b.position } }
+            tableBefore = t
+        }
+        // D31: a lost shot's look sees quiet frames with a measured ball; a new shot cuts it short (no guess).
+        if let i = shots.firstIndex(where: { $0.guess.map { !$0.done } ?? false }) {
+            if r.shotStarted || r.shot != nil { shots[i].guess?.freeze() }
+            else if quiet && r.confirmed.contains(where: \.measured) { shots[i].guess?.observe(r) }
+        }
         // 3. A shot that ended this frame joins the FIFO; its look starts with this frame.
         if let shot = r.shot {
             enqueue(shot, ids: r.ballIDs)

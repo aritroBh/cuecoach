@@ -594,3 +594,61 @@ struct PocketConfirm: Equatable, Sendable {
     var pocket: Pocket
     var ball: BallID?
 }
+
+/// D31: a shot lost to a relock (tracking lost mid-shot) is closed on a best guess, never a prompt. `before` is the
+/// table's last known rule-id state (the last quiet pre-shot frame). Once the table is quiet after the relock, a look
+/// window (`window` s of quiet frames with a measured ball) records which rule ids are seen. A ball that was on the
+/// table before and is not seen anywhere in the window counts as pocketed (at the pocket nearest to where it was
+/// last measured); an unidentified measured ball in the window could be any of them, so then none count (D29).
+/// No guess (unrated close) when the look was cut short by a new shot, or no pre-shot ball was seen again (not the
+/// same table, or nothing to anchor on).
+struct LostShotGuess: Sendable {
+    let before: [BallID: Vec2]
+    let lastSeen: [BallID: Vec2]
+    let start: Double
+    var window = 1.0
+    private(set) var windowStart: Double?
+    private(set) var seen: Set<BallID> = []
+    private(set) var uncertain = false
+    private(set) var frozen = false
+    private(set) var end: Double?
+    var done: Bool { frozen || end != nil }
+
+    init(before: [BallID: Vec2], lastSeen: [BallID: Vec2], start: Double) {
+        self.before = before; self.lastSeen = lastSeen; self.start = start
+    }
+
+    /// One quiet frame of the look (the caller gates on quiet and on at least one measured ball).
+    mutating func observe(_ r: PerceptionResult) {
+        guard !done else { return }
+        if windowStart == nil { windowStart = r.timestamp }
+        for b in r.confirmed where b.measured {
+            if let id = r.ballIDs[b.id] { seen.insert(id) } else { uncertain = true }
+        }
+        if r.timestamp - windowStart! >= window { end = r.timestamp }
+    }
+
+    /// A new shot cut the look short: no guess.
+    mutating func freeze() { if !done { frozen = true } }
+
+    /// Another relock before the look finished: the table hasn't been shot since, so look again from scratch.
+    mutating func restart() {
+        guard !done else { return }
+        windowStart = nil; seen = []; uncertain = false
+    }
+
+    /// The best-guess record (keys = ball numbers, cue = 0) and its rule ids; nil = close unrated.
+    func record(spec: TableSpec) -> (record: ShotRecord, ids: [Int: BallID])? {
+        guard !frozen, let end, !seen.isDisjoint(with: before.keys) else { return nil }
+        var pocketed: [Int: Pocket] = [:]
+        if !uncertain {
+            for (id, p) in before where !seen.contains(id) {
+                let at = lastSeen[id] ?? p
+                pocketed[id.number] = spec.pockets.min { spec.pocketCenter($0).distance(to: at) < spec.pocketCenter($1).distance(to: at) }
+            }
+        }
+        let rec = ShotRecord(start: start, end: end, preState: Dictionary(uniqueKeysWithValues: before.map { ($0.key.number, $0.value) }),
+                             finalState: [:], cueID: BallID.cue.number, firstContact: nil, rails: [], pocketed: pocketed)
+        return (rec, Dictionary(uniqueKeysWithValues: before.keys.map { ($0.number, $0) }))
+    }
+}

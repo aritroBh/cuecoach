@@ -264,7 +264,10 @@ struct D30PocketTests {
         m.drive(rolling)
         #expect(log.e == ["start", "end", "start", "end"])
         m.drive(result(8))
-        #expect(log.e == ["start", "end", "start", "end", "unrated", "unrated"], "one close per shot, at rest")
+        // The held shot (already ended) closes unrated; the shot in flight is a D31 best guess: its look needs 1 s.
+        #expect(log.e == ["start", "end", "start", "end", "unrated"], "one close per shot, at rest")
+        play(m, from: 8, seconds: 1.5)
+        #expect(log.e == ["start", "end", "start", "end", "unrated", "rated"], "D31: the lost shot closes rated on its guess")
     }
 
     func relockedDuringMotion(_ log: @escaping @MainActor (String) -> Void) -> LiveModel {
@@ -294,8 +297,9 @@ struct D30PocketTests {
         var t = 8.0
         while t < 9.0 { t += 1.0 / 15; var r = result(t); r.shooterAddressing = true; m.drive(r) }
         #expect(Array(log.e.dropFirst(before.count)) == ["start"], "the aim is forwarded; nothing closes during it")
-        play(m, from: 9, seconds: 2)
-        #expect(Array(log.e.dropFirst(before.count)) == ["start", "cancel", "unrated", "unrated"])
+        play(m, from: 9, seconds: 3)
+        // The held shot closes unrated; the shot in flight closes on its D31 best guess after its 1 s look.
+        #expect(Array(log.e.dropFirst(before.count)) == ["start", "cancel", "unrated", "rated"])
     }
 
     /// …and when that aim becomes a shot, both lost shots close before the new shot's result, never during motion.
