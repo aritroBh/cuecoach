@@ -9,6 +9,20 @@ enum OutcomeBuilder {
         Pocket.allCases.min { spec.pocketCenter($0).distance(to: q) < spec.pocketCenter($1).distance(to: q) }!
     }
 
+    /// Did the cue ball's centre go below the head string before `time`? Reads the trace at every event
+    /// (cushions included) and on a fine grid between them, so a rail-first path out and back is seen.
+    static func cueCrossedHeadString(_ trace: ShotTrace, before time: Double, step: Double = 0.005) -> Bool {
+        let line = trace.initial.spec.headStringX
+        func below(_ t: Double) -> Bool { (trace.state(at: t).balls[.cue]?.position.x ?? 0) > line }
+        if trace.events.contains(where: { $0.time <= time && below($0.time) }) { return true }
+        var t = 0.0
+        while t < time {
+            if below(t) { return true }
+            t += step
+        }
+        return below(time)
+    }
+
     static func outcome(from trace: ShotTrace, game g: GameState, candidate c: Candidate?,
                         offTable: Set<BallID> = []) -> ShotOutcome {
         var firstContact: BallID?
@@ -54,8 +68,10 @@ enum OutcomeBuilder {
         }
         if g.ballInHand == .behindHeadString, let cue = trace.initial.balls[.cue] {
             out.cueBallStartedAboveHeadString = cue.position.x < spec.headStringX
+            // WPA 3.11: legal if the first ball hit is on/below the head string, or the cue ball crossed it first.
             if let f = firstContact, let fb = trace.initial.balls[f] {
                 out.cueBallCrossedHeadStringFirst = fb.position.x >= spec.headStringX
+                    || cueCrossedHeadString(trace, before: firstContactTime)
             }
         }
         if let c {
