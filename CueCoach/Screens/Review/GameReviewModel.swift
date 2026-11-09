@@ -168,9 +168,25 @@ public final class GameReviewModel {
 
     // MARK: Accessibility (direction words only, never numbers)
 
+    /// "up" / "down" / "steady" for a change in Team A's win chance.
+    nonisolated static func directionWord(_ delta: Double) -> String {
+        abs(delta) < 0.02 ? "steady" : (delta > 0 ? "up" : "down")
+    }
+
+    /// Who leads at a win chance (the chart's spoken y values use the same words).
+    nonisolated static func standingWords(_ p: Double) -> String {
+        p > 0.55 ? "Team A ahead" : (p < 0.45 ? "Team B ahead" : "Even")
+    }
+
+    /// The eval-bar fallback (chart hidden): direction + standing, never a number.
+    var evalBarsAccessibilityLabel: String? {
+        guard let first = shots.first, let last = shots.last else { return nil }
+        let before = winProbBefore(first), after = winProbAfter(last)
+        return "Team A win chance \(Self.directionWord(after - before)), \(Self.standingWords(after))"
+    }
+
     func accessibilityLabel(_ s: ReviewShot) -> String {
-        let delta = winProbAfter(s) - winProbBefore(s)
-        let dir = abs(delta) < 0.02 ? "steady" : (delta > 0 ? "up" : "down")
+        let dir = Self.directionWord(winProbAfter(s) - winProbBefore(s))
         return ["Shot \(s.index + 1)", s.shooter?.name, timelineStyle(s).words, "Team A win chance \(dir)"]
             .compactMap { $0 }.joined(separator: ", ")
     }

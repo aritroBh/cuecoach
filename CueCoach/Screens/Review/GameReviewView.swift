@@ -203,7 +203,7 @@ public struct GameReviewView: View {
                     TeamRing(team: 1)
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Team A win chance \(Int((before * 100).rounded())) to \(Int((after * 100).rounded())) percent")
+                .accessibilityLabel(model.evalBarsAccessibilityLabel ?? "")   // direction words only, never numbers
                 .accessibilityIdentifier("review.evalbars")
             }
         }
@@ -546,7 +546,7 @@ private struct WinChanceDescriptor: AXChartDescriptorRepresentable {
         let x = AXNumericDataAxisDescriptor(title: "Shot", range: Double(pts.first?.x ?? 0)...Double(max(pts.last?.x ?? 1, 1)),
                                             gridlinePositions: []) { "Shot \(Int($0) + 1)" }
         let y = AXNumericDataAxisDescriptor(title: "Team A win chance", range: 0...1, gridlinePositions: [0.5]) { v in
-            v > 0.55 ? "Team A ahead" : (v < 0.45 ? "Team B ahead" : "Even")
+            GameReviewModel.standingWords(v)
         }
         let series = AXDataSeriesDescriptor(name: "Win chance", isContinuous: true,
                                             dataPoints: pts.map { AXDataPoint(x: Double($0.x), y: $0.y) })

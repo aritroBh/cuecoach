@@ -179,6 +179,30 @@ import Engine
         #expect(m.accessibilityLabel(shots[0]).rangeOfCharacter(from: CharacterSet(charactersIn: "%")) == nil)
     }
 
+    /// The eval-bar fallback (chart hidden, < 4 points) speaks direction words like every other win-chance path:
+    /// never a percentage or any number (no numeric-precise advice).
+    @Test func evalBarsAccessibilityUsesDirectionWordsNoNumbers() {
+        let shots = (0..<2).map { shot($0, .good, by: a1, team: 0) }
+        let up = GameReviewModel(data: data(shots: shots, series: [0.5, 0.6, 0.72]))
+        #expect(up.evalBarsAccessibilityLabel == "Team A win chance up, Team A ahead")
+        let down = GameReviewModel(data: data(shots: shots, series: [0.5, 0.4, 0.3]))
+        #expect(down.evalBarsAccessibilityLabel == "Team A win chance down, Team B ahead")
+        let even = GameReviewModel(data: data(shots: shots, series: [0.5, 0.51, 0.5]))
+        #expect(even.evalBarsAccessibilityLabel == "Team A win chance steady, Even")
+        for m in [up, down, even] {
+            let label = m.evalBarsAccessibilityLabel ?? ""
+            #expect(label.rangeOfCharacter(from: CharacterSet.decimalDigits.union(CharacterSet(charactersIn: "%"))) == nil)
+        }
+        #expect(GameReviewModel(data: data(shots: [])).evalBarsAccessibilityLabel == nil)
+    }
+
+    /// The chart's spoken y values share the same standing words.
+    @Test func winChanceStandingWords() {
+        #expect(GameReviewModel.standingWords(0.8) == "Team A ahead")
+        #expect(GameReviewModel.standingWords(0.2) == "Team B ahead")
+        #expect(GameReviewModel.standingWords(0.5) == "Even")
+    }
+
     @Test func fallbackPathsAreStraightLinesForMovedBalls() {
         var pre = table(), post = table(cue: Vec2(1, 0.3))
         pre.balls[BallID(3)!] = BallState(position: Vec2(1.8, 0.2))
