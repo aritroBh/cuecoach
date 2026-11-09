@@ -55,6 +55,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 ## All-modules push (workflow wf_4253a676, user: "use all agents", 2026-11-06)
 Each module: TDD worker → Codex review + Claude adversarial verification → fix → re-verify.
 - [~] Engine (Phase 2): candidates, Monte Carlo, win prob, ratings D18 — .worktrees/engine
+- [x] Engine review fixes (Codex GPT-5.3 + Kimi K3; wt/fix-engine, not merged): WPA 3.11 crossing read from the cue-ball path (87433da), kitchen-ball kicks that cross the head string (20efd94), rating top-up refreshes difficulty/baseline (85dfe4a). CueCore 694/694, 0 warnings
 - [~] Stats + archetypes + pro comps (Phase 6) — .worktrees/stats. Comparison math done; all 10 pro profiles still `estimated` → sourcing real stats (research agent). No pro videos downloaded (ToS/copyright; detector not trained yet)
 - [~] Training logic (Phase 8): drills, assist levels, level policy, bias detector — .worktrees/training
 - [~] Mesh (Phase 5): MPC, protocol, host election/migration, clock sync — .worktrees/mesh (Sim C)

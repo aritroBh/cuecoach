@@ -318,14 +318,39 @@ struct Evaluator: Sendable {
 
     func mean(_ s: [Sample]) -> Double { s.reduce(0) { $0 + $1.w } / Double(max(1, s.count)) }
 
+    /// SE over antithetic pair means (the pairs are not independent draws).
+    static func pairedSE(_ w: [Double]) -> Double {
+        let pairs = stride(from: 0, to: w.count - 1, by: 2).map { (w[$0] + w[$0 + 1]) / 2 }
+        let pm = pairs.reduce(0, +) / Double(max(1, pairs.count))
+        let v = pairs.reduce(0) { $0 + ($1 - pm) * ($1 - pm) } / Double(max(1, pairs.count - 1))
+        return pairs.count > 1 ? (v / Double(pairs.count)).squareRoot() : 0
+    }
+
+    /// `s` (summarised from its first `s.samples` paired samples) extended with `extra`, the samples at the
+    /// following indices; `allW` is every sample's W in index order. Same result as summarising all of them.
+    func extend(_ s: CandidateScore, with extra: [Sample], allW: [Double]) -> CandidateScore {
+        let n0 = s.samples
+        let made0 = Int((s.pIntended * Double(n0)).rounded()), missed0 = n0 - made0
+        let madeX = extra.filter(\.intended).map(\.w), missedX = extra.filter { !$0.intended }.map(\.w)
+        let made = made0 + madeX.count, missed = missed0 + missedX.count, n = n0 + extra.count
+        var out = s
+        out.pIntended = Double(made) / Double(max(1, n))
+        out.ev = allW.reduce(0, +) / Double(max(1, allW.count))
+        out.evSE = Self.pairedSE(allW)
+        out.evMake = made == 0 ? nil : ((s.evMake ?? 0) * Double(made0) + madeX.reduce(0, +)) / Double(made)
+        out.evMiss = missed == 0 ? nil : ((s.evMiss ?? 0) * Double(missed0) + missedX.reduce(0, +)) / Double(missed)
+        if s.candidate.intendsPot {
+            let leafX = extra.filter { $0.intended && $0.staysAtTable }.map(\.w).max()
+            out.bestLeaf = [s.bestLeaf, leafX].compactMap { $0 }.max()
+        }
+        out.samples = n
+        return out
+    }
+
     func summarise(_ q: Quick, _ ss: [Sample]) -> CandidateScore {
         let n = ss.count
         let ev = mean(ss)
-        // SE over antithetic pair means (the pairs are not independent draws).
-        let pairs = stride(from: 0, to: n - 1, by: 2).map { (ss[$0].w + ss[$0 + 1].w) / 2 }
-        let pm = pairs.reduce(0, +) / Double(max(1, pairs.count))
-        let v = pairs.reduce(0) { $0 + ($1 - pm) * ($1 - pm) } / Double(max(1, pairs.count - 1))
-        let se = pairs.count > 1 ? (v / Double(pairs.count)).squareRoot() : 0
+        let se = Self.pairedSE(ss.map(\.w))
         let made = ss.filter(\.intended), missed = ss.filter { !$0.intended }
         let leaf = q.candidate.intendsPot ? made.filter(\.staysAtTable).map(\.w).max() : nil
         return CandidateScore(candidate: q.candidate, pMakeAnalytic: q.pAnalytic, pBaseline: q.pBaseline,

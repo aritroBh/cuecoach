@@ -64,7 +64,10 @@ extension ShotEngine {
             let start = ev.startState(cand)
             let extra = (chosenW.count..<target).map { ev.sample(cand, start: start, index: $0) }
             chosenW += extra.map(\.w)
-            if chosen == nil || chosen!.samples == 0 {
+            // Every chosen-arm signal below (difficulty, safety baseline, v̂) reads the topped-up estimate.
+            if let c = chosen, c.samples > 0, c.samples + extra.count == chosenW.count {
+                chosen = ev.extend(c, with: extra, allW: chosenW)
+            } else {
                 let pA = ev.analyticP(cand, skill: e.skill), pB = ev.analyticP(cand, skill: .reference)
                 chosen = ev.summarise(Evaluator.Quick(candidate: cand, pAnalytic: pA, pBaseline: pB,
                                                       score: chosen?.quickScore ?? 0, sims: 0), extra)
