@@ -63,7 +63,7 @@ struct InGameChrome: View {
                     if session.menuAvailable { menuButton } else { Color.clear.frame(width: 56, height: 56) }
                 }
                 if let game = session.game, game.hasLineup {
-                    TurnDiscs(game: game, reduceMotion: reduce || forced)
+                    TurnDiscs(game: game, reduceMotion: reduce || forced) { session.handTurn(toTeam: $0) }
                 }
                 Spacer()
             }
@@ -144,6 +144,8 @@ struct InGameChrome: View {
 struct TurnDiscs: View {
     let game: GameSessionModel
     let reduceMotion: Bool
+    /// Routed through `LiveSession`, which ignores it while a shot is live.
+    let handTurn: (Int) -> Void
 
     var body: some View {
         HStack {
@@ -158,7 +160,7 @@ struct TurnDiscs: View {
     private func disc(team: Int) -> some View {
         let active = game.shootingTeam == team
         let p = active ? game.shooter : game.waitingShooter
-        return Button { game.handTurn(toTeam: team) } label: {
+        return Button { handTurn(team) } label: {
             SBAvatar(symbol: p?.symbol ?? "person.fill", colorName: p?.colorName ?? "blue", size: active ? 56 : 44,
                      team: team, dimmed: !active)
                 .frame(width: 64, height: 64)

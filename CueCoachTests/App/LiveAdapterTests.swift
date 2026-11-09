@@ -68,6 +68,41 @@ import Training
         #expect(h.currentGame()?.1.shooter == 1)
     }
 
+    // Fix round (review finding 1): no turn hand-over while a shot is live (aim open or balls moving).
+    @Test func handTurnDuringAShotIsIgnored() {
+        let s = gameSession()
+        let h = LiveScreenAdapter.hooks(for: s)
+        h.aimStarted()
+        s.handTurn(toTeam: 1)
+        #expect(s.game?.shootingTeam == 0)
+        h.aimEnded()                              // stroke taken, balls moving
+        s.handTurn(toTeam: 1)
+        #expect(s.game?.shootingTeam == 0)
+        h.settled(.good, false)                   // at rest again
+        s.handTurn(toTeam: 1)
+        #expect(s.game?.shootingTeam == 1)
+    }
+
+    @Test func handTurnBetweenShotsPushesTheNewTeamsLegalTargets() throws {
+        let s = gameSession(.barEight)
+        let h = LiveScreenAdapter.hooks(for: s)
+        var next = try #require(h.currentGame()).1
+        next.groups = [0: .solids, 1: .stripes]
+        next.phase = .inPlay
+        h.gameAdvanced(next)
+        var pushed: [Set<BallID>] = []
+        s.game?.legalChanged = { pushed.append($0) }
+        s.handTurn(toTeam: 1)
+        let (engine, state) = try #require(h.currentGame())
+        #expect(state.shooter == 1)
+        #expect(pushed == [engine.legalTargets(state)])
+        #expect(pushed.first?.isEmpty == false)
+        #expect(pushed.first?.allSatisfy { $0.group == .stripes } == true)
+        h.aimStarted()
+        s.handTurn(toTeam: 0)                     // ignored mid-shot: nothing pushed
+        #expect(pushed.count == 1)
+    }
+
     @Test func liveAdvancesTheShellsRulesState() throws {
         let s = gameSession(.barEight)
         let h = LiveScreenAdapter.hooks(for: s)

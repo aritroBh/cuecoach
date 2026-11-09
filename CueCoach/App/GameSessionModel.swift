@@ -31,6 +31,9 @@ final class GameSessionModel {
     /// The game's rules (D11 rule set from setup) and state, which Live rates shots against and advances.
     @ObservationIgnored let rulesEngine: RulesEngine
     @ObservationIgnored private var rulesState: GameState
+    /// Ring legality changed outside a settled shot (a between-shots turn hand-over): the new shooter's legal targets.
+    /// Same payload as Live's `LiveModel.legalChanged` after a settled shot; the shell forwards it to Live's pipeline.
+    @ObservationIgnored var legalChanged: (Set<BallID>) -> Void = { _ in }
 
     init(config: GameConfig) {
         self.config = config
@@ -63,9 +66,13 @@ final class GameSessionModel {
     func passTurn() { turnIndex += 1 }
 
     /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs.
+    /// Call it through `LiveSession.handTurn`, which refuses while a shot is live. The new shooter's legal targets are
+    /// pushed at once, so their rings aren't the old team's red/green until the next settled shot.
     func handTurn(toTeam team: Int) {
         guard hasLineup, team != shootingTeam else { return }
         passTurn()
+        let (engine, state) = rules
+        legalChanged(engine.legalTargets(state))
     }
 
     /// Swap two players within a team; the player shooting now keeps the turn.
