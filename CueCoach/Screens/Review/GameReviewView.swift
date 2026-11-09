@@ -424,14 +424,8 @@ public struct GameReviewView: View {
     }
 
     private var doneBar: some View {
-        Button { model.onDone?() } label: {
-            Text("Done").axFont(.headline).foregroundStyle(AX.ink)
-                .frame(maxWidth: .infinity, minHeight: 56)
-                .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
-                .overlay(RoundedRectangle(cornerRadius: AX.radius.container).strokeBorder(AX.ink.opacity(0.12), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("review.done")
+        // Astryx Button (secondary, full width); its tap area is at least 44 pt.
+        AXButton(title: "Done", variant: .secondary, fill: true, id: "review.done") { model.onDone?() }
     }
 }
 

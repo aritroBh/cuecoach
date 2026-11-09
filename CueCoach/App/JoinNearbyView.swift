@@ -82,31 +82,19 @@ struct JoinNearbyView: View {
             backButton
         case .unavailable:
             StatusGlyph(symbol: "lock.shield", tint: AX.caution, title: "No access", animate: false, id: "join.unavailable")
-            Button {
+            // Astryx Button: the tappable (and accessibility) area is at least 44 × 44 pt.
+            AXButton(title: "Settings", variant: .primary, id: "join.openSettings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-            } label: {
-                // Frame + hit shape inside the label: the tappable (and accessibility) area is the full 88×44.
-                Text("Settings").axFont(.headline)
-                    .frame(minWidth: 88, minHeight: 44).contentShape(Rectangle())
             }
-            .accessibilityIdentifier("join.openSettings")
         }
     }
 
     private var cancelButton: some View {
-        Button { model.backToList() } label: {
-            Text("Leave").axFont(.headline).foregroundStyle(AX.inkMuted)
-                .frame(minWidth: 88, minHeight: 44).contentShape(Rectangle())
-        }
-        .accessibilityIdentifier("join.leave")
+        AXButton(title: "Leave", variant: .ghost, id: "join.leave") { model.backToList() }
     }
 
     private var backButton: some View {
-        Button { model.backToList() } label: {
-            Label("Back", systemImage: "arrow.uturn.backward").axFont(.headline)
-                .frame(minWidth: 88, minHeight: 44).contentShape(Rectangle())
-        }
-        .accessibilityIdentifier("join.back")
+        AXButton(title: "Back", variant: .secondary, id: "join.back") { model.backToList() }
     }
 }
 

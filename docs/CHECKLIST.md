@@ -121,3 +121,12 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Device UI (iPhone 17 Pro Max): AppShell + Screens 24 pass / 2 fail (both device-timing test issues, fixed in de656b7, not yet re-run: phone went unavailable)
 - [ ] Device QA on both physical phones (15 Pro Max perf gate, 17 Pro Max) at 4e42342: phones were unavailable (locked/disconnected); includes checking the 4 mm raw-motion threshold on a real table
 - [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
+
+## D34 Astryx design system (wt/astryx-ui, 2026-11-09, UI worker; not merged)
+- [x] Vendored Meta's Astryx Apple package as `Packages/Astryx` (MIT, commit 86fcdd3, headers kept; LICENSE + THIRD_PARTY_NOTICES + bundled licence copy); iOS 27, Swift 6, no external deps; wired via project.yml
+- [x] Network audit: left out the JavaScriptCore logic host, the wire view, Avatar/AvatarStatusDot and Thumbnail (AsyncImage `src`), non-default themes; removed every `href` link (Button/Item/ListItem) and SafeDestination URL parsing. PrivacyAuditTests now scans the vendored sources and forbids AsyncImage, Link(destination:), OpenURLAction, .openURL and URL(string:) (except the Settings deep link); allow-list gains Astryx/AstryxNative only
+- [x] Default theme app-wide, light + dark following the system (Live stays dark: camera ground). `CueCoach/Theme/AstryxBridge.swift` (AX roles, AXLive overlay palette, AXType on Astryx type tokens, Astryx Heading/Text/Card/Banner/Button wrappers); SBColor/SA/SBFont and every hex/RGB literal removed from App, Screens, Live
+- [x] Restyled: Home, Game hub, New game setup, Join nearby (list/waiting/full/host left), Training picker, Settings, Profile (create/stats/training), Lobby + sheets, Review, post-shot badge, in-game chrome/menu, Live overlays (lines, rings, ghost ball, handles, pocket confirm, coaching glyphs, shot dock, debug HUD, RealityKit overlay materials)
+- [x] Tests: AstryxThemeTests (roles = tokens in both modes, overlay palette fixed, type scale + AX damping, hex avatar mapping, no-ad-hoc-colour lint); AstryxShotsUITests (every main screen, light/dark PNGs)
+- [x] Sim F (CueCoach Sim F, iOS 27): unit 1141/1141; UI 44/45 pass + 1 skip (two-phone test needs real phones): AppShell incl. AX5 + Reduce Motion matrix, ScreensA (touch targets, AX5 matrix), ScreensB, LiveReplay, AstryxShots; privacy audit and no-text-while-aiming tests green
+- [ ] Cross-vendor review (not Claude) of wt/astryx-ui
