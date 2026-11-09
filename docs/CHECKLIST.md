@@ -120,4 +120,5 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] D30 "look, then ask" for uncertain pockets (resolver + icon-only post-shot confirm); unit 1106/1106 at d8752e9
 - [~] Device UI (iPhone 17 Pro Max): AppShell + Screens 24 pass / 2 fail (both device-timing test issues, fixed in de656b7, not yet re-run: phone went unavailable)
 - [ ] Device QA on both physical phones (15 Pro Max perf gate, 17 Pro Max) at 4e42342: phones were unavailable (locked/disconnected); includes checking the 4 mm raw-motion threshold on a real table
-- [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
+- [x] D32 detector benchmark (wt/d32-bench): 3D virtual-sim bench, app-path harness, hybrid + yolo26n-sim3d-ft shipped as default by measurement (docs/research/detector-benchmark.md); re-run on real footage later
+- [ ] User: lost-shot adjudication UI · stick-visible-but-no-stroke veto (D29 scope)
