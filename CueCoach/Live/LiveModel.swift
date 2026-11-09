@@ -142,11 +142,6 @@ final class LiveModel {
 
     private func finish(_ p: PendingShot) {
         pending.removeFirst()
-        defer {
-            // The next held shot's aim was not forwarded while this one was held: open and close it for the shell
-            // so its lifecycle stays balanced before that shot settles.
-            if !pending.isEmpty { hooks.aimStarted(); hooks.aimEnded() }
-        }
         var rec = p.record
         for (tid, pk) in p.resolver.candidates {
             let dropped = p.answers[tid] ?? (p.verdicts?[tid] == .pocketed)
@@ -196,10 +191,10 @@ final class LiveModel {
             return
         }
         // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
-        // While a shot is held (D30) the shell is still gated on it: new aims aren't forwarded until it settles.
-        let holding = !pending.isEmpty
+        // The shell always sees the aim lifecycle, held shot or not (its badge silencing and menu gating depend on
+        // it); a held shot's settle is delivered later, only while nobody aims (GPT-5.3 re-review K2).
         for e in aimEvents.update(cueVisible: r.liveAim != nil || r.shooterAddressing, atRest: r.atRest, shotStarted: r.shotStarted,
-                                  shotEnded: r.shot != nil, at: r.timestamp) where !holding {
+                                  shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
             case .aimStarted: hooks.aimStarted()
             case .aimEnded: hooks.aimEnded()

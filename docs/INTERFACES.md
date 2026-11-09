@@ -319,6 +319,10 @@ static func IdentitySession.registered(on: PersistenceStack, players:guests:face
 extension IdentitySession: RecognitionGallery      // purgedAll / purged(ids) revoke; restored(ids) reloads from the store
 struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backup-excluded recognition store; delete fences
 ```
+- D30 held shots and `LiveHooks`: the aim lifecycle (`aimStarted` / `aimEnded` / `aimCancelled`) is always forwarded
+  as it happens. A shot's `settled(rating, turnPasses)` (or `ballsSettled` for a held shot dropped by a relock) may
+  arrive after later aims have opened and closed: always outside an aim, exactly once per shot, in shot order. The
+  shell treats it as standalone (`LiveSession.settled` records the shot, shows its badge, rotates the turn).
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
   balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
   addressing the cue ball (wrists) also opens the aim for the shell.

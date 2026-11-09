@@ -226,11 +226,11 @@ struct D30PocketTests {
         // The next shooter addresses the cue ball during the look window and stays there past it.
         var t = 3.0
         while t < 5.0 { t += 1.0 / 15; var r = result(t); r.shooterAddressing = true; m.drive(r) }
-        #expect(log.e == ["start", "end"], "held: no new aim forwarded, nothing settled during the aim")
+        #expect(log.e == ["start", "end", "start"], "the aim reaches the shell; nothing settles during it")
         #expect(m.badge == nil)
         // They step away: the aim is over, the held shot settles once.
         play(m, from: 5, seconds: 2)
-        #expect(log.e == ["start", "end", "rated"])
+        #expect(log.e == ["start", "end", "start", "cancel", "rated"])
     }
 
     /// The confirm is icon-only: its view source has no text (the aiming-path lint covers Live; this pins it).
