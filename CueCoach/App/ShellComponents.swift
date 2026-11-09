@@ -7,7 +7,7 @@ extension EnvironmentValues {
     @Entry var shellNoLoops: Bool = false
 }
 
-/// Big calm choice tile: one glyph cluster + one word.
+/// Big calm choice tile: one glyph cluster + one word, on an Astryx card.
 struct ShellTile<Glyph: View>: View {
     let title: String
     let id: String
@@ -17,18 +17,17 @@ struct ShellTile<Glyph: View>: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 16) {
+            VStack(spacing: AX.space.s4) {
                 glyph()
                 Text(title)
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(SBColor.ink)
+                    .axFont(.title)
+                    .foregroundStyle(AX.ink)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, minHeight: minHeight)
-            .padding(.vertical, 16)
-            .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(SBColor.ink.opacity(0.08), lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 20))
+            .padding(.vertical, AX.space.s4)
+            .axSurface(elevated: true)
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityElement(children: .ignore)
@@ -44,12 +43,12 @@ struct ShellPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed && !(reduce || forced) ? 0.97 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .opacity(configuration.isPressed ? 0.75 : 1)   // Astryx press opacity
             .animation(.snappy(duration: 0.2), value: configuration.isPressed)
     }
 }
 
-/// 44–56 pt circular icon control.
+/// 44–56 pt circular icon control on the Astryx card ground.
 struct ShellCircleButton: View {
     let symbol: String
     let label: String
@@ -59,11 +58,11 @@ struct ShellCircleButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: size * 0.4, weight: .semibold))
-                .foregroundStyle(SBColor.ink)
+                .font(AXGlyph.font(size * 0.4, .semibold))
+                .foregroundStyle(AX.ink)
                 .frame(width: size, height: size)
-                .background(Circle().fill(SBColor.surface))
-                .overlay(Circle().stroke(SBColor.ink.opacity(0.1), lineWidth: 1))
+                .background(Circle().fill(AX.surface))
+                .overlay(Circle().strokeBorder(AX.border, lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(ShellPressStyle())
@@ -72,8 +71,9 @@ struct ShellCircleButton: View {
     }
 }
 
-/// The one green primary action per screen. Dim when blocked; a blocked tap still fires `action`
-/// so the model can point at what's missing.
+/// The one primary action per screen, in the Astryx primary look (accent fill, on-accent label), drawn tall
+/// (64 pt) because it is pressed beside a table. Dim when blocked; a blocked tap still fires `action` so the
+/// model can point at what's missing.
 struct ShellStartButton: View {
     var title = "Start"
     var symbol = "play.fill"
@@ -82,14 +82,14 @@ struct ShellStartButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            // Blocked = surface + lock glyph at full contrast; the screen points at what's missing.
+            // Blocked = Astryx neutral fill + lock glyph at full contrast; the screen points at what's missing.
             Label(title, systemImage: enabled ? symbol : "lock.fill")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(enabled ? Color.black : SBColor.ink)
+                .axFont(.subtitle)
+                .foregroundStyle(enabled ? AX.onAccent : AX.ink)
                 .frame(maxWidth: .infinity, minHeight: 64)
-                .background(Capsule().fill(enabled ? SBColor.legal : SBColor.surface))
-                .overlay(Capsule().strokeBorder(SBColor.ink.opacity(enabled ? 0 : 0.25), lineWidth: 1))
-                .contentShape(Capsule())
+                .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous)
+                    .fill(enabled ? AX.accent : AX.neutral))
+                .contentShape(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityIdentifier(id)
@@ -97,13 +97,13 @@ struct ShellStartButton: View {
     }
 }
 
-/// Small uppercase-free section heading (22 semibold per MASTER is for titles; sections use headline).
+/// Section heading: the Astryx heading (level 3), in secondary ink.
 struct ShellSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline).foregroundStyle(SBColor.inkMuted).accessibilityAddTraits(.isHeader)
+        VStack(alignment: .leading, spacing: AX.space.s3) {
+            AXHeading(text: title, level: 3, muted: true)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -111,5 +111,5 @@ struct ShellSection<Content: View>: View {
 }
 
 struct ShellBackground: View {
-    var body: some View { SBColor.bg.ignoresSafeArea() }
+    var body: some View { AX.page.ignoresSafeArea() }
 }

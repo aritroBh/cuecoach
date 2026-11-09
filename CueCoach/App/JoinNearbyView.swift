@@ -48,7 +48,7 @@ struct JoinNearbyView: View {
         switch model.state {
         case .searching:
             if model.games.isEmpty {
-                StatusGlyph(symbol: "dot.radiowaves.left.and.right", tint: SBColor.teamA, title: "Looking",
+                StatusGlyph(symbol: "dot.radiowaves.left.and.right", tint: AX.teamA, title: "Looking",
                             animate: loops, id: "join.searching")
             } else {
                 ForEach(model.games) { g in
@@ -56,57 +56,45 @@ struct JoinNearbyView: View {
                 }
             }
         case .joining(let g):
-            GameRow(game: g, trailing: AnyView(ProgressView().tint(SBColor.ink))) {}
+            GameRow(game: g, trailing: AnyView(ProgressView().tint(AX.ink))) {}
                 .disabled(true)
             cancelButton
         case .joined(let g):
             // AX sizes: compact "Waiting" + Leave first so both sit in the first viewport; the lineup (which
             // carries the host's rules and table) follows. The big game row is skipped there.
             if typeSize.isAccessibilitySize {
-                StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting",
+                StatusGlyph(symbol: "video.fill", tint: AX.legal, title: "Waiting", animate: loops, id: "join.waiting",
                             compact: true)
                 cancelButton
                 if let l = model.lineup { LineupStrip(lineup: l) }
             } else {
-                GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(SBColor.legal))) {}
+                GameRow(game: g, trailing: AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(AX.legal))) {}
                     .disabled(true)
                 if let l = model.lineup { LineupStrip(lineup: l) }
-                StatusGlyph(symbol: "video.fill", tint: SBColor.legal, title: "Waiting", animate: loops, id: "join.waiting")
+                StatusGlyph(symbol: "video.fill", tint: AX.legal, title: "Waiting", animate: loops, id: "join.waiting")
                 cancelButton
             }
         case .full:
-            StatusGlyph(symbol: "lock.fill", tint: SBColor.caution, title: "Game full", animate: false, id: "join.full")
+            StatusGlyph(symbol: "lock.fill", tint: AX.caution, title: "Game full", animate: false, id: "join.full")
             backButton
         case .hostLeft:
-            StatusGlyph(symbol: "wifi.slash", tint: SBColor.danger, title: "Host left", animate: false, id: "join.hostLeft")
+            StatusGlyph(symbol: "wifi.slash", tint: AX.danger, title: "Host left", animate: false, id: "join.hostLeft")
             backButton
         case .unavailable:
-            StatusGlyph(symbol: "lock.shield", tint: SBColor.caution, title: "No access", animate: false, id: "join.unavailable")
-            Button {
+            StatusGlyph(symbol: "lock.shield", tint: AX.caution, title: "No access", animate: false, id: "join.unavailable")
+            // Astryx Button: the tappable (and accessibility) area is at least 44 × 44 pt.
+            AXButton(title: "Settings", variant: .primary, id: "join.openSettings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-            } label: {
-                // Frame + hit shape inside the label: the tappable (and accessibility) area is the full 88×44.
-                Text("Settings").font(.body.weight(.semibold))
-                    .frame(minWidth: 88, minHeight: 44).contentShape(Rectangle())
             }
-            .accessibilityIdentifier("join.openSettings")
         }
     }
 
     private var cancelButton: some View {
-        Button { model.backToList() } label: {
-            Text("Leave").font(.body.weight(.semibold)).foregroundStyle(SBColor.inkMuted)
-                .frame(minWidth: 88, minHeight: 44).contentShape(Rectangle())
-        }
-        .accessibilityIdentifier("join.leave")
+        AXButton(title: "Leave", variant: .ghost, id: "join.leave") { model.backToList() }
     }
 
     private var backButton: some View {
-        Button { model.backToList() } label: {
-            Label("Back", systemImage: "arrow.uturn.backward").font(.body.weight(.semibold))
-                .frame(minWidth: 88, minHeight: 44).contentShape(Rectangle())
-        }
-        .accessibilityIdentifier("join.back")
+        AXButton(title: "Back", variant: .secondary, id: "join.back") { model.backToList() }
     }
 }
 
@@ -125,8 +113,8 @@ private struct StatusGlyph: View {
                 .foregroundStyle(tint)
                 .symbolEffect(.variableColor.iterative, isActive: animate)
                 .frame(width: compact ? 72 : 120, height: compact ? 72 : 120)
-                .background(Circle().fill(SBColor.surface))
-            Text(title).font(.title2.weight(.semibold)).foregroundStyle(SBColor.ink)
+                .background(Circle().fill(AX.surface))
+            Text(title).axFont(.title).foregroundStyle(AX.ink)
                 .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
         .frame(maxWidth: .infinity)
@@ -139,7 +127,7 @@ private struct StatusGlyph: View {
 /// One hosted game: host avatar, rule ball, seat dots.
 private struct GameRow: View {
     let game: NearbyGame
-    var trailing: AnyView = AnyView(Image(systemName: "chevron.right").foregroundStyle(SBColor.inkMuted))
+    var trailing: AnyView = AnyView(Image(systemName: "chevron.right").foregroundStyle(AX.inkMuted))
     let action: () -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -150,10 +138,10 @@ private struct GameRow: View {
             layout {
                 SBAvatar(symbol: game.host?.symbol ?? "person.fill", colorName: game.host?.colorName ?? "blue", size: 52, team: 0)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(game.host?.name ?? "Nearby").font(.title3.weight(.semibold)).foregroundStyle(SBColor.ink)
+                    Text(game.host?.name ?? "Nearby").axFont(.subtitle).foregroundStyle(AX.ink)
                     HStack(spacing: 4) {
                         ForEach(0..<max(game.seatsTotal, 0), id: \.self) { i in
-                            Circle().fill(i < game.seatsFilled ? SBColor.ink : SBColor.ink.opacity(0.2)).frame(width: 8, height: 8)
+                            Circle().fill(i < game.seatsFilled ? AX.ink : AX.ink.opacity(0.2)).frame(width: 8, height: 8)
                         }
                     }
                     .accessibilityHidden(true)
@@ -163,15 +151,15 @@ private struct GameRow: View {
                 VStack(spacing: 4) {
                     SARuleBall(number: SettingsViewModel.ruleBall(game.ruleSet), size: 36)
                     Text(SettingsViewModel.ruleShortLabel(game.ruleSet))
-                        .font(.footnote.weight(.semibold)).foregroundStyle(SBColor.inkMuted)
+                        .axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                         .lineLimit(1)
                 }
-                trailing.font(.title3.weight(.semibold))
+                trailing.axFont(.subtitle)
             }
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: 88)
-            .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
-            .contentShape(RoundedRectangle(cornerRadius: 20))
+            .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.container))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityElement(children: .ignore)
@@ -192,7 +180,7 @@ private struct LineupStrip: View {
             HStack(spacing: 12) {
                 SARuleBall(number: SettingsViewModel.ruleBall(lineup.ruleSet), size: 32)
                 SATableSilhouette(size: lineup.tableSize).frame(width: 56, height: 28)
-                Text("\(SettingsViewModel.feet(lineup.tableSize)) ft").font(.body.weight(.semibold)).foregroundStyle(SBColor.inkMuted)
+                Text("\(SettingsViewModel.feet(lineup.tableSize)) ft").axFont(.headline).foregroundStyle(AX.inkMuted)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(SettingsViewModel.ruleLabel(lineup.ruleSet)), \(SettingsViewModel.feet(lineup.tableSize)) foot table")
@@ -204,11 +192,11 @@ private struct LineupStrip: View {
                         if let p {
                             SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 48, team: seat.team)
                         } else {
-                            Circle().strokeBorder(SBColor.team(seat.team), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                            Circle().strokeBorder(AX.team(seat.team), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
                                 .frame(width: 48, height: 48)
                         }
                         Text(p?.name ?? "\(GameSetupModel.teamLetter(seat.team))\(seat.slot + 1)")
-                            .font(.footnote.weight(.semibold)).foregroundStyle(p == nil ? SBColor.inkMuted : SBColor.ink)
+                            .axFont(.label, weight: .semibold).foregroundStyle(p == nil ? AX.inkMuted : AX.ink)
                             .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
@@ -223,7 +211,7 @@ private struct LineupStrip: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("join.lineup")
     }

@@ -59,7 +59,7 @@ struct ScreensADebugRoot: View {
         NavigationStack { screen }
             .dynamicTypeSize(request.typeSize)
             .environment(\.saForceReduceMotion, request.reduceMotion)
-            .preferredColorScheme(.dark)
+            .cueCoachTheme()
     }
 
     @ViewBuilder private var screen: some View {

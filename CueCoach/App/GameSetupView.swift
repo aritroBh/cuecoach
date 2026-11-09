@@ -42,7 +42,7 @@ struct GameSetupView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
-            .background(SBColor.bg.opacity(0.9))
+            .background(AX.page.opacity(0.9))
         }
         .sensoryFeedback(.error, trigger: model.blockedStartCount)
         .navigationTitle("New game")
@@ -65,7 +65,7 @@ struct GameSetupView: View {
                         model.ruleSet = r
                     } content: {
                         SARuleBall(number: SettingsViewModel.ruleBall(r))
-                        Text(SettingsViewModel.ruleShortLabel(r)).font(.body.weight(.semibold))
+                        Text(SettingsViewModel.ruleShortLabel(r)).axFont(.headline)
                     }
                 }
             }
@@ -81,13 +81,13 @@ struct GameSetupView: View {
                     model.setPlayersPerTeam(1)
                 } content: {
                     formatGlyph(1)
-                    Text("Singles").font(.body.weight(.semibold))
+                    Text("Singles").axFont(.headline)
                 }
                 ChoiceTile(selected: model.isTeams, id: "setup.format.teams", label: "Teams") {
                     if !model.isTeams { model.setPlayersPerTeam(2) }
                 } content: {
                     formatGlyph(2)
-                    Text("Teams").font(.body.weight(.semibold))
+                    Text("Teams").axFont(.headline)
                 }
             }
             if model.isTeams {
@@ -99,9 +99,9 @@ struct GameSetupView: View {
                             model.setPlayersPerTeam(n)
                         } content: {
                             HStack(spacing: 3) {
-                                ForEach(0..<n, id: \.self) { _ in Circle().fill(SBColor.teamA).frame(width: 8, height: 8) }
+                                ForEach(0..<n, id: \.self) { _ in Circle().fill(AX.teamA).frame(width: 8, height: 8) }
                             }
-                            Text("\(n)v\(n)").font(.body.weight(.semibold)).monospacedDigit()
+                            Text("\(n)v\(n)").axFont(.headline).monospacedDigit()
                         }
                     }
                 }
@@ -112,9 +112,9 @@ struct GameSetupView: View {
 
     private func formatGlyph(_ n: Int) -> some View {
         HStack(spacing: 6) {
-            HStack(spacing: -6) { ForEach(0..<n, id: \.self) { _ in Circle().fill(SBColor.teamA).frame(width: 18, height: 18) } }
-            Text("vs").font(.caption.weight(.semibold)).foregroundStyle(SBColor.inkMuted)
-            HStack(spacing: -6) { ForEach(0..<n, id: \.self) { _ in Circle().fill(SBColor.teamB).frame(width: 18, height: 18) } }
+            HStack(spacing: -6) { ForEach(0..<n, id: \.self) { _ in Circle().fill(AX.teamA).frame(width: 18, height: 18) } }
+            Text("vs").axFont(.small, weight: .semibold).foregroundStyle(AX.inkMuted)
+            HStack(spacing: -6) { ForEach(0..<n, id: \.self) { _ in Circle().fill(AX.teamB).frame(width: 18, height: 18) } }
         }
         .frame(height: 40)
         .accessibilityHidden(true)
@@ -133,8 +133,8 @@ struct GameSetupView: View {
                     } content: {
                         SATableSilhouette(size: s).frame(height: 40)
                         HStack(spacing: 4) {
-                            if measured { Image(systemName: "ruler.fill").font(.caption.weight(.semibold)).foregroundStyle(SBColor.legal) }
-                            Text("\(SettingsViewModel.feet(s)) ft").font(.body.weight(.semibold)).monospacedDigit()
+                            if measured { Image(systemName: "ruler.fill").axFont(.small, weight: .semibold).foregroundStyle(AX.legal) }
+                            Text("\(SettingsViewModel.feet(s)) ft").axFont(.headline).monospacedDigit()
                         }
                     }
                 }
@@ -166,8 +166,8 @@ struct GameSetupView: View {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 } label: {
                     Label("No access", systemImage: "lock.shield")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(SBColor.caution)
+                        .axFont(.headline)
+                        .foregroundStyle(AX.caution)
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
                 }
@@ -175,8 +175,8 @@ struct GameSetupView: View {
                 .accessibilityIdentifier("setup.meshUnavailable")
             } else if model.syncFailed {
                 Label("Not sent", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(SBColor.caution)
+                    .axFont(.headline)
+                    .foregroundStyle(AX.caution)
                     .frame(minHeight: 44)
                     .accessibilityLabel("Last change didn't reach the other phones")
                     .accessibilityIdentifier("setup.syncFailed")
@@ -190,10 +190,10 @@ private struct PhoneDisc: View {
     var body: some View {
         Image(systemName: "iphone.gen3")
             .font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(SBColor.ink)
+            .foregroundStyle(AX.ink)
             .frame(width: 52, height: 52)
-            .background(Circle().fill(SBColor.surface))
-            .overlay(Circle().stroke(active ? SBColor.legal : .clear, lineWidth: 2))
+            .background(Circle().fill(AX.surface))
+            .overlay(Circle().stroke(active ? AX.legal : .clear, lineWidth: 2))
     }
 }
 
@@ -208,17 +208,17 @@ struct ChoiceTile<Content: View>: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 8) { content() }
-                .foregroundStyle(selected ? SBColor.ink : SBColor.inkMuted)
+                .foregroundStyle(selected ? AX.ink : AX.inkMuted)
                 .padding(8)
                 .frame(maxWidth: .infinity, minHeight: 96)
-                .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.surface.opacity(selected ? 1 : 0.5)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(selected ? SBColor.ink : .clear, lineWidth: 2))
+                .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(selected ? AX.accentMuted : AX.surface))
+                .overlay(RoundedRectangle(cornerRadius: AX.radius.container).strokeBorder(selected ? AX.accent : AX.border, lineWidth: selected ? 2 : 1))
                 .overlay(alignment: .topTrailing) {
                     if selected {
-                        Image(systemName: "checkmark.circle.fill").font(.body).foregroundStyle(SBColor.ink).padding(6)
+                        Image(systemName: "checkmark.circle.fill").axFont(.body).foregroundStyle(AX.accent).padding(6)
                     }
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 14))
+                .contentShape(RoundedRectangle(cornerRadius: AX.radius.container))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityElement(children: .ignore)
@@ -243,7 +243,7 @@ struct SeatOrderRow: View {
             ForEach(Array(order.enumerated()), id: \.offset) { i, seat in
                 HStack(spacing: 8) {
                     if i > 0 {
-                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(SBColor.inkMuted)
+                        Image(systemName: "chevron.right").axFont(.small, weight: .bold).foregroundStyle(AX.inkMuted)
                             .accessibilityHidden(true)
                     }
                     seatButton(seat, number: i + 1)
@@ -268,9 +268,9 @@ struct SeatOrderRow: View {
                         SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 52, team: seat.team)
                     } else {
                         Circle()
-                            .strokeBorder(SBColor.team(seat.team), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                            .strokeBorder(AX.team(seat.team), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
                             .frame(width: 52, height: 52)
-                        Image(systemName: "plus").font(.title3.weight(.semibold)).foregroundStyle(SBColor.team(seat.team))
+                        Image(systemName: "plus").axFont(.subtitle).foregroundStyle(AX.team(seat.team))
                     }
                 }
                 .frame(width: 64, height: 64)
@@ -278,8 +278,8 @@ struct SeatOrderRow: View {
                 // The first empty seat breathes from the start so a blocked Start is never a mystery.
                 .modifier(Breathe(active: blocking && !reduceMotion))
                 Text(p?.name ?? "\(GameSetupModel.teamLetter(seat.team))\(seat.slot + 1)")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(p == nil ? SBColor.inkMuted : SBColor.ink)
+                    .axFont(.label, weight: .semibold)
+                    .foregroundStyle(p == nil ? AX.inkMuted : AX.ink)
                     .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -378,12 +378,11 @@ struct SeatPickerSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(SBColor.bg)
+            .background(AX.page)
             .navigationTitle("\(GameSetupModel.teamLetter(seat.team))\(seat.slot + 1)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
-        .preferredColorScheme(.dark)
     }
 
     private func addNew() {
@@ -395,7 +394,7 @@ struct SeatPickerSheet: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 SBAvatar(symbol: symbol, colorName: color, size: 40)
-                Text(title).font(.body.weight(.semibold)).foregroundStyle(SBColor.ink)
+                Text(title).axFont(.headline).foregroundStyle(AX.ink)
                 Spacer()
             }
             .frame(minHeight: 52)

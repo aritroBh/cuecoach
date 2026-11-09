@@ -26,8 +26,8 @@ struct HomeScreen: View {
                     }
                     ShellTile(title: "Training", id: "home.training", action: router.openTraining) {
                         Image(systemName: "scope")
-                            .font(.system(size: 48, weight: .semibold))
-                            .foregroundStyle(SBColor.legal)
+                            .font(AXGlyph.font(48, .semibold))
+                            .foregroundStyle(AX.accent)
                             .frame(height: 64)
                             .accessibilityHidden(true)
                     }
@@ -53,12 +53,12 @@ struct GameHubScreen: View {
                 layout {
                     ShellTile(title: "New game", id: "game.new", action: router.openNewGame) {
                         Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 48, weight: .semibold)).foregroundStyle(SBColor.legal)
+                            .font(.system(size: 48, weight: .semibold)).foregroundStyle(AX.accent)
                             .accessibilityHidden(true)
                     }
                     ShellTile(title: "Join nearby", id: "game.join", action: router.openJoinNearby) {
                         Image(systemName: "dot.radiowaves.left.and.right")
-                            .font(.system(size: 44, weight: .semibold)).foregroundStyle(SBColor.teamA)
+                            .font(AXGlyph.font(44, .semibold)).foregroundStyle(AX.accent)
                             .accessibilityHidden(true)
                     }
                 }

@@ -85,11 +85,11 @@ struct InGameChrome: View {
     private var menuButton: some View {
         Button { session.isMenuOpen = true } label: {
             Image(systemName: "line.3.horizontal")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(AXGlyph.font(22, .semibold))
+                .foregroundStyle(AXLive.aim)
                 .frame(width: 56, height: 56)
-                .background(Circle().fill(.black.opacity(0.45)))
-                .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
+                .background(Circle().fill(AXLive.chip.opacity(0.7)))
+                .overlay(Circle().strokeBorder(AXLive.aim.opacity(0.25), lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(ShellPressStyle())
@@ -99,40 +99,40 @@ struct InGameChrome: View {
 
     private var menu: some View {
         ZStack(alignment: .bottom) {
-            Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { session.isMenuOpen = false }
+            AXLive.scrim.ignoresSafeArea().onTapGesture { session.isMenuOpen = false }
                 .accessibilityHidden(true)
             VStack(spacing: 16) {
                 if let game = session.game, game.hasLineup { OrderEditor(game: game) }
                 HStack(spacing: 16) {
-                    menuAction("Resume", symbol: "play.fill", tint: SBColor.ink, id: "chrome.resume") { session.isMenuOpen = false }
+                    menuAction("Resume", symbol: "play.fill", tint: AX.accent, id: "chrome.resume") { session.isMenuOpen = false }
                     if session.game != nil {
-                        menuAction("End game", symbol: "flag.checkered", tint: SBColor.danger, id: "chrome.endGame") {
+                        menuAction("End game", symbol: "flag.checkered", tint: AX.danger, id: "chrome.endGame") {
                             session.isMenuOpen = false
                             router.endGame()
                         }
                     } else {
-                        menuAction("Stop", symbol: "stop.fill", tint: SBColor.danger, id: "chrome.stop") {
+                        menuAction("Stop", symbol: "stop.fill", tint: AX.danger, id: "chrome.stop") {
                             session.isMenuOpen = false
                             router.stopTraining()
                         }
                     }
                 }
             }
-            .padding(16)
-            .background(RoundedRectangle(cornerRadius: 20).fill(SBColor.surface))
-            .padding(16)
+            .padding(AX.space.s4)
+            .axSurface(AX.raised, radius: AX.radius.page, elevated: true)
+            .padding(AX.space.s4)
         }
     }
 
     private func menuAction(_ title: String, symbol: String, tint: Color, id: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
-                Image(systemName: symbol).font(.system(size: 26, weight: .semibold)).foregroundStyle(tint)
-                Text(title).font(.body.weight(.semibold)).foregroundStyle(SBColor.ink)
+                Image(systemName: symbol).font(AXGlyph.font(26, .semibold)).foregroundStyle(tint)
+                Text(title).axFont(.headline).foregroundStyle(AX.ink)
             }
             .frame(maxWidth: .infinity, minHeight: 96)
-            .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.bg.opacity(0.6)))
-            .contentShape(RoundedRectangle(cornerRadius: 14))
+            .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.neutral))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous))
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityIdentifier(id)
@@ -194,7 +194,7 @@ struct OrderEditor: View {
                             }
                         } label: {
                             SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 44, team: t)
-                                .overlay(Circle().stroke(SBColor.ink, lineWidth: isPicked ? 3 : 0).padding(-6))
+                                .overlay(Circle().stroke(AX.ink, lineWidth: isPicked ? 3 : 0).padding(-6))
                                 .frame(width: 56, height: 56)
                                 .contentShape(Circle())
                         }
@@ -207,8 +207,8 @@ struct OrderEditor: View {
                 }
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(SBColor.bg.opacity(0.6)))
+        .padding(AX.space.s3)
+        .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.neutral))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chrome.order")
     }
