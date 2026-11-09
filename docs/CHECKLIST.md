@@ -121,3 +121,9 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Device UI (iPhone 17 Pro Max): AppShell + Screens 24 pass / 2 fail (both device-timing test issues, fixed in de656b7, not yet re-run: phone went unavailable)
 - [ ] Device QA on both physical phones (15 Pro Max perf gate, 17 Pro Max) at 4e42342: phones were unavailable (locked/disconnected); includes checking the 4 mm raw-motion threshold on a real table
 - [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
+
+## Fix round wt/fix-app (2026-11-09, Claude fix worker, Sim G; not merged)
+- [x] 7 MAJORs from the Grok 4.7 / Kimi K3 review, test-first, one commit each: no turn hand-over mid-shot + hand-over pushes new shooter's legality · swap keeps the pending visit (per-team D17 cursors) · review header from rules winner/score/isFinished · Start blocked while a join is in flight, send() false when it reaches nobody · debug HUD writes `dev.hud` (old key migrated once) · store-open failure shows a Retry recovery screen (no in-memory fallback, never deletes) · FaceBenchmark finish() canonical volunteer order
+- [x] Cross-vendor review: Kimi K2.5 APPROVE 1–7; Grok 4.7 APPROVE 2–7, BLOCKER on 1 (hand-over legality not wired to the pipeline) → fixed via `LiveHooks.legalSink` (8eecfc0); re-review of that fix pending (non-Claude)
+- [x] Unit 1148/1148 on Sim G; UI AppShell + LiveReplay 13/13 on Sim G (testJoinFullLobby flaked once on the loaded Mac, passed on rerun)
+- [ ] Review per-shot pocketed/fouls stay empty: Live passes the shell only rating + next GameState, not ShotResult
