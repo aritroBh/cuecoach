@@ -21,18 +21,17 @@ struct StoreRecoveryView: View {
             ShellBackground()
             VStack(spacing: 24) {
                 Image(systemName: "externaldrive.badge.exclamationmark")
-                    .font(.system(size: 64, weight: .semibold))
-                    .foregroundStyle(SBColor.warn)
+                    .font(AXGlyph.font(64, .semibold))
+                    .foregroundStyle(AX.caution)
                     .accessibilityHidden(true)
                 Text("Can't open your saved games.")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(SBColor.ink)
+                    .axFont(.subtitle)
+                    .foregroundStyle(AX.ink)
                     .multilineTextAlignment(.center)
                 ShellStartButton(title: "Retry", symbol: "arrow.clockwise", enabled: true, id: "shell.storeRetry", action: retry)
             }
             .padding(16)
         }
-        .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("shell.storeUnavailable")
     }
