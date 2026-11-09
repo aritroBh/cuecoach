@@ -35,7 +35,10 @@ enum SettingsKeys {
     nonisolated static let ruleSet = "cc.rules.default"
     nonisolated static let threeBall = "cc.rules.threeBall"
     nonisolated static let tableSize = "cc.table.manual"
-    nonisolated static let debugHUD = "cc.debug.hud"
+    /// The key LiveScreen's `@AppStorage` reads (D9 dev HUD).
+    nonisolated static let debugHUD = "dev.hud"
+    /// Where Settings wrote the switch before it matched Live; migrated once on launch, then removed.
+    nonisolated static let legacyDebugHUD = "cc.debug.hud"
     nonisolated static let recognitionOptIn = "cc.recognition.optIn"
 }
 
@@ -89,7 +92,11 @@ public final class SettingsViewModel {
     }
     var ruleSet: RuleSetID { didSet { defaults.set(ruleSet.rawValue, forKey: SettingsKeys.ruleSet) } }
     var threeBallRule: Bool { didSet { defaults.set(threeBallRule, forKey: SettingsKeys.threeBall) } }
-    var debugHUD: Bool { didSet { defaults.set(debugHUD, forKey: SettingsKeys.debugHUD) } }
+    var debugHUD: Bool {
+        didSet {
+            if debugHUD { defaults.set(true, forKey: SettingsKeys.debugHUD) } else { defaults.removeObject(forKey: SettingsKeys.debugHUD) }
+        }
+    }
     private var manualTable: TableSize? {
         didSet { defaults.set(manualTable?.rawValue, forKey: SettingsKeys.tableSize) }
     }
@@ -112,6 +119,10 @@ public final class SettingsViewModel {
         recognitionOptIn = defaults.bool(forKey: SettingsKeys.recognitionOptIn)
         ruleSet = defaults.string(forKey: SettingsKeys.ruleSet).flatMap(RuleSetID.init(rawValue:)) ?? .default
         threeBallRule = defaults.object(forKey: SettingsKeys.threeBall) as? Bool ?? true
+        if let old = defaults.object(forKey: SettingsKeys.legacyDebugHUD) as? Bool {
+            if old && defaults.object(forKey: SettingsKeys.debugHUD) == nil { defaults.set(true, forKey: SettingsKeys.debugHUD) }
+            defaults.removeObject(forKey: SettingsKeys.legacyDebugHUD)
+        }
         debugHUD = defaults.bool(forKey: SettingsKeys.debugHUD)
         manualTable = defaults.string(forKey: SettingsKeys.tableSize).flatMap(TableSize.init(rawValue:))
         // Backgrounding closes the Undo window at once: a suspended app must not keep templates restorable.

@@ -109,6 +109,27 @@ struct Boom: Error {}
         #expect(b.recognitionOptIn == true)
     }
 
+    // Fix round (review finding 5): the switch writes the key LiveScreen reads (`dev.hud`).
+    @Test func debugHUDWritesTheKeyLiveReads() {
+        let d = freshDefaults()
+        let m = model(defaults: d)
+        m.debugHUD = true
+        #expect(d.bool(forKey: "dev.hud"))
+        m.debugHUD = false
+        #expect(d.object(forKey: "dev.hud") == nil)
+    }
+
+    @Test func oldDebugHUDValueMigratesOnce() {
+        let d = freshDefaults()
+        d.set(true, forKey: "cc.debug.hud")
+        let m = model(defaults: d)
+        #expect(m.debugHUD)
+        #expect(d.bool(forKey: "dev.hud"))
+        #expect(d.object(forKey: "cc.debug.hud") == nil)
+        m.debugHUD = false
+        #expect(!model(defaults: d).debugHUD)     // the old key can't resurrect it
+    }
+
     @Test func threeBallToggleOnlyForWPANine() {
         let m = model()
         #expect(!m.showsThreeBallToggle)

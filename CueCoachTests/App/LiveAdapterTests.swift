@@ -68,6 +68,68 @@ import Training
         #expect(h.currentGame()?.1.shooter == 1)
     }
 
+    // Fix round (review finding 1): no turn hand-over while a shot is live (aim open or balls moving).
+    @Test func handTurnDuringAShotIsIgnored() {
+        let s = gameSession()
+        let h = LiveScreenAdapter.hooks(for: s)
+        h.aimStarted()
+        s.handTurn(toTeam: 1)
+        #expect(s.game?.shootingTeam == 0)
+        h.aimEnded()                              // stroke taken, balls moving
+        s.handTurn(toTeam: 1)
+        #expect(s.game?.shootingTeam == 0)
+        h.settled(.good, false)                   // at rest again
+        s.handTurn(toTeam: 1)
+        #expect(s.game?.shootingTeam == 1)
+    }
+
+    @Test func handTurnBetweenShotsPushesTheNewTeamsLegalTargets() throws {
+        let s = gameSession(.barEight)
+        let h = LiveScreenAdapter.hooks(for: s)
+        var next = try #require(h.currentGame()).1
+        next.groups = [0: .solids, 1: .stripes]
+        next.phase = .inPlay
+        h.gameAdvanced(next)
+        var pushed: [Set<BallID>] = []
+        s.game?.legalChanged = { pushed.append($0) }
+        s.handTurn(toTeam: 1)
+        let (engine, state) = try #require(h.currentGame())
+        #expect(state.shooter == 1)
+        #expect(pushed == [engine.legalTargets(state)])
+        #expect(pushed.first?.isEmpty == false)
+        #expect(pushed.first?.allSatisfy { $0.group == .stripes } == true)
+        h.aimStarted()
+        s.handTurn(toTeam: 0)                     // ignored mid-shot: nothing pushed
+        #expect(pushed.count == 1)
+    }
+
+    /// Grok 4.7 BLOCKER on fix 1: production wiring. The view binds only `LiveModel.legalChanged` to its pipeline
+    /// (`setLegal`); a between-shots hand-over must reach that same sink through the adapter's hooks, with nothing
+    /// assigned to `GameSessionModel.legalChanged` by the test.
+    @Test func handTurnReachesThePipelineSinkLiveBinds() throws {
+        let s = gameSession(.barEight)
+        let m = LiveModel(mode: .game)
+        m.hooks = LiveScreenAdapter.hooks(for: s)                 // LiveScreenAdapter → LiveScreen.init
+        @MainActor final class Sink { var pushed: [Set<BallID>] = [] }
+        let sink = Sink()
+        m.legalChanged = { sink.pushed.append($0) }              // what ARLiveView.attach / LiveScreen.task bind
+        var next = try #require(m.hooks.currentGame()).1
+        next.groups = [0: .solids, 1: .stripes]
+        next.phase = .inPlay
+        m.hooks.gameAdvanced(next)
+        s.handTurn(toTeam: 1)                                     // tap B's disc between shots
+        let (engine, state) = try #require(m.hooks.currentGame())
+        #expect(sink.pushed == [engine.legalTargets(state)])
+        #expect(sink.pushed.last?.isEmpty == false)
+        #expect(sink.pushed.last?.allSatisfy { $0.group == .stripes } == true)
+        m.legalChanged = { _ in }                                 // a rebind (new pipeline) gets later pushes
+        let rebound = Sink()
+        m.legalChanged = { rebound.pushed.append($0) }
+        s.handTurn(toTeam: 0)
+        #expect(rebound.pushed.count == 1)
+        #expect(rebound.pushed.last?.allSatisfy { $0.group == .solids } == true)
+    }
+
     @Test func liveAdvancesTheShellsRulesState() throws {
         let s = gameSession(.barEight)
         let h = LiveScreenAdapter.hooks(for: s)

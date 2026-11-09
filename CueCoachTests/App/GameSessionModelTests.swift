@@ -84,8 +84,30 @@ import Engine
         #expect(d.shots.map(\.index) == [0])
         #expect(d.shots.first?.rating == .best)
         #expect(d.tableSize == .eightFoot)
-        #expect(d.isFinished)
+        #expect(!d.isFinished)            // rack still on: the review must not claim a finished game
         #expect(d.winnerTeam == nil)
+    }
+
+    // Fix round (review finding 3): the header follows the rules state, not hardcoded values.
+    @Test func reviewHeaderFollowsTheRulesWinner() {
+        let s = teams()
+        s.shotSettled(rating: .good, turnPasses: true)
+        var g = s.rules.1
+        g.phase = .over(winner: 1)
+        s.rulesAdvanced(g)
+        let d = s.reviewData()
+        #expect(d.winnerTeam == 1)
+        #expect(d.score == [0, 1])        // one rack this session, won by team B
+        #expect(d.isFinished)
+    }
+
+    @Test func quittingMidRackIsNotFinished() {
+        let s = teams()
+        s.shotSettled(rating: .good, turnPasses: true)
+        let d = s.reviewData()
+        #expect(!d.isFinished)
+        #expect(d.winnerTeam == nil)
+        #expect(d.score == [0, 0])
     }
 
     @Test func reviewWithNoShotsIsEmpty() {
@@ -101,6 +123,17 @@ import Engine
         #expect(s.rotation.map(\.name) == ["A2", "B1", "A1", "B2"])
         s.passTurn()
         #expect(s.shooter == a1)          // next A player in the new order
+    }
+
+    // Fix round (review finding 2): swapping the shooter's slot must not skip the other team's pending visit.
+    @Test func swappingTheShootersSlotKeepsTheNextVisit() {
+        let s = teams()                   // A1 shooting; order A1, B1, A2, B2
+        s.swap(team: 0, 0, 1)             // team A order becomes A2, A1
+        #expect(s.shooter == a1)          // A1 keeps the turn
+        #expect(s.waitingShooter == b1)
+        var seen: [String] = []
+        for _ in 0..<4 { s.passTurn(); seen.append(s.shooter.name) }
+        #expect(seen == ["B1", "A2", "B2", "A1"])
     }
 
     @Test func reorderIgnoresBadIndices() {

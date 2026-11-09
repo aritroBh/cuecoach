@@ -28,18 +28,27 @@ struct StoredTableMeasurement: TableMeasurementSource {
         self.measurement = measurement; self.defaults = defaults
     }
 
-    static func production() -> ShellEnvironment {
-        let stack = (try? PersistenceStack()) ?? (try! PersistenceStack(inMemory: true))
-        let owners = PersistenceOwnerStore(stack: stack)
-        return ShellEnvironment(roster: PersistenceRoster(stack: stack), owners: owners,
-                                settings: PersistenceSettingsStore(stack: stack),
-                                mesh: MPCGameLobby(localName: { owners.owner?.name ?? "Phone" }),
-                                measurement: StoredTableMeasurement(), defaults: .standard)
+    /// Launch outcome. The on-disk store failing to open is an error state: never a silent in-memory store whose
+    /// games vanish on quit, and never an automatic delete of the store (review finding 6).
+    enum Boot {
+        case ready(ShellEnvironment)
+        case storeUnavailable
+        var environment: ShellEnvironment? { if case .ready(let e) = self { e } else { nil } }
     }
 
-    static func current(_ args: [String] = ProcessInfo.processInfo.arguments) -> ShellEnvironment {
+    /// `makeStack` is the seam tests use to make the store fail.
+    static func production(makeStack: () throws -> PersistenceStack = { try PersistenceStack() }) -> Boot {
+        guard let stack = try? makeStack() else { return .storeUnavailable }
+        let owners = PersistenceOwnerStore(stack: stack)
+        return .ready(ShellEnvironment(roster: PersistenceRoster(stack: stack), owners: owners,
+                                       settings: PersistenceSettingsStore(stack: stack),
+                                       mesh: MPCGameLobby(localName: { owners.owner?.name ?? "Phone" }),
+                                       measurement: StoredTableMeasurement(), defaults: .standard))
+    }
+
+    static func current(_ args: [String] = ProcessInfo.processInfo.arguments) -> Boot {
         #if DEBUG
-        if let env = ShellLaunch.environment(args) { return env }
+        if let env = ShellLaunch.environment(args) { return .ready(env) }
         #endif
         return production()
     }

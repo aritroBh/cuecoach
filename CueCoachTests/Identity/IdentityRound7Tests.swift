@@ -89,3 +89,33 @@ import Testing
         #expect(FaceBenchmark.farUpperBootstrap(matrix: [[(0, 0)]]) == 0)
     }
 }
+
+/// Fix round (review finding 7): the ship-gate verdict can't depend on Dictionary order (per-process hash seed).
+@MainActor @Suite(.serialized) struct BenchmarkOrderTests {
+    static func runInOrder(_ order: [Int], _ subs: [[Embedding]], at t0: Date) -> FaceBenchmark.Verdict {
+        let store = FaceShipGateStore(key: "test.gate.\(UUID().uuidString)")
+        defer { store.clear() }
+        let s = FaceBenchmarkSession(modelID: "m", startedAt: t0)
+        for i in order { s.addSubject(subs[i], consent: FaceBenchConsentFlow.grant(agreedAt: t0), now: t0) }
+        return s.finish(store: store, now: t0)
+    }
+
+    /// passedAt is the wall clock at finish; compare everything else.
+    static func stable(_ v: FaceBenchmark.Verdict) -> FaceBenchmark.Verdict {
+        guard case .pass(var r) = v else { return v }
+        r.passedAt = .distantPast
+        return .pass(r)
+    }
+
+    @Test func sameVolunteersInAnyOrderGiveTheSameVerdictAndReport() {
+        let subs = HeldOutShipGateTests.subjects(20, spread: 0.05)
+        let t0 = Date()
+        let forward = Self.runInOrder(Array(0..<20), subs, at: t0)
+        let backward = Self.runInOrder(Array((0..<20).reversed()), subs, at: t0)
+        let interleaved = Self.runInOrder(Array(stride(from: 1, to: 20, by: 2)) + Array(stride(from: 0, to: 20, by: 2)), subs, at: t0)
+        #expect(Self.stable(forward) == Self.stable(backward))
+        #expect(Self.stable(forward) == Self.stable(interleaved))
+        // Several runs of the same order also agree (each run re-keys volunteers with fresh UUIDs).
+        for _ in 0..<3 { #expect(Self.stable(Self.runInOrder(Array(0..<20), subs, at: t0)) == Self.stable(forward)) }
+    }
+}

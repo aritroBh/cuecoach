@@ -34,7 +34,9 @@ final class LiveModel {
     var badge: BadgeStyle?
     private var badgeToken = 0
     /// App-shell lifecycle hooks (LiveSession).
-    var hooks = LiveHooks()
+    var hooks = LiveHooks() {
+        didSet { hooks.legalSink { [weak self] in self?.legalChanged($0) } }   // forwards to whatever the view binds
+    }
     private var aimEvents = AimEvents()
     /// Rules state for ratings and ring legality (bar-8 open table until the shell supplies a game).
     let engine: RulesEngine

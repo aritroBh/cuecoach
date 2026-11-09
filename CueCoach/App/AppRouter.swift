@@ -46,6 +46,13 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
     /// Balls at rest (Training, or a game shot without a rating yet).
     func ballsSettled() { isAiming = false }
 
+    /// One-tap turn correction (SPEC §5.8), between shots only: while an aim is open or balls are moving the
+    /// shooter is fixed, so a stray tap on a turn disc can't change who is shooting mid-shot.
+    func handTurn(toTeam team: Int) {
+        guard !isAiming else { return }
+        game?.handTurn(toTeam: team)
+    }
+
     /// A game shot settled and was rated.
     func settled(rating: DecisionRating, turnPasses: Bool) {
         isAiming = false

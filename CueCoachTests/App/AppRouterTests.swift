@@ -106,7 +106,7 @@ import Training
         guard case .review(let data)? = r.stage else { Issue.record("no review"); return }
         #expect(data.shots.count == 1)
         #expect(data.shots.first?.rating == .great)
-        #expect(data.isFinished)
+        #expect(!data.isFinished)                 // ended mid-rack: no winner yet
     }
 
     @MainActor final class FakeLink: GameMeshLink {

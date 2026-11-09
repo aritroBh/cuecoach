@@ -1,9 +1,47 @@
 import SwiftUI
 
-/// Root: NavigationStack (Home → Game hub → New game | Join nearby; Home → Training) under one full-screen
-/// cover for Live and Review. See docs/design/app-shell.md for the graph.
+/// Root: the shell once the store opened, else the recovery screen (no profile or game creation without a store).
 struct AppShellRoot: View {
-    @State private var env = ShellEnvironment.current()
+    @State private var boot = ShellEnvironment.current()
+
+    var body: some View {
+        switch boot {
+        case .ready(let env): ShellMain(env: env)
+        case .storeUnavailable: StoreRecoveryView { boot = ShellEnvironment.current() }
+        }
+    }
+}
+
+/// The saved-games store didn't open. Nothing is deleted; Retry opens it again.
+struct StoreRecoveryView: View {
+    let retry: () -> Void
+
+    var body: some View {
+        ZStack {
+            ShellBackground()
+            VStack(spacing: 24) {
+                Image(systemName: "externaldrive.badge.exclamationmark")
+                    .font(.system(size: 64, weight: .semibold))
+                    .foregroundStyle(SBColor.warn)
+                    .accessibilityHidden(true)
+                Text("Can't open your saved games.")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(SBColor.ink)
+                    .multilineTextAlignment(.center)
+                ShellStartButton(title: "Retry", symbol: "arrow.clockwise", enabled: true, id: "shell.storeRetry", action: retry)
+            }
+            .padding(16)
+        }
+        .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("shell.storeUnavailable")
+    }
+}
+
+/// NavigationStack (Home → Game hub → New game | Join nearby; Home → Training) under one full-screen
+/// cover for Live and Review. See docs/design/app-shell.md for the graph.
+struct ShellMain: View {
+    let env: ShellEnvironment
     @State private var router = AppRouter()
     /// The cover was dismissed by its content (LiveScreen's own ✕) and is animating away.
     @State private var coverDismissing = false

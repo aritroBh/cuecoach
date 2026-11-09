@@ -57,8 +57,9 @@ enum FaceBenchmark {
                 }
             }
             for (subject, enrolled, e) in probes {
-                let best = gallery.compactMap { k, t -> (subject: Int, score: Double)? in
-                    t.compactMap { e.cosine($0) }.max().map { (k, $0) }
+                // Sorted keys: an exact score tie resolves the same way every run (not by Dictionary order).
+                let best = gallery.keys.sorted().compactMap { k -> (subject: Int, score: Double)? in
+                    gallery[k]!.compactMap { e.cosine($0) }.max().map { (k, $0) }
                 }.max { $0.score < $1.score }
                 out.append(Probe(subject: subject, enrolled: enrolled, best: best))
             }
@@ -372,7 +373,9 @@ final class FaceBenchmarkSession {
     /// Evaluates, stores the aggregate record on a pass, and deletes every embedding either way (run over).
     func finish(store: FaceShipGateStore = FaceShipGateStore(), now: Date = .now) -> FaceBenchmark.Verdict {
         expireIfNeeded(now: now)
-        let v = FaceBenchmark.evaluate(subjects: Array(subjects.values), modelID: modelID)
+        // Canonical volunteer order: `subjects.values` is in Dictionary order (per-process hash seed), and the split,
+        // folds and bootstrap are positional, so the verdict must not depend on it (review finding 7).
+        let v = FaceBenchmark.evaluate(subjects: FaceBenchmark.canonical(Array(subjects.values)), modelID: modelID, now: now)
         if case .pass(let r) = v { try? store.save(r) }
         deleteAll()
         return v

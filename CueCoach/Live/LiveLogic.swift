@@ -468,6 +468,9 @@ struct LiveHooks {
     var currentGame: @MainActor () -> (RulesEngine, GameState)? = { nil }
     /// The rules state after a settled shot (from `currentGame`'s state), so the shell's copy follows play.
     var gameAdvanced: @MainActor (GameState) -> Void = { _ in }
+    /// Live hands the shell a sink into the same `setLegal` its pipeline uses after a settled shot, so ring legality
+    /// changed by the shell between shots (one-tap turn hand-over) reaches the rings at once.
+    var legalSink: @MainActor (@escaping @MainActor (Set<BallID>) -> Void) -> Void = { _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,
