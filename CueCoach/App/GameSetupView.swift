@@ -169,6 +169,7 @@ struct GameSetupView: View {
                         .font(.body.weight(.semibold))
                         .foregroundStyle(SBColor.caution)
                         .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Nearby phones blocked. Open Settings")
                 .accessibilityIdentifier("setup.meshUnavailable")
@@ -360,10 +361,11 @@ struct SeatPickerSheet: View {
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("seat.newName")
                             .onSubmit(addNew)
-                        Button("Add", action: addNew)
-                            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
-                            .frame(minWidth: 44, minHeight: 44)
-                            .accessibilityIdentifier("seat.add")
+                        Button(action: addNew) {
+                            Text("Add").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                        }
+                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .accessibilityIdentifier("seat.add")
                     }
                 } header: { Text("New player") }
                 if model[seat] != nil {

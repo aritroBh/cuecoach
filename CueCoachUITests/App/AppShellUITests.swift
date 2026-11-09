@@ -267,7 +267,8 @@ final class AppShellUITests: XCTestCase {
         shot(app, "05-live-badge", v)
         app.terminate()
 
-        app = launch(["-appshell.fakeMesh=games"], variant: v)
+        // Waiting-only lobby: the host never starts, so Live can't cover the join screen mid-check.
+        app = launch(["-appshell.fakeMesh=gamesWaiting"], variant: v)
         tapThrough(app, "home.game", to: "game.join")
         tapThrough(app, "game.join", to: "join.game.g1")
         shot(app, "09-join-list", v)
@@ -276,6 +277,8 @@ final class AppShellUITests: XCTestCase {
         // The next step and the way out are in the first viewport at every size.
         assertHittable(element(app, "join.waiting"))
         assertHittable(element(app, "join.leave"))
+        // ≥ 44 pt touch target (the frame must be on the tappable label, not outside the button).
+        XCTAssertGreaterThanOrEqual(element(app, "join.leave").frame.height, 44)
         shot(app, "10-join-waiting", v)
         app.terminate()
 

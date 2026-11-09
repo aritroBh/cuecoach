@@ -58,6 +58,13 @@ enum ShellLaunch {
             m.onBrowse = list
             m.onJoin = [(0.8, .joined(gameID: "g1")), (1.0, .lineupChanged(gameID: "g1", half)),
                         (2.5, .lineupChanged(gameID: "g1", full)), (5.0, .started(gameID: "g1", cfg))]
+        case "gamesWaiting":
+            // As "games" but the host never starts: the join screen stays in its waiting state (UI matrix checks).
+            let half = LobbyLineup(ruleSet: .wpaNine, tableSize: .nineFoot, seats: [[sam], [nil]])
+            let full = LobbyLineup(ruleSet: .wpaNine, tableSize: .nineFoot, seats: cfg.teams.map { $0.map(Optional.some) })
+            m.onBrowse = list
+            m.onJoin = [(0.8, .joined(gameID: "g1")), (1.0, .lineupChanged(gameID: "g1", half)),
+                        (2.5, .lineupChanged(gameID: "g1", full))]
         case "full": m.onBrowse = list; m.onJoin = [(0.8, .rejectedFull(gameID: "g1"))]
         case "hostLeft": m.onBrowse = list; m.onJoin = [(0.8, .joined(gameID: "g1")), (2.0, .hostLeft(gameID: "g1"))]
         case "denied": m.onBrowse = [(0.3, .unavailable)]
