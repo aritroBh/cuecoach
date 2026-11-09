@@ -33,13 +33,14 @@ struct AstryxThemeTests {
             ("border", AX.border, l.border, d.border),
             ("accent", AX.accent, l.accent, d.accent),
             ("onAccent", AX.onAccent, l.onAccent, d.onAccent),
-            ("legal", AX.legal, l.success, d.dataShamrock3),
-            ("caution", AX.caution, l.warning, d.warning),
-            ("warn", AX.warn, l.dataCategoricalOrange, d.dataCategoricalOrange),
-            ("danger", AX.danger, l.error, d.error),
+            ("legal", AX.legal, l.dataShamrock5, d.dataShamrock3),
+            ("caution", AX.caution, l.textWarning, d.warning),
+            ("warn", AX.warn, l.dataOrange4, d.dataCategoricalOrange),
+            ("danger", AX.danger, l.dataRed4, d.dataRed3),
             ("brilliant", AX.brilliant, l.dataCategoricalCyan, d.iconCyan),
             ("teamA", AX.teamA, l.accent, d.textAccent),
-            ("teamB", AX.teamB, l.dataCategoricalOrange, d.dataCategoricalOrange),
+            ("teamB", AX.teamB, l.dataOrange4, d.dataCategoricalOrange),
+            ("teamBText", AX.teamBText, l.dataOrange5, d.dataCategoricalOrange),
         ]
     }()
 
@@ -48,6 +49,67 @@ struct AstryxThemeTests {
         let (name, role, light, dark) = Self.roles[i]
         #expect(Self.same(role, light, Self.light), "\(name) light")
         #expect(Self.same(role, dark, Self.dark), "\(name) dark")
+    }
+
+    // MARK: WCAG contrast (Grok 4.7 review MAJOR)
+
+    private static func luminance(_ c: Color, _ traits: UITraitCollection) -> Double {
+        let v = rgba(c, traits)
+        func lin(_ x: CGFloat) -> Double { let x = Double(x); return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+        return 0.2126 * lin(v[0]) + 0.7152 * lin(v[1]) + 0.0722 * lin(v[2])
+    }
+
+    static func contrast(_ a: Color, _ b: Color, _ traits: UITraitCollection) -> Double {
+        let (x, y) = (luminance(a, traits), luminance(b, traits))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
+
+    /// Roles drawn as words: at least 4.5:1 on the page and on a card, light and dark.
+    static let textRoles: [(String, Color)] = [
+        ("ink", AX.ink), ("inkMuted", AX.inkMuted), ("accentText", AX.accentText), ("legal", AX.legal),
+        ("caution", AX.caution), ("danger", AX.danger), ("teamA", AX.teamA), ("teamBText", AX.teamBText),
+    ]
+    /// Roles drawn as rings, glyphs and strokes: at least 3:1 (WCAG non-text contrast).
+    static let ringRoles: [(String, Color)] = [
+        ("accent", AX.accent), ("warn", AX.warn), ("teamB", AX.teamB), ("brilliant", AX.brilliant),
+    ] + textRoles
+
+    @Test func textAndRingRolesMeetWCAGOnPageAndCardInBothModes() {
+        var failures: [String] = []
+        for (traits, mode) in [(Self.light, "light"), (Self.dark, "dark")] {
+            for (ground, groundName) in [(AX.page, "page"), (AX.surface, "card")] {
+                for (name, role) in Self.textRoles where Self.contrast(role, ground, traits) < 4.5 {
+                    failures.append("text \(name) on \(groundName) \(mode): \(Self.contrast(role, ground, traits))")
+                }
+                for (name, role) in Self.ringRoles where Self.contrast(role, ground, traits) < 3 {
+                    failures.append("ring \(name) on \(groundName) \(mode): \(Self.contrast(role, ground, traits))")
+                }
+            }
+        }
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+    }
+
+    /// Team B (ring and words) stays clearly apart from Team A blue and from caution amber: CIE76 colour
+    /// difference at least 20 in both modes (lightness counts, not only hue).
+    @Test func teamBIsDistinctFromTeamAAndCaution() {
+        func lab(_ c: Color, _ t: UITraitCollection) -> (Double, Double, Double) {
+            let v = Self.rgba(c, t)
+            func lin(_ x: CGFloat) -> Double { let x = Double(x); return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+            let (r, g, b) = (lin(v[0]), lin(v[1]), lin(v[2]))
+            let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047, y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+            func f(_ t: Double) -> Double { t > 0.008856 ? pow(t, 1.0 / 3) : 7.787 * t + 16.0 / 116 }
+            return (116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z)))
+        }
+        func deltaE(_ a: Color, _ b: Color, _ t: UITraitCollection) -> Double {
+            let (p, q) = (lab(a, t), lab(b, t))
+            return ((p.0 - q.0) * (p.0 - q.0) + (p.1 - q.1) * (p.1 - q.1) + (p.2 - q.2) * (p.2 - q.2)).squareRoot()
+        }
+        for t in [Self.light, Self.dark] {
+            for b in [AX.teamB, AX.teamBText] {
+                for other in [AX.teamA, AX.caution] { #expect(deltaE(b, other, t) >= 20) }
+            }
+        }
     }
 
     @Test func pageFollowsTheSystemAppearance() {

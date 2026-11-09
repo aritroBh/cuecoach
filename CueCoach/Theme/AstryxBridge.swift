@@ -39,20 +39,27 @@ enum AX {
     static let accentMuted = token(\.accentMuted)
     static let accentText = token(\.textAccent)
     static let onAccent = token(\.onAccent)
-    // Feedback. Astryx's dark `success` is a deep green that drops below 3:1 on the dark page, so dark mode takes
-    // the bright shamrock data token; every other role is the theme's own semantic token.
-    static let legal = dynamic(l.success, d.dataShamrock3)
+    // Feedback. Every role clears WCAG on the page and on a card in both modes (AstryxThemeTests): words 4.5:1,
+    // rings and glyphs 3:1. Where Astryx's semantic token misses (light `success` 4.3, `warning` 1.8, `error` 4.3,
+    // `dataCategoricalOrange` 2.8; dark `error` 4.4 on a card, dark `success` 4.0), the role takes the nearest
+    // Astryx ramp step that clears it. Large fills and the Live overlay (AXLive) keep the bright tokens.
+    static let legal = dynamic(l.dataShamrock5, d.dataShamrock3)
     static let legalMuted = token(\.successMuted)
-    static let caution = token(\.warning)
+    static let caution = dynamic(l.textWarning, d.warning)
     static let onCaution = token(\.onWarning)
-    static let warn = token(\.dataCategoricalOrange)
-    static let danger = token(\.error)
+    /// Rings and glyphs only (3:1).
+    static let warn = dynamic(l.dataOrange4, d.dataCategoricalOrange)
+    static let danger = dynamic(l.dataRed4, d.dataRed3)
     static let dangerMuted = token(\.errorMuted)
     static let brilliant = dynamic(l.dataCategoricalCyan, d.iconCyan)
     // Teams: A = Astryx blue (solid ring), B = orange (dashed ring); never colour alone.
     static let teamA = dynamic(l.accent, d.textAccent)
-    static let teamB = token(\.dataCategoricalOrange)
+    /// Team B rings and glyphs (3:1); `teamBText` for words (4.5:1).
+    static let teamB = dynamic(l.dataOrange4, d.dataCategoricalOrange)
+    static let teamBText = dynamic(l.dataOrange5, d.dataCategoricalOrange)
     static func team(_ i: Int) -> Color { i == 0 ? teamA : teamB }
+    /// Team colour for words (4.5:1).
+    static func teamText(_ i: Int) -> Color { i == 0 ? teamA : teamBText }
     /// Team A solid, Team B dashed: never colour alone.
     static func teamStroke(_ i: Int, width: CGFloat = 2) -> StrokeStyle {
         StrokeStyle(lineWidth: width, lineCap: .round, dash: i == 0 ? [] : [4, 3])

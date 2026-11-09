@@ -164,7 +164,7 @@ public struct LobbyView: View {
                 Circle().strokeBorder(AX.team(team), style: StrokeStyle(lineWidth: 3, dash: team == 0 ? [] : [4, 3]))
                     .frame(width: 20, height: 20)
                 Text(LobbyModel.teamName(team)).axFont(.headline)
-                    .foregroundStyle(AX.team(team))
+                    .foregroundStyle(AX.teamText(team))
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Team \(LobbyModel.teamName(team))")
