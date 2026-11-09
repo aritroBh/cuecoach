@@ -88,3 +88,45 @@ import Rules
         for _ in 0..<50 { #expect(LobbyWire.randomSessionTag() != 0) }
     }
 }
+
+/// Fix round (review finding 4): a start that reaches nobody is not "sent", and Start waits out a join in flight.
+@Suite struct LobbyHostPeersTests {
+    @Test func messageWithNoIntendedRecipientsIsTriviallySent() {
+        #expect(LobbyHostPeers.recipients(intended: [], connected: ["x"]) == .nobody)
+    }
+
+    @Test func intendedRecipientsNoneConnectedIsNotSent() {
+        #expect(LobbyHostPeers.recipients(intended: ["a"], connected: []) == .unreachable)
+        #expect(LobbyHostPeers.recipients(intended: ["a"], connected: ["b"]) == .unreachable)
+    }
+
+    @Test func connectedRecipientsAreTargeted() {
+        #expect(LobbyHostPeers.recipients(intended: ["a", "b"], connected: ["b", "c"]) == .peers(["b"]))
+    }
+
+    @Test func joinInFlightBlocksStartUntilAdmittedOrDropped() {
+        var p = LobbyHostPeers()
+        #expect(p.canStart)
+        p.connecting("a")
+        #expect(!p.canStart)                      // connected-but-not-yet-admitted joiner would miss `.start`
+        let admittedA = p.admit("a")
+        #expect(admittedA)
+        #expect(p.canStart)
+        #expect(p.admitted == ["a"])
+        p.connecting("b")
+        #expect(!p.canStart)
+        p.dropped("b")                            // join failed
+        #expect(p.canStart)
+        #expect(p.admitted == ["a"])
+    }
+
+    @Test func rejectedFullJoinerDoesNotBlockStart() {
+        var p = LobbyHostPeers(capacity: 1)
+        p.connecting("a"); _ = p.admit("a")
+        p.connecting("b")
+        let admittedB = p.admit("b")
+        #expect(!admittedB)                       // full: told `.full`, not admitted
+        #expect(p.canStart)
+        #expect(p.admitted == ["a"])
+    }
+}

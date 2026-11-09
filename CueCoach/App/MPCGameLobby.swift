@@ -98,6 +98,49 @@ enum LobbyWire {
 }
 
 
+/// Host-side bookkeeping: who joined, who is mid-join, and who a message can reach (pure, unit-tested).
+/// Start is refused while a join is in flight: that phone is connecting (or connected but not yet admitted on the
+/// main actor) and would never get `.start`. The host sees "Not sent" and taps Start again a moment later.
+struct LobbyHostPeers {
+    enum Recipients: Equatable {
+        /// No one was meant to get it: trivially sent.
+        case nobody
+        /// Someone was meant to get it but none of them is connected: not sent.
+        case unreachable
+        case peers([String])
+    }
+
+    private(set) var admitted: [String] = []
+    private(set) var joining: Set<String> = []
+    let capacity: Int
+    init(capacity: Int = LobbyWire.maxJoiners) { self.capacity = capacity }
+
+    var canStart: Bool { joining.isEmpty }
+
+    /// MPC reports the peer connecting (an accepted invitation mid-handshake).
+    mutating func connecting(_ key: String) { if !admitted.contains(key) { joining.insert(key) } }
+
+    /// The peer connected. False when the game is full (it is told `.full` and never admitted).
+    mutating func admit(_ key: String) -> Bool {
+        joining.remove(key)
+        if admitted.contains(key) { return true }
+        guard admitted.count < capacity else { return false }
+        admitted.append(key)
+        return true
+    }
+
+    mutating func dropped(_ key: String) {
+        joining.remove(key)
+        admitted.removeAll { $0 == key }
+    }
+
+    static func recipients(intended: [String], connected: [String]) -> Recipients {
+        guard !intended.isEmpty else { return .nobody }
+        let t = connected.filter { intended.contains($0) }
+        return t.isEmpty ? .unreachable : .peers(t)
+    }
+}
+
 /// Real lobby over MultipeerConnectivity (local link only, encryption required, zero network).
 /// Host: advertises `cuecoach-lb` with a small advert, accepts joiners, pushes the lineup and the start.
 /// Joiner: browses adverts, invites the chosen host, mirrors its lineup, starts when the host does.
@@ -117,7 +160,8 @@ enum LobbyWire {
     private var advert: NearbyGame?
     private var lineup: LobbyLineup?
     private var phoneNames: [String: String] = [:]   // displayName → name
-    private var admitted: [String] = []
+    private var peers = LobbyHostPeers()
+    private var admitted: [String] { peers.admitted }
 
     // Joiner state
     private var found: [String: (MCPeerID, NearbyGame)] = [:]   // displayName → advert
@@ -150,7 +194,9 @@ enum LobbyWire {
         send(.lineup(lineup), to: admitted)
     }
 
+    /// False (host stays in setup, "Not sent") while a phone is mid-join, or when no joined phone got it.
     func announceStart(_ config: GameConfig) -> Bool {
+        guard peers.canStart else { return false }
         let ok = send(.start(config, sessionTag: config.sessionTag ?? LobbyWire.randomSessionTag()), to: admitted)
         if ok { started = true }
         return ok
@@ -165,7 +211,7 @@ enum LobbyWire {
         advertiser = nil
         session = nil
         mode = .idle
-        phoneNames = [:]; admitted = []
+        phoneNames = [:]; peers = LobbyHostPeers()
         started = false
         Task { try? await Task.sleep(for: .seconds(delay)); s?.disconnect() }
     }
@@ -218,16 +264,21 @@ enum LobbyWire {
         session?.disconnect(); session = nil
         mode = .idle
         found = [:]; joinedHost = nil; welcomed = false
-        phoneNames = [:]; admitted = []
+        phoneNames = [:]; peers = LobbyHostPeers()
     }
 
-    /// True when delivered to MPC or when nobody is connected (nothing to send).
+    /// True when delivered to MPC, or when nobody was meant to get it. False when there were intended recipients
+    /// but none of them is connected (review finding 4: a start that reaches nobody is not "sent").
     @discardableResult
     private func send(_ m: LobbyWire.Message, to keys: [String]) -> Bool {
         let m = LobbyWire.sanitized(m)
-        guard let session else { return true }
-        let targets = session.connectedPeers.filter { keys.contains($0.displayName) }
-        guard !targets.isEmpty else { return true }
+        guard !keys.isEmpty else { return true }
+        guard let session else { return false }
+        let connected = session.connectedPeers
+        guard case .peers(let names) = LobbyHostPeers.recipients(intended: keys, connected: connected.map(\.displayName)) else {
+            return false
+        }
+        let targets = connected.filter { names.contains($0.displayName) }
         guard LobbyWire.isAcceptable(m), let data = try? LobbyWire.encode(m), data.count <= LobbyWire.maxMessageBytes else {
             onEvent?(.sendFailed); return false
         }
@@ -255,21 +306,26 @@ enum LobbyWire {
         reply(true, session)
     }
 
+    /// Host side: MPC says a peer is mid-handshake (it may not take part in a start until admitted or dropped).
+    fileprivate func peerConnecting(_ key: String) {
+        guard mode == .hosting else { return }
+        peers.connecting(key)
+    }
+
     fileprivate func peerChanged(_ key: String, connected: Bool) {
         switch mode {
         case .hosting:
             if connected {
                 guard !admitted.contains(key) else { return }
-                if admitted.count >= LobbyWire.maxJoiners {
+                guard peers.admit(key) else {
                     if let s = session, let p = s.connectedPeers.first(where: { $0.displayName == key }),
                        let d = try? LobbyWire.encode(.full) { try? s.send(d, toPeers: [p], with: .reliable) }
                     return
                 }
-                admitted.append(key)
                 send(.welcome, to: [key])
                 if let lineup { send(.lineup(lineup), to: [key]) }
             } else {
-                admitted.removeAll { $0 == key }
+                peers.dropped(key)
                 phoneNames[key] = nil
             }
             emitPhones()
@@ -333,7 +389,10 @@ extension MPCGameLobby: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MC
         let key = peerID.displayName
         let connected = state == .connected
         let id = ObjectIdentifier(session)
-        guard state != .connecting else { return }
+        if state == .connecting {
+            Task { @MainActor in if self.isCurrent(session: id) { self.peerConnecting(key) } }
+            return
+        }
         Task { @MainActor in if self.isCurrent(session: id) { self.peerChanged(key, connected: connected) } }
     }
 
