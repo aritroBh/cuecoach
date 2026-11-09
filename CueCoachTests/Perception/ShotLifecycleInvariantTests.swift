@@ -7,19 +7,22 @@ import Testing
 
 /// Randomized check of LiveModel's shot lifecycle (aims, D30 looks / asks, relocks) against the shell contract
 /// (INTERFACES.md D30 note). The generator draws physical motion and, independently, which motion signals report it
-/// (raw onset, the tracker's at-rest bit, filtered velocity, a launching ball missed for a frame), aim evidence and the
-/// segmenter's shot lifecycle. The oracle keeps its OWN spec models, computed only from what it generated:
+/// (raw onset, the tracker's at-rest bit, filtered velocity, a launching ball missed for 1-6 frames, which is motion only
+/// within 0.3 s of its last measurement on the oracle's own clock), aim evidence (with sustained aims that flicker for
+/// 1-3 frames) and the segmenter's shot lifecycle. Expected quiet is computed after the expected aim update, so a
+/// retained aim (the 1 s evidence-loss grace) is never quiet. The oracle keeps its OWN spec models, computed only from what it generated:
 ///  - the aim state machine: the exact expected aimStarted / aimEnded / aimCancelled hooks per call, in order;
 ///  - each shot's look (its own window, freezes, sightings, observed-empty frames) → verdicts, and the confirm /
 ///    answers → the FULL expected resolved ShotRecord, compared with `==`;
 ///  - the expected FIFO (shots in end order, relock-lost entries).
 /// Checked after every call: hooks exactly as expected; no close during a reset, physical motion or aim evidence, or
-/// before a quiet frame since the last relock; each close is the next entry, of the right kind, with exactly its
+/// before a quiet frame since the last relock; each close is the next entry, of the right kind (a recorded shot rated
+/// via settled, a lost entry unrated via ballsSettled), with exactly its
 /// expected resolved record, followed by exactly one shell call; confirm and standalone badge never visible during
 /// motion or aim; at the end every entry closed.
 @MainActor
 struct ShotLifecycleInvariantTests {
-    static let seed: UInt64 = 0xC0FFEE_D32
+    static let seed: UInt64 = 0xC0FFEE_D33
     static let sequences = 3000
     static let framesPerSequence = 80
 
@@ -194,7 +197,8 @@ struct ShotLifecycleInvariantTests {
         Oracle.tally = [:]
         var rng = RNG(s: seed)
         var st = (frames: 0, shots: 0, lost: 0, resets: 0, taps: 0, answered: 0, onsetOnly: 0, notAtRestOnly: 0,
-                  velocityOnly: 0, dropoutOnly: 0, compared: 0, endWithOnset: 0)
+                  velocityOnly: 0, dropoutOnly: 0, compared: 0, endWithOnset: 0,
+                  flicker: 0, grace: 0, runInWindow: 0, runPast: 0)
         var violations: [String] = []
         for seq in 0..<sequences {
             let m = LiveModel(mode: .game)
@@ -228,6 +232,7 @@ struct ShotLifecycleInvariantTests {
                 switch (e.record, rec) {
                 case (nil, nil): if rated { o.fail("close-kind", "seq \(seq): lost entry \(id) closed rated") }
                 case (.some, let got?):
+                    if !rated { o.fail("close-kind", "seq \(seq): recorded entry \(id) closed unrated") }
                     let want = e.expectedResolved
                     st.compared += 1
                     if got != want { o.fail("resolved-record", "seq \(seq): entry \(id) resolved \(got.pocketed) want \(String(describing: want?.pocketed))") }
@@ -237,7 +242,9 @@ struct ShotLifecycleInvariantTests {
 
             var t = 0.0
             var inFlight = false, deadline = 0, sinceStart = 0
-            var lastQuiet = true, clearSinceReset = true, resetSinceFrame = false, cueMeasuredLast = false   // no prior measurement yet
+            var lastQuiet = true, clearSinceReset = true, resetSinceFrame = false
+            var cueLastMeasuredAt: Double? = nil          // the oracle's own continuity clock (no prior measurement yet)
+            var dropLeft = 0, holdAim = 0, gapLeft = 0    // generator: dropout run / sustained aim with flicker
 
             func checkAim(_ want: [String], _ what: String) {
                 if o.actualAim != want { o.fail("aim-hooks", "seq \(seq) t \(String(format: "%.2f", t)) \(what): hooks \(o.actualAim) want \(want)") }
@@ -246,24 +253,30 @@ struct ShotLifecycleInvariantTests {
 
             func drive(_ r: PerceptionResult, phys: Bool) {
                 let evidence = r.shooterAddressing || r.liveAim != nil
-                let dropout = r.tracks.contains { $0.confirmed && !$0.measured } && cueMeasuredLast
-                let signal = !r.atRest || r.motionOnset || r.tracks.contains { $0.confirmed && $0.speed > 0.04 } || dropout
-                let quietNow = !phys && !evidence
-                if quietNow && !signal { clearSinceReset = true }
-                o.closeAllowed = quietNow && clearSinceReset
-                o.context = phys ? (r.atRest ? "physical motion with atRest=true" : "physical motion") : (evidence ? "aim evidence" : (clearSinceReset ? "quiet" : "no quiet frame since relock"))
+                let cueMeasured = r.tracks.first { $0.id == 1 }?.measured ?? true
+                // Partial dropout: unmeasured within 0.3 s of the cue's last measurement (the oracle's own clock).
+                let dropout = !cueMeasured && (cueLastMeasuredAt.map { r.timestamp - $0 <= 0.3 } ?? false)
+                let signal = !r.atRest || r.motionOnset || r.tracks.contains { $0.confirmed && $0.speed > 0.04 } || dropout || phys
+                if !evidence && !signal { clearSinceReset = true }
                 // spec: look step 1, aim, enqueue + look on the new entry
                 o.lookStep(r, signal: signal, beforeEnqueue: true)
                 let want = o.expectAim(evidence: evidence, rest: !signal, started: r.shotStarted, ended: r.shot != nil, t: r.timestamp)
+                // Quiet AFTER the expected aim update: a retained aim (the 1 s evidence-loss grace) is not quiet.
+                let quietNow = o.phase == .idle && !evidence && !signal && clearSinceReset
+                if o.phase == .aiming && !evidence && !signal { st.grace += 1 }
+                o.closeAllowed = quietNow
+                o.context = phys ? (r.atRest ? "physical motion with atRest=true" : "physical motion")
+                    : (evidence ? "aim evidence" : (signal ? "a motion signal" : (o.phase != .idle ? "the aim grace (\(o.phase))"
+                    : (clearSinceReset ? "quiet" : "no quiet frame since relock"))))
                 if let shot = r.shot { o.enqueue(shot, ids: r.ballIDs); o.lookStep(r, signal: signal, beforeEnqueue: false) }
                 m.drive(r)
                 o.closeAllowed = false
                 checkAim(want, "frame")
                 if o.awaiting != nil { o.fail("shell-close", "seq \(seq): a FIFO close never reached the shell") }
                 o.refreshConfirm()
-                lastQuiet = quietNow && !signal
+                lastQuiet = quietNow
                 resetSinceFrame = false
-                cueMeasuredLast = r.tracks.first { $0.id == 1 }?.measured ?? true
+                if cueMeasured { cueLastMeasuredAt = r.timestamp }
                 if m.showsPocketConfirm && !quietNow { o.fail("confirm-gate", "seq \(seq) t \(t): confirm visible during \(o.context)") }
                 if m.badge != nil && (!quietNow || r.shotStarted) { o.fail("badge-gate", "seq \(seq) t \(t): badge during \(o.context)") }
                 if r.shotStarted { inFlight = true; sinceStart = 0; deadline = 3 + Int(rng.next() % 118) }   // ≤ 8 s
@@ -295,31 +308,53 @@ struct ShotLifecycleInvariantTests {
                     return
                 }
                 if windDown {
+                    dropLeft = 0; holdAim = 0; gapLeft = 0
                     drive(me.frame(t, atRest: true, onset: false, velocity: false, cueMeasured: true,
                                              evidence: (false, false)), phys: false)
                     return
                 }
+                // Aim evidence: random, or a sustained aim (entered while the spec is aiming) with 1-3 frame flickers.
+                var evidence = (rng.chance(0.2), rng.chance(0.08))
+                if holdAim > 0 {
+                    holdAim -= 1
+                    if gapLeft > 0 { gapLeft -= 1; evidence = (false, false); st.flicker += 1 }
+                    else if rng.chance(0.25) { gapLeft = Int(rng.next() % 3); evidence = (false, false); st.flicker += 1 }
+                    else { evidence = (true, rng.chance(0.3)) }
+                } else if o.phase == .aiming && rng.chance(0.4) {
+                    holdAim = 5 + Int(rng.next() % 16)
+                }
+                let canDrop = cueLastMeasuredAt.map { t - $0 <= 0.3 } ?? false
                 // Physical motion, then which signals report it, drawn independently (with sole-signal cases).
-                let phys = rng.chance(inFlight ? 0.5 : 0.2)
+                // A dropout run (1-6 unmeasured frames) is motion only while within 0.3 s of the last measurement.
+                var phys: Bool
                 var onset = false, notAtRest = false, velocity = false, dropout = false
+                if dropLeft > 0 {
+                    dropLeft -= 1
+                    dropout = true
+                    phys = canDrop
+                    if phys { st.runInWindow += 1 } else { st.runPast += 1; notAtRest = rng.chance(0.12) }
+                } else {
+                phys = rng.chance(holdAim > 0 ? 0.05 : (inFlight ? 0.5 : 0.2))
                 if phys {
                     if rng.chance(0.4) {
                         switch rng.next() % 4 {
                         case 0: onset = true; st.onsetOnly += 1
                         case 1: notAtRest = true; st.notAtRestOnly += 1
                         case 2: velocity = true; st.velocityOnly += 1
-                        default: dropout = cueMeasuredLast; if !dropout { onset = true }; if dropout { st.dropoutOnly += 1 }
+                        default: dropout = canDrop; if !dropout { onset = true }
+                            if dropout { st.dropoutOnly += 1; dropLeft = Int(rng.next() % 6) }
                         }
                     } else {
                         repeat {
                             onset = rng.chance(0.5); notAtRest = rng.chance(0.5); velocity = rng.chance(0.4)
-                            dropout = cueMeasuredLast && rng.chance(0.15)
+                            dropout = canDrop && rng.chance(0.15)
                         } while !(onset || notAtRest || velocity || dropout)
+                        if dropout { dropLeft = Int(rng.next() % 6) }
                     }
                 } else {
                     notAtRest = rng.chance(0.12)                                   // the rest bit lags after motion
                 }
-                let evidence = (rng.chance(0.2), rng.chance(0.08))
+                }
                 let started = !inFlight && phys && rng.chance(0.25)
                 var extra: [TrackedBall] = []
                 var occupied: Set<Pocket> = []
@@ -396,7 +431,7 @@ struct ShotLifecycleInvariantTests {
             }
             violations += o.violations
         }
-        let summary = "[invariants] seed \(String(seed, radix: 16)) sequences \(sequences) frames \(st.frames) shots \(st.shots) lost \(st.lost) resets \(st.resets) taps \(st.taps) answers \(st.answered) records-compared \(st.compared) sole-signal frames: onset \(st.onsetOnly) not-at-rest \(st.notAtRestOnly) velocity \(st.velocityOnly) dropout \(st.dropoutOnly) shot-end-with-onset \(st.endWithOnset)"
+        let summary = "[invariants] seed \(String(seed, radix: 16)) sequences \(sequences) frames \(st.frames) shots \(st.shots) lost \(st.lost) resets \(st.resets) taps \(st.taps) answers \(st.answered) records-compared \(st.compared) sole-signal frames: onset \(st.onsetOnly) not-at-rest \(st.notAtRestOnly) velocity \(st.velocityOnly) dropout \(st.dropoutOnly) shot-end-with-onset \(st.endWithOnset) aim-flicker frames \(st.flicker) grace frames \(st.grace) dropout-run frames in window \(st.runInWindow) past \(st.runPast)"
         return (summary, violations, Oracle.tally)
     }
 

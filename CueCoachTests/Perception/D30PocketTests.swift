@@ -511,6 +511,29 @@ struct D30PocketTests {
         #expect(spy.settled.count == 1)
     }
 
+    /// f12 MAJOR: the continuity gate covers every frame of a dropout run within 0.3 s of the last measurement (not
+    /// only the first missed frame), and only those: once the window is past the table can be quiet again.
+    @Test func multiFrameDropoutIsNotQuietThroughTheWindow() {
+        let spy = Spy(), m = model(spy)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        let obj = TrackedBall(id: 9, position: Vec2(0.4, 0.4), velocity: .zero, kind: .solid, tentativeNumber: 2, confirmed: true)
+        m.drive(result(4.6, extra: [obj]))                                       // cue last measured at 4.6
+        #expect(m.showsPocketConfirm)
+        for k in 1...4 {                                                          // 4.67 … 4.87: all within 0.3 s
+            var miss = result(4.6 + Double(k) / 15, extra: [obj])
+            miss.tracks = miss.tracks.map { var b = $0; if b.id == 1 { b.measured = false }; return b }
+            m.drive(miss)
+            #expect(!m.showsPocketConfirm, "missed frame \(k) is still within the window")
+            m.answerPocket(dropped: true)
+            #expect(spy.settled.isEmpty, "no settle on missed frame \(k)")
+        }
+        var past = result(4.6 + 6.0 / 15, extra: [obj])                          // 0.4 s since the last measurement
+        past.tracks = past.tracks.map { var b = $0; if b.id == 1 { b.measured = false }; return b }
+        m.drive(past)
+        #expect(spy.settled.count == 1, "the answer lands once the window is past")
+    }
+
     /// MAJOR: a frame that carries A's shot end AND B's raw onset is not A's look: a ball in A's pocket on that frame
     /// doesn't count, A's look is frozen at once (its uncertain ball is asked).
     @Test func shotEndFrameWithOnsetIsNotTheNewShotsLook() {
