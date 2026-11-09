@@ -151,15 +151,27 @@ import Testing
         #expect(try reopened.recognitionContext.fetchCount(FetchDescriptor<RecognitionData>(predicate: #Predicate { $0.profileID == pid })) == 0)
     }
 
+    /// Discriminating (interim review): the gallery checks, while it is being told, that the row is still on
+    /// disk. The old order (delete + save, then notify) would see 0 rows.
     @Test func dropTellsGalleriesBeforeTouchingTheStore() throws {
-        final class G: RecognitionGallery {
-            var calls = 0
-            func recognitionDidChange(_ change: RecognitionChange) { calls += 1 }
+        @MainActor final class G: RecognitionGallery {
+            let stack: PersistenceStack
+            var rowsWhenTold: [Int] = []
+            init(_ s: PersistenceStack) { stack = s }
+            func recognitionDidChange(_ change: RecognitionChange) {
+                rowsWhenTold.append((try? ModelContext(stack.recognitionContainer).fetchCount(FetchDescriptor<RecognitionData>())) ?? -1)
+            }
         }
         let s = try PersistenceStack(inMemory: true)
-        let g = G()
+        let p = PlayerProfile(name: "Ari", avatarSymbol: "s", avatarColor: "c", isLocalOwner: true)
+        s.competitiveContext.insert(p)
+        try s.competitiveContext.save()
+        try s.storeRecognition(profileID: p.id, faceEmbedding: nil, appearanceEmbedding: Data([1]),
+                               optedInAt: .now, version: 1)
+        let g = G(s)
         s.register(g)
-        try s.dropRecognition(of: [UUID()])
-        #expect(g.calls == 1)
+        try s.dropRecognition(of: [p.id])
+        #expect(g.rowsWhenTold == [1])
+        #expect(try s.recognitionContext.fetchCount(FetchDescriptor<RecognitionData>()) == 0)
     }
 }

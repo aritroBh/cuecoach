@@ -41,6 +41,9 @@ struct PerceptionResult: Sendable {
     var shooterAddressing = false
     /// Whole pipeline time for this frame (detect + depth + track + cue + aim), ms.
     var totalMs: Double = 0
+    /// D30: pockets this frame can judge (in frame, no hand over them) and pockets with a ball in their jaws.
+    var pocketsInView: Set<Pocket> = Set(Pocket.allCases)
+    var pocketsOccupied: Set<Pocket> = []
 
     var confirmed: [TrackedBall] { tracks.filter(\.confirmed) }
 }
@@ -208,7 +211,9 @@ actor PerceptionPipeline {
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence, liveTargetID: liveTargetID,
                                 depthBalls: depthBalls.count, ballIDs: ballIDs,
                                 shooterAddressing: addressing,
-                                totalMs: Date().timeIntervalSince(t0) * 1000)
+                                totalMs: Date().timeIntervalSince(t0) * 1000,
+                                pocketsInView: Self.pocketsInView(geometry: geo, image: f.image, wrists: f.wristsByPerson.flatMap { $0 }),
+                                pocketsOccupied: Self.occupiedPockets(confirmed, spec: table.spec))
     }
 }
 
@@ -392,5 +397,27 @@ enum PoseJump {
         let rel = ra.transpose * rb
         let angle = acos(max(-1, min(1, (rel[0, 0] + rel[1, 1] + rel[2, 2] - 1) / 2)))
         return moved / gap > maxSpeed || angle / gap > maxTurnRate
+    }
+}
+
+extension PerceptionPipeline {
+    /// D30: a pocket can be judged when its centre is inside the frame and no wrist is over it.
+    static func pocketsInView(geometry geo: FrameGeometry, image: PixelImage, wrists: [Vec2], margin: Double = 8,
+                              handRadius: Double = 0.15) -> Set<Pocket> {
+        let w = Double(image.sourceWidth), h = Double(image.sourceHeight)
+        let inv = geo.clothInverse
+        let hands = wrists.compactMap { inv.apply($0) }
+        return Set(geo.spec.pockets.filter { pk in
+            let c = geo.spec.pocketCenter(pk)
+            guard let p = geo.cloth.apply(c), p.x >= margin, p.y >= margin, p.x <= w - margin, p.y <= h - margin else { return false }
+            return !hands.contains { $0.distance(to: c) < handRadius }
+        })
+    }
+
+    /// D30: pockets with a tracked (measured) ball within `radius` of their centre: hanging in the jaws.
+    static func occupiedPockets(_ tracks: [TrackedBall], spec: TableSpec, radius: Double = 0.12) -> Set<Pocket> {
+        Set(spec.pockets.filter { pk in
+            tracks.contains { $0.confirmed && $0.measured && $0.measuredPosition.distance(to: spec.pocketCenter(pk)) <= radius }
+        })
     }
 }

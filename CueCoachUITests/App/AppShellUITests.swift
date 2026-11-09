@@ -48,6 +48,20 @@ final class AppShellUITests: XCTestCase {
         waitForExpectations(timeout: t)
     }
 
+    /// Tap `id` once it is hittable and wait for `destination`. On the device a tap right after launch can be
+    /// swallowed (the tile exists but the app isn't taking touches yet): if the destination doesn't show, tap
+    /// once more. The destination is still asserted, with the full timeout.
+    @MainActor @discardableResult
+    func tapThrough(_ app: XCUIApplication, _ id: String, to destination: String, _ t: TimeInterval = 8,
+                    file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
+        let e = wait(app, id, file: file, line: line)
+        let hittable = NSPredicate(format: "isHittable == true")
+        _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: hittable, object: e)], timeout: 5)
+        e.tap()
+        if !element(app, destination).waitForExistence(timeout: 3), e.exists, e.isHittable { e.tap() }
+        return wait(app, destination, t, file: file, line: line)
+    }
+
     @MainActor func tapSeat(_ app: XCUIApplication, _ seat: String, pick: String) {
         wait(app, "setup.seat.\(seat)").tap()
         wait(app, pick).tap()
@@ -235,10 +249,9 @@ final class AppShellUITests: XCTestCase {
         var app = launch(["-appshell.fakeMesh=games", "-appshell.demoShot"], variant: v)
         wait(app, "home.game")
         shot(app, "01-home", v)
-        element(app, "home.game").tap()
+        tapThrough(app, "home.game", to: "game.new")
         shot(app, "02-gamehub", v)
-        wait(app, "game.new").tap()
-        wait(app, "setup.start")
+        tapThrough(app, "game.new", to: "setup.start")
         shot(app, "03-setup", v)
         tapSeat(app, "0.0", pick: "seat.player.Ari")
         tapSeat(app, "1.0", pick: "seat.guest")
@@ -248,9 +261,8 @@ final class AppShellUITests: XCTestCase {
         app.terminate()
 
         app = launch(["-appshell.fakeMesh=games"], variant: v)
-        wait(app, "home.game").tap()
-        wait(app, "game.join").tap()
-        wait(app, "join.game.g1")
+        tapThrough(app, "home.game", to: "game.join")
+        tapThrough(app, "game.join", to: "join.game.g1")
         shot(app, "09-join-list", v)
         element(app, "join.game.g1").tap()
         wait(app, "join.lineup.Ari", 6)
@@ -261,8 +273,7 @@ final class AppShellUITests: XCTestCase {
         app.terminate()
 
         app = launch(variant: v)
-        wait(app, "home.training").tap()
-        wait(app, "training.start")
+        tapThrough(app, "home.training", to: "training.start")
         shot(app, "08-training", v)
     }
 

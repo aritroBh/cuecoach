@@ -139,6 +139,10 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         // A steep close view fitted from both long rails + the side pockets ("sidePockets") sees only some
         // pockets: every one in frame dark, and at least two of them. Any other fit still needs 4 dark (a 7 ft
         // fit inside a 9 ft table found two dark spots and locked 56 cm off in the matrix).
+        // Known limit (interim review): on a sidePockets frame the two scored mouths are the same dark spots
+        // the fit already required, so this adds little beyond the fit; the false path left needs two dark 6-22 cm
+        // objects aligned on opposite cushions. Independent evidence (a matched keypoint mouth, or a LiDAR hole at
+        // both mouths) would close it; not required yet so elev-45/60 still lock without keypoints.
         guard d.partialAnchor == "sidePockets" else { return false }
         return scores.count >= 2 && scores.allSatisfy { $0 >= 0.5 }
     }

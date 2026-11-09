@@ -40,6 +40,7 @@ struct LiveScreen: View {
             HandlesLayer(model: model).ignoresSafeArea()
             LoupeView(model: model).ignoresSafeArea().allowsHitTesting(false)
             controls
+            PocketConfirmView(model: model).ignoresSafeArea()
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
@@ -462,6 +463,10 @@ struct ReplayLiveView: View {
                     let r = await pipeline.process(PerceptionFrame(image: px, camera: cam, timestamp: t))
                     result = r
                     model.noteResult(r)
+                    if let pk = model.pocketConfirm?.pocket, let tf = table,
+                       let p = FrameGeometry(frame: tf, camera: cam).cloth.apply(tf.spec.pocketCenter(pk)) {
+                        model.pocketConfirmPoint = map.toView(p)
+                    }
                 }
                 try? await Task.sleep(for: .milliseconds(66))
             }

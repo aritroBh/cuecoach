@@ -226,6 +226,16 @@ struct PrivacyAuditTests {
         #expect(offenders.isEmpty, "ModelConfiguration without cloudKitDatabase: .none in \(offenders)")
     }
 
+    /// App Groups can arrive without any code literal (a variable suite name, Xcode's capability UI): no plist,
+    /// entitlements file or project spec in the repo may request them (interim review MINOR).
+    @Test func noAppGroupsEntitlementAnywhere() {
+        let files = Repo.files(under: ".") { ["entitlements", "plist", "yml", "pbxproj"].contains($0.pathExtension.lowercased()) }
+        let offenders = files.filter { ((try? String(contentsOf: $0, encoding: .utf8)) ?? "").contains("com.apple.security.application-groups") }
+            .map(Repo.rel)
+        #expect(files.count > 1, "scan found \(files.count) files; it would be vacuous")
+        #expect(offenders.isEmpty, "App Groups requested in \(offenders)")
+    }
+
     /// No entitlements files, provisioning profiles, signing identities, or env files in the public repo.
     @Test func noEntitlementsOrSigningSecretsInRepo() {
         let bad: Set<String> = ["entitlements", "mobileprovision", "provisionprofile", "p12", "p8", "cer",

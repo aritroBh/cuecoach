@@ -71,6 +71,68 @@ final class LiveModel {
     /// A shot in flight was lost to a perception reset: it closes unrated once the balls are seen at rest.
     private var lostShot = false
 
+    // MARK: D30 "look, then ask"
+
+    /// The question Live is waiting on (post-shot only; hidden while anyone aims). Rules, badge and turn wait.
+    private(set) var pocketConfirm: PocketConfirm?
+    /// Where to draw it (the pocket on screen), set by the active view; nil = bottom centre.
+    var pocketConfirmPoint: CGPoint?
+    private var aimingNow = false
+    var showsPocketConfirm: Bool { pocketConfirm != nil && !aimingNow }
+
+    private struct PendingShot {
+        var record: ShotRecord
+        var ids: [Int: BallID]
+        var resolver: UncertainPocketResolver
+        var verdicts: [Int: UncertainPocketResolver.Verdict]?
+        var answers: [Int: Bool] = [:]
+    }
+    /// Settled shots in order; the first is being resolved. A shot without uncertain pockets passes straight through.
+    private var pending: [PendingShot] = []
+
+    private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
+        let known = record.uncertainPockets.filter { ids[$0.key] != nil }
+        pending.append(PendingShot(record: record, ids: ids, resolver: UncertainPocketResolver(candidates: known, balls: ids)))
+    }
+
+    private func advancePending(_ r: PerceptionResult?) {
+        while var p = pending.first, pocketConfirm == nil {
+            if p.resolver.candidates.isEmpty { finish(p); continue }
+            if p.verdicts == nil {
+                guard let r, let v = p.resolver.observe(r) else { pending[0] = p; return }
+                p.verdicts = v
+                pending[0] = p
+            }
+            if let ask = nextAsk(p) { pocketConfirm = ask; return }
+            finish(p)
+        }
+    }
+
+    private func nextAsk(_ p: PendingShot) -> PocketConfirm? {
+        guard let v = p.verdicts else { return nil }
+        let open = v.filter { $0.value == .ask && p.answers[$0.key] == nil }.keys.sorted()
+        return open.first.map { PocketConfirm(trackID: $0, pocket: p.resolver.candidates[$0]!, ball: p.ids[$0]) }
+    }
+
+    /// The one-tap answer: ✓ the ball dropped, ✗ it didn't.
+    func answerPocket(dropped: Bool) {
+        guard let q = pocketConfirm, !pending.isEmpty else { return }
+        pending[0].answers[q.trackID] = dropped
+        pocketConfirm = nextAsk(pending[0])
+        if pocketConfirm == nil { finish(pending[0]); advancePending(nil) }
+    }
+
+    private func finish(_ p: PendingShot) {
+        pending.removeFirst()
+        var rec = p.record
+        for (tid, pk) in p.resolver.candidates {
+            let dropped = p.answers[tid] ?? (p.verdicts?[tid] == .pocketed)
+            if dropped { rec.pocketed[tid] = pk }
+            rec.uncertainPockets[tid] = nil
+        }
+        shotSettled(rec, ids: p.ids)
+    }
+
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
 
     /// Ring legality before the first shot: the shell's active game if injected, else the local default.
@@ -120,7 +182,9 @@ final class LiveModel {
             case .settled: break   // reported by shotSettled with the rating
             }
         }
-        if let shot = r.shot { shotSettled(shot, ids: r.ballIDs) }
+        aimingNow = r.liveAim != nil || r.shooterAddressing || aimEvents.phase != .idle
+        if let shot = r.shot { enqueue(shot, ids: r.ballIDs) }
+        advancePending(r)
     }
 
     var calibrated = false

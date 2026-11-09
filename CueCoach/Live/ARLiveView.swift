@@ -196,6 +196,10 @@ final class ARLiveController: NSObject {
         }
         if model.calibrated {
             if !model.handles.isEmpty { model.handles = [] }
+            // D30: the confirm sits at the pocket in question.
+            if let pk = model.pocketConfirm?.pocket, let tf = tableFrame {
+                model.pocketConfirmPoint = v.project(tf.world(tf.spec.pocketCenter(pk)).f).map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) }
+            }
         } else {
             model.handles = editor.corners.map { w in v.project(w.f).map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) } }
         }

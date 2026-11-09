@@ -518,3 +518,50 @@ struct LimitedLatch: Sendable {
     /// Returns whether a non-normal state was seen since the last call, and clears it.
     mutating func take() -> Bool { defer { seen = false }; return seen }
 }
+
+/// D30 "look, then ask": after the balls settle, each pocket the segmenter wasn't sure of (a slow make) is resolved
+/// by looking for `window` seconds. The ball seen anywhere on the table, or a ball in that pocket's jaws, means it
+/// stayed; the pocket in view for most of the window with no ball means it dropped; anything else is asked.
+struct UncertainPocketResolver: Sendable {
+    enum Verdict: Equatable, Sendable { case onTable, pocketed, ask }
+    /// Track id → pocket (only balls with a rule id: an unknown ball has no rules consequence, D29).
+    let candidates: [Int: Pocket]
+    let balls: [Int: BallID]
+    var window = 1.0
+    /// Share of the window's frames the pocket must be in view (in frame, no hand over it) to call it dropped.
+    var minVisibleShare = 0.6
+    private var start: Double?
+    private var frames = 0
+    private var visible: [Int: Int] = [:]
+    private var seen: Set<Int> = []
+
+    init(candidates: [Int: Pocket], balls: [Int: BallID]) { self.candidates = candidates; self.balls = balls }
+
+    /// nil while still looking; the verdicts once the window has passed.
+    mutating func observe(_ r: PerceptionResult) -> [Int: Verdict]? {
+        if start == nil { start = r.timestamp }
+        frames += 1
+        let measured = r.confirmed.filter(\.measured)
+        for (tid, pk) in candidates {
+            if r.pocketsInView.contains(pk) { visible[tid, default: 0] += 1 }
+            if r.pocketsOccupied.contains(pk) { seen.insert(tid) }
+            if measured.contains(where: { $0.id == tid }) { seen.insert(tid) }
+            if let b = balls[tid], measured.contains(where: { r.ballIDs[$0.id] == b }) { seen.insert(tid) }
+        }
+        guard let s = start, r.timestamp - s >= window else { return nil }
+        var out: [Int: Verdict] = [:]
+        for tid in candidates.keys {
+            if seen.contains(tid) { out[tid] = .onTable }
+            else if Double(visible[tid] ?? 0) >= minVisibleShare * Double(frames) { out[tid] = .pocketed }
+            else { out[tid] = .ask }
+        }
+        return out
+    }
+}
+
+/// D30: the one question Live may ask after a shot (icon only: the ball at that pocket, ✓ dropped / ✗ didn't).
+struct PocketConfirm: Equatable, Sendable {
+    var trackID: Int
+    var pocket: Pocket
+    var ball: BallID?
+}
