@@ -391,9 +391,20 @@ struct AimEvents: Sendable {
     private var cueLostAt: Double?
 
     mutating func update(cueVisible: Bool, atRest: Bool, shotStarted: Bool, shotEnded: Bool, at t: Double) -> [Event] {
-        if shotEnded, phase == .moving || phase == .aiming {
+        if shotEnded, phase == .moving {
             phase = .idle; cueLostAt = nil
+            // The shot-end frame already shows the next shooter: that aim opens now (GPT-5.6 MAJOR 3), so a reset
+            // before the next frame cancels it instead of closing shots during it.
+            if cueVisible && atRest { phase = .aiming; return [.settled, .aimStarted] }
             return [.settled]
+        }
+        if shotEnded, phase == .aiming {
+            // A shot ended while an aim is open (its launch wasn't seen): the open aim continues if the shooter is
+            // still there, otherwise it is cancelled; never a second aimStarted, never left dangling.
+            cueLostAt = nil
+            if cueVisible { return [.settled] }
+            phase = .idle
+            return [.settled, .aimCancelled]
         }
         if shotStarted, phase != .moving {
             let wasAiming = phase == .aiming
@@ -558,10 +569,19 @@ struct UncertainPocketResolver: Sendable {
             if let b = balls[tid], measured.contains(where: { r.ballIDs[$0.id] == b }) { seen.insert(tid) }
         }
         guard let s = start, r.timestamp - s >= window else { return nil }
+        return verdicts(final: true)
+    }
+
+    /// The look was cut short (a later shot started, or something moved): what was seen still counts, a certain
+    /// pocket stands, and an uncertain one that wasn't seen is asked.
+    func frozen() -> [Int: Verdict] { verdicts(final: false) }
+
+    private func verdicts(final: Bool) -> [Int: Verdict] {
         var out: [Int: Verdict] = [:]
         for tid in candidates.keys {
             if seen.contains(tid) { out[tid] = .onTable }
-            else if certain.contains(tid) || Double(visible[tid] ?? 0) >= minObservedShare * Double(frames) { out[tid] = .pocketed }
+            else if certain.contains(tid) { out[tid] = .pocketed }
+            else if final && frames > 0 && Double(visible[tid] ?? 0) >= minObservedShare * Double(frames) { out[tid] = .pocketed }
             else { out[tid] = .ask }
         }
         return out

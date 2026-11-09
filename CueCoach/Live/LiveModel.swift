@@ -57,54 +57,65 @@ final class LiveModel {
         }
     }
 
-    /// Perception was reset (revalidation, recalibration, a new table): no shot can settle any more, so an open
-    /// aim or shot is closed for the shell (its menu would otherwise stay locked).
-    func perceptionReset() {
-        // D30: a held shot can't be looked at or asked about against the new table: drop it, closed unrated for
-        // the shell (like a lost shot), so its result can never apply to a later shot. The open aim or moving shot
-        // is closed too (GPT-5.6 final re-review): an aim is cancelled first, so the shell re-gates its menu, then
-        // each dropped held shot closes; while balls move, every close waits until they are at rest.
-        let held = pending.count
-        if held > 0 {
-            pending = []
-            pocketConfirm = nil
-            pocketConfirmPoint = nil
-            aimingNow = false
+    // MARK: Shot lifecycle (D30 + relocks): one FIFO, one state machine
+    //
+    // Every shot that ends gets an entry, in shot order. An entry is
+    //   .looking  - its own post-settle look is running (only the newest entry can be looking);
+    //   .decided  - verdicts known; it may still be asking (an uncertain pocket not seen either way);
+    //   .lost     - dropped by a relock: it closes unrated.
+    // Entries close strictly from the front, one close per shot (`settled` rated, or `ballsSettled` unrated), and only
+    // while the table is quiet: nobody aiming and nothing moving. A later shotStarted, or any motion, freezes a look
+    // that hasn't finished (unseen uncertain pockets become questions). Only the front entry may ask; a shot queued
+    // behind an unanswered question still had its own look in its own window. Nothing stays stuck except an
+    // unanswered question.
+
+    private enum ShotState { case looking, decided, lost }
+    private struct ShotEntry {
+        var id: Int
+        var state: ShotState
+        var record: ShotRecord?
+        var ids: [Int: BallID] = [:]
+        var resolver: UncertainPocketResolver?
+        var verdicts: [Int: UncertainPocketResolver.Verdict] = [:]
+        var answers: [Int: Bool] = [:]
+
+        var openAsk: Int? {
+            verdicts.filter { $0.value == .ask && answers[$0.key] == nil }.keys.sorted().first
         }
-        switch aimEvents.phase {
-        case .aiming:
-            hooks.aimCancelled()
-            for _ in 0..<held { hooks.ballsSettled() }
-        case .moving:
-            lostShots += held + 1   // balls are moving: keep the shell gated until they are at rest again
-        case .idle:
-            for _ in 0..<held { hooks.ballsSettled() }
-        }
-        aimEvents = AimEvents()
     }
+    private var shots: [ShotEntry] = []
+    private var nextShotID = 0
+    private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
+    private func lostEntry() -> ShotEntry { ShotEntry(id: newID(), state: .lost) }
+    /// Test seam (the invariant oracle): every close, in order, with the entry's id and its record (nil = unrated).
+    @ObservationIgnored var onCloseForTesting: ((Int, ShotRecord?) -> Void)?
+    /// Entries created so far (shots ended + shots lost in flight).
+    var shotsCreatedForTesting: Int { nextShotID }
 
-    /// Shots lost to a perception reset (held ones and the one in flight): each closes unrated once the balls are
-    /// seen at rest.
-    private var lostShots = 0
-
-    // MARK: D30 "look, then ask"
-
-    /// The question Live is waiting on (post-shot only; hidden while anyone aims). Rules, badge and turn wait.
+    /// The question Live is waiting on (post-shot only). Rules, badge and turn wait for it.
     private(set) var pocketConfirm: PocketConfirm?
     /// Where to draw it (the pocket on screen), set by the active view; nil = bottom centre.
     var pocketConfirmPoint: CGPoint?
+    /// Someone is aiming (aim phase open, a live cue line, or the shooter addressing the cue ball).
     private var aimingNow = false
-    var showsPocketConfirm: Bool { pocketConfirm != nil && !aimingNow }
+    /// The last frame showed balls at rest (and some balls at all): the physical-motion gate.
+    private var atRestNow = true
+    /// Quiet = nobody aiming and nothing moving: the only time anything closes, settles, badges or asks.
+    private var quiet: Bool { !aimingNow && atRestNow }
+    var showsPocketConfirm: Bool { pocketConfirm != nil && quiet }
 
-    private struct PendingShot {
-        var record: ShotRecord
-        var ids: [Int: BallID]
-        var resolver: UncertainPocketResolver
-        var verdicts: [Int: UncertainPocketResolver.Verdict]?
-        var answers: [Int: Bool] = [:]
+    /// Perception was reset (revalidation, recalibration, a new table). An open aim is cancelled first, then every
+    /// unclosed shot (and the one in flight) is lost: it closes unrated, in order, once the table is quiet.
+    func perceptionReset() {
+        if aimEvents.phase == .aiming { hooks.aimCancelled() }
+        for i in shots.indices where shots[i].state != .lost { shots[i] = ShotEntry(id: shots[i].id, state: .lost) }
+        if aimEvents.phase == .moving { shots.append(lostEntry()) }
+        aimEvents = AimEvents()
+        aimingNow = false
+        pocketConfirm = nil
+        pocketConfirmPoint = nil
+        drain()
     }
-    /// Settled shots in order; the first is being resolved. A shot without uncertain pockets passes straight through.
-    private var pending: [PendingShot] = []
 
     private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
         // Every pocketed ball with a rule id gets the look (a jaw-stopped "certain" make is overturned by a sighting);
@@ -112,48 +123,69 @@ final class LiveModel {
         let uncertain = record.uncertainPockets.filter { ids[$0.key] != nil }
         let certain = record.pocketed.filter { ids[$0.key] != nil && uncertain[$0.key] == nil }
         let all = uncertain.merging(certain) { u, _ in u }
-        pending.append(PendingShot(record: record, ids: ids,
-                                   resolver: UncertainPocketResolver(candidates: all, balls: ids, certain: Set(certain.keys))))
+        let resolver = UncertainPocketResolver(candidates: all, balls: ids, certain: Set(certain.keys))
+        // A later shot ends any earlier look still running (even one whose launch wasn't seen).
+        for i in shots.indices where shots[i].state == .looking {
+            shots[i].verdicts = shots[i].resolver?.frozen() ?? [:]
+            shots[i].state = .decided
+        }
+        shots.append(ShotEntry(id: newID(), state: all.isEmpty ? .decided : .looking, record: record, ids: ids, resolver: resolver))
     }
 
-    private func advancePending(_ r: PerceptionResult?) {
-        while var p = pending.first, pocketConfirm == nil {
-            if p.resolver.candidates.isEmpty || p.verdicts != nil {
-                if let ask = nextAsk(p) { pocketConfirm = ask; return }
-                // Never settle (rules, badge, turn) while anyone aims: the result lands once the aim is over.
-                guard !aimingNow else { return }
-                finish(p)
-                continue
+    /// The newest entry's look sees this frame (its own window only), or is frozen by a later shot or motion.
+    private func look(_ r: PerceptionResult, freeze: Bool) {
+        guard let i = shots.indices.last, shots[i].state == .looking, var res = shots[i].resolver else { return }
+        if freeze {
+            shots[i].verdicts = res.frozen()
+            shots[i].state = .decided
+        } else if let v = res.observe(r) {
+            shots[i].verdicts = v
+            shots[i].state = .decided
+        }
+        shots[i].resolver = res
+    }
+
+    /// Close entries from the front while the table is quiet; the front may instead ask.
+    private func drain() {
+        pocketConfirm = nil
+        while let head = shots.first {
+            switch head.state {
+            case .looking:
+                return
+            case .lost:
+                guard quiet else { return }
+                shots.removeFirst()
+                onCloseForTesting?(head.id, nil)
+                hooks.ballsSettled()
+            case .decided:
+                if let tid = head.openAsk {
+                    pocketConfirm = PocketConfirm(trackID: tid, pocket: head.resolver!.candidates[tid]!, ball: head.ids[tid])
+                    return
+                }
+                guard quiet else { return }
+                shots.removeFirst()
+                onCloseForTesting?(head.id, head.record)
+                close(head)
             }
-            guard let r, let v = p.resolver.observe(r) else { pending[0] = p; return }
-            p.verdicts = v
-            pending[0] = p
         }
     }
 
-    private func nextAsk(_ p: PendingShot) -> PocketConfirm? {
-        guard let v = p.verdicts else { return nil }
-        let open = v.filter { $0.value == .ask && p.answers[$0.key] == nil }.keys.sorted()
-        return open.first.map { PocketConfirm(trackID: $0, pocket: p.resolver.candidates[$0]!, ball: p.ids[$0]) }
-    }
-
-    /// The one-tap answer: ✓ the ball dropped, ✗ it didn't.
+    /// The one-tap answer: ✓ the ball dropped, ✗ it didn't. Only ever applies to the front shot; while something
+    /// moves or someone aims it is recorded but nothing closes until the table is quiet.
     func answerPocket(dropped: Bool) {
-        guard let q = pocketConfirm, !pending.isEmpty else { return }
-        pending[0].answers[q.trackID] = dropped
-        pocketConfirm = nextAsk(pending[0])
-        if pocketConfirm == nil { advancePending(nil) }   // settles now unless someone is aiming
+        guard let q = pocketConfirm, let head = shots.first, head.state == .decided, head.openAsk == q.trackID else { return }
+        shots[0].answers[q.trackID] = dropped
+        drain()
     }
 
-    private func finish(_ p: PendingShot) {
-        pending.removeFirst()
-        var rec = p.record
-        for (tid, pk) in p.resolver.candidates {
-            let dropped = p.answers[tid] ?? (p.verdicts?[tid] == .pocketed)
+    private func close(_ e: ShotEntry) {
+        guard var rec = e.record, let res = e.resolver else { return }
+        for (tid, pk) in res.candidates {
+            let dropped = e.answers[tid] ?? (e.verdicts[tid] == .pocketed)
             if dropped { rec.pocketed[tid] = pk } else { rec.pocketed[tid] = nil; rec.pocketTimes[tid] = nil }
             rec.uncertainPockets[tid] = nil
         }
-        shotSettled(rec, ids: p.ids)
+        shotSettled(rec, ids: e.ids)
     }
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
@@ -182,38 +214,34 @@ final class LiveModel {
         }
     }
 
-    /// Drives the aim lifecycle from each perception result (and hides the badge on aim/motion).
+    /// Drives the aim lifecycle and the shot FIFO from each perception result (and hides the badge on aim/motion).
     func drive(_ r: PerceptionResult) {
         let moving = r.confirmed.contains { $0.speed > 0.1 }
         let cueCreeping = r.confirmed.contains { r.marks[$0.id] == .cue && $0.speed > 0.04 }
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
-        if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing { hideBadge() }
+        if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing || !r.atRest { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
-        // Shots lost to a relock: ignore frames while their balls are still rolling (no aim open since the relock);
-        // once at rest, keep processing the frame (it may already carry the next aim) and close them below, outside
-        // any aim and before any later shot's result (GPT-5.6 re-review of 8ede140).
-        // A launch (D29: even with no aim seen) always gets through, so the shell sees its aim open and close.
-        if lostShots > 0, !r.atRest, aimEvents.phase == .idle, !r.shotStarted { return }
-        // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
-        // The shell always sees the aim lifecycle, held shot or not (its badge silencing and menu gating depend on
-        // it); a held shot's settle is delivered later, only while nobody aims (GPT-5.3 re-review K2).
+        // 1. A later shot or any motion ends an unfinished look (this frame belongs to something else).
+        look(r, freeze: r.shotStarted || !r.atRest)
+        // 2. The shell always sees the aim lifecycle (the shooter addressing the cue ball counts as aiming, D29).
         for e in aimEvents.update(cueVisible: r.liveAim != nil || r.shooterAddressing, atRest: r.atRest, shotStarted: r.shotStarted,
                                   shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
             case .aimStarted: hooks.aimStarted()
             case .aimEnded: hooks.aimEnded()
             case .aimCancelled: hooks.aimCancelled()
-            case .settled: break   // reported by shotSettled with the rating
+            case .settled: break   // the shot closes through the FIFO
             }
         }
         aimingNow = r.liveAim != nil || r.shooterAddressing || aimEvents.phase != .idle
-        if lostShots > 0, !aimingNow, r.atRest, !r.confirmed.isEmpty {
-            let n = lostShots
-            lostShots = 0
-            for _ in 0..<n { hooks.ballsSettled() }
+        atRestNow = r.atRest && !r.confirmed.isEmpty
+        // 3. A shot that ended this frame joins the FIFO; its look starts with this frame.
+        if let shot = r.shot {
+            enqueue(shot, ids: r.ballIDs)
+            look(r, freeze: false)
         }
-        if let shot = r.shot { enqueue(shot, ids: r.ballIDs) }
-        advancePending(r)
+        // 4. Close / ask from the front.
+        drain()
     }
 
     var calibrated = false

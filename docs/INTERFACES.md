@@ -319,13 +319,19 @@ static func IdentitySession.registered(on: PersistenceStack, players:guests:face
 extension IdentitySession: RecognitionGallery      // purgedAll / purged(ids) revoke; restored(ids) reloads from the store
 struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backup-excluded recognition store; delete fences
 ```
-- D30 held shots and `LiveHooks`: the aim lifecycle (`aimStarted` / `aimEnded` / `aimCancelled`) is always forwarded
-  as it happens. A shot's `settled(rating, turnPasses)` (or `ballsSettled` for a held shot dropped by a relock) may
-  arrive after later aims have opened and closed: always outside an aim, exactly once per shot, in shot order. The
-  shell treats it as standalone (`LiveSession.settled` records the shot, shows its badge, rotates the turn).
-  On a relock (`perceptionReset`), an open aim is `aimCancelled` first, then each dropped held shot gets one
-  `ballsSettled`; if balls are moving, those closes (plus the lost moving shot's) all wait until the balls are at rest and no aim is open; the aim
-  lifecycle keeps flowing meanwhile, and the closes always precede any later shot's result.
+- D30 held shots and `LiveHooks` (LiveModel's shot FIFO). Every ended shot gets an entry, in shot order:
+  `.looking` (its own post-settle look; only the newest entry; a later `shotStarted`, any motion or a later shot
+  end freezes it, unseen uncertain pockets becoming questions) → `.decided` (may ask; only the front entry asks) →
+  closed. A relock cancels an open aim first, then turns every unclosed entry (and the shot in flight) into
+  `.lost` (closes unrated). Invariants (checked by `ShotLifecycleInvariantTests` over seeded random sequences):
+  - aims started = ended + cancelled whenever no aim is open (at most one open); the aim lifecycle is always
+    forwarded live, held shot or not; a shot-end frame that already shows the next shooter opens that aim;
+  - exactly one close per shot (`settled` rated, or `ballsSettled` unrated), strictly in shot order, and a rated
+    close carries that shot's own record;
+  - no close, settle, badge or visible confirm while someone aims or anything moves (`!atRest`, including the launch
+    frame before `shotStarted`); a tap during motion is recorded and applied once quiet;
+  - nothing stays pending except an unanswered question.
+  The shell treats a late `settled` as standalone (`LiveSession.settled` records the shot, shows its badge, rotates).
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
   balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
   addressing the cue ball (wrists) also opens the aim for the shell.

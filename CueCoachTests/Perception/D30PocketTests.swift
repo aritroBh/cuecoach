@@ -331,6 +331,115 @@ struct D30PocketTests {
         #expect(Array(log.e.dropFirst(before.count)) == ["start", "end", "unrated", "unrated", "rated"])
     }
 
+    // MARK: GPT-5.6 holistic audit: one state machine
+
+    func logModel(_ log: @escaping @MainActor (String) -> Void) -> LiveModel {
+        let m = LiveModel(mode: .game)
+        var h = LiveHooks(aimStarted: { log("start") }, aimEnded: { log("end") }, aimCancelled: { log("cancel") },
+                          ballsSettled: { log("unrated") }, settled: { _, _ in log("rated") })
+        let game = lastSolidGame()
+        h.currentGame = { game }
+        m.hooks = h
+        return m
+    }
+
+    /// MAJOR 1a: A's look is cut short by B's launch: B's frames never decide A (A is asked, not "seen gone").
+    @Test func aLaterLaunchFreezesAnUnfinishedLookAsAQuestion() {
+        let spy = Spy(), m = model(spy)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 0.4)                          // A's look has started, not finished
+        var go = result(3.5); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        play(m, from: 3.5, seconds: 2)                          // (B rolling then resting: none of it is A's look)
+        #expect(m.pocketConfirm?.pocket == .footLeft, "A asks")
+        #expect(spy.settled.isEmpty)
+    }
+
+    /// MAJOR 1b: a shot queued behind an unanswered question still gets its own look in its own window.
+    @Test func aQueuedShotGetsItsOwnLookBehindAQuestion() {
+        let spy = Spy(), m = model(spy)
+        @MainActor final class States { var all: [GameState] = [] }
+        let states = States()
+        var h = m.hooks
+        h.gameAdvanced = { spy.advanced = $0; states.all.append($0) }
+        m.hooks = h
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.pocketConfirm != nil)                          // A asks
+        var go = result(5); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        // B: the 11 (track 3) into the foot right, certain; during B's own window it is seen in the jaws: stays.
+        var b = ShotRecord(start: 5, end: 6, preState: [:], finalState: [:], cueID: 1, firstContact: 3, rails: [], pocketed: [3: .footRight])
+        b.uncertainPockets = [:]
+        var endB = result(6, shot: b); endB.ballIDs[3] = BallID(11)!
+        m.drive(endB)
+        var t = 6.0
+        while t < 7.5 { t += 1.0 / 15; var r = result(t, occupied: [.footRight]); r.ballIDs[3] = BallID(11)!; m.drive(r) }
+        // Later frames (C's world) show nothing in the jaws; B's verdict was already made in its own window.
+        play(m, from: 7.5, seconds: 2)
+        m.answerPocket(dropped: true)                           // A: dropped
+        #expect(spy.settled.count == 2)
+        // (The spy's currentGame is fixed, so each state is that shot's own result.)
+        #expect(states.all.first?.onTable.contains(BallID(3)!) == false, "A's answer applied to A")
+        #expect(states.all.last?.onTable.contains(BallID(11)!) == true, "B's ball stayed, from B's own look")
+    }
+
+    /// MAJOR 2: the first launch frame (moving, before shotStarted) hides the confirm and defers a tap's settle.
+    @Test func motionBeforeShotStartedGatesTheConfirmAndTheSettle() {
+        let spy = Spy(), m = model(spy)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.showsPocketConfirm)
+        var launch = result(4.6); launch.atRest = false        // no shotStarted yet (the segmenter needs 2 frames)
+        m.drive(launch)
+        #expect(!m.showsPocketConfirm)
+        m.answerPocket(dropped: true)
+        #expect(spy.settled.isEmpty, "nothing settles while a ball moves")
+        m.drive(result(5))
+        #expect(spy.settled.count == 1)
+    }
+
+    /// MAJOR 3: a shot-end frame that already shows the next shooter opens that aim; a reset then cancels it before
+    /// closing the shot.
+    @Test func shotEndWithAddressingOpensTheAimAndAResetCancelsItFirst() {
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        let m = logModel { log.e.append($0) }
+        var go = result(1); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        let miss = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        var end = result(2, shot: miss); end.shooterAddressing = true
+        m.drive(end)
+        #expect(log.e == ["start", "end", "start"], "the next aim opened on the shot-end frame; nothing closed in it")
+        m.perceptionReset()
+        #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
+    }
+
+    /// MAJOR 4: every close goes through one FIFO: a shot lost in a moving relock closes before a later shot dropped
+    /// by a second relock.
+    @Test func twoRelocksCloseInShotOrder() {
+        @MainActor final class Log { var e: [String] = []; var ids: [Int] = [] }
+        let log = Log()
+        let m = logModel { log.e.append($0) }
+        m.onCloseForTesting = { id, _ in log.ids.append(id) }
+        var go = result(1); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        m.perceptionReset()                                     // A lost while moving (id 0)
+        var rolling = result(1.5); rolling.atRest = false
+        m.drive(rolling)
+        var go2 = result(2); go2.atRest = false; go2.shotStarted = true
+        m.drive(go2)
+        // B (id 1) ends with the next shooter already addressing: no quiet frame for A to close in.
+        var endB = result(3, shot: slowMake(), inView: Set(Pocket.allCases).subtracting([.footLeft])); endB.shooterAddressing = true
+        m.drive(endB)
+        var t = 3.0
+        while t < 4.5 { t += 1.0 / 15; var r = result(t, inView: Set(Pocket.allCases).subtracting([.footLeft])); r.shooterAddressing = true; m.drive(r) }
+        #expect(log.ids.isEmpty, "nothing closes during the aim")
+        m.perceptionReset()
+        #expect(log.ids == [0, 1], "A before B")
+        #expect(log.e.filter { $0 == "start" }.count == log.e.filter { $0 == "end" || $0 == "cancel" }.count)
+    }
+
     /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge
     /// while anyone aims; the held result lands once the aim is over.
     @Test func heldShotNeverSettlesDuringAnAimAndTheShellStaysBalanced() {
