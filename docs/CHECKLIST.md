@@ -104,8 +104,9 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] No text in the aiming path (shared PostShotRatingBadge); shell LiveScreenAdapter drives LiveSession and injects the game's rules
 - [x] Codex reviews: capture-r8, autocal-r4, privacy-r3, wiring (REJECT → fixes → rerun REJECT, MAJORs only → fixes)
 - [x] Also merged: autocal-r4 8f08b48 (steep side-pocket fits) · tracker-r2 39079d0; side-pocket pocket-evidence rule (sidePockets fits only)
-- [x] App unit suite 1086 tests (1 test expectation fixed after tracker-r2, re-verified) · CueCore 687 · generic iOS device build OK
+- [x] App unit suite 1098/1098 at 78f2cbb · CueCore 687 · generic iOS device build OK · lead's fix/coreml-strides (device ANE stride crash) merged
+- [x] UI QA regression fixed: LiveReplay (model frames skip the classical shading check; training overlay on the AssistLevel scale, D1/D24). Simulator UI: LiveReplay passes; earlier partial run 27 pass
 - [x] Lock matrix (27×20, app, -O build): in-scope 92.3 % accurate, all 72.0 %, p50 TTL 1.33 s; elev-45 25 % / elev-60 40 % (was 5/25)
 - [!] Matrix false locks: 1 wrong-size lock (felt-tan seed 10, 16 cm, under the old 20 cm cut-off; now counted). Earlier run: dist-2/3 m wrong size. Size disambiguation needs work before the 0-false gate holds
-- [~] Final combined Codex rerun (usage limit until 17:23); UI suite
+- [!] Final combined Codex rerun NOT run: Codex usage limit until 2026-11-11 13:07 (prompt ready: scratchpad/reviews/integ-final3.prompt)
 - [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
