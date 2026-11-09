@@ -491,6 +491,37 @@ struct D30PocketTests {
         #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
     }
 
+    // MARK: GPT-5.6 review of 71b0253
+
+    /// BLOCKER: B's launch frame with the cue ball missed (its track coasts unmeasured, atRest still true, no onset,
+    /// a static ball measured) is not quiet: A's confirm hides and a tap can't settle it.
+    @Test func partialDropoutAtLaunchIsNotQuiet() {
+        let spy = Spy(), m = model(spy)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.showsPocketConfirm)
+        let obj = TrackedBall(id: 9, position: Vec2(0.4, 0.4), velocity: .zero, kind: .solid, tentativeNumber: 2, confirmed: true)
+        var miss = result(4.6, extra: [obj])
+        miss.tracks = miss.tracks.map { var b = $0; if b.id == 1 { b.measured = false }; return b }
+        m.drive(miss)
+        #expect(!m.showsPocketConfirm)
+        m.answerPocket(dropped: true)
+        #expect(spy.settled.isEmpty, "no settle while the launching ball is unseen")
+        m.drive(result(5.5, extra: [obj]))
+        #expect(spy.settled.count == 1)
+    }
+
+    /// MAJOR: a frame that carries A's shot end AND B's raw onset is not A's look: a ball in A's pocket on that frame
+    /// doesn't count, A's look is frozen at once (its uncertain ball is asked).
+    @Test func shotEndFrameWithOnsetIsNotTheNewShotsLook() {
+        let spy = Spy(), m = model(spy)
+        var end = result(3, shot: slowMake(), occupied: [.footLeft]); end.motionOnset = true
+        m.drive(end)
+        play(m, from: 3, seconds: 1.5)
+        #expect(m.pocketConfirm?.pocket == .footLeft, "frozen at once: asked, not 'seen in the jaws'")
+        #expect(spy.settled.isEmpty)
+    }
+
     /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge
     /// while anyone aims; the held result lands once the aim is over.
     @Test func heldShotNeverSettlesDuringAnAimAndTheShellStaysBalanced() {

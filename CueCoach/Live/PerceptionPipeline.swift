@@ -211,9 +211,12 @@ actor PerceptionPipeline {
         let started = !wasInShot && (segmenter?.inShot ?? false)
         // Raw motion onset: a measured ball's position moved this frame (the tracker's at-rest lags onset and its
         // filtered velocity can be zeroed). One threshold: > 4 mm and > 5 cm/s over the frame gap.
+        // Raw positions survive short misses: a ball reacquired after a dropout reports its displacement since its
+        // last measurement (GPT-5.6 review of 71b0253).
         var onset = false
         var raw: [Int: (p: Vec2, t: Double)] = [:]
-        for b in confirmed where b.measured {
+        for b in confirmed {
+            guard b.measured else { if let prev = lastRaw[b.id] { raw[b.id] = prev }; continue }
             let q = b.measuredPosition
             if let prev = lastRaw[b.id], f.timestamp > prev.t {
                 let d = q.distance(to: prev.p)
@@ -221,6 +224,16 @@ actor PerceptionPipeline {
             }
             raw[b.id] = (q, f.timestamp)
         }
+        // A launching ball reacquired as a NEW track (the old one still coasting) is motion too: a measured track with
+        // no raw history appearing within 20 cm of a coasting confirmed track's last raw position, away from it.
+        let coasting = confirmed.filter { !$0.measured }.compactMap { lastRaw[$0.id]?.p }
+        if !onset, !coasting.isEmpty {
+            for b in tracks where b.measured && lastRaw[b.id] == nil {
+                let q = b.measuredPosition
+                if coasting.contains(where: { let d = $0.distance(to: q); return d > 0.004 && d < 0.2 }) { onset = true; break }
+            }
+        }
+        for b in tracks where b.measured && !b.confirmed { raw[b.id] = (b.measuredPosition, f.timestamp) }
         lastRaw = raw
         let ballIDs = shotIDs.update(known: BallIdentity.known(confirmed, cueID: cueID),
                                      inShot: wasInShot || (segmenter?.inShot ?? false), ended: shot != nil)

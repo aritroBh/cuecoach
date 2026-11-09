@@ -330,8 +330,10 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
     close carries that shot's own record;
   - no close, settle, badge or visible confirm while someone aims (aim phase, or physical evidence: addressing / live
     cue line) or anything moves. Motion is ONE signal: `!atRest` OR the pipeline's raw `motionOnset` (a measured
-    ball's position moved > 4 mm and > 5 cm/s this frame; it leads the debounced at-rest) OR a ball's speed; a frame
-    with no balls seen is not quiet either. A tap during motion is recorded and applied once quiet;
+    ball's position moved > 4 mm and > 5 cm/s since its last measurement, raw positions kept across short misses; or
+    a new track appearing within 20 cm of a coasting one) OR a ball's speed OR a partial dropout (a confirmed ball
+    measured within the last 0.3 s but not this frame); a frame with no balls seen is not quiet either. A shot-end
+    frame that already moves freezes the new shot's look at once (it is never that shot's look). A tap during motion is recorded and applied once quiet;
   - a relock cancels an open aim and never closes anything itself: closes wait for a fresh post-relock frame with
     no aim evidence and no motion. Addressing while the segmenter still holds a shot open (`.moving`) opens no shell
     aim (the shell is still gated on that shot); the aim opens on the shot-end frame or the first frame after a relock;

@@ -107,6 +107,9 @@ final class LiveModel {
     /// The ONE physical-motion signal (last frame): the tracker not at rest, raw motion onset (which leads the
     /// debounced at-rest), or any ball moving; for closing, a frame with no balls seen counts as not quiet too.
     private var movingNow = false
+    /// Last time each confirmed track was measured (partial-dropout continuity).
+    private var lastMeasuredAt: [Int: Double] = [:]
+    static let dropoutWindow = 0.3
     /// After a relock nothing drains until a fresh frame proves no aim and no motion.
     private var clearSinceReset = true
     /// Quiet = no aim (phase or evidence) and nothing moving: the only time anything closes, settles, badges or asks.
@@ -228,8 +231,21 @@ final class LiveModel {
     func drive(_ r: PerceptionResult) {
         let ballMoving = r.confirmed.contains { $0.speed > 0.1 }
         let cueCreeping = r.confirmed.contains { r.marks[$0.id] == .cue && $0.speed > 0.04 }
-        // The one physical-motion signal: not at rest, raw onset (leads the debounced at-rest), or a ball moving.
-        let moving = !r.atRest || r.motionOnset || ballMoving || cueCreeping
+        // Partial dropout: a confirmed ball measured within the last `dropoutWindow` s but not this frame may be the
+        // one that just launched; motion can't be excluded (GPT-5.6 review of 71b0253).
+        var dropout = false
+        var seenNow: [Int: Double] = [:]
+        for b in r.confirmed {
+            if b.measured { seenNow[b.id] = r.timestamp }
+            else if let last = lastMeasuredAt[b.id] {
+                seenNow[b.id] = last
+                if r.timestamp - last <= Self.dropoutWindow { dropout = true }
+            }
+        }
+        lastMeasuredAt = seenNow
+        // The one physical-motion signal: not at rest, raw onset (leads the debounced at-rest), a ball moving, or a
+        // just-seen ball unmeasured.
+        let moving = !r.atRest || r.motionOnset || ballMoving || cueCreeping || dropout
         let evidence = r.liveAim != nil || r.shooterAddressing
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
         if evidence || moving || r.shotStarted { hideBadge() }
@@ -255,7 +271,8 @@ final class LiveModel {
         // 3. A shot that ended this frame joins the FIFO; its look starts with this frame.
         if let shot = r.shot {
             enqueue(shot, ids: r.ballIDs)
-            look(r, freeze: false)
+            // A shot-end frame that already shows the next motion is not this shot's look: freeze at once.
+            look(r, freeze: moving || r.shotStarted)
         }
         // 4. Close / ask from the front.
         drain()
