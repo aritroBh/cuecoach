@@ -30,6 +30,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=DESTINATION)
     parser.add_argument("--max-mb", type=float, default=15)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--weights-name", help="provenance recorded in the metadata (e.g. the training run name)")
+    parser.add_argument("--benchmark", help="benchmark the weights were chosen on (e.g. d32-virtual-sim-v1)")
     args = parser.parse_args()
     if not args.weights.is_file():
         parser.error(f"checkpoint does not exist: {args.weights}")
@@ -68,6 +70,10 @@ def main() -> None:
     if not image_inputs or image_inputs[0].type.imageType.width != 640 or image_inputs[0].type.imageType.height != 640:
         raise RuntimeError("exported package does not have a 640x640 image input")
     metadata = {"input_size": 640, "classes": names}
+    if args.weights_name:
+        metadata["weights"] = args.weights_name
+    if args.benchmark:
+        metadata["benchmark"] = args.benchmark
     metadata_path.write_text(json.dumps(metadata, separators=(",", ":")) + "\n")
     final_size = sum(item.stat().st_size for item in output.rglob("*") if item.is_file())
     print(f"Exported {output} ({final_size / 1_000_000:.2f} MB, FP16, embedded NMS)")

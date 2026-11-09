@@ -88,9 +88,10 @@ actor PerceptionPipeline {
     private let feltSampleCount = 10
 
     /// The shipped detector (the app's call sites pass it; the init default stays classical for logic tests on
-    /// rendered scenes): the trained Core ML model (synthetic-trained, ANE) with the classical detector as fallback. `UserDefaults "cc.detector.classical" = true` forces classical-only (table-side A/B).
+    /// rendered scenes): the D32 benchmark winner (`DetectorChoice.benchmarkWinner`). `UserDefaults
+    /// "cc.detector.classical" = true` forces classical-only (table-side A/B).
     static func defaultDetector(defaults: UserDefaults = .standard) -> any BallDetector {
-        defaults.bool(forKey: "cc.detector.classical") ? HybridBallDetector(model: nil) : HybridBallDetector()
+        defaults.bool(forKey: "cc.detector.classical") ? HybridBallDetector(model: nil) : DetectorChoice.benchmarkWinner.make()
     }
 
     init(detector: any BallDetector = ClassicalBallDetector(), previewer: any ShotPreviewing = PhysicsShotPreview()) {

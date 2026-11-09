@@ -16,6 +16,8 @@ __pycache__/
 tools/datasets/
 tools/footage/
 *.mlpackage/
+# App-bundled models are committed (D21/D32); the face model below stays ignored.
+!CueCoach/Resources/Models/*.mlpackage/
 # Face model (D25): fetched + converted by tools/faceid/fetch_auraface.sh, ~124 MB, never committed.
 CueCoach/Resources/Models/FaceEmbedding.mlpackage/
 *.mlmodelc/

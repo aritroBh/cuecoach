@@ -190,3 +190,35 @@ final class HybridBallDetector: BallDetector, @unchecked Sendable {
         }
     }
 }
+
+/// D32: the ball detectors the virtual-sim benchmark scores, and the one it picked for the app
+/// (docs/research/detector-benchmark.md). The app's factory and the benchmark harness both build through `make()`.
+enum DetectorChoice: String, CaseIterable, Sendable {
+    /// v0 colour detector alone.
+    case classical
+    /// The bundled model on every frame (classical only when inference fails).
+    case model
+    /// The model paced to ≤ 30 Hz of frame time, classical between runs and on failure.
+    case hybrid
+
+    /// Measured winner (identity F1, detection F1, false positives on empty cloth; latency relative).
+    static let benchmarkWinner: DetectorChoice = .hybrid
+    /// The model weights that won it (`BallDetector.json` "weights"): YOLO26n synth30 fine-tuned on train-style 3D
+    /// renders (tools/detector/sim3d_dataset.py + finetune_mix.py, 10 epochs).
+    static let benchmarkWeights = "yolo26n-sim3d-ft"
+
+    func make(model: (any BallInference)? = CoreMLBallInference.shared) -> any BallDetector {
+        switch self {
+        case .classical: ClassicalBallDetector()
+        case .model: HybridBallDetector(model: model, minInterval: 0)
+        case .hybrid: HybridBallDetector(model: model, minInterval: 1.0 / 30)
+        }
+    }
+
+    /// Which candidate a detector is (nil for anything else, e.g. a hybrid without a model).
+    init?(of detector: any BallDetector) {
+        if detector is ClassicalBallDetector { self = .classical; return }
+        guard let h = detector as? HybridBallDetector, h.model != nil else { return nil }
+        self = h.minInterval == 0 ? .model : .hybrid
+    }
+}

@@ -34,3 +34,22 @@ Frames and timestamps go to ignored `data/footage_frames/`; they are unlabeled a
 `export_coreml.py` writes `CueCoach/Resources/Models/BallDetector.mlpackage` and a small adjacent `BallDetector.json`. The model is static 640×640, FP16, with embedded NMS; export stops if the package exceeds 15 MB. The local smoke test loads the package and runs one generated scene. This repo worker has no iPhone 15 Pro attached, so the 30+ FPS target still needs a sustained device benchmark.
 
 Ultralytics states that its code and trained models use AGPL-3.0 by default; a commercial/proprietary deployment needs an Enterprise license. See [Ultralytics licensing](https://www.ultralytics.com/license) before shipping.
+
+## D32 virtual-sim benchmark (held out)
+
+`sim3d.py` ray-casts a real pinhole camera against the table (cloth, cushions, rails, pockets) and true spheres lit by
+overhead lamps in linear light, then runs a phone pipeline (ball/camera motion blur, lens softness, vignetting, flare,
+auto-exposure and partial white balance, shot/read noise, tone curve, 4:2:0 chroma, JPEG 55–92). Cameras sit 1–4 m
+from the table at 20–80° down, eye 0.25–1.45 m above the cloth; layouts include racks, touching clusters, a cue stick
+and hands, chalk and specks, moving balls, and empty cloth.
+
+```sh
+uv run --python 3.12 python bench_scenes.py                    # data/bench/v1: 136 clips × 4 frames (16 empty)
+# app path on the simulator (CueCoachTests/DetectorBenchTests, opt-in; build with -O for speed):
+TEST_RUNNER_CUECOACH_BENCH=v1 xcodebuild test … SWIFT_OPTIMIZATION_LEVEL=-O -only-testing:CueCoachTests/DetectorBenchTests
+uv run --python 3.12 python bench_score.py --bench data/bench/v1 --markdown out.md
+```
+
+Bench clips use their own seed namespace and the "bench" style (cloth colours, ball-set palettes, lamp layouts);
+`sim3d_dataset.py` renders the disjoint "train" style for training, and `finetune_mix.py` mixes it with the 2D renders.
+Results: `docs/research/detector-benchmark.md`. Run pytest as `uv run --python 3.12 python -m pytest`.
