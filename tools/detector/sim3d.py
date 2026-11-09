@@ -285,7 +285,7 @@ def make_scene(rng: np.random.Generator, style: str = "bench", empty: bool = Fal
                  tags={"layout": layout, "cloth": cloth_name, "table": table, "lamps": n_lamps, "kelvin": kelvin})
 
 
-def sample_camera(rng: np.random.Generator, scene: Scene) -> tuple[Camera, dict]:
+def sample_camera(rng: np.random.Generator, scene: Scene, img_w: int = SRC_W, img_h: int = SRC_H) -> tuple[Camera, dict]:
     """Hand-held phone pose: 1–4 m from a point on the table, 20–80° down, eye 0.25–1.45 m above the cloth."""
     L, W = scene.length, scene.width
     for _ in range(1000):
@@ -301,7 +301,7 @@ def sample_camera(rng: np.random.Generator, scene: Scene) -> tuple[Camera, dict]
     eye = target + np.array([math.cos(azimuth) * horiz, math.sin(azimuth) * horiz, height])
     fov = float(rng.uniform(60, 70))
     roll = float(rng.normal(0, 4))
-    cam = Camera.look_at(eye, target, fov, roll)
+    cam = Camera.look_at(eye, target, fov, roll, img_w, img_h)
     return cam, {"elevation_deg": elevation, "distance_m": distance, "height_m": height, "fov_deg": fov, "roll_deg": roll,
                  "azimuth": float(azimuth), "target": target.tolist()}
 
