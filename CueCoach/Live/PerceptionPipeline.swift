@@ -39,6 +39,8 @@ struct PerceptionResult: Sendable {
     var ballIDs: [Int: BallID] = [:]
     /// The shooter's wrist is near the cue ball (stepping up to shoot) — hides post-shot text.
     var shooterAddressing = false
+    /// D33: a cue stick seen near the cue ball (stroke or not, held over the cue tracker's 1 s window): aim evidence.
+    var stickNearCue = false
     /// Whole pipeline time for this frame (detect + depth + track + cue + aim), ms.
     var totalMs: Double = 0
     /// D30: pockets this frame can judge (in frame, no hand over them) and pockets with a ball in their jaws.
@@ -242,6 +244,7 @@ actor PerceptionPipeline {
                                 shotStarted: started, shot: shot, liveAim: live, convergence: convergence, liveTargetID: liveTargetID,
                                 depthBalls: depthBalls.count, ballIDs: ballIDs,
                                 shooterAddressing: addressing,
+                                stickNearCue: cueTracker.cueVisible(at: f.timestamp),
                                 totalMs: Date().timeIntervalSince(t0) * 1000,
                                 pocketsInView: Self.pocketsInView(geometry: geo, image: f.image, wrists: f.wristsByPerson.flatMap { $0 }),
                                 pocketsOccupied: Self.occupiedPockets(confirmed, spec: table.spec),

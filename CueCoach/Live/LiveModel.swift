@@ -246,7 +246,8 @@ final class LiveModel {
         // The one physical-motion signal: not at rest, raw onset (leads the debounced at-rest), a ball moving, or a
         // just-seen ball unmeasured.
         let moving = !r.atRest || r.motionOnset || ballMoving || cueCreeping || dropout
-        let evidence = r.liveAim != nil || r.shooterAddressing
+        // Aim evidence: a live cue line, the shooter addressing the cue ball (D29), or a stick near it (D33, no stroke needed).
+        let evidence = r.liveAim != nil || r.shooterAddressing || r.stickNearCue
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
         if evidence || moving || r.shotStarted { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
