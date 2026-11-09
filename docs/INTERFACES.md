@@ -328,8 +328,13 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
     forwarded live, held shot or not; a shot-end frame that already shows the next shooter opens that aim;
   - exactly one close per shot (`settled` rated, or `ballsSettled` unrated), strictly in shot order, and a rated
     close carries that shot's own record;
-  - no close, settle, badge or visible confirm while someone aims or anything moves (`!atRest`, including the launch
-    frame before `shotStarted`); a tap during motion is recorded and applied once quiet;
+  - no close, settle, badge or visible confirm while someone aims (aim phase, or physical evidence: addressing / live
+    cue line) or anything moves. Motion is ONE signal: `!atRest` OR the pipeline's raw `motionOnset` (a measured
+    ball's position moved > 4 mm and > 5 cm/s this frame; it leads the debounced at-rest) OR a ball's speed; a frame
+    with no balls seen is not quiet either. A tap during motion is recorded and applied once quiet;
+  - a relock cancels an open aim and never closes anything itself: closes wait for a fresh post-relock frame with
+    no aim evidence and no motion. Addressing while the segmenter still holds a shot open (`.moving`) opens no shell
+    aim (the shell is still gated on that shot); the aim opens on the shot-end frame or the first frame after a relock;
   - nothing stays pending except an unanswered question.
   The shell treats a late `settled` as standalone (`LiveSession.settled` records the shot, shows its badge, rotates).
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark

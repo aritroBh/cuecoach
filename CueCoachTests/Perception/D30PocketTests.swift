@@ -197,6 +197,9 @@ struct D30PocketTests {
         #expect(m.pocketConfirm != nil)
         m.perceptionReset()
         #expect(m.pocketConfirm == nil && !m.showsPocketConfirm)
+        // GPT-5.6 BLOCKER 2: the close waits for a fresh post-relock frame proving no aim and no motion.
+        #expect(c.settledUnrated == 0)
+        m.drive(result(5))
         #expect(c.settledUnrated == 1, "the shell's gate is released")
         // The next shot: a plain miss, no pockets.
         let miss = ShotRecord(start: 10, end: 12, preState: [1: Vec2(0.5, 0.5)], finalState: [1: Vec2(1, 0.6)], cueID: 1,
@@ -226,8 +229,11 @@ struct D30PocketTests {
         while t < 5.0 { t += 1.0 / 15; var r = result(t, inView: Set(Pocket.allCases).subtracting([.footLeft])); r.shooterAddressing = true; m.drive(r) }
         #expect(log.e == ["start", "end", "start"])
         m.perceptionReset()
-        #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
+        // GPT-5.6 BLOCKER 2: the shooter was still addressing on the last frame; the dropped shot closes only once a
+        // post-relock frame shows no aim and no motion.
+        #expect(log.e == ["start", "end", "start", "cancel"])
         play(m, from: 5, seconds: 2)
+        #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
         #expect(log.e == ["start", "end", "start", "cancel", "unrated"], "nothing else lands for the dropped shot")
     }
 
@@ -412,6 +418,8 @@ struct D30PocketTests {
         m.drive(end)
         #expect(log.e == ["start", "end", "start"], "the next aim opened on the shot-end frame; nothing closed in it")
         m.perceptionReset()
+        #expect(log.e == ["start", "end", "start", "cancel"], "cancel first; the shooter is still there")
+        m.drive(result(3))
         #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
     }
 
@@ -421,7 +429,7 @@ struct D30PocketTests {
         @MainActor final class Log { var e: [String] = []; var ids: [Int] = [] }
         let log = Log()
         let m = logModel { log.e.append($0) }
-        m.onCloseForTesting = { id, _ in log.ids.append(id) }
+        m.onCloseForTesting = { id, _, _ in log.ids.append(id) }
         var go = result(1); go.atRest = false; go.shotStarted = true
         m.drive(go)
         m.perceptionReset()                                     // A lost while moving (id 0)
@@ -436,8 +444,51 @@ struct D30PocketTests {
         while t < 4.5 { t += 1.0 / 15; var r = result(t, inView: Set(Pocket.allCases).subtracting([.footLeft])); r.shooterAddressing = true; m.drive(r) }
         #expect(log.ids.isEmpty, "nothing closes during the aim")
         m.perceptionReset()
+        #expect(log.ids.isEmpty, "nothing closes before a fresh quiet frame")
+        m.drive(result(5))
         #expect(log.ids == [0, 1], "A before B")
         #expect(log.e.filter { $0 == "start" }.count == log.e.filter { $0 == "end" || $0 == "cancel" }.count)
+    }
+
+    // MARK: GPT-5.6 review of dc5f5bd
+
+    /// BLOCKER 1: B's onset frame can still read at rest with zero filtered velocity; the raw onset alone hides A's
+    /// confirm, freezes nothing new, and a tap waits: A settles only once B is truly quiet.
+    @Test func rawMotionOnsetGatesTheConfirmTapAndSettle() {
+        let spy = Spy(), m = model(spy)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.showsPocketConfirm)
+        var onset = result(4.6); onset.motionOnset = true      // atRest still true, velocities zero
+        m.drive(onset)
+        #expect(!m.showsPocketConfirm)
+        m.answerPocket(dropped: true)
+        #expect(spy.settled.isEmpty, "no settle while B moves")
+        var rolling = result(4.7); rolling.atRest = false
+        m.drive(rolling)
+        #expect(spy.settled.isEmpty)
+        m.drive(result(5.5))
+        #expect(spy.settled.count == 1)
+    }
+
+    /// BLOCKER 2: the segmenter holds shot A open (.moving) while the next shooter addresses; a relock then must not
+    /// close A during that aim. After the relock the aim opens for the shell; A closes once the aim is over.
+    @Test func relockWhileTheNextShooterAddressesAHeldOpenShotWaitsForTheAimToEnd() {
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        let m = logModel { log.e.append($0) }
+        var go = result(1); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        var t = 1.0
+        // Balls at rest, A still open (a ball missing), the next shooter addresses.
+        while t < 2.5 { t += 1.0 / 15; var r = result(t); r.shooterAddressing = true; m.drive(r) }
+        #expect(log.e == ["start", "end"], "no shell aim while the segmenter holds A open")
+        m.perceptionReset()
+        #expect(log.e == ["start", "end"], "nothing closes on the relock: the shooter is still there")
+        while t < 3.5 { t += 1.0 / 15; var r = result(t); r.shooterAddressing = true; m.drive(r) }
+        #expect(log.e == ["start", "end", "start"], "the aim opens for the shell after the relock; A still waits")
+        play(m, from: 3.5, seconds: 2)
+        #expect(log.e == ["start", "end", "start", "cancel", "unrated"])
     }
 
     /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge

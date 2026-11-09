@@ -87,21 +87,30 @@ final class LiveModel {
     private var nextShotID = 0
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
     private func lostEntry() -> ShotEntry { ShotEntry(id: newID(), state: .lost) }
-    /// Test seam (the invariant oracle): every close, in order, with the entry's id and its record (nil = unrated).
-    @ObservationIgnored var onCloseForTesting: ((Int, ShotRecord?) -> Void)?
+    /// Test seam (the invariant oracle): every close, in order, right before its shell/rules effect: the entry's id,
+    /// the resolved record that is applied (nil = unrated), and whether it is rated.
+    @ObservationIgnored var onCloseForTesting: ((Int, ShotRecord?, Bool) -> Void)?
     /// Entries created so far (shots ended + shots lost in flight).
     var shotsCreatedForTesting: Int { nextShotID }
+    /// FIFO and gate state for test diagnostics.
+    var lifecycleDebugDescription: String {
+        "fifo \(shots.map { "\($0.id):\($0.state)\($0.openAsk.map { "?\($0)" } ?? "")" }) phase \(aimEvents.phase) evidence \(aimEvidence) moving \(movingNow) clear \(clearSinceReset) confirm \(pocketConfirm != nil)"
+    }
 
     /// The question Live is waiting on (post-shot only). Rules, badge and turn wait for it.
     private(set) var pocketConfirm: PocketConfirm?
     /// Where to draw it (the pocket on screen), set by the active view; nil = bottom centre.
     var pocketConfirmPoint: CGPoint?
-    /// Someone is aiming (aim phase open, a live cue line, or the shooter addressing the cue ball).
-    private var aimingNow = false
-    /// The last frame showed balls at rest (and some balls at all): the physical-motion gate.
-    private var atRestNow = true
-    /// Quiet = nobody aiming and nothing moving: the only time anything closes, settles, badges or asks.
-    private var quiet: Bool { !aimingNow && atRestNow }
+    /// Physical aim evidence on the last frame (a live cue line, or the shooter addressing the cue ball). It is what
+    /// the camera saw, so a relock does not clear it.
+    private var aimEvidence = false
+    /// The ONE physical-motion signal (last frame): the tracker not at rest, raw motion onset (which leads the
+    /// debounced at-rest), or any ball moving; for closing, a frame with no balls seen counts as not quiet too.
+    private var movingNow = false
+    /// After a relock nothing drains until a fresh frame proves no aim and no motion.
+    private var clearSinceReset = true
+    /// Quiet = no aim (phase or evidence) and nothing moving: the only time anything closes, settles, badges or asks.
+    private var quiet: Bool { aimEvents.phase == .idle && !aimEvidence && !movingNow && clearSinceReset }
     var showsPocketConfirm: Bool { pocketConfirm != nil && quiet }
 
     /// Perception was reset (revalidation, recalibration, a new table). An open aim is cancelled first, then every
@@ -111,10 +120,11 @@ final class LiveModel {
         for i in shots.indices where shots[i].state != .lost { shots[i] = ShotEntry(id: shots[i].id, state: .lost) }
         if aimEvents.phase == .moving { shots.append(lostEntry()) }
         aimEvents = AimEvents()
-        aimingNow = false
         pocketConfirm = nil
         pocketConfirmPoint = nil
-        drain()
+        // The aim evidence and motion seen last stay; nothing closes until a post-relock frame shows the table quiet
+        // (GPT-5.6: a shooter addressing while the segmenter held the last shot open must not see shell text).
+        clearSinceReset = false
     }
 
     private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
@@ -155,7 +165,7 @@ final class LiveModel {
             case .lost:
                 guard quiet else { return }
                 shots.removeFirst()
-                onCloseForTesting?(head.id, nil)
+                onCloseForTesting?(head.id, nil, false)
                 hooks.ballsSettled()
             case .decided:
                 if let tid = head.openAsk {
@@ -164,7 +174,6 @@ final class LiveModel {
                 }
                 guard quiet else { return }
                 shots.removeFirst()
-                onCloseForTesting?(head.id, head.record)
                 close(head)
             }
         }
@@ -185,6 +194,7 @@ final class LiveModel {
             if dropped { rec.pocketed[tid] = pk } else { rec.pocketed[tid] = nil; rec.pocketTimes[tid] = nil }
             rec.uncertainPockets[tid] = nil
         }
+        onCloseForTesting?(e.id, rec, true)
         shotSettled(rec, ids: e.ids)
     }
 
@@ -216,15 +226,20 @@ final class LiveModel {
 
     /// Drives the aim lifecycle and the shot FIFO from each perception result (and hides the badge on aim/motion).
     func drive(_ r: PerceptionResult) {
-        let moving = r.confirmed.contains { $0.speed > 0.1 }
+        let ballMoving = r.confirmed.contains { $0.speed > 0.1 }
         let cueCreeping = r.confirmed.contains { r.marks[$0.id] == .cue && $0.speed > 0.04 }
+        // The one physical-motion signal: not at rest, raw onset (leads the debounced at-rest), or a ball moving.
+        let moving = !r.atRest || r.motionOnset || ballMoving || cueCreeping
+        let evidence = r.liveAim != nil || r.shooterAddressing
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
-        if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing || !r.atRest { hideBadge() }
+        if evidence || moving || r.shotStarted { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
         // 1. A later shot or any motion ends an unfinished look (this frame belongs to something else).
-        look(r, freeze: r.shotStarted || !r.atRest)
+        look(r, freeze: r.shotStarted || moving)
         // 2. The shell always sees the aim lifecycle (the shooter addressing the cue ball counts as aiming, D29).
-        for e in aimEvents.update(cueVisible: r.liveAim != nil || r.shooterAddressing, atRest: r.atRest, shotStarted: r.shotStarted,
+        //    Addressing while the segmenter still holds the last shot open (.moving) opens no shell aim: the shell is
+        //    still gated on that shot; the aim opens on the shot-end frame or the first frame after a relock.
+        for e in aimEvents.update(cueVisible: evidence, atRest: r.atRest && !moving, shotStarted: r.shotStarted,
                                   shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
             case .aimStarted: hooks.aimStarted()
@@ -233,8 +248,10 @@ final class LiveModel {
             case .settled: break   // the shot closes through the FIFO
             }
         }
-        aimingNow = r.liveAim != nil || r.shooterAddressing || aimEvents.phase != .idle
-        atRestNow = r.atRest && !r.confirmed.isEmpty
+        aimEvidence = evidence
+        // Nothing seen to judge by (e.g. right after a relock) is not quiet either.
+        movingNow = moving || r.confirmed.isEmpty
+        if !clearSinceReset, !evidence, !movingNow { clearSinceReset = true }
         // 3. A shot that ended this frame joins the FIFO; its look starts with this frame.
         if let shot = r.shot {
             enqueue(shot, ids: r.ballIDs)

@@ -44,6 +44,8 @@ struct PerceptionResult: Sendable {
     /// D30: pockets this frame can judge (in frame, no hand over them) and pockets with a ball in their jaws.
     var pocketsInView: Set<Pocket> = Set(Pocket.allCases)
     var pocketsOccupied: Set<Pocket> = []
+    /// Raw motion this frame (a measured ball moved), independent of the debounced `atRest` and filtered velocity.
+    var motionOnset = false
 
     var confirmed: [TrackedBall] { tracks.filter(\.confirmed) }
 }
@@ -81,6 +83,8 @@ actor PerceptionPipeline {
     private var feltSamples: [(UInt8, UInt8, UInt8)] = []
     /// Rule ids seen before and during the current shot (a pocketed ball's track is gone at settlement).
     private var shotIDs = ShotIdentities()
+    /// Last raw (measured) position per track, for the motion-onset signal.
+    private var lastRaw: [Int: (p: Vec2, t: Double)] = [:]
     private let feltSampleCount = 10
 
     /// The shipped detector (the app's call sites pass it; the init default stays classical for logic tests on
@@ -108,6 +112,7 @@ actor PerceptionPipeline {
         cueID = nil
         cueLostAt = nil
         shotIDs = ShotIdentities()
+        lastRaw = [:]
         rivalFrames = nil
         lastPose = nil
     }
@@ -204,6 +209,19 @@ actor PerceptionPipeline {
         let strokeGate: Bool? = cueTracker.cueVisible(at: f.timestamp) ? cueTracker.strokeRecent(at: f.timestamp) : nil
         let shot = segmenter?.update(tracks: tracks, cueID: cueID, atRest: rest, at: f.timestamp, strokeRecent: strokeGate)
         let started = !wasInShot && (segmenter?.inShot ?? false)
+        // Raw motion onset: a measured ball's position moved this frame (the tracker's at-rest lags onset and its
+        // filtered velocity can be zeroed). One threshold: > 4 mm and > 5 cm/s over the frame gap.
+        var onset = false
+        var raw: [Int: (p: Vec2, t: Double)] = [:]
+        for b in confirmed where b.measured {
+            let q = b.measuredPosition
+            if let prev = lastRaw[b.id], f.timestamp > prev.t {
+                let d = q.distance(to: prev.p)
+                if d > max(0.004, 0.05 * (f.timestamp - prev.t)) { onset = true }
+            }
+            raw[b.id] = (q, f.timestamp)
+        }
+        lastRaw = raw
         let ballIDs = shotIDs.update(known: BallIdentity.known(confirmed, cueID: cueID),
                                      inShot: wasInShot || (segmenter?.inShot ?? false), ended: shot != nil)
         return PerceptionResult(timestamp: f.timestamp, detections: dets, tracks: tracks, marks: marks, atRest: rest,
@@ -213,7 +231,8 @@ actor PerceptionPipeline {
                                 shooterAddressing: addressing,
                                 totalMs: Date().timeIntervalSince(t0) * 1000,
                                 pocketsInView: Self.pocketsInView(geometry: geo, image: f.image, wrists: f.wristsByPerson.flatMap { $0 }),
-                                pocketsOccupied: Self.occupiedPockets(confirmed, spec: table.spec))
+                                pocketsOccupied: Self.occupiedPockets(confirmed, spec: table.spec),
+                                motionOnset: onset)
     }
 }
 
