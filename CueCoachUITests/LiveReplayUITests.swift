@@ -3,7 +3,12 @@ import XCTest
 /// Simulator has no camera/ARKit: the live screen replays a synthetic table through the same
 /// locator → auto-lock → detection → aim path.
 final class LiveReplayUITests: XCTestCase {
-    @MainActor func testPlayLocksTableWithoutTapsAndShowsBallsAndAim() {
+    @MainActor func testPlayLocksTableWithoutTapsAndShowsBallsAndAim() throws {
+        // The synthetic replay table exists only in simulator builds (D20); a device always runs the real AR camera,
+        // so on a phone this would test whatever the camera sees.
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("Replay is simulator-only (D20); device Live uses the AR camera.")
+        #endif
         let app = XCUIApplication()
         app.launchArguments = ["-appshell.uitest"]
         app.launch()
