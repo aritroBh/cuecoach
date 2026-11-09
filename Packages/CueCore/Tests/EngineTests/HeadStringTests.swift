@@ -62,3 +62,24 @@ private func footRailBackToKitchen() -> ShotTrace {
     #expect(out.firstContact == Fx.b(1))
     #expect(out.cueBallCrossedHeadStringFirst == true)
 }
+
+// MARK: - Generator: kitchen balls are reachable by kicks that cross the head string (WPA 3.11)
+
+@Test func generator_kitchenBallInHand_kicksAtAKitchenBallCrossingTheHeadString() {
+    // Open table after a break scratch; the only legal ball sits in the kitchen.
+    let s = Fx.table(cue: nil, [1: Vec2(0.30, 0.75), 8: Vec2(1.5, 0.5)])
+    let g = Fx.eightBall([1, 8], groups: nil, bih: .behindHeadString)
+    let rules = RulesEngine(ruleSet: .barEight)
+    let cs = CandidateGenerator(rules: rules).generate(s, g)
+    let kicks = cs.filter { if case .kick = $0.kind { $0.target == Fx.b(1) } else { false } }
+    #expect(!kicks.isEmpty)
+    // Straight-line shots at a kitchen ball are guaranteed WPA 3.11 fouls: never generated.
+    #expect(!cs.contains { $0.target == Fx.b(1) && ($0.kind == .direct || $0.kind == .safety) })
+    // Simulation validates: at least one kick hits the 1 first, legally.
+    let legal = kicks.contains { c in
+        var t = s; t.balls[.cue] = BallState(position: c.cuePlacement!)
+        let out = OutcomeBuilder.outcome(from: Simulator().simulate(t, stroke: c.stroke), game: g, candidate: c)
+        return out.firstContact == Fx.b(1) && !rules.apply(out, to: g).fouls.contains(.badPlayFromAboveHeadString)
+    }
+    #expect(legal)
+}

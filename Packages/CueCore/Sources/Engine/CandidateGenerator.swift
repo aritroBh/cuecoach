@@ -84,7 +84,10 @@ public struct CandidateGenerator: Sendable {
 
         let legal = rules.legalTargets(g).filter { objects[$0] != nil }.sorted()
         let restrictKitchen = g.ballInHand == .behindHeadString
+        // Straight-line shots at kitchen balls are WPA 3.11 fouls; kicks may still reach them by crossing the
+        // head string first (rail point below it), and the simulation judges the result.
         let targets = restrictKitchen ? legal.filter { objects[$0]!.x >= spec.headStringX } : legal
+        let kickTargets = restrictKitchen ? legal : targets
 
         // Cue position(s): the real cue ball, or ball-in-hand placements.
         var placements: [Vec2?] = []
@@ -132,7 +135,8 @@ public struct CandidateGenerator: Sendable {
             emit(l.kind, target: l.target, ball: l.objectBall, pocket: l.pocket, dir: l.aimPoint - cue,
                  step: l.minStep, placement: placement, ghost: l.ghost)
         }
-        for l in kicks(cue: cue, objects: objects, targets: targets, spec: spec)
+        for l in kicks(cue: cue, objects: objects, targets: kickTargets, spec: spec,
+                       crossHeadString: restrictKitchen)
             .prefix(snookered ? caps.kicksWhenSnookered : caps.kicks) {
             emit(l.kind, target: l.target, ball: l.objectBall, pocket: l.pocket, dir: l.aimPoint - cue,
                  step: l.minStep, placement: placement, ghost: l.ghost)
@@ -233,16 +237,21 @@ public struct CandidateGenerator: Sendable {
 
     // MARK: Kicks (mirror the ghost / the ball across the rail)
 
-    func kicks(cue: Vec2, objects: [BallID: Vec2], targets: [BallID], spec: TableSpec) -> [Line] {
+    /// `crossHeadString`: ball in hand in the kitchen; a kick at a kitchen ball must bounce below the head string.
+    func kicks(cue: Vec2, objects: [BallID: Vec2], targets: [BallID], spec: TableSpec,
+               crossHeadString: Bool = false) -> [Line] {
         var pots: [Line] = [], hits: [Line] = []
+        let line = spec.headStringX
         let all = Self.blockers(objects, except: [])
         for t in targets {
             let o = objects[t]!
             let others = Self.blockers(objects, except: [t])
+            let mustCross = crossHeadString && o.x < line
             for rail in EngineGeometry.railsAll {
                 // Kick to hit the ball (legal contact).
                 let om = EngineGeometry.mirror(o, across: rail, spec: spec)
                 if let rp = EngineGeometry.railPoint(from: cue, toMirrored: om, rail: rail, spec: spec),
+                   !mustCross || rp.x > line,
                    EngineGeometry.pathClear(from: cue, to: rp, blockers: all),
                    EngineGeometry.pathClear(from: rp, to: o, blockers: others) {
                     let v = AnalyticP.requiredSpeed(cueTravel: cue.distance(to: om), obTravel: 0.3, cut: 0, rails: 1)
@@ -257,6 +266,7 @@ public struct CandidateGenerator: Sendable {
                     guard Self.onCloth(ghost, spec: spec, margin: -0.004) else { continue }
                     let gm = EngineGeometry.mirror(ghost, across: rail, spec: spec)
                     guard let rp = EngineGeometry.railPoint(from: cue, toMirrored: gm, rail: rail, spec: spec),
+                          !mustCross || rp.x > line,
                           EngineGeometry.pathClear(from: cue, to: rp, blockers: all),
                           EngineGeometry.pathClear(from: rp, to: ghost, blockers: others),
                           EngineGeometry.pathClear(from: o, to: pc, blockers: others) else { continue }
