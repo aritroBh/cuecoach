@@ -110,6 +110,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [!] Matrix false locks: 1 wrong-size lock (felt-tan seed 10, 16 cm, under the old 20 cm cut-off; now counted). Earlier run: dist-2/3 m wrong size. Size disambiguation needs work before the 0-false gate holds
 - [!] Final combined Codex rerun NOT run: Codex usage limit until 2026-11-11 13:07 (prompt ready: scratchpad/reviews/integ-final3.prompt)
 - [x] Review round (GPT-5.3): D30 look on every pocketed ball, observed-gone only (≥ 80 %), independent side-pocket evidence. Matrix (app, -O) before/after: in-scope 92.3 → 92.0 %, all 72.0 → 71.1 %, p50 1.33 → 1.27 s, elev-45/60 25/40 → 20/40 %, false 1 → 1 (wrong size, dist-2.0m seed 3, 18.9 cm)
+- [x] Review round (Kimi K3): relock drops a held D30 shot (closed unrated), shell aim lifecycle balanced while held, no settle/badge during aim, model cueScore. Unit 1113 (2 fixed/verified: a look-window test updated, soak passes alone 0.0 MB growth); UI on Sim E: LiveReplay + ScreensA + ScreensB 29/29
 - [x] D30 "look, then ask" for uncertain pockets (resolver + icon-only post-shot confirm); unit 1106/1106 at d8752e9
 - [~] Device UI (iPhone 17 Pro Max): AppShell + Screens 24 pass / 2 fail (both device-timing test issues, fixed in de656b7, not yet re-run: phone went unavailable)
 - [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)

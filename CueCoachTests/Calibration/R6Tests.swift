@@ -157,6 +157,7 @@ struct R6ModelTests {
         let shot = ShotRecord(start: 0, end: 1, preState: [:], finalState: [:], cueID: 1, firstContact: 2,
                               rails: [], pocketed: [2: .footLeft])
         m.noteResult(result(shot: shot))
+        for i in 1...20 { m.noteResult(result(t: Double(i) / 15)) }   // D30: the 1 s post-settle look
         #expect(got == .mistake || got == .blunder)
     }
 

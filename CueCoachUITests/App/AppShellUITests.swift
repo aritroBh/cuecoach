@@ -62,6 +62,13 @@ final class AppShellUITests: XCTestCase {
         return wait(app, destination, t, file: file, line: line)
     }
 
+    /// After a navigation the push may still be settling (reduce motion, a loaded Mac): wait up to `t` for the
+    /// element to become hittable, then assert it. Same assertion, waited for.
+    @MainActor func assertHittable(_ e: XCUIElement, _ t: TimeInterval = 5, file: StaticString = #filePath, line: UInt = #line) {
+        _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: e)], timeout: t)
+        XCTAssertTrue(e.isHittable, "\(e.identifier) not hittable", file: file, line: line)
+    }
+
     @MainActor func tapSeat(_ app: XCUIApplication, _ seat: String, pick: String) {
         wait(app, "setup.seat.\(seat)").tap()
         wait(app, pick).tap()
@@ -267,8 +274,8 @@ final class AppShellUITests: XCTestCase {
         element(app, "join.game.g1").tap()
         wait(app, "join.lineup.Ari", 6)
         // The next step and the way out are in the first viewport at every size.
-        XCTAssertTrue(element(app, "join.waiting").isHittable)
-        XCTAssertTrue(element(app, "join.leave").isHittable)
+        assertHittable(element(app, "join.waiting"))
+        assertHittable(element(app, "join.leave"))
         shot(app, "10-join-waiting", v)
         app.terminate()
 
