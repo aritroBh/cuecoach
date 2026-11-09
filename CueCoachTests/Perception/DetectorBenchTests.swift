@@ -33,19 +33,19 @@ struct DetectorBenchTests {
             frames.append(["file": f.file, "ms": ms, "classicalFrame": shading,
                            "detections": dets.map(DetectorBench.json)])
         }
-        // Tracker level: each clip looped to 1 s at 30 Hz through the app pipeline (fresh detector per clip).
+        // Tracker level: each clip looped to 0.4 s at 30 Hz (3 hits confirm) through the app pipeline (fresh detector per clip).
         var clips: [[String: Any]] = []
         for (clip, list) in Dictionary(grouping: bench.frames, by: \.clip).sorted(by: { $0.key < $1.key }) {
             let p = PerceptionPipeline(detector: DetectorBench.make(candidate))
             await p.setTable(list[0].table)
             let images = try list.map { try DetectorBench.image(bench.dir.appendingPathComponent($0.file)) }
             var last: PerceptionResult?
-            for i in 0..<30 {
+            for i in 0..<12 {
                 let k = i % list.count
                 last = await p.process(PerceptionFrame(image: images[k], camera: list[k].camera, timestamp: Double(i) / 30))
             }
             let confirmed = last?.confirmed ?? []
-            clips.append(["clip": clip, "lastFile": list[29 % list.count].file,
+            clips.append(["clip": clip, "lastFile": list[11 % list.count].file,
                           "tracks": confirmed.map { ["x": $0.position.x, "y": $0.position.y, "kind": $0.kind.rawValue,
                                                      "number": $0.tentativeNumber ?? -1] }])
         }
@@ -61,9 +61,8 @@ struct DetectorBenchTests {
 }
 
 enum DetectorBench {
-    /// `classical` = v0 colour detector; `model` = the bundled Core ML model every frame (classical only if inference
-    /// fails); `hybrid` = `PerceptionPipeline.defaultDetector()` as shipped, paced by frame time.
-    static let candidates = ["classical", "model", "hybrid"]
+    /// `DetectorChoice` cases: classical, model (every frame), hybrid (≤ 30 Hz, classical between runs).
+    static let candidates = DetectorChoice.allCases.map(\.rawValue)
 
     static var benchName: String? { ProcessInfo.processInfo.environment["CUECOACH_BENCH"] }
 
@@ -75,13 +74,8 @@ enum DetectorBench {
         #endif
     }
 
-    static func make(_ name: String) -> any BallDetector {
-        switch name {
-        case "classical": ClassicalBallDetector()
-        case "model": HybridBallDetector(minInterval: 0)
-        default: PerceptionPipeline.defaultDetector(defaults: UserDefaults(suiteName: "bench") ?? .standard)
-        }
-    }
+    /// The app's own factory (`DetectorChoice.make`), so the benchmark scores exactly what the app would build.
+    static func make(_ name: String) -> any BallDetector { (DetectorChoice(rawValue: name) ?? .hybrid).make() }
 
     /// The pipeline's no-LiDAR rule (PerceptionPipeline.process): white/unknown blobs need sphere shading.
     static func shadingFilter(_ dets: [BallDetection], _ img: PixelImage) -> [BallDetection] {
