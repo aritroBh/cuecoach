@@ -261,6 +261,57 @@ struct D30PocketTests {
         #expect(log.e == ["start", "end", "start", "end", "unrated", "unrated"], "one close per shot, at rest")
     }
 
+    func relockedDuringMotion(_ log: @escaping @MainActor (String) -> Void) -> LiveModel {
+        let m = LiveModel(mode: .game)
+        var h = LiveHooks(aimStarted: { log("start") }, aimEnded: { log("end") }, aimCancelled: { log("cancel") },
+                          ballsSettled: { log("unrated") }, settled: { _, _ in log("rated") })
+        let game = lastSolidGame()
+        h.currentGame = { game }
+        m.hooks = h
+        var moving = result(1); moving.atRest = false; moving.shotStarted = true
+        m.drive(moving)
+        m.drive(result(3, shot: slowMake()))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        var next = result(6); next.atRest = false; next.shotStarted = true
+        m.drive(next)
+        m.perceptionReset()
+        return m
+    }
+
+    /// GPT-5.6 re-review of 8ede140: the first rest frame after a relock may already carry the next aim. The aim
+    /// reaches the shell, and the lost shots close only once that aim is over: never during it.
+    @Test func lostShotsNeverCloseDuringTheNextAim() {
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        let m = relockedDuringMotion { log.e.append($0) }
+        let before = log.e
+        var t = 8.0
+        while t < 9.0 { t += 1.0 / 15; var r = result(t); r.shooterAddressing = true; m.drive(r) }
+        #expect(Array(log.e.dropFirst(before.count)) == ["start"], "the aim is forwarded; nothing closes during it")
+        play(m, from: 9, seconds: 2)
+        #expect(Array(log.e.dropFirst(before.count)) == ["start", "cancel", "unrated", "unrated"])
+    }
+
+    /// …and when that aim becomes a shot, both lost shots close before the new shot's result, never during motion.
+    @Test func lostShotsCloseBeforeTheNextShotsResultAndNeverDuringMotion() {
+        @MainActor final class Log { var e: [String] = [] }
+        let log = Log()
+        let m = relockedDuringMotion { log.e.append($0) }
+        let before = log.e
+        var a = result(8); a.shooterAddressing = true
+        m.drive(a)
+        var go = result(8.5); go.atRest = false; go.shotStarted = true
+        m.drive(go)
+        var rolling = result(9); rolling.atRest = false
+        m.drive(rolling)
+        #expect(Array(log.e.dropFirst(before.count)) == ["start", "end"], "no close during the new shot's motion")
+        let miss = ShotRecord(start: 8.5, end: 10, preState: [1: Vec2(0.5, 0.5)], finalState: [1: Vec2(1, 0.6)], cueID: 1,
+                              firstContact: 2, rails: [], pocketed: [:])
+        m.drive(result(10, shot: miss))
+        play(m, from: 10, seconds: 2)
+        #expect(Array(log.e.dropFirst(before.count)) == ["start", "end", "unrated", "unrated", "rated"])
+    }
+
     /// MINOR: while a shot is held the shell's aim lifecycle stays balanced, and nothing settles or shows a badge
     /// while anyone aims; the held result lands once the aim is over.
     @Test func heldShotNeverSettlesDuringAnAimAndTheShellStaysBalanced() {

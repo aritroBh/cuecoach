@@ -189,13 +189,10 @@ final class LiveModel {
         // Any pre-shot sign hides the text — even when the cue detector misses the aim (Codex r6).
         if r.liveAim != nil || moving || cueCreeping || r.shotStarted || r.shooterAddressing { hideBadge() }
         if r.liveAim != nil { showAimHint = false }
-        if lostShots > 0 {
-            guard r.atRest, !r.confirmed.isEmpty else { return }
-            let n = lostShots
-            lostShots = 0
-            for _ in 0..<n { hooks.ballsSettled() }
-            return
-        }
+        // Shots lost to a relock: ignore frames while their balls are still rolling (no aim open since the relock);
+        // once at rest, keep processing the frame (it may already carry the next aim) and close them below, outside
+        // any aim and before any later shot's result (GPT-5.6 re-review of 8ede140).
+        if lostShots > 0, !r.atRest, aimEvents.phase == .idle { return }
         // The shooter addressing the cue ball counts as aiming even when the stick is missed (Codex capture-r8).
         // The shell always sees the aim lifecycle, held shot or not (its badge silencing and menu gating depend on
         // it); a held shot's settle is delivered later, only while nobody aims (GPT-5.3 re-review K2).
@@ -209,6 +206,11 @@ final class LiveModel {
             }
         }
         aimingNow = r.liveAim != nil || r.shooterAddressing || aimEvents.phase != .idle
+        if lostShots > 0, !aimingNow, r.atRest, !r.confirmed.isEmpty {
+            let n = lostShots
+            lostShots = 0
+            for _ in 0..<n { hooks.ballsSettled() }
+        }
         if let shot = r.shot { enqueue(shot, ids: r.ballIDs) }
         advancePending(r)
     }
