@@ -139,12 +139,13 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         // A steep close view fitted from both long rails + the side pockets ("sidePockets") sees only some
         // pockets: every one in frame dark, and at least two of them. Any other fit still needs 4 dark (a 7 ft
         // fit inside a 9 ft table found two dark spots and locked 56 cm off in the matrix).
-        // Known limit (interim review): on a sidePockets frame the two scored mouths are the same dark spots
-        // the fit already required, so this adds little beyond the fit; the false path left needs two dark 6-22 cm
-        // objects aligned on opposite cushions. Independent evidence (a matched keypoint mouth, or a LiDAR hole at
-        // both mouths) would close it; not required yet so elev-45/60 still lock without keypoints.
         guard d.partialAnchor == "sidePockets" else { return false }
-        return scores.count >= 2 && scores.allSatisfy { $0 >= 0.5 }
+        guard scores.count >= 2, scores.allSatisfy({ $0 >= 0.5 }) else { return false }
+        // The two side mouths are the dark spots the fit was built on, so they can't be its evidence too
+        // (cross-vendor review): require something independent, a keypoint mouth at one of the candidate's
+        // pockets or another fitted pocket that is in frame and dark.
+        let others = d.pocketScores.filter { $0.key != .sideLeft && $0.key != .sideRight }
+        return mouthKeypoints >= 1 || others.values.contains { $0 >= 0.5 }
     }
 
     private func map(_ e: AutoTableEstimate, frame f: LocatorFrame, plane: Plane3?) -> TableEstimate? {

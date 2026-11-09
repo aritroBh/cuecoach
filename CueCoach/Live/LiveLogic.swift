@@ -519,31 +519,40 @@ struct LimitedLatch: Sendable {
     mutating func take() -> Bool { defer { seen = false }; return seen }
 }
 
-/// D30 "look, then ask": after the balls settle, each pocket the segmenter wasn't sure of (a slow make) is resolved
-/// by looking for `window` seconds. The ball seen anywhere on the table, or a ball in that pocket's jaws, means it
-/// stayed; the pocket in view for most of the window with no ball means it dropped; anything else is asked.
+/// D30 "look, then ask": after the balls settle, every pocketed ball is checked by looking for `window` seconds. The
+/// ball seen anywhere on the table, or a ball in that pocket's jaws, means it stayed. A certain pocket otherwise
+/// stands (never asked). An uncertain one is called dropped only when the pocket was observed empty for most of the
+/// window (in view, no hand, the detector measuring that frame); anything else is asked.
 struct UncertainPocketResolver: Sendable {
     enum Verdict: Equatable, Sendable { case onTable, pocketed, ask }
     /// Track id → pocket (only balls with a rule id: an unknown ball has no rules consequence, D29).
     let candidates: [Int: Pocket]
     let balls: [Int: BallID]
+    /// Balls the segmenter called pocketed outright: the look can only overturn them (seen on the table or in the
+    /// jaws), never ask about them.
+    let certain: Set<Int>
     var window = 1.0
-    /// Share of the window's frames the pocket must be in view (in frame, no hand over it) to call it dropped.
-    var minVisibleShare = 0.6
+    /// Share of the window's frames in which the pocket was actually observed empty (in view, no hand over it,
+    /// and the detector measured something that frame) needed to call an uncertain ball dropped.
+    var minObservedShare = 0.8
     private var start: Double?
     private var frames = 0
     private var visible: [Int: Int] = [:]
     private var seen: Set<Int> = []
 
-    init(candidates: [Int: Pocket], balls: [Int: BallID]) { self.candidates = candidates; self.balls = balls }
+    init(candidates: [Int: Pocket], balls: [Int: BallID], certain: Set<Int> = []) {
+        self.candidates = candidates; self.balls = balls; self.certain = certain
+    }
 
     /// nil while still looking; the verdicts once the window has passed.
     mutating func observe(_ r: PerceptionResult) -> [Int: Verdict]? {
         if start == nil { start = r.timestamp }
         frames += 1
         let measured = r.confirmed.filter(\.measured)
+        // A frame with no measurement at all is a detector dropout, not a look at an empty pocket.
+        let usable = !measured.isEmpty
         for (tid, pk) in candidates {
-            if r.pocketsInView.contains(pk) { visible[tid, default: 0] += 1 }
+            if usable && r.pocketsInView.contains(pk) { visible[tid, default: 0] += 1 }
             if r.pocketsOccupied.contains(pk) { seen.insert(tid) }
             if measured.contains(where: { $0.id == tid }) { seen.insert(tid) }
             if let b = balls[tid], measured.contains(where: { r.ballIDs[$0.id] == b }) { seen.insert(tid) }
@@ -552,7 +561,7 @@ struct UncertainPocketResolver: Sendable {
         var out: [Int: Verdict] = [:]
         for tid in candidates.keys {
             if seen.contains(tid) { out[tid] = .onTable }
-            else if Double(visible[tid] ?? 0) >= minVisibleShare * Double(frames) { out[tid] = .pocketed }
+            else if certain.contains(tid) || Double(visible[tid] ?? 0) >= minObservedShare * Double(frames) { out[tid] = .pocketed }
             else { out[tid] = .ask }
         }
         return out

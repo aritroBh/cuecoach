@@ -131,6 +131,52 @@ struct D30PocketTests {
         #expect(spy.advanced?.onTable.contains(BallID(3)!) == true)
     }
 
+    // MARK: Cross-vendor review round (GPT-5.3)
+
+    /// d.M4: a "certain" pocket (fast into the mouth) that is then seen hanging in the jaws stays on the table;
+    /// the turn and the rules follow what was seen, and a certain pocket never prompts.
+    @Test func certainPocketSeenInTheJawsStays() {
+        let spy = Spy(), m = model(spy)
+        var rec = slowMake()
+        rec.uncertainPockets = [:]
+        rec.pocketed = [2: .footLeft]
+        m.drive(result(3, shot: rec))
+        #expect(spy.settled.isEmpty, "every pocketed ball gets the look")
+        play(m, from: 3, seconds: 1.5, occupied: [.footLeft])
+        #expect(m.pocketConfirm == nil)
+        #expect(spy.settled.count == 1 && spy.settled.first?.1 == true, "nothing dropped: the turn passes")
+        #expect(spy.advanced?.onTable.contains(BallID(3)!) == true)
+    }
+
+    /// A certain pocket with nothing contrary stays pocketed after the window, and even an occluded pocket doesn't ask.
+    @Test func certainPocketWithNoContrarySightingStaysPocketedWithoutAsking() {
+        let spy = Spy(), m = model(spy)
+        var rec = slowMake()
+        rec.uncertainPockets = [:]
+        rec.pocketed = [2: .footLeft]
+        m.drive(result(3, shot: rec))
+        play(m, from: 3, seconds: 1.5, inView: Set(Pocket.allCases).subtracting([.footLeft]))
+        #expect(m.pocketConfirm == nil)
+        #expect(spy.settled.count == 1 && spy.settled.first?.1 == false)
+        #expect(spy.advanced?.onTable.contains(BallID(3)!) == false)
+    }
+
+    /// "Gone" must be observed: frames where the detector measured nothing (a dropout) don't count as seeing the
+    /// pocket empty, so an uncertain pocket in view during a dropout is asked, not called pocketed.
+    @Test func detectionDropoutIsNotObservedGone() {
+        let spy = Spy(), m = model(spy)
+        m.drive(result(3, shot: slowMake()))
+        var t = 3.0
+        while t < 4.5 {
+            t += 1.0 / 15
+            var r = result(t)
+            r.tracks = r.tracks.map { var b = $0; b.measured = false; return b }   // nothing measured this frame
+            m.drive(r)
+        }
+        #expect(spy.settled.isEmpty)
+        #expect(m.pocketConfirm?.pocket == .footLeft)
+    }
+
     /// The confirm is icon-only: its view source has no text (the aiming-path lint covers Live; this pins it).
     @Test func confirmHasNoText() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

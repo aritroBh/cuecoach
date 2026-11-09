@@ -25,7 +25,7 @@ struct R6EvidenceTests {
         var side = AutoFrameDiagnostics()
         side.partialAnchor = "sidePockets"
         side.pocketScores = [.sideLeft: 0.8, .sideRight: 0.7]
-        #expect(AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 0))
+        #expect(AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 1))   // + one matched keypoint mouth
     }
 
     /// Matrix bar-rive-combo seed 5: a 7 ft fit inside a 9 ft table with two dark in-frame "pockets" locked
@@ -36,6 +36,19 @@ struct R6EvidenceTests {
         #expect(!AutoTableLocating.hasPocketEvidence(full, mouthKeypoints: 0))
         full.partialAnchor = "corner"
         #expect(!AutoTableLocating.hasPocketEvidence(full, mouthKeypoints: 0))
+    }
+
+    /// Cross-vendor review: the two side mouths are the fit's own anchors, so they can't also be its evidence.
+    /// A sidePockets frame needs independent corroboration: a keypoint mouth at a candidate pocket, or another
+    /// dark fitted pocket.
+    @Test func sidePocketFitNeedsIndependentCorroboration() {
+        var side = AutoFrameDiagnostics()
+        side.partialAnchor = "sidePockets"
+        side.pocketScores = [.sideLeft: 0.9, .sideRight: 0.8]
+        #expect(!AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 0))
+        #expect(AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 1))
+        side.pocketScores[.footLeft] = 0.7
+        #expect(AutoTableLocating.hasPocketEvidence(side, mouthKeypoints: 0))
     }
 
     @Test func rugOrNoDarkMouthsStillRejects() {

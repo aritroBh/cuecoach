@@ -91,8 +91,13 @@ final class LiveModel {
     private var pending: [PendingShot] = []
 
     private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
-        let known = record.uncertainPockets.filter { ids[$0.key] != nil }
-        pending.append(PendingShot(record: record, ids: ids, resolver: UncertainPocketResolver(candidates: known, balls: ids)))
+        // Every pocketed ball with a rule id gets the look (a jaw-stopped "certain" make is overturned by a sighting);
+        // only uncertain ones may be asked.
+        let uncertain = record.uncertainPockets.filter { ids[$0.key] != nil }
+        let certain = record.pocketed.filter { ids[$0.key] != nil && uncertain[$0.key] == nil }
+        let all = uncertain.merging(certain) { u, _ in u }
+        pending.append(PendingShot(record: record, ids: ids,
+                                   resolver: UncertainPocketResolver(candidates: all, balls: ids, certain: Set(certain.keys))))
     }
 
     private func advancePending(_ r: PerceptionResult?) {
@@ -127,7 +132,7 @@ final class LiveModel {
         var rec = p.record
         for (tid, pk) in p.resolver.candidates {
             let dropped = p.answers[tid] ?? (p.verdicts?[tid] == .pocketed)
-            if dropped { rec.pocketed[tid] = pk }
+            if dropped { rec.pocketed[tid] = pk } else { rec.pocketed[tid] = nil; rec.pocketTimes[tid] = nil }
             rec.uncertainPockets[tid] = nil
         }
         shotSettled(rec, ids: p.ids)
