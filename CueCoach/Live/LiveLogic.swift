@@ -265,14 +265,16 @@ struct OverlayVisibility: Equatable, Sendable {
     var ratingBadge: Bool
 
     /// Training follows the Training module's policy (`AssistLevel.visibleWhileAiming(in:)`, D1: level 4 shows
-    /// nothing while aiming) with D24's Line 3 only in position play. Rings and the rules helpers always stay.
-    static func of(_ mode: LiveMode, drill: DrillID? = nil) -> OverlayVisibility {
+    /// nothing while aiming; `visibleAfterShot(in:)` once the balls have settled with no aim open: the full overlay)
+    /// with D24's Line 3 only in position play. Rings and the rules helpers always stay; Game mode never changes.
+    static func of(_ mode: LiveMode, drill: DrillID? = nil, afterShot: Bool = false) -> OverlayVisibility {
         switch mode {
         case .game:
             return OverlayVisibility(line1: false, line2: false, line3: false, suggestedGhost: false, shotDock: false,
                                      liveCueLine: false, legalRings: true, illegalWarning: true, ratingBadge: true)
         case .training(let level):
-            let e = (AssistLevel(rawValue: level) ?? .full).visibleWhileAiming(in: drill ?? .straightIn)
+            let lvl = AssistLevel(rawValue: level) ?? .full
+            let e = afterShot ? lvl.visibleAfterShot(in: drill ?? .straightIn) : lvl.visibleWhileAiming(in: drill ?? .straightIn)
             return OverlayVisibility(line1: e.contains(.cueToGhostLine), line2: e.contains(.objectToPocketLine),
                                      line3: e.contains(.cueAfterContactLine) && drill == .positionPlay,
                                      suggestedGhost: e.contains(.ghostBall),

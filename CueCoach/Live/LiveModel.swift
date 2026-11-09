@@ -14,7 +14,13 @@ final class LiveModel {
     let mode: LiveMode
     /// The drill being trained (Line 3 is position play only, D24); nil in a game or standalone.
     var drill: DrillID?
-    var visibility: OverlayVisibility { OverlayVisibility.of(mode, drill: drill) }
+    /// What the overlay may draw right now (read live by the views): the aiming set, or (D1) the after-shot set once
+    /// the last shot has settled and no aim is open. A new aim (or a relock) hides it again.
+    var visibility: OverlayVisibility {
+        OverlayVisibility.of(mode, drill: drill, afterShot: shotSettledNoAim && aimEvents.phase == .idle)
+    }
+    /// D1: a shot closed and no aim has started since.
+    private(set) var shotSettledNoAim = false
     /// Why the table isn't locked yet (glyph + dev HUD).
     var lockFailure: LockFailure?
     /// World corners drags snap to (the locator's best current guess).
@@ -142,6 +148,7 @@ final class LiveModel {
         tableBefore = nil
         lastSeenAt = [:]
         aimEvents = AimEvents()
+        shotSettledNoAim = false
         pocketConfirm = nil
         pocketConfirmPoint = nil
         // The aim evidence and motion seen last stay; nothing closes until a post-relock frame shows the table quiet
@@ -193,6 +200,7 @@ final class LiveModel {
                     shotSettled(rec, ids: ids)
                 } else {
                     onCloseForTesting?(head.id, nil, false)
+                    shotSettledNoAim = true
                     hooks.ballsSettled()
                 }
             case .decided:
@@ -242,6 +250,7 @@ final class LiveModel {
                                                pocketTimes: record.pocketTimes.isEmpty ? nil : record.pocketTimes)
         game = result.nextState
         lastRating = rating
+        shotSettledNoAim = true
         hooks.gameAdvanced(result.nextState)
         legalChanged(eng.legalTargets(result.nextState))
         if mode == .game {
@@ -284,7 +293,7 @@ final class LiveModel {
         for e in aimEvents.update(cueVisible: evidence, atRest: r.atRest && !moving, shotStarted: r.shotStarted,
                                   shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
-            case .aimStarted: hooks.aimStarted()
+            case .aimStarted: shotSettledNoAim = false; hooks.aimStarted()
             case .aimEnded: hooks.aimEnded()
             case .aimCancelled: hooks.aimCancelled()
             case .settled: break   // the shot closes through the FIFO

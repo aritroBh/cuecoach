@@ -247,7 +247,9 @@ enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShap
   *frame* time by `MouthCountingProvider.beginFrame(timestamp:)` (not wall clock), so replays and the VirtualTable
   harness see the phone's cadence.
 - **Live screen (D24)**: `LiveScreen(mode: LiveMode, drill: DrillID?, hooks: LiveHooks, onClose: (() -> Void)?)`
-  with `.game` | `.training(level: Int)`; visibility per `OverlayVisibility.of(mode)`.
+  with `.game` | `.training(level: Int)`; visibility per `OverlayVisibility.of(mode, drill:, afterShot:)`, read live
+  from `LiveModel.visibility` (D1: the aiming set while an aim is open; once the last shot has settled with no aim
+  open, Training shows `AssistLevel.visibleAfterShot` — level 4 included; the next aim hides it again).
   `LiveHooks` (closures, all `@MainActor`) is how Live drives the shell's `LiveSession`:
   `aimStarted / aimEnded / aimCancelled / ballsSettled / settled(DecisionRating, turnPasses)`, emitted by the pure
   `AimEvents` state machine. With hooks set, the shell draws the post-shot badge; standalone, Live does (hidden
