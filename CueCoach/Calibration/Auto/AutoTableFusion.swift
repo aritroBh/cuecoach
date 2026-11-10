@@ -207,10 +207,13 @@ struct AutoTableFusion: Sendable {
         // The pose's measured size (what the adapter's ambiguity check reads) comes from the votes for the chosen
         // preset, not from frames that abstained (Grok 4.7: a 7 ft lock read 2.19 m and stopped being published).
         // Locked with no such vote in the window, the last measured size stays.
+        // While locked, fewer than `minSizeVotes` size votes never move it (Grok 4.7 r2: one borderline 8 ft snap at
+        // 2.21 m among abstainers became the measured size, the adapter stopped trusting the lock, and it stuck).
         var measured = (mL, mW)
         if let s = snapped {
             let mine = voters.filter { $0.snapped == s && Self.votesOnSize($0) }
-            if !mine.isEmpty { measured = (autoMedian(mine.map(\.measuredLength)), autoMedian(mine.map(\.measuredWidth))) }
+            if locked, !sizeBacked, let f = fused { measured = (f.measuredLength, f.measuredWidth) }
+            else if !mine.isEmpty { measured = (autoMedian(mine.map(\.measuredLength)), autoMedian(mine.map(\.measuredWidth))) }
             else if locked, let f = fused { measured = (f.measuredLength, f.measuredWidth) }
         }
         // Pose from the frames consistent with that size: a guessed frame (see `sizeMeasured`) was centred for its own
