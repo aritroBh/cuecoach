@@ -43,7 +43,15 @@ struct AimStressTests {
             for n in [1, 3, 9, 12] {
                 balls.append((n, Vec2(0.9 + rng.uniform() * 0.9, 0.12 + rng.uniform() * 0.8)))
             }
-            let rs = await Self.settle(p, d, balls, frames: 40)
+            var rs = await Self.settle(p, d, balls, frames: 40)
+            // The physics preview runs off the perception actor at utility priority; on a loaded machine it can land
+            // after the first 40 frames (geometry shows meanwhile). Give it time instead of skipping the layout.
+            var extra = 0
+            while rs.last?.aim != nil, rs.last?.aim?.outcome == nil, extra < 60 {
+                try await Task.sleep(for: .milliseconds(50))
+                rs += await Self.settle(p, d, balls, frames: 1, start: 40 + extra)
+                extra += 1
+            }
             guard let r = rs.last, let aim = r.aim, aim.outcome != nil else { continue }
             checked += 1
             // Rebuild the stroke the overlay implies and simulate it.
