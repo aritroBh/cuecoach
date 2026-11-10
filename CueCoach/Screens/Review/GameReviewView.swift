@@ -21,7 +21,7 @@ public struct GameReviewView: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 32) {
-                        header
+                        AnyView(header)
                         content
                     }
                     .padding(.horizontal, wide ? 24 : 16)
@@ -44,51 +44,65 @@ public struct GameReviewView: View {
 
     private var wide: Bool { (vSize == .compact || hSize == .regular) && !typeSize.isAccessibilitySize }
 
-    @ViewBuilder private var content: some View {
+    /// Each phase/layout is type-erased. iOS 27.3 (beta) crashes in the Swift runtime instantiating the
+    /// single nested _ConditionalContent type of every branch together (EXC_BAD_ACCESS in
+    /// swift_getTypeByMangledName from GameReviewView.content, device only). Erasing per branch keeps each
+    /// branch's metadata separate and only instantiated when that branch is shown.
+    private var content: AnyView {
         switch model.phase {
-        case .failed:
-            VStack(spacing: 24) {
-                centered("exclamationmark.triangle", "Unavailable", tint: AX.caution, id: "review.failed")
-                if model.canRetry {
-                    Button { Task { await model.retry() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(AXGlyph.font(28, .semibold))
-                            .foregroundStyle(AX.ink)
-                            .frame(width: 72, height: 72)
-                            .background(Circle().fill(AX.surface))
-                            .overlay(Circle().strokeBorder(AX.ink.opacity(0.2), lineWidth: 1))
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Try again")
-                    .accessibilityIdentifier("review.retry")
-                }
-            }
-            .frame(maxWidth: .infinity)
-        case .loading:
-            VStack(spacing: 24) {
-                Skeleton(height: 200, reduceMotion: reduceMotion)
-                Skeleton(height: 56, reduceMotion: reduceMotion)
-                Skeleton(height: 200, reduceMotion: reduceMotion)
-                Skeleton(height: 260, reduceMotion: reduceMotion)
-            }
-            .accessibilityLabel("Loading review")
-            .accessibilityIdentifier("review.loading")
+        case .failed: AnyView(failedContent)
+        case .loading: AnyView(loadingContent)
         case .loaded:
             if model.isEmpty {
-                centered("circle.slash", "No shots", tint: AX.inkMuted, id: "review.empty")
+                AnyView(centered("circle.slash", "No shots", tint: AX.inkMuted, id: "review.empty"))
             } else if wide {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard }
-                    VStack(alignment: .leading, spacing: 32) { sotgCard; mvpCard }
-                }
+                AnyView(HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 32) { AnyView(winChance); AnyView(timeline); AnyView(replayCard) }
+                    VStack(alignment: .leading, spacing: 32) { AnyView(sotgCard); AnyView(mvpCard) }
+                })
             } else if typeSize.isAccessibilitySize {
                 // AX sizes: the replay (the hero) comes first so it isn't pushed under the Done bar.
-                VStack(alignment: .leading, spacing: 32) { replayCard; timeline; winChance; sotgCard; mvpCard }
+                AnyView(VStack(alignment: .leading, spacing: 32) {
+                    AnyView(replayCard); AnyView(timeline); AnyView(winChance); AnyView(sotgCard); AnyView(mvpCard)
+                })
             } else {
-                VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard; sotgCard; mvpCard }
+                AnyView(VStack(alignment: .leading, spacing: 32) {
+                    AnyView(winChance); AnyView(timeline); AnyView(replayCard); AnyView(sotgCard); AnyView(mvpCard)
+                })
             }
         }
+    }
+
+    private var failedContent: some View {
+        VStack(spacing: 24) {
+            centered("exclamationmark.triangle", "Unavailable", tint: AX.caution, id: "review.failed")
+            if model.canRetry {
+                Button { Task { await model.retry() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(AXGlyph.font(28, .semibold))
+                        .foregroundStyle(AX.ink)
+                        .frame(width: 72, height: 72)
+                        .background(Circle().fill(AX.surface))
+                        .overlay(Circle().strokeBorder(AX.ink.opacity(0.2), lineWidth: 1))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Try again")
+                .accessibilityIdentifier("review.retry")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var loadingContent: some View {
+        VStack(spacing: 24) {
+            Skeleton(height: 200, reduceMotion: reduceMotion)
+            Skeleton(height: 56, reduceMotion: reduceMotion)
+            Skeleton(height: 200, reduceMotion: reduceMotion)
+            Skeleton(height: 260, reduceMotion: reduceMotion)
+        }
+        .accessibilityLabel("Loading review")
+        .accessibilityIdentifier("review.loading")
     }
 
     private func centered(_ symbol: String, _ word: String, tint: Color, id: String) -> some View {
@@ -260,6 +274,7 @@ public struct GameReviewView: View {
                     Spacer()
                     Text("Shot \(s.index + 1)").axFont(.body).foregroundStyle(AX.inkMuted)
                 }
+                AnyView(resultRow(s))   // type-erased like every Review section (aab3667: iOS 27.3 runtime crash)
                 Group {
                     if model.isReplayAvailable(s) {
                         ReplayDiagram(shot: s, moment: model.replayMoment, showAlternative: model.showsAlternative(s),
@@ -308,6 +323,40 @@ public struct GameReviewView: View {
             }
             .padding(16)
             .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
+        }
+    }
+
+    /// What the shot did: pocketed ball glyphs and a foul mark. A D31 best guess sits in a dashed outline with a
+    /// question glyph, its balls dimmed, so it never reads as camera-confirmed.
+    @ViewBuilder private func resultRow(_ s: ReviewShot) -> some View {
+        if GameReviewModel.showsResult(s) {
+            let balls = GameReviewModel.resultBalls(s)
+            HStack(spacing: 12) {
+                ForEach(balls, id: \.self) { ReviewBallGlyph(ball: $0) }
+                if !s.fouls.isEmpty {
+                    Image(systemName: "xmark.octagon.fill").font(AXGlyph.font(28, .semibold)).foregroundStyle(AX.danger)
+                }
+                if balls.isEmpty && s.fouls.isEmpty {
+                    Image(systemName: "circle.slash").font(AXGlyph.font(24)).foregroundStyle(AX.inkMuted)
+                }
+                Spacer(minLength: 0)
+                if s.isGuess {
+                    Image(systemName: "questionmark.circle").font(AXGlyph.font(24, .semibold)).foregroundStyle(AX.inkMuted)
+                }
+            }
+            .frame(minHeight: 48)
+            .opacity(s.isGuess ? 0.75 : 1)
+            .padding(.horizontal, s.isGuess ? 12 : 0)
+            .overlay {
+                if s.isGuess {
+                    RoundedRectangle(cornerRadius: AX.radius.element)
+                        .strokeBorder(AX.inkMuted, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                }
+            }
+            .contentShape(.accessibility, Rectangle())   // the spoken frame is the whole ≥ 44 pt row
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(GameReviewModel.resultAccessibilityLabel(s))
+            .accessibilityIdentifier("review.result")
         }
     }
 
@@ -458,6 +507,37 @@ struct EvalBar: View {
             .frame(height: 20)
         }
         .frame(height: 20)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A pocketed ball on the review card: its colour (a stripe's white band), number on a white disc; the cue ball plain.
+struct ReviewBallGlyph: View {
+    /// Edge that separates the ball (above all the white cue ball) from the card.
+    static let outline = AX.inkMuted
+    let ball: BallID
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 32
+    var body: some View {
+        ZStack {
+            if ball.isCue {
+                Circle().fill(AX.ballWhite)
+            } else {
+                Circle().fill(AX.ball(ball.number))
+                if ball.number > 8 {
+                    Circle().fill(AX.ballWhite).mask(
+                        VStack(spacing: 0) {
+                            Rectangle().frame(height: size * 0.22)
+                            Spacer(minLength: 0)
+                            Rectangle().frame(height: size * 0.22)
+                        })
+                }
+                Circle().fill(AX.ballWhite).frame(width: size * 0.56)
+                Text("\(ball.number)").font(.system(size: size * 0.34, weight: .bold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(AX.pocket)
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay(Circle().strokeBorder(Self.outline, lineWidth: 1.5))
         .accessibilityHidden(true)
     }
 }

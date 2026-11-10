@@ -57,7 +57,7 @@ import Engine
     }
 
     static func finished() -> GameReviewData {
-        let shots: [ReviewShot] = [
+        var shots: [ReviewShot] = [
             shot(0, .book, sam, team: 0, wpa: 0.02),
             shot(1, .good, kim, team: 1, wpa: 0.04, pocket: (9, .headRight)),
             shot(2, .inaccuracy, kim, team: 1, wpa: -0.05, alt: true),
@@ -71,6 +71,8 @@ import Engine
             shot(10, .good, bo, team: 0, wpa: 0.06, pocket: (3, .footLeft)),
             shot(11, .best, bo, team: 0, wpa: 0.1, pocket: (8, .sideLeft)),
         ]
+        // A D31 best guess (lost to a relock): review flags it rather than showing it as camera-confirmed.
+        shots[10].isGuess = true
         let series = [0.5, 0.52, 0.48, 0.53, 0.67, 0.68, 0.56, 0.87, 0.92, 0.84, 0.96, 0.98, 1.0]
         return GameReviewData(gameIndex: 2, teams: [[sam, bo], [ana, kim]], score: [2, 1], winnerTeam: 0, isFinished: true,
                               winProb: series, shots: shots,

@@ -110,6 +110,22 @@ import Engine
         #expect(d.score == [0, 0])
     }
 
+    @Test func reviewShotsCarryTheSettledShotsResult() throws {
+        let s = teams()
+        s.shotSettled(SettledShot(rating: .mistake, turnPasses: true, pocketed: [BallID(3)!: .footLeft, .cue: .sideRight],
+                                  fouls: [.scratch]))
+        s.shotSettled(SettledShot(rating: .good, turnPasses: false, pocketed: [BallID(9)!: .headRight], isGuess: true))
+        let d = s.reviewData()
+        try #require(d.shots.count == 2)
+        #expect(d.shots[0].pocketed == [BallID(3)!: .footLeft, .cue: .sideRight])
+        #expect(d.shots[0].fouls == [.scratch])
+        #expect(!d.shots[0].isGuess)
+        #expect(d.shots[1].pocketed == [BallID(9)!: .headRight])
+        #expect(d.shots[1].fouls.isEmpty)
+        #expect(d.shots[1].isGuess, "D31 best guess: never shown as camera-confirmed")
+        #expect(d.shots[1].shooter?.name == "B1")
+    }
+
     @Test func reviewWithNoShotsIsEmpty() {
         let d = teams().reviewData()
         #expect(d.shots.isEmpty)

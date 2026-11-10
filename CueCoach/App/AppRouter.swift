@@ -55,8 +55,13 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
 
     /// A game shot settled and was rated.
     func settled(rating: DecisionRating, turnPasses: Bool) {
+        settled(SettledShot(rating: rating, turnPasses: turnPasses))
+    }
+
+    /// A game shot settled and was rated, with what the Rules engine saw (kept for Game Review).
+    func settled(_ shot: SettledShot) {
         isAiming = false
-        game?.shotSettled(rating: rating, turnPasses: turnPasses)
+        game?.shotSettled(shot)
     }
 }
 

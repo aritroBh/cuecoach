@@ -331,6 +331,24 @@ import Engine
         n.playShotOfGameClip()
         #expect(played.count == 1)
     }
+
+    // Review shot result (wt/review-shots): pocketed balls + fouls on the card, a guess flagged; words only, no numbers
+    // beyond ball numbers.
+    @Test func shotResultShowsPocketedFoulsAndGuess() {
+        var s = shot(0, .mistake, by: a1, team: 0)
+        #expect(!GameReviewModel.showsResult(s))
+        s.pocketed = [BallID(9)!: .footLeft, BallID(3)!: .sideLeft, .cue: .sideRight]
+        s.fouls = [.scratch]
+        #expect(GameReviewModel.showsResult(s))
+        #expect(GameReviewModel.resultBalls(s).map(\.number) == [3, 9, 0], "object balls in order, the cue ball last")
+        #expect(GameReviewModel.resultAccessibilityLabel(s) == "Pocketed 3, 9, cue ball. Foul")
+        s.isGuess = true
+        #expect(GameReviewModel.resultAccessibilityLabel(s) == "Pocketed 3, 9, cue ball. Foul. Best guess")
+        var g = shot(1, .okay, by: b1, team: 1)
+        g.isGuess = true
+        #expect(GameReviewModel.showsResult(g), "a guess with nothing made still shows its cue")
+        #expect(GameReviewModel.resultAccessibilityLabel(g) == "Nothing pocketed. Best guess")
+    }
 }
 
 @MainActor private final class FixedAnalysis: ReviewShotAnalysis {

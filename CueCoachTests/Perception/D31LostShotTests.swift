@@ -94,6 +94,40 @@ struct D31LostShotTests {
         #expect(!m.showsPocketConfirm)
     }
 
+    @Test func aGuessedShotIsFlaggedAsAGuessForReview() throws {
+        let spy = Spy(), m = model(spy)
+        var results: [SettledShot] = []
+        let forward = m.hooks.settledShot
+        m.hooks.settledShot = { results.append($0); forward($0) }
+        var t = loseAShot(m)
+        let after: [(TrackedBall, BallID?)] = [(ball(11, cueAt, kind: .cue, n: 0), .cue), (ball(13, fiveAt, n: 5), BallID(5)!),
+                                               (ball(14, eightAt, kind: .eight, n: 8), .eight)]
+        for _ in 0..<25 { t += 1.0 / 15; m.drive(frame(t, after)) }
+        let r = try #require(results.first)
+        #expect(results.count == 1 && spy.settled.count == 1, "one close, still seen by the two-value view")
+        #expect(r.isGuess, "lost to a relock: a best guess, not camera-confirmed")
+        #expect(r.pocketed == [BallID(3)!: .footLeft])
+        #expect(r.fouls.isEmpty)
+    }
+
+    @Test func aGuessedShotReachesReviewAsAGuess() throws {
+        let p = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
+        let q = ShellPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "orange")
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[p], [q]]))
+        let m = LiveModel(mode: .game)
+        var h = LiveScreenAdapter.hooks(for: LiveSession(mode: .game, game: game, drill: nil))
+        let g = self.game()
+        h.currentGame = { g }   // the scripted table (groups set, the 3 and 5 left for solids)
+        m.hooks = h
+        var t = loseAShot(m)
+        let after: [(TrackedBall, BallID?)] = [(ball(11, cueAt, kind: .cue, n: 0), .cue), (ball(13, fiveAt, n: 5), BallID(5)!),
+                                               (ball(14, eightAt, kind: .eight, n: 8), .eight)]
+        for _ in 0..<25 { t += 1.0 / 15; m.drive(frame(t, after)) }
+        let shot = try #require(game.reviewData().shots.first)
+        #expect(shot.isGuess)
+        #expect(shot.pocketed == [BallID(3)!: .footLeft])
+    }
+
     @Test func anUncertainIdentityNeverCountsAsPocketed() throws {
         let spy = Spy(), m = model(spy)
         var t = loseAShot(m)

@@ -102,13 +102,14 @@ struct ReplayDiagram: View {
                     }
                 }
             }
-            // Pocketed: small ring inside the pocket.
+            // Pocketed: small ring inside the pocket (dashed when the shot is a D31 best guess).
             if moment == .after {
                 for (id, p) in shot.pocketed {
                     let c = pt(spec.pocketCenter(p))
                     let rr = pocketR * 0.55
                     ctx.stroke(Path(ellipseIn: CGRect(x: c.x - rr, y: c.y - rr, width: 2 * rr, height: 2 * rr)),
-                               with: .color(id.isCue ? AX.danger : Self.ballColor(id)), lineWidth: 2)
+                               with: .color(id.isCue ? AX.danger : Self.ballColor(id)),
+                               style: StrokeStyle(lineWidth: 2, dash: shot.isGuess ? [3, 3] : []))   // D31 guess: dashed
                 }
             }
             // Fouls: danger × at the scratch pocket or the cue ball's resting point.

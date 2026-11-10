@@ -204,7 +204,7 @@ final class LiveModel {
                 shots.removeFirst()
                 if let (rec, ids) = head.guess?.record() {
                     onCloseForTesting?(head.id, rec, true)
-                    shotSettled(rec, ids: ids)
+                    shotSettled(rec, ids: ids, guessed: true)
                 } else {
                     onCloseForTesting?(head.id, nil, false)
                     shotSettledNoAim = true
@@ -251,17 +251,20 @@ final class LiveModel {
 
     /// A shot ended: rate it through the Rules engine against the shell's game (or the local default), advance the
     /// local copy, tell the shell. The shell owns the real game state; it applies its own result.
-    func shotSettled(_ record: ShotRecord, ids: [Int: BallID]) {
+    /// `guessed`: a D31 lost shot's best-guess record (the shell's review flags it).
+    func shotSettled(_ record: ShotRecord, ids: [Int: BallID], guessed: Bool = false) {
         let (eng, state) = hooks.currentGame() ?? (engine, game)
-        let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state,
-                                               pocketTimes: record.pocketTimes.isEmpty ? nil : record.pocketTimes)
+        let pocketTimes = record.pocketTimes.isEmpty ? nil : record.pocketTimes
+        let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state, pocketTimes: pocketTimes)
         game = result.nextState
         lastRating = rating
         shotSettledNoAim = true
         hooks.gameAdvanced(result.nextState)
         legalChanged(eng.legalTargets(result.nextState))
         if mode == .game {
-            hooks.settled(rating, result.turnPasses)
+            hooks.settledShot(SettledShot(rating: rating, turnPasses: result.turnPasses,
+                                          pocketed: RuleRating.outcome(record, ids: ids).pocketed,
+                                          fouls: result.fouls, isGuess: guessed))
             showBadge(BadgeStyle.of(rating))
         } else {
             hooks.ballsSettled()

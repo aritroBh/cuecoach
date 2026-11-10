@@ -39,6 +39,8 @@ struct ReviewShot: Identifiable, Hashable, Sendable {
     /// True when `paths` came from a physics trace. False = inferred straight before→after segments, which can
     /// cut through balls and rails (banks, kicks), so the diagram draws only faint displacement arrows.
     var pathsAreTraced = false
+    /// D31: the shot was lost to a relock; `pocketed` is a best guess, never shown as camera-confirmed.
+    var isGuess = false
 }
 
 struct ReviewHighlight: Hashable, Sendable {

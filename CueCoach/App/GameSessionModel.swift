@@ -10,6 +10,10 @@ struct SessionShot: Hashable, Sendable {
     var shooter: ShellPlayer
     var team: Int
     var rating: DecisionRating
+    /// What the Rules engine saw (`SettledShot`); a D31 guess is flagged.
+    var pocketed: [BallID: Pocket] = [:]
+    var fouls: [Foul] = []
+    var isGuess = false
 }
 
 /// In-game state the chrome shows: whose turn (D17 rotation), the post-shot badge, rated shots for review.
@@ -112,18 +116,27 @@ final class GameSessionModel {
         }
     }
 
-    func record(rating: DecisionRating) {
-        shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: rating))
+    func record(rating: DecisionRating) { record(SettledShot(rating: rating, turnPasses: false)) }
+
+    private func record(_ r: SettledShot) {
+        shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: r.rating,
+                                 pocketed: r.pocketed, fouls: r.fouls, isGuess: r.isGuess))
     }
 
-    /// The balls settled and the engine rated the shot: record it, show the badge, rotate if the turn passes.
     @discardableResult
     func shotSettled(rating: DecisionRating, turnPasses: Bool) -> PostShotRating {
-        record(rating: rating)
+        shotSettled(SettledShot(rating: rating, turnPasses: turnPasses))
+    }
+
+    /// The balls settled and the engine rated the shot: record it (with its result, for review), show the badge,
+    /// rotate if the turn passes.
+    @discardableResult
+    func shotSettled(_ shot: SettledShot) -> PostShotRating {
+        record(shot)
         let s = shots[shots.count - 1]
-        let signal = PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)
+        let signal = PostShotRating(shotID: s.id, rating: shot.rating, shooterName: s.shooter.name, team: s.team)
         badge.receive(.rated(signal))
-        if turnPasses { passTurn() }
+        if shot.turnPasses { passTurn() }
         return signal
     }
 
@@ -132,15 +145,16 @@ final class GameSessionModel {
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one
     /// rack per game session), finished only when the rack is over (a mid-rack quit stays locked).
-    /// Per-shot pocketed balls and fouls are empty: Live hands the shell only the rating and the next `GameState`,
-    /// not the `ShotResult`, so the session never has them. Table states and paths are out of scope (nil / empty).
+    /// Each rated shot carries what the Rules engine saw (pocketed with pocket, fouls) and its D31 guess flag. Table
+    /// states and paths aren't kept for a live game yet (nil / empty).
     func reviewData() -> GameReviewData {
         func rp(_ p: ShellPlayer) -> ReviewPlayer { ReviewPlayer(id: p.id, name: p.name, symbol: p.symbol, colorName: p.colorName) }
         var teams = self.teams.map { $0.map(rp) }
         while teams.count < 2 { teams.append([]) }
         let reviewShots = shots.map {
             ReviewShot(id: $0.id, index: $0.index, shooter: rp($0.shooter), team: $0.team, rating: $0.rating,
-                       pre: nil, post: nil, pocketed: [:], fouls: [], paths: [:], alternative: nil, wpaDelta: 0)
+                       pre: nil, post: nil, pocketed: $0.pocketed, fouls: $0.fouls, paths: [:], alternative: nil,
+                       wpaDelta: 0, isGuess: $0.isGuess)
         }
         let winner = rulesState.winner.flatMap { teams.indices.contains($0) ? $0 : nil }
         var score = [Int](repeating: 0, count: teams.count)

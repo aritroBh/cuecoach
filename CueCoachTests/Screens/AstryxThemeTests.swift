@@ -89,6 +89,20 @@ struct AstryxThemeTests {
         #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
     }
 
+    /// The review card's ball glyph outline is what separates the white cue ball from a white light-mode card:
+    /// opaque and at least 3:1 (non-text contrast) on the page and the card, light and dark.
+    @Test func reviewBallOutlineSeparatesTheCueBallFromTheCard() {
+        var failures: [String] = []
+        for (traits, mode) in [(Self.light, "light"), (Self.dark, "dark")] {
+            if Self.rgba(ReviewBallGlyph.outline, traits)[3] < 1 { failures.append("outline translucent \(mode)") }
+            for (ground, groundName) in [(AX.page, "page"), (AX.surface, "card")]
+            where Self.contrast(ReviewBallGlyph.outline, ground, traits) < 3 {
+                failures.append("outline on \(groundName) \(mode): \(Self.contrast(ReviewBallGlyph.outline, ground, traits))")
+            }
+        }
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+    }
+
     /// Team B (ring and words) stays clearly apart from Team A blue and from caution amber: CIE76 colour
     /// difference at least 20 in both modes (lightness counts, not only hue).
     @Test func teamBIsDistinctFromTeamAAndCaution() {

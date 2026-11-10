@@ -12,7 +12,8 @@ struct LiveScreenAdapter: View {
     @MainActor static func hooks(for session: LiveSession) -> LiveHooks {
         var h = LiveHooks(aimStarted: { session.aimStarted() }, aimEnded: { session.aimEnded() },
                           aimCancelled: { session.aimCancelled() }, ballsSettled: { session.ballsSettled() },
-                          settled: { rating, passes in session.settled(rating: rating, turnPasses: passes) })
+                          settled: { _, _ in })
+        h.settledShot = { session.settled($0) }
         let game = session.game
         h.currentGame = { game?.rules }
         h.gameAdvanced = { game?.rulesAdvanced($0) }

@@ -454,6 +454,18 @@ enum TwoTapTable {
     }
 }
 
+/// A rated game shot as the Rules engine saw it (Live → shell → Game Review).
+struct SettledShot: Hashable, Sendable {
+    var rating: DecisionRating
+    var turnPasses: Bool
+    /// The shot's pocketed balls (rule ids; `.cue` = scratch) with the pocket each went into.
+    var pocketed: [BallID: Pocket] = [:]
+    /// `RuleResult.fouls`.
+    var fouls: [Foul] = []
+    /// D31: lost to a relock. `pocketed` (and its pockets) is a best guess, never camera-confirmed.
+    var isGuess = false
+}
+
 /// What Live tells the app shell (wired by `LiveScreenAdapter` to `LiveSession`). Defaults do nothing, so Live
 /// runs standalone (then it draws its own post-shot badge).
 struct LiveHooks {
@@ -461,7 +473,14 @@ struct LiveHooks {
     var aimEnded: @MainActor () -> Void = {}
     var aimCancelled: @MainActor () -> Void = {}
     var ballsSettled: @MainActor () -> Void = {}
-    var settled: @MainActor (DecisionRating, Bool) -> Void = { _, _ in }
+    /// A rated game shot closed: its rating, whether the turn passes, and what the Rules engine saw (pocketed, fouls),
+    /// flagged when it is a D31 best guess.
+    var settledShot: @MainActor (SettledShot) -> Void = { _ in }
+    /// Two-value view of `settledShot` (rating, turn passes). Setting it replaces `settledShot` and drops the result.
+    var settled: @MainActor (DecisionRating, Bool) -> Void {
+        get { let f = settledShot; return { f(SettledShot(rating: $0, turnPasses: $1)) } }
+        set { settledShot = { newValue($0.rating, $0.turnPasses) } }
+    }
     /// The shell shows the post-shot badge itself; Live then doesn't.
     var shellShowsBadge = false
     /// The shell's active game (rules + state) for ratings and ring legality; nil = bar-8 open table.
