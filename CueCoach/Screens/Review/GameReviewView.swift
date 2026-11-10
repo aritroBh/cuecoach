@@ -513,6 +513,8 @@ struct EvalBar: View {
 
 /// A pocketed ball on the review card: its colour (a stripe's white band), number on a white disc; the cue ball plain.
 struct ReviewBallGlyph: View {
+    /// Edge that separates the ball (above all the white cue ball) from the card.
+    static let outline = AX.inkMuted
     let ball: BallID
     @ScaledMetric(relativeTo: .body) private var size: CGFloat = 32
     var body: some View {
@@ -535,7 +537,7 @@ struct ReviewBallGlyph: View {
             }
         }
         .frame(width: size, height: size)
-        .overlay(Circle().stroke(AX.inkMuted.opacity(0.4), lineWidth: 1))
+        .overlay(Circle().strokeBorder(Self.outline, lineWidth: 1.5))
         .accessibilityHidden(true)
     }
 }
