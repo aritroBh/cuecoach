@@ -142,3 +142,10 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Cross-vendor review: Kimi K2.5 APPROVE 1–7; Grok 4.7 APPROVE 2–7, BLOCKER on 1 (hand-over legality not wired to the pipeline) → fixed via `LiveHooks.legalSink` (8eecfc0). Grok re-review: D17 cursors approved; new BLOCKER on 8eecfc0 (throwaway `LiveScreen.init` stole the sink) → fixed in 27ce0d2 (`LiveModel.bindLegal`, mounted model only); re-review pending (non-Claude)
 - [x] Unit 1149/1149 on Sim G at 27ce0d2 (1148 at 8eecfc0); UI AppShell + LiveReplay 13/13 on Sim G at both (testJoinFullLobby flaked once on the loaded Mac, passed on rerun)
 - [ ] Review per-shot pocketed/fouls stay empty: Live passes the shell only rating + next GameState, not ShotResult
+
+## Merge round 2026-11-10 (head)
+- [x] Multi-model review of phase/1-core: 30 reviews (Bedrock Kimi K3/K2.5, GLM-5, DeepSeek v3.2, Qwen3-Coder, MiniMax, Nemotron; Cursor GPT-5.6, GPT-5.3 Codex, Grok 4.7, Gemini 3.7, Composer; opencode free models) → adversarial verification (Grok 4.7, Kimi K3, GLM-5): 13 real defects, all other BLOCKER/MAJOR findings refuted
+- [x] Merged + pushed (e9088ba): wt/fix-engine (3), wt/fix-app (7 + 2 Grok BLOCKERs), wt/d31-d33 (D31, D33, D1 after-shot reveal + 3 Grok findings), wt/d32-bench (D32 detector), wt/astryx-ui (D34 + contrast + review AX label); one merge fix (store-recovery screen → Astryx roles)
+- [x] Simulators at e9088ba: QA iPhone 15 Pro Max and QA iPhone 17 Pro Max — unit 1184/1184, UI 44/45 + 1 skip (two-phone test)
+- [~] iPhone 17 Pro Max (device): 1159 pass; 13 source-audit tests can't read the Mac source tree on a phone (pass on simulator); 5 heavy calibration/perception stress tests killed by iOS (signal kill) when run in parallel — serial re-run pending (needs the phone unlocked)
+- [ ] Open: wrong-size false lock (lock matrix 92.0%, 1 case); D32 phone latency on the Neural Engine; per-shot pocketed/fouls in Review need Live to hand the shot result to the shell; real-table footage to validate the synthetic-trained detector
