@@ -274,6 +274,7 @@ public struct GameReviewView: View {
                     Spacer()
                     Text("Shot \(s.index + 1)").axFont(.body).foregroundStyle(AX.inkMuted)
                 }
+                resultRow(s)
                 Group {
                     if model.isReplayAvailable(s) {
                         ReplayDiagram(shot: s, moment: model.replayMoment, showAlternative: model.showsAlternative(s),
@@ -322,6 +323,40 @@ public struct GameReviewView: View {
             }
             .padding(16)
             .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
+        }
+    }
+
+    /// What the shot did: pocketed ball glyphs and a foul mark. A D31 best guess sits in a dashed outline with a
+    /// question glyph, its balls dimmed, so it never reads as camera-confirmed.
+    @ViewBuilder private func resultRow(_ s: ReviewShot) -> some View {
+        if GameReviewModel.showsResult(s) {
+            let balls = GameReviewModel.resultBalls(s)
+            HStack(spacing: 12) {
+                ForEach(balls, id: \.self) { ReviewBallGlyph(ball: $0) }
+                if !s.fouls.isEmpty {
+                    Image(systemName: "xmark.octagon.fill").font(AXGlyph.font(28, .semibold)).foregroundStyle(AX.danger)
+                }
+                if balls.isEmpty && s.fouls.isEmpty {
+                    Image(systemName: "circle.slash").font(AXGlyph.font(24)).foregroundStyle(AX.inkMuted)
+                }
+                Spacer(minLength: 0)
+                if s.isGuess {
+                    Image(systemName: "questionmark.circle").font(AXGlyph.font(24, .semibold)).foregroundStyle(AX.inkMuted)
+                }
+            }
+            .frame(minHeight: 48)
+            .opacity(s.isGuess ? 0.75 : 1)
+            .padding(.horizontal, s.isGuess ? 12 : 0)
+            .overlay {
+                if s.isGuess {
+                    RoundedRectangle(cornerRadius: AX.radius.element)
+                        .strokeBorder(AX.inkMuted, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                }
+            }
+            .contentShape(.accessibility, Rectangle())   // the spoken frame is the whole ≥ 44 pt row
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(GameReviewModel.resultAccessibilityLabel(s))
+            .accessibilityIdentifier("review.result")
         }
     }
 
@@ -472,6 +507,35 @@ struct EvalBar: View {
             .frame(height: 20)
         }
         .frame(height: 20)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A pocketed ball on the review card: its colour (a stripe's white band), number on a white disc; the cue ball plain.
+struct ReviewBallGlyph: View {
+    let ball: BallID
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 32
+    var body: some View {
+        ZStack {
+            if ball.isCue {
+                Circle().fill(AX.ballWhite)
+            } else {
+                Circle().fill(AX.ball(ball.number))
+                if ball.number > 8 {
+                    Circle().fill(AX.ballWhite).mask(
+                        VStack(spacing: 0) {
+                            Rectangle().frame(height: size * 0.22)
+                            Spacer(minLength: 0)
+                            Rectangle().frame(height: size * 0.22)
+                        })
+                }
+                Circle().fill(AX.ballWhite).frame(width: size * 0.56)
+                Text("\(ball.number)").font(.system(size: size * 0.34, weight: .bold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(AX.pocket)
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay(Circle().stroke(AX.inkMuted.opacity(0.4), lineWidth: 1))
         .accessibilityHidden(true)
     }
 }

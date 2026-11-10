@@ -191,6 +191,25 @@ public final class GameReviewModel {
             .compactMap { $0 }.joined(separator: ", ")
     }
 
+    // MARK: Shot result (pocketed balls, fouls, D31 guess)
+
+    /// The card shows a result row when something dropped, a foul was called, or the shot is a guess.
+    nonisolated static func showsResult(_ s: ReviewShot) -> Bool { !s.pocketed.isEmpty || !s.fouls.isEmpty || s.isGuess }
+
+    /// Pocketed balls for the glyph row: object balls by number, the cue ball (a scratch) last.
+    nonisolated static func resultBalls(_ s: ReviewShot) -> [BallID] {
+        s.pocketed.keys.filter { !$0.isCue }.sorted() + (s.pocketed[.cue] != nil ? [.cue] : [])
+    }
+
+    /// Spoken result: ball numbers only, "Foul" without detail, and "Best guess" for a D31 shot.
+    nonisolated static func resultAccessibilityLabel(_ s: ReviewShot) -> String {
+        let balls = resultBalls(s).map { $0.isCue ? "cue ball" : "\($0.number)" }
+        var parts = [balls.isEmpty ? "Nothing pocketed" : "Pocketed " + balls.joined(separator: ", ")]
+        if !s.fouls.isEmpty { parts.append("Foul") }
+        if s.isGuess { parts.append("Best guess") }
+        return parts.joined(separator: ". ")
+    }
+
     func replayDescription(_ s: ReviewShot) -> String {
         guard isReplayAvailable(s) else { return "Replay unavailable." }
         let who = s.shooter?.name ?? "The shooter"

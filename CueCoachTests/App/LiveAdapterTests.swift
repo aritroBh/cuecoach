@@ -274,3 +274,33 @@ import Training
         #expect(c.start == c.end + c.cancel)
     }
 }
+
+/// Review data (CHECKLIST open item): a settled game shot's result (what the rules engine saw: balls pocketed with their
+/// pocket, and fouls) reaches the shell, so Game Review's shot cards aren't empty.
+@MainActor
+@Suite struct LiveShotOutcomeReviewTests {
+    let a = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
+    let b = ShellPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "orange")
+
+    @Test func aSettledShotsPocketedBallsAndFoulsShowInReview() throws {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        m.hooks = LiveScreenAdapter.hooks(for: session)
+        // The cue ball hits the 3, which drops in the foot-left corner; the cue ball follows into the right side: scratch.
+        let rec = ShotRecord(start: 0, end: 2, preState: [1: Vec2(0.5, 0.5), 2: Vec2(1, 0.5)], finalState: [:],
+                             cueID: 1, firstContact: 2, rails: [], pocketed: [2: .footLeft, 1: .sideRight])
+        m.shotSettled(rec, ids: [1: .cue, 2: BallID(3)!])
+        let shot = try #require(game.reviewData().shots.first)
+        #expect(shot.pocketed == [BallID(3)!: .footLeft, .cue: .sideRight])
+        #expect(shot.fouls.contains(.scratch))
+        #expect(!shot.isGuess, "a camera-seen shot is not a guess")
+    }
+
+    @Test func anUnratedCloseRecordsNoShot() {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        LiveScreenAdapter.hooks(for: session).ballsSettled()   // e.g. a D31 lost shot with no guess
+        #expect(game.reviewData().shots.isEmpty)
+    }
+}

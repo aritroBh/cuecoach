@@ -356,6 +356,22 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
     aim (the shell is still gated on that shot); the aim opens on the shot-end frame or the first frame after a relock;
   - nothing stays pending except an unanswered question.
   The shell treats a late `settled` as standalone (`LiveSession.settled` records the shot, shows its badge, rotates).
+- **Settled shot result (Live → shell → Review, wt/review-shots).** A rated close hands the shell what the Rules
+  engine saw, not only the rating:
+  ```swift
+  struct SettledShot: Hashable, Sendable {          // Live/LiveLogic.swift
+      var rating: DecisionRating; var turnPasses: Bool
+      var pocketed: [BallID: Pocket] = [:]          // the ShotOutcome's balls (rule ids; .cue = scratch), with their pocket
+      var fouls: [Foul] = []                        // RuleResult.fouls
+      var isGuess = false                           // D31 lost shot: pocketed + pockets are a best guess, not camera-confirmed
+  }
+  struct LiveHooks { … var settledShot: @MainActor (SettledShot) -> Void }   // the rated close; `settled(rating, turnPasses)`
+                                                    // stays as a two-value view of it (get wraps, set drops the result)
+  func LiveSession.settled(_: SettledShot); func GameSessionModel.shotSettled(_: SettledShot) -> PostShotRating
+  struct ReviewShot { … var isGuess = false }      // GameSessionModel.reviewData() fills pocketed, fouls, isGuess per rated shot
+  ```
+  `LiveScreenAdapter` binds `settledShot` → `LiveSession.settled(_:)`. Unrated closes (`ballsSettled`, incl. a D31
+  shot with no guess) record nothing. Live-game review shots still have `pre/post` nil and no paths (no persistence yet).
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
   balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
   addressing the cue ball (wrists) also opens the aim for the shell.

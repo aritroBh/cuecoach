@@ -150,6 +150,21 @@ final class ScreensBUITests: XCTestCase {
         shot.tap()
         XCTAssertTrue(shot.isSelected)
         XCTAssertTrue(el(app, "review.replay").label.contains("Engine preferred"))
+        // The card shows what the shot did: the scratch (cue ball down) and the foul.
+        XCTAssertTrue(el(app, "review.result").waitForExistence(timeout: 5))
+        XCTAssertEqual(el(app, "review.result").label, "Pocketed cue ball. Foul")
+        // A pocketed ball shows on its card.
+        el(app, "review.shot.1").tap()
+        XCTAssertTrue(el(app, "review.shot.1").isSelected)
+        XCTAssertEqual(el(app, "review.result").label, "Pocketed 9")
+        XCTAssertGreaterThanOrEqual(el(app, "review.result").frame.height, 44)
+        // A D31 best guess is flagged on the card.
+        el(app, "review.shot.10").tap()
+        XCTAssertEqual(el(app, "review.result").label, "Pocketed 3. Best guess")
+        // A shot that made nothing and called no foul has no result row.
+        el(app, "review.shot.2").tap()
+        XCTAssertFalse(el(app, "review.result").waitForExistence(timeout: 1))
+        el(app, "review.shot.9").tap()
         XCTAssertTrue(el(app, "review.sotg.play").exists)
         XCTAssertTrue(el(app, "review.sotg.play").elementType == .button)
     }
