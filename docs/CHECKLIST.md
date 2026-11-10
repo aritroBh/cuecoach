@@ -124,6 +124,6 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 
 ## Fix round wt/fix-app (2026-11-09, Claude fix worker, Sim G; not merged)
 - [x] 7 MAJORs from the Grok 4.7 / Kimi K3 review, test-first, one commit each: no turn hand-over mid-shot + hand-over pushes new shooter's legality · swap keeps the pending visit (per-team D17 cursors) · review header from rules winner/score/isFinished · Start blocked while a join is in flight, send() false when it reaches nobody · debug HUD writes `dev.hud` (old key migrated once) · store-open failure shows a Retry recovery screen (no in-memory fallback, never deletes) · FaceBenchmark finish() canonical volunteer order
-- [x] Cross-vendor review: Kimi K2.5 APPROVE 1–7; Grok 4.7 APPROVE 2–7, BLOCKER on 1 (hand-over legality not wired to the pipeline) → fixed via `LiveHooks.legalSink` (8eecfc0); re-review of that fix pending (non-Claude)
-- [x] Unit 1148/1148 on Sim G; UI AppShell + LiveReplay 13/13 on Sim G (testJoinFullLobby flaked once on the loaded Mac, passed on rerun)
+- [x] Cross-vendor review: Kimi K2.5 APPROVE 1–7; Grok 4.7 APPROVE 2–7, BLOCKER on 1 (hand-over legality not wired to the pipeline) → fixed via `LiveHooks.legalSink` (8eecfc0). Grok re-review: D17 cursors approved; new BLOCKER on 8eecfc0 (throwaway `LiveScreen.init` stole the sink) → fixed in 27ce0d2 (`LiveModel.bindLegal`, mounted model only); re-review pending (non-Claude)
+- [x] Unit 1149/1149 on Sim G at 27ce0d2 (1148 at 8eecfc0); UI AppShell + LiveReplay 13/13 on Sim G at both (testJoinFullLobby flaked once on the loaded Mac, passed on rerun)
 - [ ] Review per-shot pocketed/fouls stay empty: Live passes the shell only rating + next GameState, not ShotResult
