@@ -274,7 +274,7 @@ public struct GameReviewView: View {
                     Spacer()
                     Text("Shot \(s.index + 1)").axFont(.body).foregroundStyle(AX.inkMuted)
                 }
-                resultRow(s)
+                AnyView(resultRow(s))   // type-erased like every Review section (aab3667: iOS 27.3 runtime crash)
                 Group {
                     if model.isReplayAvailable(s) {
                         ReplayDiagram(shot: s, moment: model.replayMoment, showAlternative: model.showsAlternative(s),
