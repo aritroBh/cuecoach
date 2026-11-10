@@ -112,7 +112,7 @@ import Training
         m.hooks = LiveScreenAdapter.hooks(for: s)                 // LiveScreenAdapter → LiveScreen.init
         @MainActor final class Sink { var pushed: [Set<BallID>] = [] }
         let sink = Sink()
-        m.legalChanged = { sink.pushed.append($0) }              // what ARLiveView.attach / LiveScreen.task bind
+        m.bindLegal { sink.pushed.append($0) }                   // what ARLiveView.attach / LiveScreen.task do
         var next = try #require(m.hooks.currentGame()).1
         next.groups = [0: .solids, 1: .stripes]
         next.phase = .inPlay
@@ -122,12 +122,41 @@ import Training
         #expect(sink.pushed == [engine.legalTargets(state)])
         #expect(sink.pushed.last?.isEmpty == false)
         #expect(sink.pushed.last?.allSatisfy { $0.group == .stripes } == true)
-        m.legalChanged = { _ in }                                 // a rebind (new pipeline) gets later pushes
         let rebound = Sink()
-        m.legalChanged = { rebound.pushed.append($0) }
+        m.bindLegal { rebound.pushed.append($0) }                 // a rebind (new pipeline) gets later pushes
         s.handTurn(toTeam: 0)
         #expect(rebound.pushed.count == 1)
         #expect(rebound.pushed.last?.allSatisfy { $0.group == .solids } == true)
+    }
+
+    /// Grok 4.7 re-review BLOCKER on 8eecfc0: SwiftUI re-runs `LiveScreen.init` on every shell body rebuild; `@State`
+    /// keeps the first model and drops the rest. A throwaway model must not steal the game's legality sink.
+    @Test func throwawayLiveScreenInitDoesNotStealTheMountedSink() throws {
+        let s = gameSession(.barEight)
+        let hooks = LiveScreenAdapter.hooks(for: s)
+        let mounted = LiveModel(mode: .game)
+        mounted.hooks = hooks                                     // first LiveScreen.init: kept by @State
+        do {
+            let throwaway = LiveModel(mode: .game)
+            throwaway.hooks = hooks                               // body rebuild: second init, model discarded
+        }
+        @MainActor final class Sink { var pushed: [Set<BallID>] = [] }
+        let sink = Sink()
+        mounted.bindLegal { sink.pushed.append($0) }              // ARLiveView.attach / LiveScreen .task on mount
+        var next = try #require(hooks.currentGame()).1
+        next.groups = [0: .solids, 1: .stripes]
+        next.phase = .inPlay
+        hooks.gameAdvanced(next)
+        s.handTurn(toTeam: 1)
+        #expect(sink.pushed.count == 1)
+        #expect(sink.pushed.last?.allSatisfy { $0.group == .stripes } == true)
+        do {
+            let another = LiveModel(mode: .game)
+            another.hooks = hooks                                 // yet another rebuild after mount
+        }
+        s.handTurn(toTeam: 0)
+        #expect(sink.pushed.count == 2)
+        #expect(sink.pushed.last?.allSatisfy { $0.group == .solids } == true)
     }
 
     @Test func liveAdvancesTheShellsRulesState() throws {

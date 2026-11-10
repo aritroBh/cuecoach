@@ -34,9 +34,7 @@ final class LiveModel {
     var badge: BadgeStyle?
     private var badgeToken = 0
     /// App-shell lifecycle hooks (LiveSession).
-    var hooks = LiveHooks() {
-        didSet { hooks.legalSink { [weak self] in self?.legalChanged($0) } }   // forwards to whatever the view binds
-    }
+    var hooks = LiveHooks()
     private var aimEvents = AimEvents()
     /// Rules state for ratings and ring legality (bar-8 open table until the shell supplies a game).
     let engine: RulesEngine
@@ -44,6 +42,13 @@ final class LiveModel {
     /// Legal targets after the latest shot (the view pushes this to the perception pipeline).
     var legalTargets: Set<BallID> { engine.legalTargets(game) }
     var legalChanged: (Set<BallID>) -> Void = { _ in }
+    /// The mounted view binds its pipeline's `setLegal` here (once per mount): settled shots push through
+    /// `legalChanged`, and the shell gets the same sink for between-shots changes. Only a mounted model calls this, so a
+    /// throwaway `LiveScreen.init` (SwiftUI keeps the first `@State` model) never takes the shell's sink.
+    func bindLegal(_ push: @escaping (Set<BallID>) -> Void) {
+        legalChanged = push
+        hooks.legalSink { [weak self] in self?.legalChanged($0) }
+    }
     /// Post-lock "what next": pulse the cue-ball glyph until the first aim.
     var showAimHint = false
     var lastRating: DecisionRating?

@@ -74,7 +74,7 @@ final class ARLiveController: NSObject {
     func attach(_ v: ARView) {
         view = v
         let pipeline = pipeline
-        model.legalChanged = { legal in Task { await pipeline.setLegal(legal) } }
+        model.bindLegal { legal in Task { await pipeline.setLegal(legal) } }
         let seed = model.initialLegalTargets()   // the shell's active game, before any shot
         Task { await pipeline.setLegal(seed) }
         let tap = FrameTap(pipeline: pipeline, locator: locator,
