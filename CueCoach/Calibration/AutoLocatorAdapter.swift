@@ -171,7 +171,8 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
             guard let p = e.pose else { return nil }
             state.withLock { $0.consecutiveFailures = 0 }
             // Converging but not tight enough yet: tell the user to hold steady once it drags on.
-            let why: LockFailure? = e.cornerSpread > 0.02 ? .unstable : nil
+            // Steady but no size it may lock yet (only guessed, or between presets): ask for a look at the whole table.
+            let why: LockFailure? = e.cornerSpread > 0.02 ? .unstable : (e.frame.awaitingSize ? .partialTable : nil)
             return TableEstimate(corners: p.corners, confidence: min(0.95, progress), locked: false,
                                  size: p.snappedSize, failure: why, frame: nil, generation: e.generation)
         case .searching:

@@ -16,6 +16,10 @@ struct AutoTableMeasurement: Sendable {
     var cameraPosition: SIMD3<Double>
     /// Fraction of the playing length actually seen (1 = whole table; < 1 = partial fit completed by 2:1 + preset).
     var visibleLengthFraction: Double = 1
+    /// false = the size is a guess, not a measurement: a corner-anchored partial fit chose the preset by how well its
+    /// outline fills the cloth mask (a cloth the colour of its rails fills a preset one size up: felt-tan seed 10).
+    /// Such a frame casts no size vote, cannot back a lock's size, and is pose evidence only under its own preset.
+    var sizeMeasured = true
 }
 
 struct AutoFusionConfig: Sendable {
@@ -62,6 +66,19 @@ struct AutoTableFusion: Sendable {
     private var flipPending = false
     private(set) var fused: AutoTablePose?
     private(set) var spread: Double = .infinity
+    /// The window holds a frame that measured the size (see `AutoTableMeasurement.sizeMeasured`). A lock needs it:
+    /// with guessed sizes only, fusion converges but waits (fail closed, never a guessed size).
+    private(set) var sizeBacked = false
+    /// The size decision is a preset, or an off-preset size outside the presets' range (a bar box, a 10 ft). An
+    /// unsnapped size between the smallest and largest preset means the frames disagree (no preset majority, or
+    /// fits between two presets: dist-2.0m seed 3 fused 7 ft fits with long tracked fits to 2.19 m): never lock it.
+    private(set) var sizeDecided = false
+    /// Both: the size can be locked.
+    var sizeSettled: Bool { sizeBacked && sizeDecided }
+    static let presetSpan: ClosedRange<Double> = {
+        let l = TableSize.allCases.map(\.playingLength)
+        return l.min()!...l.max()!
+    }()
     private var deviations: [Double] = []
     /// Size held since lock (spec, snapped preset).
     private var heldSize: (spec: TableSpec, snapped: TableSize?)?
@@ -125,34 +142,18 @@ struct AutoTableFusion: Sendable {
 
     private mutating func recompute(camera: SIMD3<Double>) {
         guard !window.isEmpty else { fused = nil; return }
-        let up = simd_normalize(window.last!.up)
-        func yaw(_ a: SIMD3<Double>) -> Double { atan2(a.z, a.x) }
-        let ref = fused.map { yaw($0.xAxis) } ?? yaw(window.last!.axis)
-        let angles = window.map { ref + autoWrapHalfPi(yaw($0.axis) - ref) }
-        var cx = autoMedian(window.map(\.center.x)), cy = autoMedian(window.map(\.center.y))
-        var cz = autoMedian(window.map(\.center.z))
-        var th = autoMedian(angles)
-        // Huber refinement (δ = 1 cm / 0.3°).
-        for _ in 0..<3 {
-            var sw = 0.0, sx = 0.0, sy = 0.0, sz = 0.0, swt = 0.0, st = 0.0
-            for (i, m) in window.enumerated() {
-                let r = simd_distance(m.center, SIMD3(cx, cy, cz))
-                let w = r <= 0.01 ? 1 : 0.01 / r
-                sw += w; sx += w * m.center.x; sy += w * m.center.y; sz += w * m.center.z
-                let ra = abs(angles[i] - th)
-                let wt = ra <= 0.005 ? 1 : 0.005 / ra
-                swt += wt; st += wt * angles[i]
-            }
-            cx = sx / sw; cy = sy / sw; cz = sz / sw; th = st / swt
-        }
         // Size: majority preset, else the median measurement at 2:1. While locked the vote threshold has
         // a hysteresis band around the held choice, so a table near the 6 % snap edge does not flap.
+        // Only frames that measured the size vote on it (a guessed size is never size evidence).
+        let sizing = window.filter(\.sizeMeasured)
+        sizeBacked = !sizing.isEmpty
+        let voters = sizeBacked ? sizing : window
         var votes: [TableSize: Int] = [:]
-        for m in window { if let s = m.snapped { votes[s, default: 0] += 1 } }
+        for m in voters { if let s = m.snapped { votes[s, default: 0] += 1 } }
         var spec: TableSpec
         var snapped: TableSize?
-        let mL = autoMedian(window.map(\.measuredLength)), mW = autoMedian(window.map(\.measuredWidth))
-        let n = Double(window.count), top = votes.max(by: { $0.value < $1.value })
+        let mL = autoMedian(voters.map(\.measuredLength)), mW = autoMedian(voters.map(\.measuredWidth))
+        let n = Double(voters.count), top = votes.max(by: { $0.value < $1.value })
         var preset: TableSize?
         if locked, let held = heldSize {
             // A held preset stays while it keeps ≥ share − band of the votes (whoever else leads); any other
@@ -173,10 +174,15 @@ struct AutoTableFusion: Sendable {
             let len = (mL + 2 * mW) / 2
             spec.length = len; spec.width = len / 2
         }
+        sizeDecided = snapped != nil || !Self.presetSpan.contains(spec.length)
         // Locked: hold the size so corners never move without a new generation. A different size is
         // adopted only after it has been the (self-consistent) candidate for `sizeAdoptFrames` frames.
         if locked, let held = heldSize {
-            if abs(spec.length - held.spec.length) > config.sizeChangeTolerance {
+            if !sizeSettled {
+                // Nothing in the window measured a size, or it sits between presets: hold the locked one.
+                pendingSize = nil
+                spec = held.spec; snapped = held.snapped
+            } else if abs(spec.length - held.spec.length) > config.sizeChangeTolerance {
                 if let p = pendingSize, p.snapped == snapped,
                    abs(p.spec.length - spec.length) <= config.sizeChangeTolerance {
                     pendingSize = (spec, snapped, p.frames + 1)
@@ -195,6 +201,31 @@ struct AutoTableFusion: Sendable {
                 spec = held.spec; snapped = held.snapped
             }
         }
+        // Pose from the frames consistent with that size: a guessed frame (see `sizeMeasured`) was centred for its own
+        // preset, so for any other size it is no pose evidence (bar-rive-combo seed 5: 7 ft guesses centred a 9 ft pose
+        // 25 cm off).
+        func consistent(_ m: AutoTableMeasurement) -> Bool { m.sizeMeasured || m.snapped == snapped }
+        let posing = window.contains(where: consistent) ? window.filter(consistent) : window
+        let up = simd_normalize(posing.last!.up)
+        func yaw(_ a: SIMD3<Double>) -> Double { atan2(a.z, a.x) }
+        let ref = fused.map { yaw($0.xAxis) } ?? yaw(posing.last!.axis)
+        let angles = posing.map { ref + autoWrapHalfPi(yaw($0.axis) - ref) }
+        var cx = autoMedian(posing.map(\.center.x)), cy = autoMedian(posing.map(\.center.y))
+        var cz = autoMedian(posing.map(\.center.z))
+        var th = autoMedian(angles)
+        // Huber refinement (δ = 1 cm / 0.3°).
+        for _ in 0..<3 {
+            var sw = 0.0, sx = 0.0, sy = 0.0, sz = 0.0, swt = 0.0, st = 0.0
+            for (i, m) in posing.enumerated() {
+                let r = simd_distance(m.center, SIMD3(cx, cy, cz))
+                let w = r <= 0.01 ? 1 : 0.01 / r
+                sw += w; sx += w * m.center.x; sy += w * m.center.y; sz += w * m.center.z
+                let ra = abs(angles[i] - th)
+                let wt = ra <= 0.005 ? 1 : 0.005 / ra
+                swt += wt; st += wt * angles[i]
+            }
+            cx = sx / sw; cy = sy / sw; cz = sz / sw; th = st / swt
+        }
         var axis = SIMD3(cos(th), 0, sin(th))
         axis -= up * simd_dot(axis, up)
         axis = simd_normalize(axis)
@@ -207,15 +238,16 @@ struct AutoTableFusion: Sendable {
         fused = pose
         // Spread over the most recent frames.
         let recent = window.suffix(config.lockFrames)
-        let devs = recent.map { Self.deviation($0, from: pose) }
+        func dev(_ m: AutoTableMeasurement) -> Double { consistent(m) ? Self.deviation(m, from: pose) : .infinity }
+        let devs = recent.map(dev)
         spread = recent.count >= 3 ? autoMedian(devs) : .infinity
         func agrees(frames: Int, spread limit: Double) -> Bool {
             guard window.count >= frames else { return false }
-            let d = window.suffix(frames).map { Self.deviation($0, from: pose) }
+            let d = window.suffix(frames).map(dev)
             return autoMedian(d) <= limit && Double(d.filter { $0 < 1.5 * limit }.count) >= 0.8 * Double(d.count)
                 && Self.partialViewsAgree(window, center: center, up: up, config: config)
         }
-        if !locked, agrees(frames: config.fastLockFrames, spread: config.lockCornerSpread)
+        if !locked, sizeSettled, agrees(frames: config.fastLockFrames, spread: config.lockCornerSpread)
             || agrees(frames: config.lockFrames, spread: config.slowLockCornerSpread) {
             locked = true
             generation += 1
