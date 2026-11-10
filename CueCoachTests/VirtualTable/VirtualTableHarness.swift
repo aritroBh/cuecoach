@@ -137,8 +137,10 @@ enum VTHarness {
     }
 
     /// Runs one locator over the session exactly like FrameTap + ARLiveController (lock → confirm → stop).
+    /// `cpuGating: false` feeds every frame the app gate would offer an idle phone, so the result does not depend on
+    /// how loaded the test machine is (regression guards); the matrix keeps the measured-CPU gating.
     static func run(_ s: VTSetup, kind: VTLocatorKind, cache: inout [Int: VTFrame], thumbAt: Double? = nil,
-                    thumb: inout VTFrame?) async -> (VTRunResult, [SIMD3<Double>]?) {
+                    thumb: inout VTFrame?, cpuGating: Bool = true) async -> (VTRunResult, [SIMD3<Double>]?) {
         let traj = s.trajectory
         var res = VTRunResult(locator: kind, condition: s.condition.name, axis: s.condition.axis, seed: s.seed,
                               path: traj.kind.rawValue, fps: s.fps, size: s.truth.size, elevationDeg: s.elevationDeg,
@@ -250,8 +252,10 @@ enum VTHarness {
             }
             let used = vtThreadCPU() - c0 + frame.convertCPU
             cpu += used
-            gate.busyUntil = ts + used
-            busyUntil = ts + used
+            if cpuGating {
+                gate.busyUntil = ts + used
+                busyUntil = ts + used
+            }
             if isLocked {
                 res.locked = true
                 res.ttlStart = t

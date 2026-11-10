@@ -194,7 +194,8 @@ extension VirtualTableFalseLockTests {
         let s = VTSetup.make(try Self.condition("dist-2.0m"), seed: 3)
         var cache: [Int: VTFrame] = [:]
         var thumb: VTFrame?
-        let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
+        // Ungated: under full-suite load the CPU-gated run saw too few frames to lock in its window (QA 17 Pro Max).
+        let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb, cpuGating: false)
         #expect(!(r.locked && r.sizeOK == false), "locked the wrong size, corner error \((r.cornerErr ?? 0) * 100) cm")
         #expect(!r.falseLock)
         // Full fits measure 7 ft: the table must lock, accurately (Grok 4.7: never locking is a failure too).
