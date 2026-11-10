@@ -413,7 +413,7 @@ struct ReplayLiveView: View {
         .onChange(of: model.editor.revision) { refreshHandles() }
         .task {
             let pl = pipeline
-            model.legalChanged = { legal in Task { await pl.setLegal(legal) } }
+            model.bindLegal { legal in Task { await pl.setLegal(legal) } }
             let seed = model.initialLegalTargets()
             Task { await pl.setLegal(seed) }
             model.undo = { model.editor.undo() }
