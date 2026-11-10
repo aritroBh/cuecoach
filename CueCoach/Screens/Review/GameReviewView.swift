@@ -21,7 +21,7 @@ public struct GameReviewView: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 32) {
-                        header
+                        AnyView(header)
                         content
                     }
                     .padding(.horizontal, wide ? 24 : 16)
@@ -44,51 +44,65 @@ public struct GameReviewView: View {
 
     private var wide: Bool { (vSize == .compact || hSize == .regular) && !typeSize.isAccessibilitySize }
 
-    @ViewBuilder private var content: some View {
+    /// Each phase/layout is type-erased. iOS 27.3 (beta) crashes in the Swift runtime instantiating the
+    /// single nested _ConditionalContent type of every branch together (EXC_BAD_ACCESS in
+    /// swift_getTypeByMangledName from GameReviewView.content, device only). Erasing per branch keeps each
+    /// branch's metadata separate and only instantiated when that branch is shown.
+    private var content: AnyView {
         switch model.phase {
-        case .failed:
-            VStack(spacing: 24) {
-                centered("exclamationmark.triangle", "Unavailable", tint: AX.caution, id: "review.failed")
-                if model.canRetry {
-                    Button { Task { await model.retry() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(AXGlyph.font(28, .semibold))
-                            .foregroundStyle(AX.ink)
-                            .frame(width: 72, height: 72)
-                            .background(Circle().fill(AX.surface))
-                            .overlay(Circle().strokeBorder(AX.ink.opacity(0.2), lineWidth: 1))
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Try again")
-                    .accessibilityIdentifier("review.retry")
-                }
-            }
-            .frame(maxWidth: .infinity)
-        case .loading:
-            VStack(spacing: 24) {
-                Skeleton(height: 200, reduceMotion: reduceMotion)
-                Skeleton(height: 56, reduceMotion: reduceMotion)
-                Skeleton(height: 200, reduceMotion: reduceMotion)
-                Skeleton(height: 260, reduceMotion: reduceMotion)
-            }
-            .accessibilityLabel("Loading review")
-            .accessibilityIdentifier("review.loading")
+        case .failed: AnyView(failedContent)
+        case .loading: AnyView(loadingContent)
         case .loaded:
             if model.isEmpty {
-                centered("circle.slash", "No shots", tint: AX.inkMuted, id: "review.empty")
+                AnyView(centered("circle.slash", "No shots", tint: AX.inkMuted, id: "review.empty"))
             } else if wide {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard }
-                    VStack(alignment: .leading, spacing: 32) { sotgCard; mvpCard }
-                }
+                AnyView(HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 32) { AnyView(winChance); AnyView(timeline); AnyView(replayCard) }
+                    VStack(alignment: .leading, spacing: 32) { AnyView(sotgCard); AnyView(mvpCard) }
+                })
             } else if typeSize.isAccessibilitySize {
                 // AX sizes: the replay (the hero) comes first so it isn't pushed under the Done bar.
-                VStack(alignment: .leading, spacing: 32) { replayCard; timeline; winChance; sotgCard; mvpCard }
+                AnyView(VStack(alignment: .leading, spacing: 32) {
+                    AnyView(replayCard); AnyView(timeline); AnyView(winChance); AnyView(sotgCard); AnyView(mvpCard)
+                })
             } else {
-                VStack(alignment: .leading, spacing: 32) { winChance; timeline; replayCard; sotgCard; mvpCard }
+                AnyView(VStack(alignment: .leading, spacing: 32) {
+                    AnyView(winChance); AnyView(timeline); AnyView(replayCard); AnyView(sotgCard); AnyView(mvpCard)
+                })
             }
         }
+    }
+
+    private var failedContent: some View {
+        VStack(spacing: 24) {
+            centered("exclamationmark.triangle", "Unavailable", tint: AX.caution, id: "review.failed")
+            if model.canRetry {
+                Button { Task { await model.retry() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(AXGlyph.font(28, .semibold))
+                        .foregroundStyle(AX.ink)
+                        .frame(width: 72, height: 72)
+                        .background(Circle().fill(AX.surface))
+                        .overlay(Circle().strokeBorder(AX.ink.opacity(0.2), lineWidth: 1))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Try again")
+                .accessibilityIdentifier("review.retry")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var loadingContent: some View {
+        VStack(spacing: 24) {
+            Skeleton(height: 200, reduceMotion: reduceMotion)
+            Skeleton(height: 56, reduceMotion: reduceMotion)
+            Skeleton(height: 200, reduceMotion: reduceMotion)
+            Skeleton(height: 260, reduceMotion: reduceMotion)
+        }
+        .accessibilityLabel("Loading review")
+        .accessibilityIdentifier("review.loading")
     }
 
     private func centered(_ symbol: String, _ word: String, tint: Color, id: String) -> some View {
