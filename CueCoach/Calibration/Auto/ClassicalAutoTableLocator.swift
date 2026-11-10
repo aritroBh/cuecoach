@@ -288,6 +288,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         }
         var allPts = rails.flatMap(\.points)
         var pose0 = pose(fit)
+        var sizeMeasured = true
         diag.reprojectionRMS = Self.reprojectionRMS(allPts, pose: pose0, plane: plane, camera: camera, profile: prof)
         if diag.reprojectionRMS >= config.maxFrameRMS {
             // One rail edge confused (a lamp highlight on the cushion, a shadow, an arm) while the other three agree:
@@ -314,13 +315,17 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             let rms2 = Self.reprojectionRMS(kept, pose: p2, plane: plane, camera: camera, profile: prof)
             guard rms2 < config.maxFrameRMS else { diag.rejection = "reprojection"; return nil }
             fit = f2; pose0 = p2; allPts = kept; diag.reprojectionRMS = rms2; diag.droppedRail = k
+            // One axis measured by its two rails, the other at 2:1: a size only if that axis fits exactly one preset
+            // (8 and 9 ft overlap within 6 %; cross-vendor review, GLM-5). Otherwise pose under its preset, no vote.
+            sizeMeasured = AutoRectFitter.uniquePreset(length: (f2.measuredL + 2 * f2.measuredW) / 2)
         }
         guard viewElevation(camera, center: pose0.center, up: plane.normal) >= config.minViewElevation else {
             diag.rejection = "view too shallow"; return nil
         }
-        let m = AutoTableMeasurement(center: pose0.center, axis: pose0.xAxis, up: plane.normal,
+        var m = AutoTableMeasurement(center: pose0.center, axis: pose0.xAxis, up: plane.normal,
                                      measuredLength: fit.measuredL, measuredWidth: fit.measuredW, snapped: fit.snapped,
                                      cameraPosition: camera.position)
+        m.sizeMeasured = sizeMeasured
         return Detection(measurement: m, edgePoints: allPts, plane: plane, profile: prof)
     }
 

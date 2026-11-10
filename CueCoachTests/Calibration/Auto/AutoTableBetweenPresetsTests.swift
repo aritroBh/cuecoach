@@ -13,13 +13,48 @@ struct AutoTableBetweenPresetsTests {
                              measuredLength: L, measuredWidth: L / 2, snapped: snapped, cameraPosition: SIMD3(0, 2.2, -0.6))
     }
 
-    @Test func mixedPresetAndOffPresetFramesDoNotLockTheMedian() {
+    /// Cross-vendor review (Grok 4.7): an unsnapped fit between presets is no size vote (it is as far from one
+    /// neighbour as from the other), but it is pose evidence. 7 ft fits among them decide the size once there are
+    /// enough of them, and the pose's measured size comes from those votes, so the adapter trusts it.
+    @Test func betweenPresetFitsAbstainAndTheMeasuredPresetLocks() throws {
         var f = AutoTableFusion()
         for i in 0..<30 {
-            f.add(i % 3 == 0 ? Self.m(length: TableSize.sevenFoot.playingLength, snapped: .sevenFoot, i: i)
-                             : Self.m(length: 2.186, snapped: nil, i: i))
+            f.add(i % 10 == 0 ? Self.m(length: TableSize.sevenFoot.playingLength, snapped: .sevenFoot, i: i)
+                              : Self.m(length: 2.186, snapped: nil, i: i))
+        }
+        #expect(f.locked)
+        let p = try #require(f.fused)
+        #expect(p.snappedSize == .sevenFoot)
+        #expect(AutoTableLocating.sizeIsTrusted(p))
+    }
+
+    /// One preset vote among abstaining fits is not enough to decide a size.
+    @Test func aSinglePresetVoteAmongAbstainersNeverLocks() {
+        var f = AutoTableFusion()
+        for i in 0..<30 {
+            f.add(i == 0 ? Self.m(length: TableSize.sevenFoot.playingLength, snapped: .sevenFoot, i: i)
+                         : Self.m(length: 2.186, snapped: nil, i: i))
         }
         #expect(!f.locked)
+    }
+
+    @Test func betweenPresetFitsAloneNeverLock() {
+        var f = AutoTableFusion()
+        for i in 0..<30 { f.add(Self.m(length: 2.186, snapped: nil, i: i)) }
+        #expect(!f.locked)
+    }
+
+    /// Grok 4.7: a 7 ft lock must stay published (adapter-trusted) after the window fills with between-preset fits.
+    @Test func aLockStaysTrustedAfterBetweenPresetFitsFillTheWindow() throws {
+        var f = AutoTableFusion()
+        for i in 0..<15 { f.add(Self.m(length: TableSize.sevenFoot.playingLength, snapped: .sevenFoot, i: i)) }
+        #expect(f.locked)
+        for i in 0..<40 {
+            f.add(Self.m(length: 2.186, snapped: nil, i: i))
+            let p = try #require(f.fused)
+            #expect(p.snappedSize == .sevenFoot)
+            #expect(AutoTableLocating.sizeIsTrusted(p), "frame \(i): measured \(p.measuredLength) no longer trusted")
+        }
     }
 
     @Test(arguments: [1.70, 2.85])

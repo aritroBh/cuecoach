@@ -197,6 +197,7 @@ extension VirtualTableFalseLockTests {
         let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
         #expect(!(r.locked && r.sizeOK == false), "locked the wrong size, corner error \((r.cornerErr ?? 0) * 100) cm")
         #expect(!r.falseLock)
-        if r.locked { #expect(r.accurate, "locked \((r.cornerErr ?? 0) * 100) cm off") }
+        // Full fits measure 7 ft: the table must lock, accurately (Grok 4.7: never locking is a failure too).
+        #expect(r.locked && r.accurate, "locked \(r.locked), \((r.cornerErr ?? 0) * 100) cm off, reason \(r.reason ?? "-")")
     }
 }

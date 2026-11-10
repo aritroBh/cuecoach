@@ -70,4 +70,39 @@ struct AutoTableSizeEvidenceTests {
             #expect(abs(p.center.x) < 0.02, "locked a 9 ft pose centred for 7 ft: \(p.center.x)")
         }
     }
+
+    /// Cross-vendor review (GLM-5): a stale held size must not survive once a new preset is *measured*. Locked 9 ft,
+    /// the window fills with 8 ft guesses (held, as it must be), then measured 8 ft frames arrive: adopted with a new
+    /// generation.
+    @Test func aMeasuredNewPresetIsAdoptedAfterGuessesFilledTheWindow() {
+        var f = AutoTableFusion()
+        for i in 0..<15 { f.add(Self.m(.nineFoot, measured: true, i: i)) }
+        #expect(f.locked)
+        let gen = f.generation
+        for i in 0..<30 { f.add(Self.m(.eightFoot, measured: false, i: i)) }
+        #expect(f.fused?.snappedSize == .nineFoot)
+        for i in 0..<30 { f.add(Self.m(.eightFoot, measured: true, i: i)) }
+        #expect(f.fused?.snappedSize == .eightFoot)
+        #expect(f.generation > gen)
+    }
+
+    /// Same, with the measured 8 ft frames sparse among guesses (one in three).
+    @Test func sparseMeasurementsStillReplaceAHeldSize() {
+        var f = AutoTableFusion()
+        for i in 0..<15 { f.add(Self.m(.nineFoot, measured: true, i: i)) }
+        for i in 0..<90 { f.add(Self.m(.eightFoot, measured: i % 3 == 0, i: i)) }
+        #expect(f.fused?.snappedSize == .eightFoot)
+    }
 }
+
+/// A three-rail fit (one rail dropped) measures one axis from its two opposite rails and sizes the other at 2:1 —
+/// a measurement, unlike a corner guess, but 8 and 9 ft overlap within 6 % (2.39–2.48 m), where a slightly biased
+/// axis picks one of two presets by a 2 % margin. Cross-vendor review (GLM-5): it measures the size only if its axis
+/// alone leaves exactly one preset, the corner-partial rule.
+struct AutoTableThreeRailSizeTests {
+    @Test(arguments: [(2.032, true), (2.337, true), (2.54, true), (2.43, false), (2.40, false), (2.17, false)])
+    func threeRailSizeIsMeasuredOnlyWhenOnePresetFits(length: Double, measured: Bool) {
+        #expect(AutoRectFitter.uniquePreset(length: length) == measured, "\(length)")
+    }
+}
+

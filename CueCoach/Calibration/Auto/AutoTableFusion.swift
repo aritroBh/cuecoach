@@ -17,7 +17,8 @@ struct AutoTableMeasurement: Sendable {
     /// Fraction of the playing length actually seen (1 = whole table; < 1 = partial fit completed by 2:1 + preset).
     var visibleLengthFraction: Double = 1
     /// false = the size is a guess, not a measurement: a corner-anchored partial fit chose the preset by how well its
-    /// outline fills the cloth mask (a cloth the colour of its rails fills a preset one size up: felt-tan seed 10).
+    /// outline fills the cloth mask (a cloth the colour of its rails fills a preset one size up: felt-tan seed 10), or a
+    /// three-rail fit whose one measured axis fits two presets.
     /// Such a frame casts no size vote, cannot back a lock's size, and is pose evidence only under its own preset.
     var sizeMeasured = true
 }
@@ -30,6 +31,8 @@ struct AutoFusionConfig: Sendable {
     var lockFrames = 15
     /// Robust spread of per-frame corners that allows a fast lock (m).
     var lockCornerSpread = 0.01
+    /// A size decision needs at least this many size votes in the window (one fit is not a size).
+    var minSizeVotes = 3
     /// Robust spread that allows a lock after `lockFrames` frames (m).
     var slowLockCornerSpread = 0.02
     /// A frame whose corners are this far from the fused ones disagrees (m).
@@ -66,8 +69,8 @@ struct AutoTableFusion: Sendable {
     private var flipPending = false
     private(set) var fused: AutoTablePose?
     private(set) var spread: Double = .infinity
-    /// The window holds a frame that measured the size (see `AutoTableMeasurement.sizeMeasured`). A lock needs it:
-    /// with guessed sizes only, fusion converges but waits (fail closed, never a guessed size).
+    /// The window holds ≥ `minSizeVotes` size votes (`votesOnSize`). A lock needs them: with guessed or
+    /// between-preset sizes only, fusion converges but waits (fail closed, never a guessed size).
     private(set) var sizeBacked = false
     /// The size decision is a preset, or an off-preset size outside the presets' range (a bar box, a 10 ft). An
     /// unsnapped size between the smallest and largest preset means the frames disagree (no preset majority, or
@@ -145,8 +148,8 @@ struct AutoTableFusion: Sendable {
         // Size: majority preset, else the median measurement at 2:1. While locked the vote threshold has
         // a hysteresis band around the held choice, so a table near the 6 % snap edge does not flap.
         // Only frames that measured the size vote on it (a guessed size is never size evidence).
-        let sizing = window.filter(\.sizeMeasured)
-        sizeBacked = !sizing.isEmpty
+        let sizing = window.filter(Self.votesOnSize)
+        sizeBacked = sizing.count >= config.minSizeVotes
         let voters = sizeBacked ? sizing : window
         var votes: [TableSize: Int] = [:]
         for m in voters { if let s = m.snapped { votes[s, default: 0] += 1 } }
@@ -201,6 +204,15 @@ struct AutoTableFusion: Sendable {
                 spec = held.spec; snapped = held.snapped
             }
         }
+        // The pose's measured size (what the adapter's ambiguity check reads) comes from the votes for the chosen
+        // preset, not from frames that abstained (Grok 4.7: a 7 ft lock read 2.19 m and stopped being published).
+        // Locked with no such vote in the window, the last measured size stays.
+        var measured = (mL, mW)
+        if let s = snapped {
+            let mine = voters.filter { $0.snapped == s && Self.votesOnSize($0) }
+            if !mine.isEmpty { measured = (autoMedian(mine.map(\.measuredLength)), autoMedian(mine.map(\.measuredWidth))) }
+            else if locked, let f = fused { measured = (f.measuredLength, f.measuredWidth) }
+        }
         // Pose from the frames consistent with that size: a guessed frame (see `sizeMeasured`) was centred for its own
         // preset, so for any other size it is no pose evidence (bar-rive-combo seed 5: 7 ft guesses centred a 9 ft pose
         // 25 cm off).
@@ -234,7 +246,7 @@ struct AutoTableFusion: Sendable {
         var h2f = headToFoot ?? (simd_dot(camera - center, axis) > 0 ? -axis : axis)
         if headToFoot == nil && flipPending { h2f = -h2f }
         guard let pose = Self.pose(center: center, axis: axis, up: up, spec: spec, snapped: snapped,
-                                   measured: (mL, mW), headToFoot: h2f) else { return }
+                                   measured: measured, headToFoot: h2f) else { return }
         fused = pose
         // Spread over the most recent frames.
         let recent = window.suffix(config.lockFrames)
@@ -258,6 +270,13 @@ struct AutoTableFusion: Sendable {
             // Re-locked onto a table turned by ~90°: re-derive head from the camera.
             headToFoot = simd_dot(camera - center, axis) > 0 ? -axis : axis
         }
+    }
+
+    /// A frame votes on the size if it measured it (`sizeMeasured`) and the measurement names one: an unsnapped fit
+    /// between the smallest and largest preset sits between two neighbours (as far from one as from the other) and
+    /// abstains, though it is still pose evidence (cross-vendor review, Grok 4.7: dist-2.0m seed 3 tracked fits).
+    static func votesOnSize(_ m: AutoTableMeasurement) -> Bool {
+        m.sizeMeasured && (m.snapped != nil || !presetSpan.contains((m.measuredLength + 2 * m.measuredWidth) / 2))
     }
 
     /// A partial-view lock needs ≥ 60 % of the length seen in some frame, or ≥ 2 distinct view angles.
