@@ -144,6 +144,11 @@ enum AutoRectFitter {
         return .preset(e[0].size)
     }
 
+    /// Whether a size measured on one axis (as a playing length) is within `tolerance` of exactly one preset.
+    static func uniquePreset(length L: Double, tolerance: Double = 0.06) -> Bool {
+        TableSize.allCases.filter { abs($0.playingLength - L) / $0.playingLength <= tolerance }.count == 1
+    }
+
     /// D12 sizing: nearest preset by (L + 2W)/2; relative error ≤ 6 % snaps, else the measurement is used.
     static func snap(length: Double, width: Double) -> (size: TableSize, relativeError: Double) {
         let est = (length + 2 * width) / 2

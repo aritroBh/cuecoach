@@ -27,7 +27,8 @@ struct VirtualTableFalseLockTests {
 extension VirtualTableFalseLockTests {
     /// r3 development matrix: a 1.4 × 0.7 m 2:1 patch in the bar scene locked 1.8 m away once a three-rail
     /// refit was allowed. Too small for any table, and three-rail fits must land on a preset.
-    @Test(arguments: [UInt64(12), 19])
+    /// Seed 5 (size-lock work): 7 ft corner guesses centred a 9 ft pose 28 cm off once size came only from measured frames.
+    @Test(arguments: [UInt64(12), 19, 5])
     func barComboSmallPatchIsNoTable(seed: UInt64) async throws {
         let s = VTSetup.make(try Self.condition("bar-rive-combo"), seed: seed)
         var cache: [Int: VTFrame] = [:]
@@ -140,5 +141,63 @@ struct VirtualTableTrace {
             t += 1.0 / 15; i += 1
             if e.state == .locked && t > 4 { break }
         }
+    }
+}
+extension VirtualTableFalseLockTests {
+    /// Integration matrix (-O): felt-tan seed 10 (an 8 ft table whose tan cloth matches its maple rails) locked as
+    /// 9 ft, 16 cm off. The cloth mask runs over the rail caps, so the corner-anchored partial fit picks the preset
+    /// whose outline fills the mask best — one size up — and reported it as a measured size. Replayed here without
+    /// the harness's CPU-time gating (which made the matrix case timing-dependent): the 9 ft partial-fit frames,
+    /// each fed several times as a phone held still would, must never lock a size.
+    @Test func feltTanSeed10PartialFitsNeverLockAGuessedSize() async throws {
+        let s = VTSetup.make(try Self.condition("felt-tan"), seed: 10)
+        #expect(s.truth.size == .eightFoot)
+        let app = AutoTableLocating()
+        var planes = VTPlaneSim(truths: s.planeTruths, seed: s.seed ^ 0x51, trackingReady: s.trackingReady)
+        var jitter = VTRandom(seed: s.seed ^ 0x77)
+        var ts = s.timestampBase + s.trackingReady
+        var locked: TableEstimate?
+        var planeT = s.trackingReady
+        // Times where the trace shows the 9 ft corner-anchored partial fit (full search fails: no quad).
+        for t0 in [1.40, 1.73, 2.40, 3.60, 4.33, 5.27, 5.40, 7.60, 7.73, 8.20, 9.20, 9.67] {
+            let i = Int((t0 * Double(s.fps)).rounded()), t = Double(i) / Double(s.fps)   // the harness's frame numbering
+            while planeT <= t {   // ARKit plane updates every 0.1 s, as in the harness
+                planes.update(t: planeT, renderer: VTRenderer(scene: s.scene.at(time: planeT), camera: s.camera(planeT)))
+                planeT += 0.1
+            }
+            let f = VTHarness.render(s, t: t, index: i, planes: planes.planes(t: t, jitter: &jitter))
+            for _ in 0..<6 {
+                ts += 1.0 / 15
+                let d = f.depth
+                let e = await app.ingest(LocatorFrame(image: f.pixel, camera: f.camera, planes: f.planes, timestamp: ts,
+                                                      depth: DepthMap(width: d.width, height: d.height, depth: d.depth,
+                                                                      confidence: d.confidence)))
+                if let e, e.locked { locked = e; break }
+            }
+            if locked != nil { break }
+        }
+        if let l = locked {
+            let err = VTHarness.cornerError(l.corners, s.truth.corners)
+            #expect(l.size == s.truth.size, "locked \(String(describing: l.size)) on an 8 ft table, \(err * 100) cm off")
+            #expect(err <= 0.05)
+        }
+    }
+}
+
+
+extension VirtualTableFalseLockTests {
+    /// Lock matrix (-O, baseline and GPT-5.3 round): a 7 ft table locked at a measured 2.19 m, 18.8 cm off. Full fits
+    /// said 7 ft; fits tracked from the fused pose ran ~10 cm long on both axes, between 7 and 8 ft (6.4–7.6 % from
+    /// each, so unsnapped). With no preset majority fusion took the median, a size between two presets, and an
+    /// unsnapped size was trusted unconditionally. Reproduces alone through the shipped path.
+    @Test func dist2mSeed3NeverLocksASizeBetweenPresets() async throws {
+        let s = VTSetup.make(try Self.condition("dist-2.0m"), seed: 3)
+        var cache: [Int: VTFrame] = [:]
+        var thumb: VTFrame?
+        let (r, _) = await VTHarness.run(s, kind: .app, cache: &cache, thumb: &thumb)
+        #expect(!(r.locked && r.sizeOK == false), "locked the wrong size, corner error \((r.cornerErr ?? 0) * 100) cm")
+        #expect(!r.falseLock)
+        // Full fits measure 7 ft: the table must lock, accurately (Grok 4.7: never locking is a failure too).
+        #expect(r.locked && r.accurate, "locked \(r.locked), \((r.cornerErr ?? 0) * 100) cm off, reason \(r.reason ?? "-")")
     }
 }

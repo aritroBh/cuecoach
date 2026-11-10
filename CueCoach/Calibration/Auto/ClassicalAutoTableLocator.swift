@@ -155,6 +155,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             let lockState: AutoLockState
             if fused == nil { lockState = .searching } else if s.fusion.locked { lockState = .locked }
             else { lockState = .converging(progress: s.fusion.progress) }
+            diag.awaitingSize = fused != nil && !s.fusion.locked && !s.fusion.sizeSettled
             diag.processingSeconds = Date().timeIntervalSince(t0)
             let conf = confidence(state: lockState, progress: s.fusion.progress, rms: fusedRMS ?? diag.reprojectionRMS,
                                   pockets: diag.pocketScores)
@@ -287,6 +288,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         }
         var allPts = rails.flatMap(\.points)
         var pose0 = pose(fit)
+        var sizeMeasured = true
         diag.reprojectionRMS = Self.reprojectionRMS(allPts, pose: pose0, plane: plane, camera: camera, profile: prof)
         if diag.reprojectionRMS >= config.maxFrameRMS {
             // One rail edge confused (a lamp highlight on the cushion, a shadow, an arm) while the other three agree:
@@ -313,13 +315,17 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             let rms2 = Self.reprojectionRMS(kept, pose: p2, plane: plane, camera: camera, profile: prof)
             guard rms2 < config.maxFrameRMS else { diag.rejection = "reprojection"; return nil }
             fit = f2; pose0 = p2; allPts = kept; diag.reprojectionRMS = rms2; diag.droppedRail = k
+            // One axis measured by its two rails, the other at 2:1: a size only if that axis fits exactly one preset
+            // (8 and 9 ft overlap within 6 %; cross-vendor review, GLM-5). Otherwise pose under its preset, no vote.
+            sizeMeasured = AutoRectFitter.uniquePreset(length: (f2.measuredL + 2 * f2.measuredW) / 2)
         }
         guard viewElevation(camera, center: pose0.center, up: plane.normal) >= config.minViewElevation else {
             diag.rejection = "view too shallow"; return nil
         }
-        let m = AutoTableMeasurement(center: pose0.center, axis: pose0.xAxis, up: plane.normal,
+        var m = AutoTableMeasurement(center: pose0.center, axis: pose0.xAxis, up: plane.normal,
                                      measuredLength: fit.measuredL, measuredWidth: fit.measuredW, snapped: fit.snapped,
                                      cameraPosition: camera.position)
+        m.sizeMeasured = sizeMeasured
         return Detection(measurement: m, edgePoints: allPts, plane: plane, profile: prof)
     }
 
@@ -718,6 +724,8 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         } }
         let c = prof.cushionWidth
         let chosen: (rect: AutoRect, size: TableSize)
+        // Whether the preset was measured, not guessed from mask overlap (see `AutoTableMeasurement.sizeMeasured`).
+        let sizeMeasured: Bool
         if let (i, j) = pair {
             let li = AutoLine.fit(rails[i].lifted)!, lj = AutoLine.fit(rails[j].lifted)!
             guard let C = li.intersect(lj) else { diag.rejection = "partial: parallel"; return nil }
@@ -756,6 +764,17 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             if hyps.count > 1, hyps[1].iou > best.iou - 0.05 { diag.rejection = "partial: ambiguous size"; return nil }
             chosen = (best.rect, best.size)
             diag.partialAnchor = "corner"
+            // Measured only when a visible opposite rail's spacing alone leaves exactly one preset for this
+            // orientation; otherwise the preset is whichever outline filled the cloth mask best — a guess (a cloth
+            // the colour of its rails fills the outline one size up).
+            let fits = TableSize.allCases.filter { size in
+                let spec = TableSpec(size: size)
+                let li = best.iLong ? spec.length : spec.width, lj = best.iLong ? spec.width : spec.length
+                if let e = extentAlongDi, abs(e - lj) / lj > 0.06 { return false }
+                if let e = extentAlongDj, abs(e - li) / li > 0.06 { return false }
+                return true
+            }
+            sizeMeasured = (extentAlongDi != nil || extentAlongDj != nil) && fits == [best.size]
         } else {
             // No corner in view (steep, close: VirtualTable elev-45/60): both long rails and a side pocket on each.
             guard let sp = sidePocketFit(rails: rails, image: img, camera: camera, plane: plane, profile: prof,
@@ -764,6 +783,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                 return nil
             }
             chosen = sp
+            sizeMeasured = true   // the rail spacing matched exactly one preset width (within 3 %)
         }
         // 5. Refine centre + heading at the fixed preset size from every visible rail's edge samples.
         var rect = chosen.rect
@@ -813,6 +833,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
                                      measuredLength: spec.length, measuredWidth: spec.width, snapped: chosen.size,
                                      cameraPosition: camera.position)
         m.visibleLengthFraction = min(0.99, visible)
+        m.sizeMeasured = sizeMeasured
         return Detection(measurement: m, edgePoints: allPts, plane: plane, profile: prof)
     }
 

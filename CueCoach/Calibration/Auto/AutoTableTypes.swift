@@ -188,6 +188,8 @@ struct AutoFrameDiagnostics: Sendable {
     /// What anchored a partial-view fit along the table: "corner" (a felt corner) or "sidePockets" (both side
     /// pocket mouths on two parallel rails — two pocket mouths confirmed dark in the image).
     var partialAnchor: String?
+    /// Fusion has a pose but no size it may lock (only guessed sizes, or one between presets): it waits.
+    var awaitingSize = false
     var processingSeconds: Double = 0
     var rejection: String?
 }

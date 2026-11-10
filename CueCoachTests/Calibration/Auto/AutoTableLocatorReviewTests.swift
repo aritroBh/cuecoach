@@ -48,14 +48,15 @@ struct AutoTableLocatorReviewTests {
         #expect(f.locked)
         var gen = f.generation
         var len = try #require(f.fused).spec.length
-        // Rail occlusion: the fits stop snapping and measure ~2.50 m.
+        // The fits stop snapping and measure an off-preset 2.80 m (outside the presets; an unsnapped size between
+        // presets is never adopted: AutoTableBetweenPresetsTests).
         for _ in 0..<30 {
-            f.add(Self.measurement(length: 2.50, snapped: nil))
+            f.add(Self.measurement(length: 2.80, snapped: nil))
             let now = try #require(f.fused).spec.length
             if f.generation == gen { #expect(abs(now - len) < 1e-9, "size changed \(len) → \(now) with no new generation") }
             gen = f.generation; len = now
         }
-        #expect(abs(len - 2.50) < 0.002)
+        #expect(abs(len - 2.80) < 0.002)
         #expect(f.generation >= 2)
     }
 
