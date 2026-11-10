@@ -57,6 +57,24 @@ struct AutoTableBetweenPresetsTests {
         }
     }
 
+    /// Grok 4.7 r2: locked 8 ft, abstainers fill the window, then ONE borderline 8 ft snap (2.21 m, inside 6 % of
+    /// 8 ft but past the ambiguity line) arrives. Below minSizeVotes it must not overwrite the lock's measured size,
+    /// or the adapter stops trusting the lock and later abstainers freeze the bad value.
+    @Test func aLoneBorderlineSnapWhileLockedNeverPoisonsTheMeasuredSize() throws {
+        var f = AutoTableFusion()
+        let eight = TableSize.eightFoot.playingLength
+        for i in 0..<15 { f.add(Self.m(length: eight, snapped: .eightFoot, i: i)) }
+        #expect(f.locked)
+        for i in 0..<40 { f.add(Self.m(length: 2.40, snapped: nil, i: i)) }
+        f.add(Self.m(length: 2.21, snapped: .eightFoot, i: 99))
+        for i in 0..<20 {
+            let p = try #require(f.fused)
+            #expect(p.snappedSize == .eightFoot)
+            #expect(AutoTableLocating.sizeIsTrusted(p), "step \(i): measured \(p.measuredLength) no longer trusted")
+            f.add(Self.m(length: 2.40, snapped: nil, i: 200 + i))
+        }
+    }
+
     @Test(arguments: [1.70, 2.85])
     func offPresetTablesOutsideThePresetsStillLock(length: Double) {
         var f = AutoTableFusion()
