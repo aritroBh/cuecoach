@@ -50,7 +50,11 @@ struct LiveScreen: View {
         .persistentSystemOverlays(.hidden)
         // D37 + Astryx AlertDialog (destructive confirm, no outside dismissal) = the native alert.
         .alert("End game?", isPresented: $askingEnd) {
-            Button("End game", role: .destructive) { model.requestEnd { close() } }
+            Button("End game", role: .destructive) {
+                model.requestEnd { close() }
+                // D42: never stuck waiting for a quiet table.
+                if model.isFinishing { Task { try? await Task.sleep(for: .seconds(5)); model.forceEnd() } }
+            }
             Button("Keep playing", role: .cancel) {}
         }
         .onAppear {
@@ -72,12 +76,10 @@ struct LiveScreen: View {
         let st = model.status
         return VStack(spacing: 12) {
             HStack(alignment: .top) {
-                if model.isFinishing {
-                    Color.clear.frame(width: 56, height: 56)   // D37: the open shot settles, then review opens
-                } else {
-                    CircleButton(symbol: "xmark", id: "live.close") {
-                        if model.asksBeforeClosing { askingEnd = true } else { close() }
-                    }
+                // D37/D42: while the open shot settles, a second ✕ ends at once.
+                CircleButton(symbol: "xmark", id: "live.close") {
+                    if model.isFinishing { model.forceEnd() }
+                    else if model.asksBeforeClosing { askingEnd = true } else { close() }
                 }
                 Spacer()
                 if model.calibrated && model.showAimHint && model.status == .calibrated {

@@ -111,11 +111,39 @@ final class LiveModel {
     var asksBeforeClosing: Bool { mode == .game }
     /// D37: end once every open shot has closed (through the normal FIFO, the pocket question still answerable).
     /// `done` runs exactly once; a second request while finishing is ignored.
+    /// D42: a second request while finishing forces the end at once.
     func requestEnd(_ done: @escaping @MainActor () -> Void) {
-        guard !isFinishing else { return }
+        guard !isFinishing else { return forceEnd() }
         guard hasOpenShot else { return done() }
         isFinishing = true
         onFinished = done
+    }
+    /// D42: stop waiting for a quiet table (second ✕, or the screen's ~5 s give-up). Every open shot closes now, in
+    /// order, with what is known: a running look freezes and an unasked/unanswered pocket takes the look's verdict.
+    func forceEnd() {
+        guard isFinishing, let done = onFinished else { return }
+        onFinished = nil
+        pocketConfirm = nil
+        while !shots.isEmpty {
+            var head = shots.removeFirst()
+            switch head.state {
+            case .looking:
+                head.verdicts = head.resolver?.frozen() ?? [:]
+                close(head)
+            case .decided:
+                close(head)
+            case .lost:
+                if let (rec, ids) = head.guess?.record() {
+                    onCloseForTesting?(head.id, rec, true)
+                    shotSettled(rec, ids: ids, guessed: true)
+                } else {
+                    onCloseForTesting?(head.id, nil, false)
+                    shotSettledNoAim = true
+                    hooks.ballsSettled()
+                }
+            }
+        }
+        done()
     }
     private var nextShotID = 0
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
