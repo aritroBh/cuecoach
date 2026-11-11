@@ -20,6 +20,11 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
 | 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | TODO |
 | 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | TODO |
+| 009 | Every phone folds one shot log (D39, D41 next-shooter event, D38 gap) | P1 | L | 002, 008 (007 recommended) | TODO |
+| 010 | Mesh link forwards the committed log to the game | P1 | M | 009 | TODO |
+| 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | TODO |
+| 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | BLOCKED (SwiftData schema migration needs user approval) |
+| 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | TODO (Q12 + "needs tap" UI to confirm first) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -28,6 +33,10 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - 003 and 004 are independent and can run in parallel with 001/002.
 - **Latency fallback (not yet planned):** it waits on 003's device numbers. If the `.all` p95 is under 33 ms on the iPhone 15 Pro Max, it isn't needed.
 - 006 after 002: a saved `Shot` stores the before/after states that 002 introduces.
+- 009–013 are plan 006's follow-ups, planned at `5cd3fcf`. 009 needs 002 (before/after) and 008 (gap shot,
+  `needsShooter`) merged; it adds two `GameEvent` cases and bumps the mesh protocol to major 2. 010, 011 and 013
+  build on 009 and can run in parallel after it, but 011 and 010 must agree on reading `isHost`/`commitSeq` before
+  `endGame` stops the link. 012 waits on 011 and user approval. 013 waits on the user's Q12 answer.
 
 ## Decisions
 - Plan 001: D35. With no WPA data, the team MVP is the winning team's best-rated shooter.
