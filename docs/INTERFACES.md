@@ -378,3 +378,91 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
 - `PersistenceStack.recognition(for:)` never returns a row opted in at/before the profile's revocation tombstone.
 - No text in Live/Perception/Calibration: standalone Live shows `PostShotRatingBadge` (Screens/PostShot); `BadgeStyle` is
   `RatingBadgeStyle`.
+
+## Proposed (plan 006 — not approved)
+
+Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. `Shot.isGuess` is a Competitive V3 migration and is not part of this contract.
+
+Plan 002 adds `before` and `after` on `SettledShot` and `SessionShot`. This section uses that shape.
+
+```swift
+// Widened wire record. New fields are optional on the wire: a missing key decodes as nil / false.
+// Synthesized Codable is not enough; the implementation must use decodeIfPresent.
+// Old peers ignore unknown JSON keys. No new GameEvent case (that would break logEntries on an older build).
+struct MeshShotRecord: Hashable, Codable, Sendable {
+    var shotID: UUID
+    var shooterTeam: Int
+    var outcome: ShotOutcome
+    var postState: TableState?          // existing; plan 002 `after` as a TableState
+    var preState: TableState? = nil     // plan 002 `before`; nil = empty before, review stays without states
+    var decisionRating: DecisionRating? = nil   // nil = every phone runs RuleRating while folding
+    var isGuess: Bool = false           // D31; in memory and on the wire. Not a SwiftData column until V3
+}
+
+// Host or solo phone → competitive store only. Joiners never call it. Training never builds one.
+protocol GameRecorder: Sendable {
+    func record(_ game: FinishedGame) throws
+}
+
+struct FinishedGame: Sendable {
+    var id: UUID                        // first committed shot's shotID
+    var ruleSet: RuleSetID
+    var tableSize: TableSize
+    var teams: [StoredTeam]             // lineup at start; mid-game swaps are not logged yet
+    var winnerTeam: Int?                // nil = unfinished, and only if the user chose to save those
+    var winProbSeries: [Double]         // [] until the engine runs; profile WPA skips an empty series
+    var startedAt: Date
+    var endedAt: Date?                  // nil only for an unfinished save
+    var shots: [RecordedShot]           // isGuess shots omitted until V3
+}
+
+struct RecordedShot: Sendable {
+    var id: UUID
+    var index: Int
+    var shooterID: UUID
+    var team: Int
+    var attributionSource: AttributionSource   // .turnOrder, or .tap after shooterCorrection
+    var preState: TableState
+    var postState: TableState
+    var calledPocket: Pocket?           // nil
+    var firstContact: BallID?
+    var railsAfterContact: Int          // 0 means unknown, not "no rail"
+    var pocketed: [BallID: Pocket]
+    var fouls: [Foul]
+    var features: ShotFeatures          // extract(pre:post:empty trace) when the cue is in pre; else neutral and skip in Aggregates
+    var made: Bool                      // an object ball was pocketed
+    var onTarget: Bool                  // made, when nothing was called
+    var cueResult: CueResult            // .notApplicable
+    var decisionRating: DecisionRating
+    var executionRating: ExecutionRating // .made / .miss from `made`; position .notApplicable
+    var wpaDelta: Double                // 0 until the engine runs
+    var isClutch: Bool                  // false until win probability exists
+    var timeOnShot: Double              // -1 = not measured (Aggregates ignores negatives)
+    var clipRef: String?                // nil
+}
+
+@MainActor protocol GameMeshLink: AnyObject {
+    var peerCount: Int { get }
+    var isStopped: Bool { get }
+    var isHost: Bool { get }            // true when mesh == nil (solo) as well, at the call site
+    var commitSeq: UInt64 { get }
+    var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)? { get set }
+    func start()
+    func stop()
+    func append(_ event: GameEvent)     // host writes; client sends .proposal
+}
+
+// GameSessionModel ↔ MeshGameLink
+// shotSettled(_:)  — host or solo appends .shot(MeshShotRecord built from SettledShot, including before/after).
+//                    A client drops the local settle. Badge and turn come from ingest, not from this call.
+// ingest(log:commitSeq:) — fold the committed prefix. .shot appends a SessionShot (RuleRating when
+//                    decisionRating is nil). .shooterCorrection(shotID:team:) sets that shot's team to the
+//                    tapped team, sets attribution .tap, and replays D17 from that index.
+// handTurn(toTeam:) — proposes .shooterCorrection for the latest shot. Does not call passTurn().
+//                    No-op while aiming (LiveSession already returns). No-op when shots is empty.
+// finishRack()     — if isHost (or mesh == nil) and commitSeq covers the rack and the roster still has a
+//                    majority, GameRecorder.record. Skips isGuess shots. Training has no GameSessionModel, so
+//                    this is unreachable from LiveSession.mode == .training.
+```
+
+`MeshGameLink` today implements only `start` / `stop` and roster `peerCount` (`CueCoach/App/MeshGameLink.swift:29-36`). The proposed callbacks are the contract for the follow-up. `GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
