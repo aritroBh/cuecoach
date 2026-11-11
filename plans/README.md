@@ -25,6 +25,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | TODO |
 | 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | TODO (D43: migration approved; after 011) |
 | 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | TODO (Q12 = D44 island + merge; "needs tap" UI still to mock first) |
+| 014 | Pro 8 (88″) and 86″ table presets (D46) | P2 | M | 005 (009 for the mesh step) | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
