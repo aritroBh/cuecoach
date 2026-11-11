@@ -160,3 +160,14 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [ ] Open (from audit): ~~live review timeline shows every shot Unrated (plans/002)~~ fixed; ~~team-game MVP is a tie broken by dictionary order (plans/001)~~ fixed; unlisted table sizes (Pro-8 locks as 8 ft; ~86″ never locks with a partial-table hint) — plans/005, needs user decision
 - [x] User decisions 2026-11-10: D35 team MVP fallback, D36 table sizes (A + C), D37 ✕ confirm, D38 lost-shot ask, D39–D41 mesh/saving (plans 001, 005, 007, 008, 006)
 - [~] Plans running: 001 (Claude, Sim H), 003 (Claude, Sim D), 004 (Claude, Sim I), 005 (Claude, CueCoach iPhone 15 Pro); 006 design done (Cursor Grok 4.7 draft, head review). Codex/Antigravity/Cursor GPT out of quota; reviews via Cursor Grok + opencode
+
+## Working round 2026-11-10 evening (head; plans 002–014)
+- [x] Plan 002 live review rates + replays live shots: merged (Grok REJECT → guessed shot keeps no replay → APPROVE)
+- [x] Plans 009–013 drafted and committed; D42–D46 recorded (user answers)
+- [x] Full CueCoachTests on merged head: 1218/1218, pushed
+- [ ] Plan 007 ✕ asks "End game?" + D42 give-up: Grok REJECT (2 BLOCKERs) → fixed, 18/18 + UI green → Grok re-review running
+- [ ] Plan 005 table-size prior + size hint (D36 C; A dropped, D46): Grok REJECT (8/9 ft overlap drops the prior vote) → fix round running
+- [ ] Plan 008 lost shot pulses turn discs + review gap (D38/D41): worker running on 1-core + 007
+- [ ] Merge 007, 005, 008 → combined full unit suite → push
+- [ ] Final QA pass: full XCUITest suite on simulators (workflow, after merges)
+- [ ] Next: plan 009 (fold the shot log) → 010/011/013 in parallel → 012 (D43) → 014 (D46)
