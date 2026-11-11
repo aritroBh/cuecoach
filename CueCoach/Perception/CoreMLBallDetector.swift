@@ -86,28 +86,33 @@ protocol BallInference: Sendable {
 final class CoreMLBallInference: BallInference, @unchecked Sendable {
     private let model: MLModel
     private let state = Mutex(0.0)
+    private let letterboxState = Mutex(0.0)
     var minConfidence = 0.35
     var iouThreshold = 0.6
 
     /// Loaded once; nil if the model is missing (the classical detector then runs alone).
     static let shared: CoreMLBallInference? = try? CoreMLBallInference()
 
-    init(bundle: Bundle = .main) throws {
+    init(bundle: Bundle = .main, computeUnits: MLComputeUnits = .all) throws {
         guard let url = bundle.url(forResource: "BallDetector", withExtension: "mlmodelc") else { throw CocoaError(.fileNoSuchFile) }
         let cfg = MLModelConfiguration()
-        cfg.computeUnits = .all
+        cfg.computeUnits = computeUnits
         model = try MLModel(contentsOf: url, configuration: cfg)
     }
 
     /// Last inference time (ms) for the dev HUD.
     var lastInferenceMs: Double { state.withLock { $0 } }
+    /// Last letterbox time (ms) for the dev HUD (not part of `lastInferenceMs`).
+    var lastLetterboxMs: Double { letterboxState.withLock { $0 } }
 
     func infer(_ image: PixelImage) -> [BallDetectorOutput.Raw]? {
         guard image.width >= 8, image.height >= 8, image.rgb.count == image.width * image.height * 3 else { return nil }
         let lb = AutoTableKeypointModel.Letterbox(imageWidth: Double(image.width), imageHeight: Double(image.height),
                                                   inputSize: BallDetectorOutput.inputSize)
+        let tLb = CFAbsoluteTimeGetCurrent()
         guard let pb = CoreMLTableKeypointProvider.letterboxed(AutoRGBImage(width: image.width, height: image.height,
                                                                              rgb: image.rgb), lb) else { return nil }
+        letterboxState.withLock { $0 = (CFAbsoluteTimeGetCurrent() - tLb) * 1000 }
         let t0 = CFAbsoluteTimeGetCurrent()
         guard let input = try? MLDictionaryFeatureProvider(dictionary: [
                   "image": MLFeatureValue(pixelBuffer: pb),
