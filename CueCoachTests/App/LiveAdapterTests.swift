@@ -400,7 +400,8 @@ import Training
         var rec = ShotRecord(start: 1, end: 2, preState: [1: Vec2(1.2, 0.6), 2: Vec2(1.6, 0.4)], finalState: [1: Vec2(1.2, 0.6)],
                              cueID: 1, firstContact: 2, rails: [], pocketed: [:])
         rec.uncertainPockets = [2: .footLeft]
-        m.drive(frame(2, moving: true, shot: rec))
+        m.drive(frame(2, shot: rec))                       // still: the post-settle look starts (Codex review)
+        #expect(m.lifecycleDebugDescription.contains("looking"), "\(m.lifecycleDebugDescription)")
         m.requestEnd { log.events.append("end") }
         m.forceEnd()
         #expect(log.events == ["settled", "end"])
@@ -446,6 +447,31 @@ import Training
         m.forceEnd()
         #expect(log.events.isEmpty)
         #expect(!m.isFinishing)
+    }
+
+    /// Codex review: "End game" while the balls still roll (shot started, no record yet) must wait for that shot.
+    @Test func endingWhileAShotIsInFlightWaitsForIt() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))     // in flight: the segmenter hasn't emitted the record yet
+        #expect(m.hasOpenShot)
+        m.requestEnd { log.events.append("end") }
+        #expect(log.events.isEmpty, "the end waits for the shot in flight")
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        #expect(log.events.isEmpty)
+        m.drive(frame(2.2))
+        #expect(log.events == ["settled", "end"])
+        #expect(game.reviewData().shots.count == 1)
+    }
+
+    /// Codex review: forcing while a shot is still in flight closes it like a shot lost to a relock (one close), then ends.
+    @Test func forcingWhileAShotIsInFlightClosesItOnce() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        #expect(log.events.count == 2 && log.events.last == "end", "\(log.events)")
+        #expect(!m.hasOpenShot)
     }
 
     @Test func forcingBeforeAnyEndRequestDoesNothing() {

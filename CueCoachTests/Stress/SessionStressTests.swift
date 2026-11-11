@@ -320,6 +320,8 @@ struct NoTextNoAudioTests {
                     continue
                 }
                 let code = line.components(separatedBy: "//").first ?? ""
+                // D37 (user): the one allowed dialog. It only appears after ✕ is tapped, so never while aiming.
+                if name.hasSuffix("LiveScreen.swift") && code.contains(".alert(\"End game?\"") { continue }
                 for token in ["Text(", "Label(", ".navigationTitle(", "TextField(", ".alert(", "UILabel", "SCNText", "MeshResource.generateText"]
                 where code.contains(token) { hits.append("\(name):\(n + 1) \(token)") }
             }
