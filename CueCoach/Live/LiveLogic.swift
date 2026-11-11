@@ -464,6 +464,9 @@ struct SettledShot: Hashable, Sendable {
     var fouls: [Foul] = []
     /// D31: lost to a relock. `pocketed` (and its pockets) is a best guess, never camera-confirmed.
     var isGuess = false
+    /// Identified balls only (D29), table metres: at shot start, and after it (balls off the table absent).
+    var before: [BallID: Vec2] = [:]
+    var after: [BallID: Vec2] = [:]
 }
 
 /// What Live tells the app shell (wired by `LiveScreenAdapter` to `LiveSession`). Defaults do nothing, so Live
