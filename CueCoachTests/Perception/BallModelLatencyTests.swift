@@ -1,5 +1,6 @@
 import CoreML
 import Foundation
+import Geometry
 import Testing
 @testable import CueCoach
 
@@ -63,5 +64,21 @@ struct BallModelLatencyTests {
         #if !targetEnvironment(simulator)
         if units == .all { #expect(Self.percentile(total, 0.95) < 33, "device total p95 over the 30 fps budget") }
         #endif
+    }
+}
+
+/// Plan 003 step 3: the dev HUD (D9) shows smoothed model predict and letterbox times from the shared model.
+@MainActor
+struct BallModelHUDTests {
+    @Test func noteResultSmoothsSharedModelTimes() throws {
+        let shared = try #require(CoreMLBallInference.shared)
+        let cg = try #require(SyntheticTableScene.demo().render())
+        let px = try #require(PixelImage(cgImage: cg))
+        _ = try #require(shared.infer(px))
+        let m = LiveModel(mode: .game)
+        #expect(m.modelMs == 0 && m.letterboxMs == 0)
+        m.noteResult(PerceptionResult(timestamp: 0, detections: [], tracks: [], marks: [:], atRest: true, aim: nil, detectMs: 0))
+        #expect(m.modelMs > 0, "model ms not read from CoreMLBallInference.shared")
+        #expect(m.letterboxMs > 0, "letterbox ms not read from CoreMLBallInference.shared")
     }
 }
