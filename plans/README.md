@@ -12,11 +12,11 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Live review data tested end to end; no MVP without WPA | P1 | S | — | TODO |
+| 001 | Live review data tested end to end; team MVP per D35 | P1 | S | — | TODO |
 | 002 | Live shots carry before/after ball positions to Game Review | P1 | M | 001 | TODO |
 | 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | TODO |
 | 004 | Pin the ball model's I/O contract | P2 | S | — | TODO |
-| 005 | Unlisted table sizes lock true or say why | P2 | M | user decision (Step 0) | BLOCKED (needs user answer A/B/C) |
+| 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | TODO |
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
@@ -28,7 +28,9 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - 006 after 002: a saved `Shot` stores the before/after states that 002 introduces.
 
 ## Decisions
-- Plan 005: _pending user answer (A, B, C, or a combination; recommended A + C)_
+- Plan 001: D35. With no WPA data, the team MVP is the winning team's best-rated shooter.
+- Plan 005: D36 = **A + C**. Snap within 2 %, otherwise lock at the measured size; the setup/Settings size is a prior.
+- New, not yet planned: D37 (✕ asks "End game?", and the open shot settles first) and D38 (a lost shot with no guess pulses the turn discs, and review shows a gap). Plans 007 and 008 follow once 001/002 land; they touch the same Live → shell path.
 
 ## Findings considered and not planned (yet)
 - Letterbox per-frame allocation and slow scalar resize (`CoreMLTableKeypoints.swift:72-100`): only matters if 003 shows the letterbox time is significant. Revisit then.

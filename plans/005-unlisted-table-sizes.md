@@ -24,7 +24,7 @@ bar and home tables come in other sizes too. Two failure modes follow from the c
 The game-setup screen already knows a table size (`GameSetupModel.tableSize`, from a measurement or the Settings
 manual size `cc.table.manual`), but the locator never sees it.
 
-## Step 0: decision needed from the user (do not guess; project rule)
+## Step 0: decision (DONE: D36 = A + C, user 2026-11-10)
 Ask the user which behaviour they want. Recommended: **A + C**.
 - **A.** Snap to a preset only within ±2 % (a measuring tolerance). Anything else locks at its **measured size**. This is what
   decision D12 allows: "the measured size snaps to a preset or is used directly". A Pro-8 would then lock at 88″.
