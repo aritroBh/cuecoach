@@ -373,7 +373,20 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
   struct ReviewShot { … var isGuess = false }      // GameSessionModel.reviewData() fills pocketed, fouls, isGuess per rated shot
   ```
   `LiveScreenAdapter` binds `settledShot` → `LiveSession.settled(_:)`. Unrated closes (`ballsSettled`, incl. a D31
-  shot with no guess) record nothing. `SessionShot` carries `before`/`after`; `reviewData()` builds `pre`/`post` `TableState`s on `config.tableSize` from them (pocketed balls `.pocketed` in `post`), and straight `paths` (`pathsAreTraced = false`). A shot with an empty `before`, or a D31 guess (`isGuess`: no after table), stays without states. Ball positions only (no pixels, embeddings or track data); in memory, not persisted.
+  shot with no guess in Training) record nothing.
+- **Lost shot with no guess (D38, D41, plan 008).** In a game, a lost shot that closes with no D31 guess calls
+  `LiveHooks.shotLost` instead of `ballsSettled` (Training, or hooks without `shotLost`, still get `ballsSettled`):
+  ```swift
+  struct LiveHooks { … var shotLost: (@MainActor () -> Void)? }   // nil = fall back to ballsSettled
+  func LiveSession.shotLost()            // clears aiming, then GameSessionModel.shotLost()
+  struct SessionShot { … var rating: DecisionRating? }            // nil = a gap (lost shot, unknown result)
+  func GameSessionModel.shotLost()       // appends a gap (current shooter + team, nothing pocketed, no fouls) and sets
+  var GameSessionModel.needsShooter: Bool   // true until a disc tap or the next aim
+  ```
+  While `needsShooter`, both turn discs pulse (a steady ring with Reduce Motion; no text). Tapping either disc sets
+  that team as shooting (the active disc confirms the same team), pushes its legal targets and clears the ask; it
+  never changes the gap's recorded shooter (D41). The next aim clears the ask and keeps the current shooter.
+  `reviewData()` maps a gap to `ReviewShot(rating: nil)` (dashed unrated style; never MVP). `SessionShot` carries `before`/`after`; `reviewData()` builds `pre`/`post` `TableState`s on `config.tableSize` from them (pocketed balls `.pocketed` in `post`), and straight `paths` (`pathsAreTraced = false`). A shot with an empty `before`, or a D31 guess (`isGuess`: no after table), stays without states. Ball positions only (no pixels, embeddings or track data); in memory, not persisted.
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
   balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
   addressing the cue ball (wrists) also opens the aim for the shell.
