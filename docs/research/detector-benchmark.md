@@ -107,3 +107,32 @@ Wiring: `DetectorChoice` (CoreMLBallDetector.swift) builds every candidate, and 
   classical under coloured light.
 
 Reproduce: `tools/detector/README.md` ("D32 virtual-sim benchmark").
+
+## Device latency (Neural Engine)
+
+Plan 003. `BallModelLatencyTests` (CueCoachTests/Perception) loads the bundled `BallDetector.mlmodelc` with each
+compute-units setting, renders `SyntheticTableScene.demo()` (in-repo, no Mac-only files), runs 10 warm-up calls, then
+times 60 calls. "letterbox" is `CoreMLTableKeypointProvider.letterboxed`, "predict" is `model.prediction` only
+(`lastInferenceMs`), "total" is their sum. Each line is a `[latency]` log line. On device the test gates `.all` total
+p95 < 33 ms (SPEC §perf, 30 fps); on the simulator it only records. The dev HUD (D9) now shows smoothed `model` and
+`lb` ms next to `det`.
+
+Simulator (`CueCoach Sim D`, iOS 27, Apple-silicon Mac), 2026-11-10, commit 31a4e79. The Mac was loaded by other test
+runs, so these numbers are noisy and only relative. The simulator has no Neural Engine, so all three settings run on
+the CPU and do not predict phone latency. Two runs of the targeted test, p50/p95 ms:
+
+| Units | Run | Letterbox | Predict | Total |
+|---|---|---|---|---|
+| `.all` | 1 | 28.0 / 34.1 | 42.3 / 52.4 | 70.9 / 85.6 |
+| `.cpuAndNeuralEngine` | 1 | 28.9 / 44.0 | 25.7 / 41.3 | 55.4 / 81.6 |
+| `.cpuOnly` | 1 | 27.5 / 31.6 | 22.2 / 26.9 | 50.1 / 56.6 |
+| `.all` | 2 | 26.1 / 28.1 | 34.0 / 38.5 | 60.0 / 65.6 |
+| `.cpuAndNeuralEngine` | 2 | 26.1 / 26.6 | 21.1 / 22.5 | 47.2 / 48.8 |
+| `.cpuOnly` | 2 | 26.3 / 27.2 | 21.4 / 22.8 | 48.0 / 49.4 |
+
+All settings returned ≥ 5 detections on the 6-ball demo frame, so the model really ran. On the simulator the
+letterbox step (~26–28 ms) costs about as much as prediction; plan 003 only records this.
+
+Device: not yet run (no phone connected). Run on the iPhone 15 Pro Max (perf gate) and iPhone 17 Pro Max with
+`-destination 'platform=iOS,name=<phone>' -only-testing:CueCoachTests/BallModelLatencyTests` and add the `[latency]`
+lines here. The device `.all` p95 decides plan 005.

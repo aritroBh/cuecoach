@@ -371,7 +371,7 @@ struct DebugHUD: View {
     let model: LiveModel
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
-            Text("\(Int(model.fps)) fps · conv \(String(format: "%.1f", model.convertMs)) · det \(String(format: "%.1f", model.detectMs)) · all \(String(format: "%.1f", model.totalMs)) ms")
+            Text("\(Int(model.fps)) fps · conv \(String(format: "%.1f", model.convertMs)) · det \(String(format: "%.1f", model.detectMs)) · model \(String(format: "%.1f", model.modelMs)) · lb \(String(format: "%.1f", model.letterboxMs)) · all \(String(format: "%.1f", model.totalMs)) ms")
             Text("lidar balls \(model.depthBalls)")
             Text("balls \(model.ballCount) · rest \(model.atRest ? "y" : "n") · aim \(model.aim != nil ? "y" : "n")")
             Text("plane \(model.planeFound ? "y" : "n") · track \(model.trackingOK ? "ok" : "lim") · \(model.formatLabel)")

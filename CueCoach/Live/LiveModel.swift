@@ -363,6 +363,9 @@ final class LiveModel {
     // Debug HUD (dev toggle only, D9).
     var fps = 0.0
     var detectMs = 0.0
+    /// Smoothed `CoreMLBallInference.shared` predict and letterbox times (plan 003).
+    var modelMs = 0.0
+    var letterboxMs = 0.0
     var convertMs = 0.0
     var totalMs = 0.0
     var depthBalls = 0
@@ -399,6 +402,10 @@ final class LiveModel {
         aim = r.aim
         drive(r)
         detectMs = detectMs * 0.8 + r.detectMs * 0.2
+        if let m = CoreMLBallInference.shared {
+            modelMs = modelMs * 0.8 + m.lastInferenceMs * 0.2
+            letterboxMs = letterboxMs * 0.8 + m.lastLetterboxMs * 0.2
+        }
         if let s = r.ballScale { ballScale = s }
         totalMs = totalMs * 0.8 + r.totalMs * 0.2
         depthBalls = r.depthBalls
