@@ -8,6 +8,10 @@ struct LiveScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model: LiveModel
     @AppStorage("dev.hud") private var showHUD = false
+    /// D37: "End game?" is up.
+    @State private var askingEnd = false
+    /// D42: the ~5 s give-up; cancelled when Live goes away.
+    @State private var giveUp: Task<Void, Never>?
 
     private let drill: DrillID?
     private let onClose: (() -> Void)?
@@ -23,6 +27,8 @@ struct LiveScreen: View {
         self.drill = drill
         self.onClose = onClose
     }
+
+    private func close() { if let onClose { onClose() } else { dismiss() } }
 
     /// Replay exists only in simulator builds (D20): device builds always run the AR pipeline.
     static var useReplay: Bool {
@@ -44,11 +50,29 @@ struct LiveScreen: View {
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
+        // D37 + Astryx AlertDialog (destructive confirm, no outside dismissal) = the native alert.
+        .alert("End game?", isPresented: $askingEnd) {
+            Button("End game", role: .destructive) {
+                model.requestEnd { close() }
+                // D42: never stuck waiting for a quiet table.
+                if model.isFinishing {
+                    giveUp = Task { @MainActor in
+                        do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                        model.forceEnd()
+                    }
+                }
+            }
+            Button("Keep playing", role: .cancel) {}
+        }
         .onAppear {
             if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true }
             UIApplication.shared.isIdleTimerDisabled = true      // no auto-lock while Live is up
         }
-        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
+            giveUp?.cancel()
+            model.abandonEnd()
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -63,7 +87,11 @@ struct LiveScreen: View {
         let st = model.status
         return VStack(spacing: 12) {
             HStack(alignment: .top) {
-                CircleButton(symbol: "xmark", id: "live.close") { if let onClose { onClose() } else { dismiss() } }
+                // D37/D42: while the open shot settles, a second ✕ ends at once.
+                CircleButton(symbol: "xmark", id: "live.close") {
+                    if model.isFinishing { model.forceEnd() }
+                    else if model.asksBeforeClosing { askingEnd = true } else { close() }
+                }
                 Spacer()
                 if model.calibrated && model.showAimHint && model.status == .calibrated {
                     AimHintGlyph().accessibilityIdentifier("live.aimHint")
