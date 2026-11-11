@@ -12,8 +12,8 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Live review data tested end to end; team MVP per D35 | P1 | S | — | TODO |
-| 002 | Live shots carry before/after ball positions to Game Review | P1 | M | 001 | TODO |
+| 001 | Live review data tested end to end; team MVP per D35 | P1 | S | — | DONE (merged; Grok APPROVE; unit 1211/1211 + 4 tie-break tests) |
+| 002 | Live shots carry before/after ball positions to Game Review | P1 | M | 001 | IN PROGRESS |
 | 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | TODO |
 | 004 | Pin the ball model's I/O contract | P2 | S | — | TODO |
 | 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | TODO |
