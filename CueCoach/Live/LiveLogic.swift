@@ -348,6 +348,7 @@ extension LockFailure {
         case .tooFar: "arrow.down.right.and.arrow.up.left"             // move closer
         case .badShape: "viewfinder"
         case .unstable: "hand.raised"                                  // hold steady
+        case .unusualSize: "ruler"                                     // in view, but an unlisted size (D36)
         }
     }
 }

@@ -358,3 +358,36 @@ import Training
         #expect(game.reviewData().shots.isEmpty)
     }
 }
+
+/// D36 (C): the table size chosen in game setup (or, in Training, the Settings manual size) is the locator's prior.
+@MainActor
+@Suite struct LiveTablePriorTests {
+    let a = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
+    let b = ShellPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "orange")
+
+    func defaults(manual: TableSize?) -> UserDefaults {
+        let d = UserDefaults(suiteName: "prior-\(UUID().uuidString)")!
+        d.set(manual?.rawValue, forKey: SettingsKeys.tableSize)
+        return d
+    }
+
+    @Test func aGameUsesItsSetupSize() {
+        let g = GameSessionModel(config: GameConfig(ruleSet: .wpaNine, tableSize: .eightFoot, teams: [[a], [b]]))
+        let s = LiveSession(mode: .game, game: g, drill: nil)
+        #expect(LiveScreenAdapter.tablePrior(for: s, defaults: defaults(manual: .nineFoot)) == .eightFoot)
+    }
+
+    @Test func trainingUsesTheSettingsSizeOrNone() {
+        let s = LiveSession(mode: .training(level: 2), game: nil, drill: .straightIn)
+        #expect(LiveScreenAdapter.tablePrior(for: s, defaults: defaults(manual: .nineFoot)) == .nineFoot)
+        #expect(LiveScreenAdapter.tablePrior(for: s, defaults: defaults(manual: nil)) == nil)
+    }
+
+    @Test func theLocatorFusesWithThePrior() {
+        #expect(AutoTableLocating(keypoints: NoKeypoints(), prior: .eightFoot).prior == .eightFoot)
+        #expect(AutoTableLocating(keypoints: NoKeypoints()).prior == nil)
+        // The prior must reach the fusion config, not only the stored property (Grok 4.7).
+        #expect(AutoTableLocating(keypoints: NoKeypoints(), prior: .nineFoot).auto.config.fusion.prior == .nineFoot)
+        #expect(AutoTableLocating(keypoints: NoKeypoints()).auto.config.fusion.prior == nil)
+    }
+}

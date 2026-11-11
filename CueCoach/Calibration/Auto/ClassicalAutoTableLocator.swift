@@ -156,6 +156,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             if fused == nil { lockState = .searching } else if s.fusion.locked { lockState = .locked }
             else { lockState = .converging(progress: s.fusion.progress) }
             diag.awaitingSize = fused != nil && !s.fusion.locked && !s.fusion.sizeSettled
+            diag.sizeBetweenPresets = diag.awaitingSize && s.fusion.sizeBetweenPresets
             diag.processingSeconds = Date().timeIntervalSince(t0)
             let conf = confidence(state: lockState, progress: s.fusion.progress, rms: fusedRMS ?? diag.reprojectionRMS,
                                   pockets: diag.pocketScores)
@@ -531,7 +532,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         if !kp.isEmpty, let f2 = AutoRectFitter.fit(rect, edges: samples, points: kp, mode: .free) { rect = f2.rect }
         let L = 2 * rect.a, W = 2 * rect.b
         diag.measuredLength = L; diag.measuredWidth = W
-        let verdict = AutoRectFitter.sizeVerdict(length: L, width: W)
+        let verdict = AutoRectFitter.sizeVerdict(length: L, width: W, prior: config.fusion.prior)
         switch verdict {
         case .notTwoToOne: diag.rejection = "not 2:1"; return nil
         case .ambiguous: diag.rejection = "size ambiguous"; return nil
@@ -604,23 +605,23 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
         guard kp.count >= 4, let free = AutoRectFitter.fit(rect, edges: [], points: kp, mode: .free) else { return nil }
         diag.keypointsUsed = kp.count
         diag.measuredLength = 2 * free.rect.a; diag.measuredWidth = 2 * free.rect.b
-        let snap = AutoRectFitter.snap(length: 2 * free.rect.a, width: 2 * free.rect.b)
-        switch AutoRectFitter.sizeVerdict(length: 2 * free.rect.a, width: 2 * free.rect.b) {
+        let size: TableSize
+        switch AutoRectFitter.sizeVerdict(length: 2 * free.rect.a, width: 2 * free.rect.b, prior: config.fusion.prior) {
         case .notTwoToOne: diag.rejection = "not 2:1"; return nil
         case .ambiguous: diag.rejection = "size ambiguous"; return nil
         case .measured, .implausibleSize: return nil
-        case .preset: break
+        case .preset(let s): size = s
         }
-        let spec = TableSpec(size: snap.size)
+        let spec = TableSpec(size: size)
         guard let fixed = AutoRectFitter.fit(free.rect, edges: [], points: kp, mode: .fixed(a: spec.length / 2, b: spec.width / 2))
         else { return nil }
         let axis = plane.e1 * fixed.rect.u.x + plane.e2 * fixed.rect.u.y
         let m = AutoTableMeasurement(center: plane.to3D(fixed.rect.center), axis: axis, up: plane.normal,
-                                     measuredLength: 2 * free.rect.a, measuredWidth: 2 * free.rect.b, snapped: snap.size,
+                                     measuredLength: 2 * free.rect.a, measuredWidth: 2 * free.rect.b, snapped: size,
                                      cameraPosition: camera.position)
         // No edge evidence: this frame's quality is how well its own fit explains the keypoints (pixels).
         let used = kps.filter { $0.confidence >= 0.3 }
-        if let p = AutoTableFusion.pose(center: m.center, axis: axis, up: plane.normal, spec: spec, snapped: snap.size,
+        if let p = AutoTableFusion.pose(center: m.center, axis: axis, up: plane.normal, spec: spec, snapped: size,
                                         measured: (m.measuredLength, m.measuredWidth), headToFoot: axis) {
             diag.reprojectionRMS = Self.keypointRMS(used, pose: p, camera: camera, profile: prof)
         }

@@ -132,15 +132,19 @@ enum AutoRectFitter {
     /// (a shadow or occluder edge standing in for one) and gives no size. The tolerance is loose on purpose: at
     /// 12–15° elevation the length runs along the view rays and free fits are ±5 % on it (virtual matrix).
     /// Within 6 % of a preset it snaps, unless another preset is also within 6 % and nearly as close
-    /// (`ambiguityMargin`): then the size is ambiguous and the frame must not vote (wait for a second look).
+    /// (`ambiguityMargin`): then the size is ambiguous and the frame must not vote (wait for a second look),
+    /// unless the chosen size (D36 C `prior`) is one of the two candidates: then it snaps to the prior.
     static func sizeVerdict(length L: Double, width W: Double, aspectTolerance: Double = 0.12,
-                            ambiguityMargin: Double = 0.02) -> SizeVerdict {
+                            ambiguityMargin: Double = 0.02, prior: TableSize? = nil) -> SizeVerdict {
         guard W > 0, abs(L / W - 2) / 2 <= aspectTolerance else { return .notTwoToOne }
         let est = (L + 2 * W) / 2
         let e = TableSize.allCases.map { (size: $0, err: abs($0.playingLength - est) / $0.playingLength) }
             .sorted { $0.err < $1.err }
         guard e[0].err <= 0.06 else { return plausibleLength.contains(est) ? .measured : .implausibleSize }
-        if e.count > 1, e[1].err <= 0.06, e[1].err - e[0].err < ambiguityMargin { return .ambiguous }
+        if e.count > 1, e[1].err <= 0.06, e[1].err - e[0].err < ambiguityMargin {
+            if let p = prior, p == e[0].size || p == e[1].size { return .preset(p) }
+            return .ambiguous
+        }
         return .preset(e[0].size)
     }
 

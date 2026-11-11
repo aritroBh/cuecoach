@@ -23,6 +23,8 @@ final class LiveModel {
     private(set) var shotSettledNoAim = false
     /// Why the table isn't locked yet (glyph + dev HUD).
     var lockFailure: LockFailure?
+    /// D36 (C): table size chosen in game setup or Settings; the locator's size prior.
+    var tablePrior: TableSize?
     /// World corners drags snap to (the locator's best current guess).
     var snapTargets: [SIMD3<Double>] = []
     var snappedHandle: Int?

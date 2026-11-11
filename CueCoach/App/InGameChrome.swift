@@ -1,4 +1,5 @@
 import SwiftUI
+import Geometry
 
 /// The one place that constructs LiveScreen: mode, drill and the hooks that drive `LiveSession` (aim → menu
 /// closed + badge silenced; settled → rating recorded, badge, turn), with the shell's game injected for ratings
@@ -6,7 +7,13 @@ import SwiftUI
 struct LiveScreenAdapter: View {
     let session: LiveSession
     var body: some View {
-        LiveScreen(mode: session.mode.liveMode, drill: session.drill, hooks: Self.hooks(for: session))
+        LiveScreen(mode: session.mode.liveMode, drill: session.drill, hooks: Self.hooks(for: session),
+                   tablePrior: Self.tablePrior(for: session))
+    }
+
+    /// D36 (C): the locator's size prior is the game's setup size, or in Training the Settings manual size (if any).
+    @MainActor static func tablePrior(for session: LiveSession, defaults: UserDefaults = .standard) -> TableSize? {
+        session.game?.config.tableSize ?? SetupDefaults.fromSettings(defaults).manualTable
     }
 
     @MainActor static func hooks(for session: LiveSession) -> LiveHooks {

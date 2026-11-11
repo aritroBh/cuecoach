@@ -7,7 +7,7 @@ import Synchronization
 /// source of a lock. `FeltQuadProposer` survives only as a fast ghost seed while Auto has no pose yet.
 /// Plugs into the live screen through `TableLocating`.
 final class AutoTableLocating: TableLocating, @unchecked Sendable {
-    private let auto: ClassicalAutoTableLocator
+    let auto: ClassicalAutoTableLocator
     private let state = Mutex(State())
     var profile = AutoTableProfile()
     /// History expires after a timestamp gap this long (the user looked away / the app was paused).
@@ -43,11 +43,17 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
     /// Counts mouth keypoints per call (pocket evidence must be mouths, not nose corners — Codex r6).
     private let mouthCounter: MouthCountingProvider?
 
-    init(keypoints: (any TableKeypointProvider)? = nil) {
+    /// D36 (C): the table size chosen in game setup or Settings; fusion snaps to it within 6 %.
+    let prior: TableSize?
+
+    init(keypoints: (any TableKeypointProvider)? = nil, prior: TableSize? = nil) {
         let kp = keypoints ?? TableKeypointModel.provider()
         self.keypoints = kp is NoKeypoints ? nil : kp
+        self.prior = prior
         mouthCounter = self.keypoints.map { MouthCountingProvider(wrapping: $0) }
-        auto = ClassicalAutoTableLocator(keypoints: mouthCounter)
+        var config = ClassicalAutoTableLocator.Config()
+        config.fusion.prior = prior
+        auto = ClassicalAutoTableLocator(config: config, keypoints: mouthCounter)
     }
 
     func reset() async {
@@ -114,7 +120,17 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
 
     /// The fused size is trusted unless its D12 estimate, (L + 2W)/2 of the free fits, sits well between the
     /// snapped preset and its neighbour (`SizeAmbiguity`, Codex r6).
-    static func sizeIsTrusted(_ p: AutoTablePose) -> Bool {
+    /// Converging but not tight enough yet: hold steady. Steady but no size it may lock yet: a size between the
+    /// presets says so (D36); only guessed sizes ask for a look at the whole table.
+    static func convergingFailure(spread: Double, awaitingSize: Bool, sizeBetweenPresets: Bool) -> LockFailure? {
+        if spread > 0.02 { return .unstable }
+        guard awaitingSize else { return nil }
+        return sizeBetweenPresets ? .unusualSize : .partialTable
+    }
+
+    /// The chosen size (D36 prior) is trusted within its 6 % snap.
+    static func sizeIsTrusted(_ p: AutoTablePose, prior: TableSize? = nil) -> Bool {
+        if let s = p.snappedSize, s == prior { return true }
         let est = (p.measuredLength + 2 * p.measuredWidth) / 2
         return !SizeAmbiguity.isAmbiguous(measuredLength: est, snapped: p.snappedSize)
     }
@@ -159,7 +175,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
                                      failure: .badShape, frame: nil, generation: e.generation)
             }
             // Size between two presets (a shadow or occluder edge stood in for a rail): wait for a second look.
-            guard Self.sizeIsTrusted(p) else {
+            guard Self.sizeIsTrusted(p, prior: prior) else {
                 return TableEstimate(corners: p.corners, confidence: 0.9, locked: false, size: nil,
                                      failure: .partialTable, frame: nil, generation: e.generation)
             }
@@ -170,9 +186,8 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         case .converging(let progress):
             guard let p = e.pose else { return nil }
             state.withLock { $0.consecutiveFailures = 0 }
-            // Converging but not tight enough yet: tell the user to hold steady once it drags on.
-            // Steady but no size it may lock yet (only guessed, or between presets): ask for a look at the whole table.
-            let why: LockFailure? = e.cornerSpread > 0.02 ? .unstable : (e.frame.awaitingSize ? .partialTable : nil)
+            let why = Self.convergingFailure(spread: e.cornerSpread, awaitingSize: e.frame.awaitingSize,
+                                             sizeBetweenPresets: e.frame.sizeBetweenPresets)
             return TableEstimate(corners: p.corners, confidence: min(0.95, progress), locked: false,
                                  size: p.snappedSize, failure: why, frame: nil, generation: e.generation)
         case .searching:

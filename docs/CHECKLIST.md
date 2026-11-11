@@ -161,12 +161,15 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] User decisions 2026-11-10: D35 team MVP fallback, D36 table sizes (A + C), D37 ✕ confirm, D38 lost-shot ask, D39–D41 mesh/saving (plans 001, 005, 007, 008, 006)
 - [~] Plans running: 001 (Claude, Sim H), 003 (Claude, Sim D), 004 (Claude, Sim I), 005 (Claude, CueCoach iPhone 15 Pro); 006 design done (Cursor Grok 4.7 draft, head review). Codex/Antigravity/Cursor GPT out of quota; reviews via Cursor Grok + opencode
 
+- [x] plans/005 D36 C + hint (wt/plan-005, Claude worker, 6254003): the game-setup size (Training: Settings manual size) is the locator's prior (a measured frame within 6 % votes for it; guesses stay guesses; 2.34 m with 7 ft chosen still locks 8 ft); a steady between-presets table shows the `ruler` hint (LockFailure.unusualSize) instead of partialTable. One new LiveScreen parameter (tablePrior). Targeted 26/26 red→green, unit 1217/1217. Lock matrix (540, app, -O): before 93.0 % in-scope / 73.3 % all / p50 1.33 s / 0 false → after 92.3 / 72.0 / 1.33 / 0 (no prior in the matrix, so the logic is unchanged there: jitter; a first run under load-avg ~200 read 91.7 % and failed a TTL floor, the rerun passes the gate)
+- [x] (resolved by D46: keep 6 %, add Pro 8/86″ presets → plan 014) plans/005 D36 A (2 % snap) STOPPED: with it the -O matrix locked 5 preset scenes at measured lengths (felt-grey 7 ft 1.935 m −4.8 %, felt-grey 9 ft 2.473 m −2.6 %, light-dim 8 ft 2.387 m +2.2 %, light-cueShadow 7 ft 1.916 m −5.7 %, clutter-railObjects 7 ft 2.076 m +2.1 %) and in-scope accuracy fell 93.0 → 83.7 % (0 false locks by the 20 cm rule). Fused size bias on preset tables reaches ±2–6 %, so a 2 % tolerance can't tell a Pro-8 (−4.4 %) from a biased 8 ft. Needs a user decision (keep B for unlisted tables, or a wider/conditional snap)
+
 ## Working round 2026-11-10 evening (head; plans 002–014)
 - [x] Plan 002 live review rates + replays live shots: merged (Grok REJECT → guessed shot keeps no replay → APPROVE)
 - [x] Plans 009–013 drafted and committed; D42–D46 recorded (user answers)
 - [x] Full CueCoachTests on merged head: 1218/1218, pushed
 - [ ] Plan 007 ✕ asks "End game?" + D42 give-up: Grok REJECT (2 BLOCKERs) → fixed, 18/18 + UI green → Grok re-review running
-- [ ] Plan 005 table-size prior + size hint (D36 C; A dropped, D46): Grok REJECT (8/9 ft overlap drops the prior vote) → fix round running
+- [x] Plan 005 table-size prior + size hint (D36 C; A dropped, D46): Grok REJECT (8/9 ft overlap) → fixed → Codex APPROVE; merged. Follow-up MINOR: a steady 2.21 m fit that settles 8 ft but fails sizeIsTrusted shows partialTable, not the size hint (AutoLocatorAdapter.swift:180)
 - [ ] Plan 008 lost shot pulses turn discs + review gap (D38/D41): worker running on 1-core + 007
 - [ ] Merge 007, 005, 008 → combined full unit suite → push
 - [ ] Final QA pass: full XCUITest suite on simulators (workflow, after merges)

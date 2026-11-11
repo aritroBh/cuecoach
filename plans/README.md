@@ -16,7 +16,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 002 | Live shots carry before/after ball positions to Game Review | P1 | M | 001 | DONE (wt/plan-002; Grok 4.7 REJECT → fixed: guessed shots keep no replay → APPROVE) |
 | 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | DONE (merged; Grok APPROVE; sim only: .all total p95 ~60–86 ms, letterbox ~26 ms; device not yet run) |
 | 004 | Pin the ball model's I/O contract | P2 | S | — | DONE (merged; Grok APPROVE; unit 1209/1209) |
-| 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | TODO |
+| 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | DONE (wt/plan-005: D36 C + size hint; A dropped per D46; Grok REJECT → fixed → Codex APPROVE) |
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
 | 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | TODO |
 | 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | TODO |

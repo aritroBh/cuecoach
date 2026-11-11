@@ -190,6 +190,8 @@ struct AutoFrameDiagnostics: Sendable {
     var partialAnchor: String?
     /// Fusion has a pose but no size it may lock (only guessed sizes, or one between presets): it waits.
     var awaitingSize = false
+    /// …and the reason is the size itself: steady measured frames between the presets (D36 size hint).
+    var sizeBetweenPresets = false
     var processingSeconds: Double = 0
     var rejection: String?
 }
