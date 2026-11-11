@@ -364,6 +364,8 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
       var pocketed: [BallID: Pocket] = [:]          // the ShotOutcome's balls (rule ids; .cue = scratch), with their pocket
       var fouls: [Foul] = []                        // RuleResult.fouls
       var isGuess = false                           // D31 lost shot: pocketed + pockets are a best guess, not camera-confirmed
+      var before: [BallID: Vec2] = [:]              // identified balls only (D29), table metres, at shot start
+      var after: [BallID: Vec2] = [:]               // identified balls only (D29), table metres; balls off the table absent
   }
   struct LiveHooks { … var settledShot: @MainActor (SettledShot) -> Void }   // the rated close; `settled(rating, turnPasses)`
                                                     // stays as a two-value view of it (get wraps, set drops the result)
@@ -371,7 +373,7 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
   struct ReviewShot { … var isGuess = false }      // GameSessionModel.reviewData() fills pocketed, fouls, isGuess per rated shot
   ```
   `LiveScreenAdapter` binds `settledShot` → `LiveSession.settled(_:)`. Unrated closes (`ballsSettled`, incl. a D31
-  shot with no guess) record nothing. Live-game review shots still have `pre/post` nil and no paths (no persistence yet).
+  shot with no guess) record nothing. `SessionShot` carries `before`/`after`; `reviewData()` builds `pre`/`post` `TableState`s on `config.tableSize` from them (pocketed balls `.pocketed` in `post`), and straight `paths` (`pathsAreTraced = false`). A shot with an empty `before` stays without states. Ball positions only (no pixels, embeddings or track data); in memory, not persisted.
 - D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
   balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
   addressing the cue ball (wrists) also opens the aim for the shell.

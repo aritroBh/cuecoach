@@ -262,9 +262,16 @@ final class LiveModel {
         hooks.gameAdvanced(result.nextState)
         legalChanged(eng.legalTargets(result.nextState))
         if mode == .game {
+            // Unidentified tracks are dropped, like RuleRating.outcome (D29).
+            func identified(_ s: [Int: Vec2]) -> [BallID: Vec2] {
+                var out: [BallID: Vec2] = [:]
+                for (tid, p) in s { if let id = ids[tid] { out[id] = p } }
+                return out
+            }
             hooks.settledShot(SettledShot(rating: rating, turnPasses: result.turnPasses,
                                           pocketed: RuleRating.outcome(record, ids: ids).pocketed,
-                                          fouls: result.fouls, isGuess: guessed))
+                                          fouls: result.fouls, isGuess: guessed,
+                                          before: identified(record.preState), after: identified(record.finalState)))
             showBadge(BadgeStyle.of(rating))
         } else {
             hooks.ballsSettled()

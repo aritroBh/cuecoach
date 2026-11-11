@@ -14,6 +14,9 @@ struct SessionShot: Hashable, Sendable {
     var pocketed: [BallID: Pocket] = [:]
     var fouls: [Foul] = []
     var isGuess = false
+    /// Ball positions (table metres) before and after the shot, from `SettledShot`.
+    var before: [BallID: Vec2] = [:]
+    var after: [BallID: Vec2] = [:]
 }
 
 /// In-game state the chrome shows: whose turn (D17 rotation), the post-shot badge, rated shots for review.
@@ -120,7 +123,8 @@ final class GameSessionModel {
 
     private func record(_ r: SettledShot) {
         shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: r.rating,
-                                 pocketed: r.pocketed, fouls: r.fouls, isGuess: r.isGuess))
+                                 pocketed: r.pocketed, fouls: r.fouls, isGuess: r.isGuess,
+                                 before: r.before, after: r.after))
     }
 
     @discardableResult
@@ -145,16 +149,27 @@ final class GameSessionModel {
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one
     /// rack per game session), finished only when the rack is over (a mid-rack quit stays locked).
-    /// Each rated shot carries what the Rules engine saw (pocketed with pocket, fouls) and its D31 guess flag. Table
-    /// states and paths aren't kept for a live game yet (nil / empty).
+    /// Each rated shot carries what the Rules engine saw (pocketed with pocket, fouls) and its D31 guess flag, plus
+    /// pre/post table states from its ball positions with straight paths (none when no position is known).
     func reviewData() -> GameReviewData {
         func rp(_ p: ShellPlayer) -> ReviewPlayer { ReviewPlayer(id: p.id, name: p.name, symbol: p.symbol, colorName: p.colorName) }
         var teams = self.teams.map { $0.map(rp) }
         while teams.count < 2 { teams.append([]) }
-        let reviewShots = shots.map {
-            ReviewShot(id: $0.id, index: $0.index, shooter: rp($0.shooter), team: $0.team, rating: $0.rating,
-                       pre: nil, post: nil, pocketed: $0.pocketed, fouls: $0.fouls, paths: [:], alternative: nil,
-                       wpaDelta: 0, isGuess: $0.isGuess)
+        let spec = TableSpec(size: config.tableSize)
+        let reviewShots = shots.map { s -> ReviewShot in
+            var pre: TableState?, post: TableState?, paths: [BallID: [Vec2]] = [:]
+            // A D31 guess has no after table (finalState is empty): no replay rather than a made-up one.
+            if !s.before.isEmpty && !s.isGuess {
+                let b = TableState(spec: spec, balls: s.before.mapValues { BallState(position: $0, motion: .stationary) })
+                var after = s.after.mapValues { BallState(position: $0, motion: .stationary) }
+                for id in s.pocketed.keys { after[id] = BallState(position: s.before[id] ?? .zero, motion: .pocketed) }
+                let a = TableState(spec: spec, balls: after)
+                pre = b; post = a
+                paths = ReviewPaths.straight(pre: b, post: a, pocketed: s.pocketed)
+            }
+            return ReviewShot(id: s.id, index: s.index, shooter: rp(s.shooter), team: s.team, rating: s.rating,
+                              pre: pre, post: post, pocketed: s.pocketed, fouls: s.fouls, paths: paths,
+                              alternative: nil, wpaDelta: 0, pathsAreTraced: false, isGuess: s.isGuess)
         }
         let winner = rulesState.winner.flatMap { teams.indices.contains($0) ? $0 : nil }
         var score = [Int](repeating: 0, count: teams.count)

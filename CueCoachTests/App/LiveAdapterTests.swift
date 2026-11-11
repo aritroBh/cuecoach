@@ -297,6 +297,60 @@ import Training
         #expect(!shot.isGuess, "a camera-seen shot is not a guess")
     }
 
+    /// Plan 002: a live shot's ball positions reach review as pre/post table states, so its rating and replay show.
+    @Test func aSettledShotsBallPositionsReachReview() throws {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        m.hooks = LiveScreenAdapter.hooks(for: session)
+        // Track 9 has no identity yet (D29): it never reaches review.
+        let rec = ShotRecord(start: 0, end: 2, preState: [1: Vec2(0.5, 0.5), 2: Vec2(1, 0.5), 9: Vec2(1.5, 0.6)],
+                             finalState: [1: Vec2(0.7, 0.5)], cueID: 1, firstContact: 2, rails: [],
+                             pocketed: [2: .footLeft])
+        m.shotSettled(rec, ids: [1: .cue, 2: BallID(3)!])
+        let data = game.reviewData()
+        let shot = try #require(data.shots.first)
+        #expect(shot.pre.map { Set($0.balls.keys) } == [.cue, BallID(3)!])
+        #expect(shot.post?.balls[BallID(3)!]?.motion == .pocketed)
+        #expect(shot.post?.balls[BallID(3)!]?.position == Vec2(1, 0.5), "a pocketed ball sits at its before position")
+        #expect(shot.post?.balls[.cue]?.position == Vec2(0.7, 0.5))
+        #expect(shot.pre?.spec == TableSpec(size: .eightFoot))
+        #expect(!shot.paths.isEmpty)
+        #expect(!shot.pathsAreTraced)
+        #expect(GameReviewModel(data: data).timelineStyle(shot) == .of(shot.rating), "rated, not dashed")
+    }
+
+    @Test func aShotWithNoKnownPositionsStaysWithoutStates() throws {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        m.hooks = LiveScreenAdapter.hooks(for: session)
+        let rec = ShotRecord(start: 0, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: nil, rails: [],
+                             pocketed: [:])
+        m.shotSettled(rec, ids: [1: .cue])
+        let shot = try #require(game.reviewData().shots.first)
+        #expect(shot.pre == nil)
+        #expect(shot.post == nil)
+        #expect(shot.paths.isEmpty)
+    }
+
+    /// Grok 4.7 review: a D31 guess knows the pre-shot table but has no after table (finalState is empty); it must not
+    /// open a replay whose after diagram drops every ball still on the felt.
+    @Test func aGuessedShotHasNoReplay() throws {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        m.hooks = LiveScreenAdapter.hooks(for: session)
+        let rec = ShotRecord(start: 0, end: 2, preState: [1: Vec2(0.5, 0.5), 2: Vec2(1, 0.5), 3: Vec2(1.2, 0.4)],
+                             finalState: [:], cueID: 1, firstContact: nil, rails: [], pocketed: [2: .footLeft])
+        m.shotSettled(rec, ids: [1: .cue, 2: BallID(3)!, 3: BallID(5)!], guessed: true)
+        let shot = try #require(game.reviewData().shots.first)
+        #expect(shot.isGuess)
+        #expect(shot.pre == nil)
+        #expect(shot.post == nil)
+        #expect(shot.paths.isEmpty)
+    }
+
     @Test func anUnratedCloseRecordsNoShot() {
         let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]]))
         let session = LiveSession(mode: .game, game: game, drill: nil)
