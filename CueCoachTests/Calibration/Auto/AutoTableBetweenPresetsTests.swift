@@ -93,3 +93,96 @@ struct AutoTableBetweenPresetsTests {
         #expect(f.generation == gen)
     }
 }
+
+/// D36: a size chosen in game setup or Settings is a prior (snap to it within 6 %, never lock a different preset without
+/// measured evidence); a steady table between presets gets a size hint, not "step back". (D36 A, the 2 % snap, is
+/// blocked: the -O matrix locked five preset scenes at measured lengths 2.1–5.7 % off; see plans/005.)
+struct AutoTableUnlistedSizeTests {
+    /// A frame as the detector reports it: the per-frame verdict decides its snap.
+    static func m(length L: Double, i: Int) -> AutoTableMeasurement {
+        let snapped: TableSize?
+        if case .preset(let s) = AutoRectFitter.sizeVerdict(length: L, width: L / 2) { snapped = s } else { snapped = nil }
+        return AutoTableBetweenPresetsTests.m(length: L, snapped: snapped, i: i)
+    }
+
+    static func fused(_ lengths: [Double], prior: TableSize? = nil) -> AutoTableFusion {
+        var c = AutoFusionConfig()
+        c.prior = prior
+        var f = AutoTableFusion(config: c)
+        for (i, L) in lengths.enumerated() { f.add(Self.m(length: L, i: i)) }
+        return f
+    }
+
+    /// Per-frame fits are ±5 % on length at shallow views: noisy preset tables lock as their preset.
+    @Test(arguments: TableSize.allCases)
+    func noisyPresetFitsStillLockAsThePreset(size: TableSize) throws {
+        var rng = AutoTestRNG(seed: 5)
+        let L = size.playingLength
+        let f = Self.fused((0..<30).map { _ in L * (1 + rng.uniform(-0.035, 0.035)) })
+        #expect(f.locked)
+        #expect(f.fused?.snappedSize == size)
+    }
+
+    @Test func anInSpanUnlistedSizeTellsTheUserItsTheSize() {
+        let f = Self.fused(Array(repeating: 2.18, count: 30))
+        #expect(!f.locked)
+        #expect(f.sizeBetweenPresets)
+        #expect(AutoTableLocating.convergingFailure(spread: 0.005, awaitingSize: true, sizeBetweenPresets: true) == .unusualSize)
+        // Only guessed sizes (or unsteady corners) still ask for a look at the whole table / a steady hand.
+        #expect(AutoTableLocating.convergingFailure(spread: 0.005, awaitingSize: true, sizeBetweenPresets: false) == .partialTable)
+        #expect(AutoTableLocating.convergingFailure(spread: 0.03, awaitingSize: true, sizeBetweenPresets: true) == .unstable)
+        #expect(AutoTableLocating.convergingFailure(spread: 0.005, awaitingSize: false, sizeBetweenPresets: false) == nil)
+    }
+
+    @Test func aGuessOnlyWindowIsNotCalledBetweenPresets() {
+        var f = AutoTableFusion()
+        for i in 0..<30 {
+            var m = AutoTableBetweenPresetsTests.m(length: 2.18, snapped: .eightFoot, i: i)
+            m.sizeMeasured = false
+            f.add(m)
+        }
+        #expect(!f.sizeBetweenPresets)
+    }
+
+    @Test func theSizeHintIsARuler() {
+        #expect(LockFailure.unusualSize.symbol == "ruler")
+        #expect(CoachingSymbol.of(failure: .unusualSize, locked: false) == "ruler")
+    }
+
+    @Test func aChosenSizeIsThePrior() throws {
+        // 8 ft chosen: a Pro-8-ish measurement and one in the middle between 7 and 8 ft both lock as 8 ft.
+        for L in [2.30, 2.235, 2.20] {
+            let f = Self.fused(Array(repeating: L, count: 30), prior: .eightFoot)
+            #expect(f.locked, "\(L)")
+            let p = try #require(f.fused)
+            #expect(p.snappedSize == .eightFoot, "\(L)")
+            #expect(AutoTableLocating.sizeIsTrusted(p, prior: .eightFoot), "\(L)")
+        }
+        // 7 ft chosen but an 8 ft table measured: never 7 ft.
+        let g = Self.fused(Array(repeating: 2.34, count: 30), prior: .sevenFoot)
+        #expect(g.fused?.snappedSize != .sevenFoot)
+        #expect(g.locked && g.fused?.snappedSize == .eightFoot)
+    }
+
+    /// A prior never stands in for measurement: guessed sizes alone still never lock.
+    @Test func aPriorIsNoSizeEvidence() {
+        var c = AutoFusionConfig()
+        c.prior = .eightFoot
+        var f = AutoTableFusion(config: c)
+        for i in 0..<30 {
+            var m = AutoTableBetweenPresetsTests.m(length: 2.337, snapped: .eightFoot, i: i)
+            m.sizeMeasured = false
+            f.add(m)
+        }
+        #expect(!f.locked)
+    }
+
+    /// Rendered end to end: an in-span 2.18 m table waits with the between-presets flag set.
+    @Test func renderedBetweenPresetsTableWaitsWithTheSizeHint() throws {
+        var scene = AutoSyntheticScene()
+        scene.lengthOverride = 2.18
+        let run = autoRun(scene, elevation: 40, frames: 18)
+        #expect(run.estimate.state != .locked)
+        #expect(run.estimate.frame.sizeBetweenPresets)
+    }
+}

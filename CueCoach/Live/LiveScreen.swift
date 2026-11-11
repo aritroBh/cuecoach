@@ -14,10 +14,12 @@ struct LiveScreen: View {
 
     /// App-shell contract: `.game` (rules helpers + rating) or `.training(level:)` (aim lines, D24); the drill being
     /// trained (nil in a game); lifecycle hooks into LiveSession; `onClose` replaces the default dismiss.
+    /// `tablePrior`: the table size chosen in game setup or Settings (D36), the locator's size prior.
     init(mode: LiveMode = .training(level: AssistLevel.full.rawValue), drill: DrillID? = nil, hooks: LiveHooks = LiveHooks(),
-         onClose: (() -> Void)? = nil) {
+         tablePrior: TableSize? = nil, onClose: (() -> Void)? = nil) {
         let m = LiveModel(mode: mode)
         m.drill = drill
+        m.tablePrior = tablePrior
         m.hooks = hooks
         _model = State(initialValue: m)
         self.drill = drill
@@ -55,7 +57,7 @@ struct LiveScreen: View {
         #if targetEnvironment(simulator)
         ReplayLiveView(model: model)
         #else
-        ARLiveView(model: model)
+        ARLiveView(model: model, locator: AutoTableLocating(prior: model.tablePrior))
         #endif
     }
 
@@ -397,7 +399,12 @@ struct ReplayLiveView: View {
     @State private var table: TableFrame?
     @State private var result: PerceptionResult?
     @State private var pipeline = PerceptionPipeline(detector: PerceptionPipeline.defaultDetector())
-    @State private var locator = AutoTableLocating()
+    @State private var locator: AutoTableLocating
+
+    init(model: LiveModel) {
+        self.model = model
+        _locator = State(initialValue: AutoTableLocating(prior: model.tablePrior))
+    }
     @State private var loop: Task<Void, Never>?
     @State private var viewSize: CGSize = .zero
 

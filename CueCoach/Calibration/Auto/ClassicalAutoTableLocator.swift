@@ -156,6 +156,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             if fused == nil { lockState = .searching } else if s.fusion.locked { lockState = .locked }
             else { lockState = .converging(progress: s.fusion.progress) }
             diag.awaitingSize = fused != nil && !s.fusion.locked && !s.fusion.sizeSettled
+            diag.sizeBetweenPresets = diag.awaitingSize && s.fusion.sizeBetweenPresets
             diag.processingSeconds = Date().timeIntervalSince(t0)
             let conf = confidence(state: lockState, progress: s.fusion.progress, rms: fusedRMS ?? diag.reprojectionRMS,
                                   pockets: diag.pocketScores)

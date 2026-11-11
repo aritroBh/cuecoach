@@ -10,6 +10,7 @@ enum LockFailure: String, Sendable, Equatable {
     case tooClose       // the cloth fills the frame on 3+ sides
     case badShape       // quad doesn't validate as a table
     case unstable       // estimates still disagree frame to frame: hold steady
+    case unusualSize    // the whole table is in view but its size sits between the presets (D36)
 }
 
 struct FeltAnalysis: Sendable {

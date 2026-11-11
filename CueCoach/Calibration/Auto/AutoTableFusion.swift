@@ -54,6 +54,10 @@ struct AutoFusionConfig: Sendable {
     var partialLockVisibleFraction = 0.6
     /// …or its view directions (camera around the table centre) span at least this angle (rad).
     var partialLockViewSpread = 15 * Double.pi / 180
+    /// D36 (C): the size chosen in game setup or Settings (nil = none). A measured frame within `priorSnap` of it
+    /// votes for it; it never stands in for a measurement (guessed frames stay guesses).
+    var prior: TableSize?
+    var priorSnap = 0.06
 }
 
 /// Multi-frame fusion in world coordinates: robust (median → Huber) pose over a sliding window,
@@ -78,6 +82,9 @@ struct AutoTableFusion: Sendable {
     private(set) var sizeDecided = false
     /// Both: the size can be locked.
     var sizeSettled: Bool { sizeBacked && sizeDecided }
+    /// D36: unsettled although the window holds enough measured frames, and their size lies between the presets:
+    /// the whole table is in view, the problem is its size (the hint says so instead of "step back").
+    private(set) var sizeBetweenPresets = false
     static let presetSpan: ClosedRange<Double> = {
         let l = TableSize.allCases.map(\.playingLength)
         return l.min()!...l.max()!
@@ -148,11 +155,11 @@ struct AutoTableFusion: Sendable {
         // Size: majority preset, else the median measurement at 2:1. While locked the vote threshold has
         // a hysteresis band around the held choice, so a table near the 6 % snap edge does not flap.
         // Only frames that measured the size vote on it (a guessed size is never size evidence).
-        let sizing = window.filter(Self.votesOnSize)
+        let sizing = window.filter(votesOnSize)
         sizeBacked = sizing.count >= config.minSizeVotes
         let voters = sizeBacked ? sizing : window
         var votes: [TableSize: Int] = [:]
-        for m in voters { if let s = m.snapped { votes[s, default: 0] += 1 } }
+        for m in voters { if let s = snap(m) { votes[s, default: 0] += 1 } }
         var spec: TableSpec
         var snapped: TableSize?
         let mL = autoMedian(voters.map(\.measuredLength)), mW = autoMedian(voters.map(\.measuredWidth))
@@ -178,6 +185,9 @@ struct AutoTableFusion: Sendable {
             spec.length = len; spec.width = len / 2
         }
         sizeDecided = snapped != nil || !Self.presetSpan.contains(spec.length)
+        let measuredFrames = window.filter(\.sizeMeasured)
+        sizeBetweenPresets = !sizeSettled && measuredFrames.count >= config.minSizeVotes
+            && Self.presetSpan.contains(autoMedian(measuredFrames.map(Self.estimate)))
         // Locked: hold the size so corners never move without a new generation. A different size is
         // adopted only after it has been the (self-consistent) candidate for `sizeAdoptFrames` frames.
         if locked, let held = heldSize {
@@ -211,7 +221,7 @@ struct AutoTableFusion: Sendable {
         // 2.21 m among abstainers became the measured size, the adapter stopped trusting the lock, and it stuck).
         var measured = (mL, mW)
         if let s = snapped {
-            let mine = voters.filter { $0.snapped == s && Self.votesOnSize($0) }
+            let mine = voters.filter { snap($0) == s && votesOnSize($0) }
             if locked, !sizeBacked, let f = fused { measured = (f.measuredLength, f.measuredWidth) }
             else if !mine.isEmpty { measured = (autoMedian(mine.map(\.measuredLength)), autoMedian(mine.map(\.measuredWidth))) }
             else if locked, let f = fused { measured = (f.measuredLength, f.measuredWidth) }
@@ -278,9 +288,20 @@ struct AutoTableFusion: Sendable {
     /// A frame votes on the size if it measured it (`sizeMeasured`) and the measurement names one: an unsnapped fit
     /// between the smallest and largest preset sits between two neighbours (as far from one as from the other) and
     /// abstains, though it is still pose evidence (cross-vendor review, Grok 4.7: dist-2.0m seed 3 tracked fits).
-    static func votesOnSize(_ m: AutoTableMeasurement) -> Bool {
-        m.sizeMeasured && (m.snapped != nil || !presetSpan.contains((m.measuredLength + 2 * m.measuredWidth) / 2))
+    /// D36 (C): a measured frame within `priorSnap` of the chosen size votes for it.
+    func votesOnSize(_ m: AutoTableMeasurement) -> Bool {
+        m.sizeMeasured && (snap(m) != nil || !Self.presetSpan.contains(Self.estimate(m)))
     }
+
+    /// The preset a frame votes for: the chosen size if it measured within `priorSnap` of it, else its own snap.
+    func snap(_ m: AutoTableMeasurement) -> TableSize? {
+        if let p = config.prior, m.sizeMeasured,
+           abs(Self.estimate(m) - p.playingLength) / p.playingLength <= config.priorSnap { return p }
+        return m.snapped
+    }
+
+    /// D12 size estimate of one frame, (L + 2W)/2.
+    static func estimate(_ m: AutoTableMeasurement) -> Double { (m.measuredLength + 2 * m.measuredWidth) / 2 }
 
     /// A partial-view lock needs ≥ 60 % of the length seen in some frame, or ≥ 2 distinct view angles.
     static func partialViewsAgree(_ ms: [AutoTableMeasurement], center: SIMD3<Double>, up: SIMD3<Double>,
