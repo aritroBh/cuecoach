@@ -42,3 +42,6 @@
 | D36 | 2026-11-10 | Table size: snap to 7/8/9 ft only within 2 %, otherwise lock at the measured size (D12); the size chosen in game setup or Settings is a prior (snap to it within 6 %, never lock a different preset without measured evidence). A steady between-presets table gets a size hint, not "step back". | User |
 | D37 | 2026-11-10 | ✕ during a game asks "End game?" first; on confirm, an open shot finishes settling before review opens (never silently dropped). | User |
 | D38 | 2026-11-10 | A lost shot with no guess: the turn discs pulse until someone taps the shooter (one tap); the review shows the shot as an unknown gap. | User |
+| D39 | 2026-11-10 | Two-phone game: the host rates every shot; a joiner shows the post-shot badge only after the host's committed rating (never its own first). | User |
+| D40 | 2026-11-10 | App closed or killed mid-rack: the game is discarded; only finished racks are saved (stats only see complete games). | User |
+| D41 | 2026-11-10 | Turn-disc tap changes only who shoots next, never an already-recorded shot (fixing a recorded shot is a separate action). | User |

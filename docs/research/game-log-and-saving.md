@@ -1,6 +1,6 @@
 # Game log and saving
 
-Drafted by Cursor (Grok 4.7) for plans/006, read-only; saved, D37/D38 folded in and reviewed by the head (Claude). Status: proposal, pending the user's answers to the open product questions.
+Drafted by Cursor (Grok 4.7) for plans/006, read-only; saved, D37/D38 folded in and reviewed by the head (Claude). Status: proposal; product questions answered by the user 2026-11-10 (D37–D41).
 
 Design spike for plan 006. Depends on plan 002's in-memory shape. No app behavior changes in this spike.
 
@@ -164,25 +164,25 @@ No other `Shot` or `Game` column has to change for the field table above. `ended
 
 These are not decided.
 
-1. In a mesh game, should a joiner's phone show its own post-shot badge immediately, or wait for the host's rating?
+1. ~~Joiner badge now or after the host?~~ **Decided: D39**, wait for the host's committed rating.
    Recommended: wait for the host's committed entry. One badge, and it matches the log.
 
-2. When the app is closed mid-game, should the game be saved as unfinished, discarded, or offered for resume?
+2. ~~Mid-game close?~~ **Decided: D40**, discard; only finished racks are saved.
    Recommended: discard. The log is memory only, and an unfinished row still counts as a game in `Aggregates` unless a later filter skips it.
 
 3. ~~Should ✕ in a game ask before ending it?~~ **Decided: D37** (user, 2026-11-10). ✕ asks "End game?". On confirm, an open shot finishes settling before review opens, so it is never silently dropped. The recorder therefore runs after that last settle.
 
 4. ~~After a lost-tracking shot with no guess, who shoots next?~~ **Decided: D38** (user, 2026-11-10). The turn discs pulse until someone taps the shooter, and the review shows the shot as an unknown gap. In a mesh game the tap is a proposal like any correction (§2), and the gap needs a log event or a `MeshShotRecord` with no outcome. Fold-the-log follow-up plan 1 must cover it.
 
-5. Should the turn disc reassign the last shot's team, or only change who shoots next?
+5. ~~Turn disc reassigns the last shot?~~ **Decided: D41**, next shooter only.
    Recommended: only change who shoots next. That is what `handTurn` does today (`CueCoach/App/GameSessionModel.swift:102-106`). Use `shooterCorrection` when someone fixes a named shot. This needs a log event the enum does not have yet, so it waits on this answer.
 
 ## Follow-up plans
 
 Worker-sized, test first. Order:
 
-1. **Fold the shot log.** Host appends `.shot` and `.shooterCorrection`. Every phone folds the committed prefix into `SessionShot`, including plan 002 `before` / `after`. A client settle does not record. Fake `MeshSession` in `GameSessionModelTests`. No SwiftData. Add the optional `MeshShotRecord` fields with missing-key defaults. Blocked on question 5 for which event the disc sends. The fold tests for both events can be written before that answer.
+1. **Fold the shot log.** Host appends `.shot` and `.shooterCorrection`. Every phone folds the committed prefix into `SessionShot`, including plan 002 `before` / `after`. A client settle does not record. Fake `MeshSession` in `GameSessionModelTests`. No SwiftData. Add the optional `MeshShotRecord` fields with missing-key defaults. Per D41 the disc changes only the next shooter, so it needs a 'next shooter' log event; `.shooterCorrection` stays for fixing a recorded shot. The fold tests for both events can be written before that answer.
 2. **Mesh link forwards the log.** `MeshGameLink` surfaces `logChanged` (`CueCoach/Mesh/MeshNode.swift:50`) to `GameSessionModel`. Depends on 1.
-3. **Save the finished rack.** `GameRecorder` on the host or solo phone, current V2 schema, field table above, skip `isGuess` shots, training test from §5. Depends on 1 and on question 2 (D37 already decides the ✕ path).
+3. **Save the finished rack.** `GameRecorder` on the host or solo phone, current V2 schema, field table above, skip `isGuess` shots, training test from §5. Depends on 1. D40: write only finished racks; D37: the recorder runs after the last settle.
 4. **`Shot.isGuess` migration.** Competitive V3 only. Review reads the flag. Guessed shots can then be saved and kept out of pot %. Blocked until that migration is approved. Do not start it inside plan 3.
 5. **Host loss and island mode.** §2.5 re-run and `IslandMerge`. No SwiftData write while partitioned. Depends on 1. Resume (question 2's third option) depends on this.
