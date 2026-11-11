@@ -7,7 +7,7 @@ import Synchronization
 /// source of a lock. `FeltQuadProposer` survives only as a fast ghost seed while Auto has no pose yet.
 /// Plugs into the live screen through `TableLocating`.
 final class AutoTableLocating: TableLocating, @unchecked Sendable {
-    private let auto: ClassicalAutoTableLocator
+    let auto: ClassicalAutoTableLocator
     private let state = Mutex(State())
     var profile = AutoTableProfile()
     /// History expires after a timestamp gap this long (the user looked away / the app was paused).

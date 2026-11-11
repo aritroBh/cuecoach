@@ -177,6 +177,45 @@ struct AutoTableUnlistedSizeTests {
         #expect(!f.locked)
     }
 
+    /// Cross-vendor review (Grok 4.7): a fit 8 ft and 9 ft both claim within 6 % (≈ 2.41–2.46 m) is `.ambiguous` and
+    /// was dropped before fusion, so the chosen size never voted. One of the ambiguous presets as prior settles it;
+    /// a prior that is not one of them changes nothing.
+    @Test func aPriorSettlesAnAmbiguousFitOnlyBetweenItsCandidates() {
+        let L = 2.435, W = L / 2
+        #expect(AutoRectFitter.sizeVerdict(length: L, width: W) == .ambiguous)
+        #expect(AutoRectFitter.sizeVerdict(length: L, width: W, prior: .eightFoot) == .preset(.eightFoot))
+        #expect(AutoRectFitter.sizeVerdict(length: L, width: W, prior: .nineFoot) == .preset(.nineFoot))
+        #expect(AutoRectFitter.sizeVerdict(length: L, width: W, prior: .sevenFoot) == .ambiguous)
+        // Never touches an unambiguous verdict.
+        #expect(AutoRectFitter.sizeVerdict(length: 2.34, width: 1.17, prior: .nineFoot) == .preset(.eightFoot))
+        #expect(AutoRectFitter.sizeVerdict(length: 2.18, width: 1.09, prior: .eightFoot) == .measured)
+    }
+
+    static func overlapRun(prior: TableSize?) -> AutoRun {
+        var scene = AutoSyntheticScene()
+        scene.lengthOverride = 2.435
+        var c = ClassicalAutoTableLocator.Config()
+        c.fusion.prior = prior
+        return autoRun(scene, elevation: 40, frames: 18, locator: ClassicalAutoTableLocator(config: c))
+    }
+
+    /// Rendered end to end: steady four-rail fits in the 8/9 ft overlap lock as the chosen size…
+    @Test(arguments: [TableSize.eightFoot, .nineFoot])
+    func anOverlapTableLocksAsTheChosenSize(prior: TableSize) throws {
+        let run = Self.overlapRun(prior: prior)
+        #expect(run.estimate.state == .locked)
+        let p = try #require(run.estimate.pose)
+        #expect(p.snappedSize == prior)
+        #expect(AutoTableLocating.sizeIsTrusted(p, prior: prior))
+    }
+
+    /// …and with no size chosen they stay ambiguous and never lock.
+    @Test func anOverlapTableWithoutAPriorNeverLocks() {
+        let run = Self.overlapRun(prior: nil)
+        #expect(run.lockedAtFrame == nil)
+        #expect(run.perFrame.contains { $0.frame.rejection == "size ambiguous" })
+    }
+
     /// Rendered end to end: an in-span 2.18 m table waits with the between-presets flag set.
     @Test func renderedBetweenPresetsTableWaitsWithTheSizeHint() throws {
         var scene = AutoSyntheticScene()

@@ -134,7 +134,7 @@ enum AutoRectFitter {
     /// Within 6 % of a preset it snaps, unless another preset is also within 6 % and nearly as close
     /// (`ambiguityMargin`): then the size is ambiguous and the frame must not vote (wait for a second look).
     static func sizeVerdict(length L: Double, width W: Double, aspectTolerance: Double = 0.12,
-                            ambiguityMargin: Double = 0.02) -> SizeVerdict {
+                            ambiguityMargin: Double = 0.02, prior: TableSize? = nil) -> SizeVerdict {
         guard W > 0, abs(L / W - 2) / 2 <= aspectTolerance else { return .notTwoToOne }
         let est = (L + 2 * W) / 2
         let e = TableSize.allCases.map { (size: $0, err: abs($0.playingLength - est) / $0.playingLength) }

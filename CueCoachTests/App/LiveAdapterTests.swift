@@ -332,5 +332,8 @@ import Training
     @Test func theLocatorFusesWithThePrior() {
         #expect(AutoTableLocating(keypoints: NoKeypoints(), prior: .eightFoot).prior == .eightFoot)
         #expect(AutoTableLocating(keypoints: NoKeypoints()).prior == nil)
+        // The prior must reach the fusion config, not only the stored property (Grok 4.7).
+        #expect(AutoTableLocating(keypoints: NoKeypoints(), prior: .nineFoot).auto.config.fusion.prior == .nineFoot)
+        #expect(AutoTableLocating(keypoints: NoKeypoints()).auto.config.fusion.prior == nil)
     }
 }
