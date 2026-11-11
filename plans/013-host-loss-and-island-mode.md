@@ -20,6 +20,8 @@ and the turn stays with the previous shooter; and in a two-phone split both side
 appended during the split is thrown away when they heal. Players lose real shots in every Wi-Fi blip.
 
 ## Decision gate (before step 2)
+**Update 2026-11-10: the user answered Q12 = island + merge (D44).** The "needs tap" display below is still open: mock it (Astryx, icon-only, never while aiming) and get the head's OK before step 2.
+
 `docs/research/mesh-identity.md:649` lists **Q12** (island + merge, or freeze and tap) as an open user question with
 "Island + merge" only recommended; no D-number records an answer. Also undecided: how a merged shot marked
 **"needs tap"** is shown (§2.5 says "on the next post-shot card"; no such card UI exists). Ask the user both. This

@@ -3,7 +3,8 @@
 > **Executor instructions**: Follow this plan step by step. Run every verification and confirm the expected result
 > before the next step. Honor the STOP conditions; do not improvise. When done, update this plan's row in `plans/README.md`.
 >
-> **BLOCKED.** This is a SwiftData schema migration on the user's competitive store. Do not start until the user has
+> **Approved 2026-11-10 as D43** (user). Still: start only after plan 011 merges.
+> (Original note:) This is a SwiftData schema migration on the user's competitive store. Do not start until the user has
 > approved it in writing (a new D-number in `docs/DECISIONS.md`). Do not fold any part of it into plan 011.
 >
 > **Drift check (run first)**: `git diff --stat 5cd3fcf..HEAD -- CueCoach/Persistence CueCoach/Screens/Review/ReviewData.swift CueCoach/App/GameSessionModel.swift docs/SCHEMA.md docs/INTERFACES.md CueCoachTests/Persistence CueCoachTests/Screens`

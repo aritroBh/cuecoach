@@ -90,7 +90,7 @@ and keep the others' original `index`; `Game.id` = first committed shot id; one 
 - Upserting by `@Attribute(.unique) id` doesn't update in place on the simulator.
 
 ## Maintenance notes
-- Kill after the winning shot but before ✕: nothing is saved, because the recorder runs in `endGame` (design §4).
+- **D45 (user, after this plan was drafted) overrides design §4:** save as soon as the winning shot is committed, not in `endGame`; a kill after the win keeps the game. Executor: trigger the recorder on the commit that gives the rack a winner (idempotent upsert by id, so a later `endGame` changes nothing). If that is not cleanly possible, STOP and report.
   Saving on the winning commit instead is a product question; ask before changing it.
 - `features` written as `neutral` must be skipped by whoever builds the `Shot → CompetitiveShot` projection (design §3).
   Mark it in that plan; there is no column that says so.

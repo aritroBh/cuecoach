@@ -23,8 +23,8 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 009 | Every phone folds one shot log (D39, D41 next-shooter event, D38 gap) | P1 | L | 002, 008 (007 recommended) | TODO |
 | 010 | Mesh link forwards the committed log to the game | P1 | M | 009 | TODO |
 | 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | TODO |
-| 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | BLOCKED (SwiftData schema migration needs user approval) |
-| 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | TODO (Q12 + "needs tap" UI to confirm first) |
+| 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | TODO (D43: migration approved; after 011) |
+| 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | TODO (Q12 = D44 island + merge; "needs tap" UI still to mock first) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -36,7 +36,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - 009–013 are plan 006's follow-ups, planned at `5cd3fcf`. 009 needs 002 (before/after) and 008 (gap shot,
   `needsShooter`) merged; it adds two `GameEvent` cases and bumps the mesh protocol to major 2. 010, 011 and 013
   build on 009 and can run in parallel after it, but 011 and 010 must agree on reading `isHost`/`commitSeq` before
-  `endGame` stops the link. 012 waits on 011 and user approval. 013 waits on the user's Q12 answer.
+  `endGame` stops the link. 012 waits on 011 (approved, D43). Q12 is answered (D44); 013's "needs tap" UI gets a mock before step 2. 011 saves on the winning commit (D45), not in `endGame`.
 
 ## Decisions
 - Plan 001: D35. With no WPA data, the team MVP is the winning team's best-rated shooter.

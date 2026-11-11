@@ -45,3 +45,6 @@
 | D39 | 2026-11-10 | Two-phone game: the host rates every shot; a joiner shows the post-shot badge only after the host's committed rating (never its own first). | User |
 | D40 | 2026-11-10 | App closed or killed mid-rack: the game is discarded; only finished racks are saved (stats only see complete games). | User |
 | D41 | 2026-11-10 | Turn-disc tap changes only who shoots next, never an already-recorded shot (fixing a recorded shot is a separate action). | User |
+| D43 | 2026-11-10 | Approve the Competitive SwiftData V2 → V3 lightweight migration adding `Shot.isGuess` (plan 012), run after plan 011, with a test that opens a real V2 store as V3. | User |
+| D44 | 2026-11-10 | Q12, phones lose each other mid-game: island + merge. Each phone keeps scoring on its own; on reconnect the logs merge, and any shot the phones disagree on asks one tap. | User |
+| D45 | 2026-11-10 | Save a rack as soon as its winning shot is committed, not on ✕; a kill after the win keeps the game (refines D40: only an unfinished rack is discarded). | User |
