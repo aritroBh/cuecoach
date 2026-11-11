@@ -99,6 +99,8 @@ final class CoreMLBallInference: BallInference, @unchecked Sendable {
         model = try MLModel(contentsOf: url, configuration: cfg)
     }
 
+    var modelDescription: MLModelDescription { model.modelDescription }
+
     /// Last inference time (ms) for the dev HUD.
     var lastInferenceMs: Double { state.withLock { $0 } }
 

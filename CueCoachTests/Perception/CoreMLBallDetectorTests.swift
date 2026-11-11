@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import Geometry
 import Testing
@@ -166,9 +167,27 @@ struct CoreMLBallDetectorTests {
         let img = try #require(PixelImage(cgImage: cg))
         let geo = FrameGeometry(frame: scene.frame, camera: scene.camera)
         let raws = try #require(model.infer(img))
+        // The demo has 6 balls: a model that loads but decodes nothing would otherwise pass as "on the table".
+        #expect(raws.count >= 5, "model saw \(raws.count) of the demo's 6 balls")
         let d = BallDetectorOutput.detections(raws, image: img, geometry: geo)
         let s = scene.frame.spec
         for b in d { #expect(b.tablePoint.x >= 0 && b.tablePoint.x <= s.length && b.tablePoint.y >= 0 && b.tablePoint.y <= s.width) }
         print("[detector] synthetic demo: \(raws.count) raw, \(d.count) on table; ms \(model.lastInferenceMs)")
+    }
+
+    /// The decoder's hard-coded feature names and shapes (`CoreMLBallInference.infer`). A re-export that renames
+    /// them makes inference return nil silently and the hybrid run classical-only.
+    @Test func bundledModelMatchesTheDecoderContract() throws {
+        let desc = try #require(CoreMLBallInference.shared).modelDescription
+        let inputs = desc.inputDescriptionsByName, outputs = desc.outputDescriptionsByName
+        let image = try #require(inputs["image"], "inputs: \(inputs.keys.sorted())")
+        #expect(image.type == .image)
+        #expect(image.imageConstraint?.pixelsWide == Int(BallDetectorOutput.inputSize))
+        #expect(image.imageConstraint?.pixelsHigh == Int(BallDetectorOutput.inputSize))
+        #expect(inputs["iouThreshold"] != nil, "inputs: \(inputs.keys.sorted())")
+        #expect(inputs["confidenceThreshold"] != nil, "inputs: \(inputs.keys.sorted())")
+        for name in ["confidence", "coordinates"] {
+            #expect(outputs[name]?.type == .multiArray, "output \(name) missing or wrong type; outputs: \(outputs.keys.sorted())")
+        }
     }
 }
