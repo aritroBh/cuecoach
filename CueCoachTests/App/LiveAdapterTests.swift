@@ -420,8 +420,9 @@ import Training
         #expect(try #require(log.shots.first).isGuess == false)
     }
 
-    /// FIFO order holds when forced: the rated shot closes, then the shot lost in flight (no pre-shot table = unrated).
-    @Test func forcingClosesOpenShotsInOrder() {
+    /// Forced with lost shots open: a relock loses every unclosed shot (and the one in flight); with no pre-shot table
+    /// each closes unrated, one close per shot, then the end fires.
+    @Test func forcingClosesEveryLostShot() {
         let (_, m, log) = setup()
         m.drive(frame(1, moving: true, started: true))
         let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
@@ -430,7 +431,7 @@ import Training
         m.perceptionReset()                                // ... and lost
         m.requestEnd { log.events.append("end") }
         m.forceEnd()
-        #expect(log.events == ["settled", "unrated", "end"])
+        #expect(log.events == ["unrated", "unrated", "end"])
         #expect(!m.hasOpenShot)
     }
 

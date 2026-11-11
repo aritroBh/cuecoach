@@ -97,6 +97,11 @@ final class LiveModel {
         /// D31: the shot in flight at a relock.
         var guess: LostShotGuess?
 
+        /// A pocket neither answered nor seen either way (only a forced close meets one).
+        var hasUnresolvedPocket: Bool {
+            guard let res = resolver else { return false }
+            return res.candidates.keys.contains { answers[$0] == nil && verdicts[$0] != .pocketed && verdicts[$0] != .onTable }
+        }
         var openAsk: Int? {
             verdicts.filter { $0.value == .ask && answers[$0.key] == nil }.keys.sorted().first
         }
@@ -110,7 +115,7 @@ final class LiveModel {
     /// D37: only a game asks before ✕ closes Live; Training closes at once.
     var asksBeforeClosing: Bool { mode == .game }
     /// D37: end once every open shot has closed (through the normal FIFO, the pocket question still answerable).
-    /// `done` runs exactly once; a second request while finishing is ignored.
+    /// `done` runs exactly once.
     /// D42: a second request while finishing forces the end at once.
     func requestEnd(_ done: @escaping @MainActor () -> Void) {
         guard !isFinishing else { return forceEnd() }
@@ -118,8 +123,11 @@ final class LiveModel {
         isFinishing = true
         onFinished = done
     }
+    /// Live went away (menu "End game", dismissal) while finishing: nothing may close or fire later.
+    func abandonEnd() { isFinishing = false; onFinished = nil }
     /// D42: stop waiting for a quiet table (second ✕, or the screen's ~5 s give-up). Every open shot closes now, in
-    /// order, with what is known: a running look freezes and an unasked/unanswered pocket takes the look's verdict.
+    /// order, with what is known: a running look freezes; an answered pocket stands; a pocket still unresolved is
+    /// never counted (D31) and makes the shot a guess (Grok 4.7 review).
     func forceEnd() {
         guard isFinishing, let done = onFinished else { return }
         onFinished = nil
@@ -129,9 +137,9 @@ final class LiveModel {
             switch head.state {
             case .looking:
                 head.verdicts = head.resolver?.frozen() ?? [:]
-                close(head)
+                close(head, guessed: head.hasUnresolvedPocket)
             case .decided:
-                close(head)
+                close(head, guessed: head.hasUnresolvedPocket)
             case .lost:
                 if let (rec, ids) = head.guess?.record() {
                     onCloseForTesting?(head.id, rec, true)
@@ -274,7 +282,7 @@ final class LiveModel {
         drain()
     }
 
-    private func close(_ e: ShotEntry) {
+    private func close(_ e: ShotEntry, guessed: Bool = false) {
         guard var rec = e.record, let res = e.resolver else { return }
         for (tid, pk) in res.candidates {
             let dropped = e.answers[tid] ?? (e.verdicts[tid] == .pocketed)
@@ -282,7 +290,7 @@ final class LiveModel {
             rec.uncertainPockets[tid] = nil
         }
         onCloseForTesting?(e.id, rec, true)
-        shotSettled(rec, ids: e.ids)
+        shotSettled(rec, ids: e.ids, guessed: guessed)
     }
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }

@@ -10,6 +10,8 @@ struct LiveScreen: View {
     @AppStorage("dev.hud") private var showHUD = false
     /// D37: "End game?" is up.
     @State private var askingEnd = false
+    /// D42: the ~5 s give-up; cancelled when Live goes away.
+    @State private var giveUp: Task<Void, Never>?
 
     private let drill: DrillID?
     private let onClose: (() -> Void)?
@@ -53,7 +55,12 @@ struct LiveScreen: View {
             Button("End game", role: .destructive) {
                 model.requestEnd { close() }
                 // D42: never stuck waiting for a quiet table.
-                if model.isFinishing { Task { try? await Task.sleep(for: .seconds(5)); model.forceEnd() } }
+                if model.isFinishing {
+                    giveUp = Task { @MainActor in
+                        do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                        model.forceEnd()
+                    }
+                }
             }
             Button("Keep playing", role: .cancel) {}
         }
@@ -61,7 +68,11 @@ struct LiveScreen: View {
             if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true }
             UIApplication.shared.isIdleTimerDisabled = true      // no auto-lock while Live is up
         }
-        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
+            giveUp?.cancel()
+            model.abandonEnd()
+        }
     }
 
     @ViewBuilder private var content: some View {
