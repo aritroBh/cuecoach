@@ -144,6 +144,8 @@ struct InGameChrome: View {
 
 /// One disc per team at the top edge: the shooter lit with their team ring, the waiting player dimmed.
 /// Tapping the dim disc hands the turn over (SPEC §5.8 one-tap correction).
+/// D38: after a lost shot with no guess both discs pulse inside a ring until one is tapped (Reduce Motion: the ring
+/// stays, no pulse). No text.
 struct TurnDiscs: View {
     let game: GameSessionModel
     let reduceMotion: Bool
@@ -166,6 +168,8 @@ struct TurnDiscs: View {
         return Button { handTurn(team) } label: {
             SBAvatar(symbol: p?.symbol ?? "person.fill", colorName: p?.colorName ?? "blue", size: active ? 56 : 44,
                      team: team, dimmed: !active)
+                .overlay { if game.needsShooter { Circle().strokeBorder(AXLive.aim, lineWidth: 3).padding(-4) } }
+                .modifier(Breathe(active: game.needsShooter && !reduceMotion))
                 .frame(width: 64, height: 64)
                 .contentShape(Circle())
         }
