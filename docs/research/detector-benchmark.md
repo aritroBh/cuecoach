@@ -112,7 +112,7 @@ Reproduce: `tools/detector/README.md` ("D32 virtual-sim benchmark").
 
 Plan 003. `BallModelLatencyTests` (CueCoachTests/Perception) loads the bundled `BallDetector.mlmodelc` with each
 compute-units setting, renders `SyntheticTableScene.demo()` (in-repo, no Mac-only files), runs 10 warm-up calls, then
-times 60 calls. "letterbox" is `CoreMLTableKeypointProvider.letterboxed`, "predict" is `model.prediction` only
+times 60 calls. "letterbox" is `CoreMLTableKeypointProvider.letterboxed`, "predict" is input setup + `model.prediction` + output reads
 (`lastInferenceMs`), "total" is their sum. Each line is a `[latency]` log line. On device the test gates `.all` total
 p95 < 33 ms (SPEC §perf, 30 fps); on the simulator it only records. The dev HUD (D9) now shows smoothed `model` and
 `lb` ms next to `det`.

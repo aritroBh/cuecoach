@@ -14,7 +14,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 |------|-------|----------|--------|------------|--------|
 | 001 | Live review data tested end to end; team MVP per D35 | P1 | S | — | DONE (merged; Grok APPROVE; unit 1211/1211 + 4 tie-break tests) |
 | 002 | Live shots carry before/after ball positions to Game Review | P1 | M | 001 | IN PROGRESS |
-| 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | TODO |
+| 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | DONE (merged; Grok APPROVE; sim only: .all total p95 ~60–86 ms, letterbox ~26 ms; device not yet run) |
 | 004 | Pin the ball model's I/O contract | P2 | S | — | DONE (merged; Grok APPROVE; unit 1209/1209) |
 | 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | TODO |
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
