@@ -367,9 +367,37 @@ import Training
         let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
         m.drive(frame(2, moving: true, shot: rec))
         m.requestEnd { log.events.append("end") }
-        m.requestEnd { log.events.append("end2") }
+        m.requestEnd { log.events.append("end2") }      // D42: a second ✕ while finishing forces the end now
+        #expect(log.events == ["settled", "end"], "the open shot closes with what is known, then the end fires once")
+        #expect(!m.hasOpenShot)
         m.drive(frame(2.2))
         #expect(log.events == ["settled", "end"])
+    }
+
+    /// D42: the ~5 s give-up (and the second ✕) close a shot that never goes quiet; it still reaches the review.
+    @Test func forcingTheEndClosesAShotThatNeverGoesQuiet() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.requestEnd { log.events.append("end") }
+        m.drive(frame(2.1, moving: true))                  // never quiet
+        #expect(log.events.isEmpty)
+        m.forceEnd()
+        #expect(log.events == ["settled", "end"])
+        #expect(game.reviewData().shots.count == 1, "the forced shot reached the review")
+        m.forceEnd()
+        #expect(log.events == ["settled", "end"], "forcing again does nothing")
+    }
+
+    @Test func forcingBeforeAnyEndRequestDoesNothing() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.forceEnd()
+        #expect(log.events.isEmpty)
+        #expect(m.hasOpenShot)
     }
 
     @Test func trainingCloseNeverAsks() {
