@@ -17,7 +17,9 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | TODO |
 | 004 | Pin the ball model's I/O contract | P2 | S | — | TODO |
 | 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | TODO |
-| 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | TODO |
+| 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
+| 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | TODO |
+| 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -30,7 +32,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 ## Decisions
 - Plan 001: D35. With no WPA data, the team MVP is the winning team's best-rated shooter.
 - Plan 005: D36 = **A + C**. Snap within 2 %, otherwise lock at the measured size; the setup/Settings size is a prior.
-- New, not yet planned: D37 (✕ asks "End game?", and the open shot settles first) and D38 (a lost shot with no guess pulses the turn discs, and review shows a gap). Plans 007 and 008 follow once 001/002 land; they touch the same Live → shell path.
+- Plan 007: D37. Plan 008: D38 + D41. Plan 006: D39 (joiner waits for host rating), D40 (discard mid-rack quits), D41 (disc = next shooter only).
 
 ## Findings considered and not planned (yet)
 - Letterbox per-frame allocation and slow scalar resize (`CoreMLTableKeypoints.swift:72-100`): only matters if 003 shows the letterbox time is significant. Revisit then.
