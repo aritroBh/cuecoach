@@ -304,3 +304,76 @@ import Training
         #expect(game.reviewData().shots.isEmpty)
     }
 }
+
+/// D37: ✕ in a game asks "End game?"; on confirm an open shot finishes settling before review opens (never dropped).
+@MainActor
+@Suite struct CloseSettlesOpenShotTests {
+    let a = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
+    let b = ShellPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "orange")
+    @MainActor final class Log { var events: [String] = [] }
+
+    func frame(_ t: Double, moving: Bool = false, started: Bool = false, shot: ShotRecord? = nil) -> PerceptionResult {
+        let cue = TrackedBall(id: 1, position: Vec2(1.2, 0.6), velocity: moving ? Vec2(0.8, 0) : .zero, kind: .cue,
+                              tentativeNumber: 0, confirmed: true)
+        var r = PerceptionResult(timestamp: t, detections: [], tracks: [cue], marks: [1: .cue], atRest: !moving, aim: nil,
+                                 detectMs: 0)
+        r.shotStarted = started; r.shot = shot
+        r.ballIDs = [1: .cue, 2: BallID(3)!]
+        r.pocketsInView = Set(Pocket.allCases)
+        return r
+    }
+
+    func setup() -> (GameSessionModel, LiveModel, Log) {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        let log = Log()
+        var h = LiveScreenAdapter.hooks(for: session)
+        let d0 = h.settled
+        h.settled = { r, p in log.events.append("settled"); d0(r, p) }
+        m.hooks = h
+        return (game, m, log)
+    }
+
+    @Test func closingAGameWithAnOpenShotWaitsForItToSettle() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))         // the shot ended, the table is not quiet yet
+        #expect(m.hasOpenShot, "\(m.lifecycleDebugDescription)")
+        m.requestEnd { log.events.append("end") }
+        #expect(m.isFinishing)
+        #expect(log.events.isEmpty, "the end waits for the open shot")
+        m.drive(frame(2.1, moving: true))                  // still rolling
+        #expect(log.events.isEmpty)
+        m.drive(frame(2.2))                                // quiet: the shot closes, then the end fires
+        #expect(log.events == ["settled", "end"])
+        #expect(!m.hasOpenShot)
+        #expect(game.reviewData().shots.count == 1, "the shot reached the review")
+        m.drive(frame(2.3))
+        #expect(log.events == ["settled", "end"], "the end fires once")
+    }
+
+    @Test func closingWithNoOpenShotEndsAtOnce() {
+        let (_, m, log) = setup()
+        #expect(!m.hasOpenShot)
+        m.requestEnd { log.events.append("end") }
+        #expect(log.events == ["end"])
+    }
+
+    @Test func aSecondCloseWhileFinishingDoesNotEndTwice() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.requestEnd { log.events.append("end") }
+        m.requestEnd { log.events.append("end2") }
+        m.drive(frame(2.2))
+        #expect(log.events == ["settled", "end"])
+    }
+
+    @Test func trainingCloseNeverAsks() {
+        #expect(!LiveModel(mode: .training(level: 2)).asksBeforeClosing)
+        #expect(LiveModel(mode: .game).asksBeforeClosing)
+    }
+}
