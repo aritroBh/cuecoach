@@ -24,7 +24,12 @@ struct ReplayRegressionTests {
     }
 
     @Test func appDetectorReplaySeesAllSixBalls() async throws {
-        let r = try await confirmedAfterReplay(PerceptionPipeline.defaultDetector())
+        let detector = PerceptionPipeline.defaultDetector()
+        let r = try await confirmedAfterReplay(detector)
+        // The hybrid falls back to classical silently when inference returns nil (renamed or reshaped model
+        // outputs), and classical alone also tracks all six: prove the model ran.
+        #expect(DetectorChoice(of: detector) == .hybrid, "app detector isn't the hybrid with a model: \(type(of: detector))")
+        #expect(!detector.needsShadingCheck, "the hybrid's last frame fell back to classical")
         #expect(r.confirmed.count == 6, "confirmed \(r.confirmed.count), detections \(r.detections.count) \(r.detections.map { "\($0.kind)\($0.tentativeNumber ?? -1)" })")
         #expect(r.aim != nil)
     }
