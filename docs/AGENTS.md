@@ -41,6 +41,7 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 | 2026-11-10 | Plan 004: ball model I/O contract pinned; hybrid proven to run the model (mutation: renamed output fails 2 tests) | Claude worker | Grok 4.7 APPROVE (2 MINOR: type/shape checks are indirect, covered by the ≥5-raws and shading guards) | merged to phase/1-core |
 | 2026-11-10 | Plan 003: device-runnable ball-model latency test (warm, letterbox/predict split, 3 compute-units), dev HUD model/lb ms | Claude worker | Grok 4.7 APPROVE (MINOR: doc wording fixed at merge; p50 rank off by one, gate uses p95) | merged to phase/1-core |
 | 2026-11-10 | Plan 006 design: authoritative mesh shot log + game saving (docs/research/game-log-and-saving.md, INTERFACES 'Proposed') | Cursor Grok 4.7 (read-only draft) | Claude head (citations spot-checked; D37–D41 folded in) | merged to phase/1-core |
+| 2026-11-10 | Plan 002: live shots carry before/after ball positions → Game Review rates + replays live shots; a D31 guess keeps no replay | Claude worker (+ head fix round) | Grok 4.7 REJECT (MAJOR: guessed shot's after table empty) → fixed → APPROVE (MINOR: INTERFACES wording fixed at merge; pocket-path assert loose) | merged to phase/1-core |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
 

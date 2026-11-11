@@ -142,7 +142,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Cross-vendor review: Kimi K2.5 APPROVE 1–7; Grok 4.7 APPROVE 2–7, BLOCKER on 1 (hand-over legality not wired to the pipeline) → fixed via `LiveHooks.legalSink` (8eecfc0). Grok re-review: D17 cursors approved; new BLOCKER on 8eecfc0 (throwaway `LiveScreen.init` stole the sink) → fixed in 27ce0d2 (`LiveModel.bindLegal`, mounted model only); re-review pending (non-Claude)
 - [x] Unit 1149/1149 on Sim G at 27ce0d2 (1148 at 8eecfc0); UI AppShell + LiveReplay 13/13 on Sim G at both (testJoinFullLobby flaked once on the loaded Mac, passed on rerun)
 - [x] Review per-shot pocketed/fouls: Live hands the shell a `SettledShot` (rating, turn, pocketed with pocket, fouls, D31 `isGuess`) via `LiveHooks.settledShot`; `GameSessionModel.reviewData()` fills them; the review card shows ball glyphs + a foul mark, a guess in a dashed outline with a question glyph (wt/review-shots, Claude worker; reviewer pending, non-Claude)
-- [ ] Found in wt/review-shots, not fixed (scope): a live game's review timeline draws every shot as unrated, because `GameReviewModel.timelineStyle` needs pre/post table states, which a live session doesn't keep yet
+- [x] (plan 002, 2026-11-10) Found in wt/review-shots: a live game's review timeline draws every shot as unrated, because `GameReviewModel.timelineStyle` needs pre/post table states, which a live session doesn't keep yet
 
 ## Merge round 2026-11-10 (head)
 - [x] Multi-model review of phase/1-core: 30 reviews (Bedrock Kimi K3/K2.5, GLM-5, DeepSeek v3.2, Qwen3-Coder, MiniMax, Nemotron; Cursor GPT-5.6, GPT-5.3 Codex, Grok 4.7, Gemini 3.7, Composer; opencode free models) → adversarial verification (Grok 4.7, Kimi K3, GLM-5): 13 real defects, all other BLOCKER/MAJOR findings refuted
@@ -157,6 +157,6 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Final fix round merged via wt/final2: review-crash, review-shots, size-lock (Grok 4.7 r3 APPROVE both), AimStressTests off-actor wait (b21f994, Grok 4.7 APPROVE)
 - [x] Improve audit at b21f994 (2 read-only auditors, every finding verified against the code by head) → plans/001–006 + plans/README.md
 - [ ] Open (new, from audit): finished games are never saved (no Game/Shot writer); two-phone games rate shots independently (mesh log unused) — design plans/006
-- [ ] Open (from audit): live review timeline shows every shot Unrated (plans/002); team-game MVP is a tie broken by dictionary order (plans/001); unlisted table sizes (Pro-8 locks as 8 ft; ~86″ never locks with a partial-table hint) — plans/005, needs user decision
+- [ ] Open (from audit): ~~live review timeline shows every shot Unrated (plans/002)~~ fixed; ~~team-game MVP is a tie broken by dictionary order (plans/001)~~ fixed; unlisted table sizes (Pro-8 locks as 8 ft; ~86″ never locks with a partial-table hint) — plans/005, needs user decision
 - [x] User decisions 2026-11-10: D35 team MVP fallback, D36 table sizes (A + C), D37 ✕ confirm, D38 lost-shot ask, D39–D41 mesh/saving (plans 001, 005, 007, 008, 006)
 - [~] Plans running: 001 (Claude, Sim H), 003 (Claude, Sim D), 004 (Claude, Sim I), 005 (Claude, CueCoach iPhone 15 Pro); 006 design done (Cursor Grok 4.7 draft, head review). Codex/Antigravity/Cursor GPT out of quota; reviews via Cursor Grok + opencode
