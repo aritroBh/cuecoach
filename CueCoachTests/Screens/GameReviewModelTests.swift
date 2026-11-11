@@ -154,6 +154,63 @@ import Engine
         #expect(m.mvp?.bestShot.id == shots[1].id)
     }
 
+    @Test func mvpTeamGameWithoutWPATieGoesToTheFirstShooter() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .good, by: a2, team: 0),
+                     shot(1, .brilliant, by: b2, team: 1),
+                     shot(2, .good, by: a1, team: 0)]
+        let d = data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]])
+        for _ in 0..<20 { #expect(GameReviewModel(data: d).mvp?.player.id == a2.id) }
+        #expect(GameReviewModel(data: d).mvp?.bestShot.id == shots[0].id)
+    }
+
+    @Test func mvpTeamGameWithoutWPAUsesTheMeanRating() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .brilliant, by: a1, team: 0), shot(1, .good, by: a2, team: 0),
+                     shot(2, .miss, by: a1, team: 0), shot(3, .good, by: a2, team: 0)]
+        let m = GameReviewModel(data: data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]]))
+        #expect(m.mvp?.player.id == a2.id)   // mean 3.0 beats a1's mean 3.5
+    }
+
+    @Test func mvpTeamGameWithoutWPAMoreRatedShotsBreaksAMeanTie() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .good, by: a1, team: 0), shot(1, .good, by: a2, team: 0), shot(2, .good, by: a2, team: 0)]
+        let m = GameReviewModel(data: data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]]))
+        #expect(m.mvp?.player.id == a2.id)   // same mean; more shots beats the earlier first shot
+    }
+
+    @Test func mvpTeamGameWithoutWPAIgnoresUnratedShots() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .good, by: a1, team: 0), shot(1, nil, by: a1, team: 0), shot(2, .okay, by: a2, team: 0)]
+        let m = GameReviewModel(data: data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]]))
+        #expect(m.mvp?.player.id == a1.id)   // a1's nil shot doesn't drag the mean below a2's .okay
+        #expect(m.mvp?.bestShot.id == shots[0].id)
+    }
+
+    @Test func mvpTeamGameWithoutWPAOrWinnerIsNil() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .brilliant, by: a1, team: 0), shot(1, .good, by: b2, team: 1)]
+        let m = GameReviewModel(data: data(shots: shots, finished: true, winner: nil, teams: [[a1, a2], [b1, b2]]))
+        #expect(!m.isLocked)
+        #expect(m.mvp == nil)
+    }
+
+    @Test func mvpTeamGameEqualWPATieGoesToTheFirstShooter() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .good, by: b2, team: 1, wpa: 0.2),
+                     shot(1, .good, by: a1, team: 0, wpa: 0.1),
+                     shot(2, .good, by: a2, team: 0, wpa: 0.2),
+                     shot(3, .good, by: a1, team: 0, wpa: 0.1)]
+        let d = data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]])
+        for _ in 0..<20 { #expect(GameReviewModel(data: d).mvp?.player.id == b2.id) }
+    }
+
     @Test func emptyAndLockedStates() {
         let e = GameReviewModel(data: data(shots: [shot(0, nil, by: a1, team: 0)]))
         #expect(e.isEmpty)

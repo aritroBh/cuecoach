@@ -133,15 +133,48 @@ public final class GameReviewModel {
         let isTeamGame = d.teams.contains { $0.count > 1 }
         let player: ReviewPlayer?
         if isTeamGame {
-            let totals = Dictionary(grouping: rated, by: { $0.shooter!.id }).mapValues { $0.reduce(0) { $0 + $1.wpaDelta } }
-            player = totals.max { $0.value < $1.value }.flatMap { best in rated.first { $0.shooter?.id == best.key }?.shooter }
+            if rated.contains(where: { $0.wpaDelta != 0 }) {
+                // Highest total WPA; a tie goes to the earlier first shot.
+                let groups = Self.byShooter(rated)
+                player = groups.enumerated().max { a, b in
+                    (a.element.reduce(0) { $0 + $1.wpaDelta }, -a.offset) < (b.element.reduce(0) { $0 + $1.wpaDelta }, -b.offset)
+                }?.element.first?.shooter
+            } else {
+                // D35: no WPA data, so the winning team's best-rated shooter.
+                guard let w = d.winnerTeam else { return nil }
+                let groups = Self.byShooter(rated.filter { $0.team == w && $0.rating != nil })
+                func score(_ g: [ReviewShot]) -> Double { Double(g.reduce(0) { $0 + Self.rank($1.rating) }) / Double(g.count) }
+                // Lower mean rank wins, then more rated shots, then the earlier first shot.
+                player = groups.enumerated().min { a, b in
+                    (score(a.element), -a.element.count, a.offset) < (score(b.element), -b.element.count, b.offset)
+                }?.element.first?.shooter
+            }
         } else {
             guard let w = d.winnerTeam, d.teams.indices.contains(w) else { return nil }
             player = d.teams[w].first
         }
-        guard let player,
-              let best = rated.filter({ $0.shooter?.id == player.id }).max(by: { $0.wpaDelta < $1.wpaDelta }) else { return nil }
+        guard let player else { return nil }
+        let own = rated.filter { $0.shooter?.id == player.id }.sorted { $0.index < $1.index }
+        let useWPA = !isTeamGame || rated.contains { $0.wpaDelta != 0 }
+        let best = useWPA
+            ? own.max(by: { $0.wpaDelta < $1.wpaDelta })
+            : own.filter { $0.rating != nil }.min { Self.rank($0.rating) < Self.rank($1.rating) }
+        guard let best else { return nil }
         return ReviewMVP(player: player, team: best.team, bestShot: best)
+    }
+
+    /// Shots grouped per shooter, in first-shot order.
+    private static func byShooter(_ shots: [ReviewShot]) -> [[ReviewShot]] {
+        var groups: [[ReviewShot]] = []
+        for s in shots.sorted(by: { $0.index < $1.index }) {
+            if let i = groups.firstIndex(where: { $0[0].shooter?.id == s.shooter?.id }) { groups[i].append(s) } else { groups.append([s]) }
+        }
+        return groups
+    }
+
+    /// Position in DecisionRating.allCases; earlier is better.
+    private static func rank(_ r: DecisionRating?) -> Int {
+        r.flatMap { DecisionRating.allCases.firstIndex(of: $0) } ?? DecisionRating.allCases.count
     }
 
     // MARK: Selection

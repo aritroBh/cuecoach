@@ -165,4 +165,16 @@ import Engine
         s.isMenuOpen = true
         #expect(s.isMenuOpen)
     }
+
+    @Test func liveTeamMVPIsTheWinningTeamsBestRatedShooter() {
+        let s = teams()
+        // Rotation A1, B1, A2, B2 (D17). Team A (0) wins. A2 rates better than A1; B1 rates best but loses.
+        s.shotSettled(rating: .okay, turnPasses: true)       // A1
+        s.shotSettled(rating: .brilliant, turnPasses: true)  // B1 (losing team: never MVP)
+        s.shotSettled(rating: .great, turnPasses: true)      // A2
+        var g = s.rules.1; g.phase = .over(winner: 0); s.rulesAdvanced(g)
+        let data = s.reviewData()
+        #expect(!GameReviewModel(data: data).isLocked)
+        for _ in 0..<20 { #expect(GameReviewModel(data: data).mvp?.player.name == "A2") }
+    }
 }
