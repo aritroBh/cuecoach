@@ -154,6 +154,28 @@ import Engine
         #expect(m.mvp?.bestShot.id == shots[1].id)
     }
 
+    @Test func mvpTeamGameWithoutWPATieGoesToTheFirstShooter() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .good, by: a2, team: 0),
+                     shot(1, .brilliant, by: b2, team: 1),
+                     shot(2, .good, by: a1, team: 0)]
+        let d = data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]])
+        for _ in 0..<20 { #expect(GameReviewModel(data: d).mvp?.player.id == a2.id) }
+        #expect(GameReviewModel(data: d).mvp?.bestShot.id == shots[0].id)
+    }
+
+    @Test func mvpTeamGameEqualWPATieGoesToTheFirstShooter() {
+        let a2 = ReviewPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "purple")
+        let b2 = ReviewPlayer(id: UUID(), name: "Kim", symbol: "flame.fill", colorName: "red")
+        let shots = [shot(0, .good, by: b2, team: 1, wpa: 0.2),
+                     shot(1, .good, by: a1, team: 0, wpa: 0.1),
+                     shot(2, .good, by: a2, team: 0, wpa: 0.2),
+                     shot(3, .good, by: a1, team: 0, wpa: 0.1)]
+        let d = data(shots: shots, winner: 0, teams: [[a1, a2], [b1, b2]])
+        for _ in 0..<20 { #expect(GameReviewModel(data: d).mvp?.player.id == b2.id) }
+    }
+
     @Test func emptyAndLockedStates() {
         let e = GameReviewModel(data: data(shots: [shot(0, nil, by: a1, team: 0)]))
         #expect(e.isEmpty)
