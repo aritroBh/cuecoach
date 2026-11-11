@@ -38,6 +38,7 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 | 2026-11-10 | Size lock (wt/size-lock): guessed partial-fit sizes never vote or lock, sizes between presets never lock, pose only from size-consistent frames (matrix false 1 → 0) | Claude worker | Grok 4.7 REJECT (1 MAJOR, fixed) · GLM-5 REJECT (BLOCKER hardened, MAJOR refuted by tests); Grok 4.7 r2 REJECT (lone borderline snap poisons measured size, fixed b9d0117) · r3 APPROVE | merged to phase/1-core |
 | 2026-11-10 | AimStressTests waits for the off-actor physics preview (b21f994, test-only) | Claude (head) | Grok 4.7 APPROVE | merged to phase/1-core |
 | 2026-11-10 | Plan 001: team MVP deterministic; no-WPA fallback = winning team's best-rated shooter (D35) | Claude worker | Grok 4.7 APPROVE (MINOR test gaps → 4 tests added, e0af36c) | merged to phase/1-core |
+| 2026-11-10 | Plan 004: ball model I/O contract pinned; hybrid proven to run the model (mutation: renamed output fails 2 tests) | Claude worker | Grok 4.7 APPROVE (2 MINOR: type/shape checks are indirect, covered by the ≥5-raws and shading guards) | merged to phase/1-core |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
 
