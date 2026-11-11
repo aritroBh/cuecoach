@@ -158,7 +158,8 @@ final class GameSessionModel {
         let spec = TableSpec(size: config.tableSize)
         let reviewShots = shots.map { s -> ReviewShot in
             var pre: TableState?, post: TableState?, paths: [BallID: [Vec2]] = [:]
-            if !s.before.isEmpty {
+            // A D31 guess has no after table (finalState is empty): no replay rather than a made-up one.
+            if !s.before.isEmpty && !s.isGuess {
                 let b = TableState(spec: spec, balls: s.before.mapValues { BallState(position: $0, motion: .stationary) })
                 var after = s.after.mapValues { BallState(position: $0, motion: .stationary) }
                 for id in s.pocketed.keys { after[id] = BallState(position: s.before[id] ?? .zero, motion: .pocketed) }
