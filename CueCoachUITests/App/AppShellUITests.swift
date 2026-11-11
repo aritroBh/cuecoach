@@ -113,8 +113,9 @@ final class AppShellUITests: XCTestCase {
         XCTAssertTrue(wait(app, "home.game").exists)
     }
 
-    /// LiveScreen's own ✕ dismisses the cover; the shell re-presents Review (game), then Done → Home.
-    @MainActor func testLiveCloseInGameGoesToReviewThenHome() {
+    /// D37: LiveScreen's own ✕ in a game asks "End game?" first. "Keep playing" stays in Live; "End game" dismisses
+    /// the cover and the shell re-presents Review, then Done → Home.
+    @MainActor func testCloseAsksBeforeEndingAGame() {
         let app = launch()
         tapThrough(app, "home.game", to: "game.new")
         wait(app, "game.new").tap()
@@ -122,7 +123,16 @@ final class AppShellUITests: XCTestCase {
         tapSeat(app, "1.0", pick: "seat.player.Sam")
         element(app, "setup.start").tap()
         wait(app, "shell.live.game")
-        tapThrough(app, "live.close", to: "review.done")
+        let alert = app.alerts["End game?"]
+        wait(app, "live.close").tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "✕ in a game asks first")
+        alert.buttons["Keep playing"].tap()
+        XCTAssertTrue(alert.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(wait(app, "shell.live.game").exists)
+        XCTAssertFalse(element(app, "review.done").exists)
+        wait(app, "live.close").tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "✕ in a game asks first")
+        alert.buttons["End game"].tap()
         wait(app, "review.done", 10).tap()
         XCTAssertTrue(wait(app, "home.game").exists)
     }

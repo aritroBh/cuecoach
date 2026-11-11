@@ -8,6 +8,8 @@ struct LiveScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model: LiveModel
     @AppStorage("dev.hud") private var showHUD = false
+    /// D37: "End game?" is up.
+    @State private var askingEnd = false
 
     private let drill: DrillID?
     private let onClose: (() -> Void)?
@@ -23,6 +25,8 @@ struct LiveScreen: View {
         self.drill = drill
         self.onClose = onClose
     }
+
+    private func close() { if let onClose { onClose() } else { dismiss() } }
 
     /// Replay exists only in simulator builds (D20): device builds always run the AR pipeline.
     static var useReplay: Bool {
@@ -44,6 +48,11 @@ struct LiveScreen: View {
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
+        // D37 + Astryx AlertDialog (destructive confirm, no outside dismissal) = the native alert.
+        .alert("End game?", isPresented: $askingEnd) {
+            Button("End game", role: .destructive) { model.requestEnd { close() } }
+            Button("Keep playing", role: .cancel) {}
+        }
         .onAppear {
             if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true }
             UIApplication.shared.isIdleTimerDisabled = true      // no auto-lock while Live is up
@@ -63,7 +72,13 @@ struct LiveScreen: View {
         let st = model.status
         return VStack(spacing: 12) {
             HStack(alignment: .top) {
-                CircleButton(symbol: "xmark", id: "live.close") { if let onClose { onClose() } else { dismiss() } }
+                if model.isFinishing {
+                    Color.clear.frame(width: 56, height: 56)   // D37: the open shot settles, then review opens
+                } else {
+                    CircleButton(symbol: "xmark", id: "live.close") {
+                        if model.asksBeforeClosing { askingEnd = true } else { close() }
+                    }
+                }
                 Spacer()
                 if model.calibrated && model.showAimHint && model.status == .calibrated {
                     AimHintGlyph().accessibilityIdentifier("live.aimHint")

@@ -102,6 +102,21 @@ final class LiveModel {
         }
     }
     private var shots: [ShotEntry] = []
+    /// A shot has ended but not closed yet (asking, looking, lost, or waiting for a quiet table).
+    var hasOpenShot: Bool { !shots.isEmpty }
+    /// D37: the player confirmed "End game"; Live stays up until the open shot closes.
+    private(set) var isFinishing = false
+    private var onFinished: (@MainActor () -> Void)?
+    /// D37: only a game asks before ✕ closes Live; Training closes at once.
+    var asksBeforeClosing: Bool { mode == .game }
+    /// D37: end once every open shot has closed (through the normal FIFO, the pocket question still answerable).
+    /// `done` runs exactly once; a second request while finishing is ignored.
+    func requestEnd(_ done: @escaping @MainActor () -> Void) {
+        guard !isFinishing else { return }
+        guard hasOpenShot else { return done() }
+        isFinishing = true
+        onFinished = done
+    }
     private var nextShotID = 0
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
     private func lostEntry() -> ShotEntry {
@@ -220,6 +235,7 @@ final class LiveModel {
                 close(head)
             }
         }
+        if let done = onFinished { onFinished = nil; done() }
     }
 
     /// The one-tap answer: ✓ the ball dropped, ✗ it didn't. Only ever applies to the front shot; while something
