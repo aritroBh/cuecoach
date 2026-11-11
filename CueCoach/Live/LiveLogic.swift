@@ -476,6 +476,8 @@ struct LiveHooks {
     var aimEnded: @MainActor () -> Void = {}
     var aimCancelled: @MainActor () -> Void = {}
     var ballsSettled: @MainActor () -> Void = {}
+    /// D38: a game shot was lost with no D31 guess (unknown result). nil = `ballsSettled` instead.
+    var shotLost: (@MainActor () -> Void)?
     /// A rated game shot closed: its rating, whether the turn passes, and what the Rules engine saw (pocketed, fouls),
     /// flagged when it is a D31 best guess.
     var settledShot: @MainActor (SettledShot) -> Void = { _ in }

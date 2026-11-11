@@ -9,7 +9,8 @@ struct SessionShot: Hashable, Sendable {
     var index: Int
     var shooter: ShellPlayer
     var team: Int
-    var rating: DecisionRating
+    /// nil = a gap: a lost shot with no guess (D38), result unknown.
+    var rating: DecisionRating?
     /// What the Rules engine saw (`SettledShot`); a D31 guess is flagged.
     var pocketed: [BallID: Pocket] = [:]
     var fouls: [Foul] = []
@@ -37,6 +38,8 @@ final class GameSessionModel {
     private var currentSlot = 0
     private var nextSlot: [Int]
     private(set) var shots: [SessionShot] = []
+    /// D38: a lost shot left a gap; the turn discs ask who shoots next until a tap or the next aim.
+    private(set) var needsShooter = false
     var isMenuOpen = false
     /// The game's mesh session when other phones joined (nil = this phone only).
     var mesh: (any GameMeshLink)?
@@ -143,6 +146,9 @@ final class GameSessionModel {
         if shot.turnPasses { passTurn() }
         return signal
     }
+
+    /// D38: a game shot was lost with no guess. (Stub.)
+    func shotLost() {}
 
     func aimStarted() { badge.receive(.aimStarted) }
     func aimEnded() { badge.receive(.aimEnded) }

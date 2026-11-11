@@ -387,6 +387,8 @@ import Training
         h.settledShot = { s in log.events.append("settled"); log.shots.append(s); d0(s) }
         let b0 = h.ballsSettled
         h.ballsSettled = { log.events.append("unrated"); b0() }
+        let l0 = h.shotLost
+        h.shotLost = { log.events.append("lost"); l0?() }
         m.hooks = h
         return (game, m, log)
     }
@@ -485,7 +487,7 @@ import Training
         m.perceptionReset()                                // ... and lost
         m.requestEnd { log.events.append("end") }
         m.forceEnd()
-        #expect(log.events == ["unrated", "unrated", "end"])
+        #expect(log.events == ["lost", "lost", "end"], "D38: in a game each lost shot with no guess is a gap")
         #expect(!m.hasOpenShot)
     }
 
@@ -515,5 +517,67 @@ import Training
     @Test func trainingCloseNeverAsks() {
         #expect(!LiveModel(mode: .training(level: 2)).asksBeforeClosing)
         #expect(LiveModel(mode: .game).asksBeforeClosing)
+    }
+}
+
+/// D38 / D41 (plan 008): in a game, a lost shot with no guess records a gap and asks who shoots next.
+@MainActor
+@Suite struct LostShotAsksForShooterTests {
+    let a = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
+    let b = ShellPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "orange")
+    @MainActor final class Log { var events: [String] = [] }
+
+    func frame(_ t: Double, moving: Bool = false, started: Bool = false) -> PerceptionResult {
+        let cue = TrackedBall(id: 1, position: Vec2(1.2, 0.6), velocity: moving ? Vec2(0.8, 0) : .zero, kind: .cue,
+                              tentativeNumber: 0, confirmed: true)
+        var r = PerceptionResult(timestamp: t, detections: [], tracks: [cue], marks: [1: .cue], atRest: !moving, aim: nil,
+                                 detectMs: 0)
+        r.shotStarted = started
+        r.ballIDs = [1: .cue]
+        r.pocketsInView = Set(Pocket.allCases)
+        return r
+    }
+
+    /// A shot in flight is lost by a relock before any quiet pre-shot table: no D31 guess.
+    func loseAShot(_ m: LiveModel) {
+        m.drive(frame(1, moving: true, started: true))
+        m.perceptionReset()
+        m.drive(frame(2))
+    }
+
+    @Test func aLostShotWithNoGuessRecordsAGapAndAsksForTheShooter() throws {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        let log = Log()
+        var h = LiveScreenAdapter.hooks(for: session)
+        let b0 = h.ballsSettled
+        h.ballsSettled = { log.events.append("unrated"); b0() }
+        let l0 = h.shotLost
+        h.shotLost = { log.events.append("lost"); l0?() }
+        m.hooks = h
+        loseAShot(m)
+        #expect(log.events == ["lost"], "\(m.lifecycleDebugDescription)")
+        #expect(game.needsShooter)
+        #expect(session.menuAvailable, "aiming is cleared")
+        let gap = try #require(game.shots.first)
+        #expect(game.shots.count == 1)
+        #expect(gap.rating == nil)
+        #expect(gap.shooter == a && gap.team == 0)
+        #expect(gap.pocketed.isEmpty && gap.fouls.isEmpty)
+        #expect(game.shooter == a, "the shooter waits for a tap")
+        let review = try #require(game.reviewData().shots.first)
+        #expect(review.rating == nil, "review shows an unknown gap")
+    }
+
+    @Test func trainingLostShotStillJustSettles() {
+        let m = LiveModel(mode: .training(level: 2))
+        let log = Log()
+        var h = LiveHooks()
+        h.ballsSettled = { log.events.append("unrated") }
+        h.shotLost = { log.events.append("lost") }
+        m.hooks = h
+        loseAShot(m)
+        #expect(log.events == ["unrated"], "\(m.lifecycleDebugDescription)")
     }
 }

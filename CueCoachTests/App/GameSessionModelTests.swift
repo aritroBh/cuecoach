@@ -177,4 +177,68 @@ import Engine
         #expect(!GameReviewModel(data: data).isLocked)
         for _ in 0..<20 { #expect(GameReviewModel(data: data).mvp?.player.name == "A2") }
     }
+
+    // MARK: D38 / D41 (plan 008): a lost shot with no guess leaves a gap and asks who shoots next.
+
+    @Test func tappingTheOtherDiscAfterALostShotHandsTheTurnAndKeepsTheGap() throws {
+        let s = teams()
+        var pushed: [Set<BallID>] = []
+        s.legalChanged = { pushed.append($0) }
+        s.shotLost()
+        #expect(s.needsShooter)
+        s.handTurn(toTeam: 1)
+        #expect(!s.needsShooter)
+        #expect(s.shooter == b1)
+        #expect(pushed.count == 1, "the chosen team's legal targets are pushed")
+        let gap = try #require(s.shots.first)
+        #expect(gap.rating == nil)
+        #expect(gap.shooter == a1 && gap.team == 0, "D41: a disc tap never changes the recorded shot")
+    }
+
+    @Test func tappingTheActiveDiscConfirmsTheSameShooter() {
+        let s = teams()
+        var pushed: [Set<BallID>] = []
+        s.legalChanged = { pushed.append($0) }
+        s.shotLost()
+        let turns = s.turnIndex
+        s.handTurn(toTeam: 0)
+        #expect(!s.needsShooter)
+        #expect(s.shooter == a1)
+        #expect(s.turnIndex == turns, "same team: no hand-over")
+        #expect(pushed.count == 1)
+        s.handTurn(toTeam: 0)   // no ask open: still a no-op
+        #expect(pushed.count == 1)
+    }
+
+    @Test func aNewShotClearsTheAsk() {
+        let s = teams()
+        let session = LiveSession(mode: .game, game: s, drill: nil)
+        session.shotLost()
+        #expect(s.needsShooter)
+        session.aimStarted()
+        #expect(!s.needsShooter)
+        #expect(s.shooter == a1, "nobody tapped: the current shooter keeps the turn")
+    }
+
+    @Test func gapShotsNeverBecomeMVP() throws {
+        // Team game, no WPA: A1 only has a gap, A2 a rated shot; team A wins.
+        let s = teams()
+        s.shotLost()                                          // A1: gap
+        s.handTurn(toTeam: 1)                                 // B1
+        s.shotSettled(rating: .okay, turnPasses: true)        // B1 → A2
+        s.shotSettled(rating: .good, turnPasses: false)       // A2
+        var g = s.rules.1; g.phase = .over(winner: 0); s.rulesAdvanced(g)
+        let mvp = try #require(GameReviewModel(data: s.reviewData()).mvp)
+        #expect(mvp.player.name == "A2")
+        #expect(mvp.bestShot.rating != nil)
+        // One-on-one: the winner's gap comes first; the best shot is still a rated one.
+        let one = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a1], [b1]]))
+        one.shotLost()                                        // A1: gap
+        one.handTurn(toTeam: 0)
+        one.shotSettled(rating: .good, turnPasses: false)     // A1
+        var g1 = one.rules.1; g1.phase = .over(winner: 0); one.rulesAdvanced(g1)
+        let m1 = try #require(GameReviewModel(data: one.reviewData()).mvp)
+        #expect(m1.player.name == "A1")
+        #expect(m1.bestShot.rating != nil, "a gap is never the MVP's best shot")
+    }
 }
