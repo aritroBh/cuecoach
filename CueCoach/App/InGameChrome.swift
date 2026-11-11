@@ -14,6 +14,7 @@ struct LiveScreenAdapter: View {
                           aimCancelled: { session.aimCancelled() }, ballsSettled: { session.ballsSettled() },
                           settled: { _, _ in })
         h.settledShot = { session.settled($0) }
+        if session.game != nil { h.shotLost = { session.shotLost() } }
         let game = session.game
         h.currentGame = { game?.rules }
         h.gameAdvanced = { game?.rulesAdvanced($0) }

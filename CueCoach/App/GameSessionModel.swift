@@ -102,12 +102,14 @@ final class GameSessionModel {
         return (1...n).lazy.map { (t + $0) % n }.first { !self.teams[$0].isEmpty } ?? t
     }
 
-    /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs.
+    /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs, except while a lost shot
+    /// asks for the shooter (D38): then the active team's tap confirms it. D41: only the next shooter changes.
     /// Call it through `LiveSession.handTurn`, which refuses while a shot is live. The new shooter's legal targets are
     /// pushed at once, so their rings aren't the old team's red/green until the next settled shot.
     func handTurn(toTeam team: Int) {
-        guard hasLineup, team != shootingTeam else { return }
-        passTurn()
+        guard hasLineup, team != shootingTeam || needsShooter else { return }
+        needsShooter = false
+        if team != shootingTeam { passTurn() }
         let (engine, state) = rules
         legalChanged(engine.legalTargets(state))
     }
@@ -140,6 +142,7 @@ final class GameSessionModel {
     @discardableResult
     func shotSettled(_ shot: SettledShot) -> PostShotRating {
         record(shot)
+        needsShooter = false   // a later shot was played: the ask is moot (D38)
         let s = shots[shots.count - 1]
         let signal = PostShotRating(shotID: s.id, rating: shot.rating, shooterName: s.shooter.name, team: s.team)
         badge.receive(.rated(signal))
@@ -147,10 +150,18 @@ final class GameSessionModel {
         return signal
     }
 
-    /// D38: a game shot was lost with no guess. (Stub.)
-    func shotLost() {}
+    /// D38: a game shot was lost with no guess. Record a gap (unknown result) for the current shooter and ask who
+    /// shoots next. The shooter stays until a disc tap or the next aim.
+    func shotLost() {
+        shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
+        needsShooter = true
+    }
 
-    func aimStarted() { badge.receive(.aimStarted) }
+    /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
+    func aimStarted() {
+        needsShooter = false
+        badge.receive(.aimStarted)
+    }
     func aimEnded() { badge.receive(.aimEnded) }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one

@@ -145,9 +145,7 @@ final class LiveModel {
                     onCloseForTesting?(head.id, rec, true)
                     shotSettled(rec, ids: ids, guessed: true)
                 } else {
-                    onCloseForTesting?(head.id, nil, false)
-                    shotSettledNoAim = true
-                    hooks.ballsSettled()
+                    closeLost(head.id)
                 }
             }
         }
@@ -257,9 +255,7 @@ final class LiveModel {
                     onCloseForTesting?(head.id, rec, true)
                     shotSettled(rec, ids: ids, guessed: true)
                 } else {
-                    onCloseForTesting?(head.id, nil, false)
-                    shotSettledNoAim = true
-                    hooks.ballsSettled()
+                    closeLost(head.id)
                 }
             case .decided:
                 if let tid = head.openAsk {
@@ -280,6 +276,13 @@ final class LiveModel {
         guard let q = pocketConfirm, let head = shots.first, head.state == .decided, head.openAsk == q.trackID else { return }
         shots[0].answers[q.trackID] = dropped
         drain()
+    }
+
+    /// A lost shot with no guess closes unrated. D38: in a game the shell records a gap and asks who shoots next.
+    private func closeLost(_ id: Int) {
+        onCloseForTesting?(id, nil, false)
+        shotSettledNoAim = true
+        if mode == .game, let lost = hooks.shotLost { lost() } else { hooks.ballsSettled() }
     }
 
     private func close(_ e: ShotEntry, guessed: Bool = false) {
