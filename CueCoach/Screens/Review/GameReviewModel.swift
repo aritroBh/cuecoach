@@ -154,7 +154,8 @@ public final class GameReviewModel {
             player = d.teams[w].first
         }
         guard let player else { return nil }
-        let own = rated.filter { $0.shooter?.id == player.id }.sorted { $0.index < $1.index }
+        // A gap (D38: lost shot, rating nil) is never the best shot.
+        let own = rated.filter { $0.shooter?.id == player.id && $0.rating != nil }.sorted { $0.index < $1.index }
         let useWPA = !isTeamGame || rated.contains { $0.wpaDelta != 0 }
         let best = useWPA
             ? own.max(by: { $0.wpaDelta < $1.wpaDelta })
