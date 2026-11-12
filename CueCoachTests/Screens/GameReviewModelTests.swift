@@ -212,8 +212,10 @@ import Engine
     }
 
     @Test func emptyAndLockedStates() {
-        let e = GameReviewModel(data: data(shots: [shot(0, nil, by: a1, team: 0)]))
-        #expect(e.isEmpty)
+        #expect(GameReviewModel(data: data(shots: [])).isEmpty)
+        // D38 (Codex review of plan 008): a game whose only shot is a lost-shot gap shows that gap, not "No shots".
+        let gapOnly = GameReviewModel(data: data(shots: [shot(0, nil, by: a1, team: 0)]))
+        #expect(!gapOnly.isEmpty)
         let shots = (0..<4).map { shot($0, .good, by: a1, team: 0) }
         let l = GameReviewModel(data: data(shots: shots, finished: false, winner: nil))
         #expect(l.isLocked)

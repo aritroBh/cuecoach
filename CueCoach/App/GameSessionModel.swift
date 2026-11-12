@@ -9,7 +9,8 @@ struct SessionShot: Hashable, Sendable {
     var index: Int
     var shooter: ShellPlayer
     var team: Int
-    var rating: DecisionRating
+    /// nil = a gap: a lost shot with no guess (D38), result unknown.
+    var rating: DecisionRating?
     /// What the Rules engine saw (`SettledShot`); a D31 guess is flagged.
     var pocketed: [BallID: Pocket] = [:]
     var fouls: [Foul] = []
@@ -37,6 +38,8 @@ final class GameSessionModel {
     private var currentSlot = 0
     private var nextSlot: [Int]
     private(set) var shots: [SessionShot] = []
+    /// D38: a lost shot left a gap; the turn discs ask who shoots next until a tap or the next aim.
+    private(set) var needsShooter = false
     var isMenuOpen = false
     /// The game's mesh session when other phones joined (nil = this phone only).
     var mesh: (any GameMeshLink)?
@@ -99,12 +102,14 @@ final class GameSessionModel {
         return (1...n).lazy.map { (t + $0) % n }.first { !self.teams[$0].isEmpty } ?? t
     }
 
-    /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs.
+    /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs, except while a lost shot
+    /// asks for the shooter (D38): then the active team's tap confirms it. D41: only the next shooter changes.
     /// Call it through `LiveSession.handTurn`, which refuses while a shot is live. The new shooter's legal targets are
     /// pushed at once, so their rings aren't the old team's red/green until the next settled shot.
     func handTurn(toTeam team: Int) {
-        guard hasLineup, team != shootingTeam else { return }
-        passTurn()
+        guard hasLineup, team != shootingTeam || needsShooter else { return }
+        needsShooter = false
+        if team != shootingTeam { passTurn() }
         let (engine, state) = rules
         legalChanged(engine.legalTargets(state))
     }
@@ -137,6 +142,7 @@ final class GameSessionModel {
     @discardableResult
     func shotSettled(_ shot: SettledShot) -> PostShotRating {
         record(shot)
+        needsShooter = false   // a later shot was played: the ask is moot (D38)
         let s = shots[shots.count - 1]
         let signal = PostShotRating(shotID: s.id, rating: shot.rating, shooterName: s.shooter.name, team: s.team)
         badge.receive(.rated(signal))
@@ -144,7 +150,18 @@ final class GameSessionModel {
         return signal
     }
 
-    func aimStarted() { badge.receive(.aimStarted) }
+    /// D38: a game shot was lost with no guess. Record a gap (unknown result) for the current shooter and ask who
+    /// shoots next. The shooter stays until a disc tap or the next aim.
+    func shotLost() {
+        shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
+        needsShooter = true
+    }
+
+    /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
+    func aimStarted() {
+        needsShooter = false
+        badge.receive(.aimStarted)
+    }
     func aimEnded() { badge.receive(.aimEnded) }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one
