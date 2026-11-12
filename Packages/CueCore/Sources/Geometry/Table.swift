@@ -18,6 +18,14 @@ public enum TableSize: String, CaseIterable, Codable, Sendable {
         case .nineFoot: 100 * 0.0254
         }
     }
+
+    /// D50: the presets auto-calibration may snap to. With no size picked only 7/8/9 ft; a picked Pro 8 or 86″
+    /// (the lock prior) joins them. Length order.
+    public static func autoSnapCandidates(prior: TableSize?) -> [TableSize] {
+        let standard: [TableSize] = [.sevenFoot, .eightFoot, .nineFoot]
+        guard let prior, !standard.contains(prior) else { return standard }
+        return allCases.filter { standard.contains($0) || $0 == prior }
+    }
 }
 
 public enum Pocket: String, CaseIterable, Codable, Sendable {

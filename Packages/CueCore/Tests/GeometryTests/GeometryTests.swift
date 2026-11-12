@@ -50,6 +50,15 @@ struct TableSpecTests {
         #expect(TableSize(rawValue: "eightySixInch") == .eightySixInch)
     }
 
+    // D50: with no size picked, auto-calibration snaps only to 7/8/9 ft; a picked Pro 8 / 86″ joins the candidates.
+    @Test func autoSnapCandidatesAreTheStandardPresetsPlusAPickedNewOne() {
+        let standard: [TableSize] = [.sevenFoot, .eightFoot, .nineFoot]
+        #expect(TableSize.autoSnapCandidates(prior: nil) == standard)
+        for p in standard { #expect(TableSize.autoSnapCandidates(prior: p) == standard) }
+        #expect(TableSize.autoSnapCandidates(prior: .proEight) == [.sevenFoot, .proEight, .eightFoot, .nineFoot])
+        #expect(TableSize.autoSnapCandidates(prior: .eightySixInch) == [.sevenFoot, .eightySixInch, .eightFoot, .nineFoot])
+    }
+
     @Test func standardBallRadius() {
         #expect(abs(TableSpec.ballRadius - 0.028575) < 1e-9)
     }
