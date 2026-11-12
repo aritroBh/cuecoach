@@ -8,8 +8,7 @@ import Testing
 @Suite("AutoTableLocator — round 3")
 struct AutoTableR3Tests {
 
-    /// The WPA/7 ft presets. 86″ and Pro 8 are 2.3 % apart, so a fit 0.8 % off one of them is a near tie
-    /// (ambiguous without a chosen size); their exact-length verdicts are in AutoTableProEightTests.
+    /// D50: with no size picked only 7/8/9 ft are snap candidates; Pro 8 / 86″ verdicts are in AutoTableProEightTests.
     @Test func cleanMeasurementsSnapToTheirPreset() {
         for s in [TableSize.sevenFoot, .eightFoot, .nineFoot] {
             let L = s.playingLength * 1.008
