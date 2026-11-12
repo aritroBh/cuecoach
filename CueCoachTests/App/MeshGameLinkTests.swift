@@ -262,36 +262,60 @@ import Rules
         host.0.stop(); joiner.0.stop()
     }
 
-    /// Codex 010 review 3: the host's identical disc tap commits first (through a third phone) while the joiner's
-    /// own tap is still on a slow radio. The joiner's drain waits for its own tap, not the look-alike.
-    @Test func joinerDrainWaitsForItsOwnTapNotAnIdenticalOne() async {
+    /// Three phones (host 18, third 17, joiner 16); the joiner's outbound is slowed after the mesh forms.
+    static func slowJoinerTrio(_ hub: MemoryHub) async
+        -> (host: (MeshGameLink, GameSessionModel, MultipeerMeshSession), third: MultipeerMeshSession,
+            joiner: (MeshGameLink, AppRouter, MultipeerMeshSession)) {
         var patient = MeshSessionTests.fast
         patient.failTimeout = 5                       // the slow joiner is not declared dead
-        let hub = MemoryHub()
-        let hs = Self.session(hub, device: 18, config: patient)
-        let ks = Self.session(hub, device: 17, config: patient)
-        let js = Self.session(hub, device: 16, config: patient)
+        let hs = session(hub, device: 18, config: patient)
+        let ks = session(hub, device: 17, config: patient)
+        let js = session(hub, device: 16, config: patient)
         let hostLink = MeshGameLink(session: hs), joinerLink = MeshGameLink(session: js)
-        let hostGame = GameSessionModel(config: Self.config)
+        let hostGame = GameSessionModel(config: config)
         hostGame.mesh = hostLink
         hostLink.start()
         await ks.start()
-        let r = Self.joinerRouter(joinerLink)
+        let r = joinerRouter(joinerLink)
         #expect(await poll {
             let (sh, sj) = (await hs.snapshot(), await js.snapshot())
             return sh.role == .host && sh.roster.count == 3 && sj.role == .client(host: hs.localPeer) && joinerLink.isJoiner
         })
-        guard case .live(let live)? = r.stage, let game = live.game else { Issue.record("no live"); return }
         hub.delay(from: js.localPeer, 1.0)
-        game.handTurn(toTeam: 1)                      // in flight for 1 s
-        hostGame.handTurn(toTeam: 1)                  // the same tap, committed at once via the third phone
+        return ((hostLink, hostGame, hs), ks, (joinerLink, r, js))
+    }
+
+    /// Ends the joiner's game now; its review must load within the cap with both look-alike inputs committed.
+    static func expectJoinerWaitsForItsOwn(_ r: AppRouter, _ joinerLink: MeshGameLink) async {
         let start = Date()
         r.endGame()
         guard case .review(let review)? = r.stage else { Issue.record("Live still up"); return }
         #expect(await poll(3) { review.phase == .loaded })
         #expect(Date().timeIntervalSince(start) < 2.3)
-        #expect(joinerLink.commitSeq == 2)            // both taps: its own proposal committed before review froze
-        hostLink.stop(); await ks.stop()
+        #expect(joinerLink.commitSeq == 2)            // its own proposal committed before review froze
+    }
+
+    /// Codex 010 review 3: the host's identical disc tap commits first (through the third phone) while the joiner's
+    /// own tap is still on a slow radio. The joiner's drain waits for its own tap, not the look-alike.
+    @Test func joinerDrainWaitsForItsOwnTapNotAnIdenticalOne() async {
+        let hub = MemoryHub()
+        let (host, third, joiner) = await Self.slowJoinerTrio(hub)
+        guard case .live(let live)? = joiner.1.stage, let game = live.game else { Issue.record("no live"); return }
+        game.handTurn(toTeam: 1)                      // in flight for 1 s
+        host.1.handTurn(toTeam: 1)                    // the same tap, committed at once via the third phone
+        await Self.expectJoinerWaitsForItsOwn(joiner.1, joiner.0)
+        host.0.stop(); await third.stop()
+    }
+
+    /// Codex 010 review 4: the same for a shooter correction (both phones fix the same shot to the same team).
+    @Test func joinerDrainWaitsForItsOwnCorrectionNotAnIdenticalOne() async {
+        let hub = MemoryHub()
+        let (host, third, joiner) = await Self.slowJoinerTrio(hub)
+        let shot = UUID()
+        joiner.0.append(.shooterCorrection(shotID: shot, team: 1))   // in flight for 1 s
+        host.0.append(.shooterCorrection(shotID: shot, team: 1))     // committed at once via the third phone
+        await Self.expectJoinerWaitsForItsOwn(joiner.1, joiner.0)
+        host.0.stop(); await third.stop()
     }
 
     /// D42: a host whose shot can't commit (joiner cut off) still reviews 2 s after End, without that shot.
