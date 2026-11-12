@@ -113,6 +113,9 @@ final class LiveModel {
     /// D37: the player confirmed "End game"; Live stays up until the open shot closes.
     private(set) var isFinishing = false
     private var onFinished: (@MainActor () -> Void)?
+    /// The end fired: later frames change nothing (Codex review: a late record must not close a shot twice).
+    private(set) var hasEnded = false
+    private func end(_ done: @MainActor () -> Void) { hasEnded = true; done() }
     /// D37: only a game asks before ✕ closes Live; Training closes at once.
     var asksBeforeClosing: Bool { mode == .game }
     /// D37: end once every open shot has closed (through the normal FIFO, the pocket question still answerable).
@@ -120,7 +123,7 @@ final class LiveModel {
     /// D42: a second request while finishing forces the end at once.
     func requestEnd(_ done: @escaping @MainActor () -> Void) {
         guard !isFinishing else { return forceEnd() }
-        guard hasOpenShot else { return done() }
+        guard hasOpenShot else { return end(done) }
         isFinishing = true
         onFinished = done
     }
@@ -154,7 +157,7 @@ final class LiveModel {
                 }
             }
         }
-        done()
+        end(done)
     }
     private var nextShotID = 0
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
@@ -274,7 +277,7 @@ final class LiveModel {
                 close(head)
             }
         }
-        if !hasOpenShot, let done = onFinished { onFinished = nil; done() }
+        if !hasOpenShot, let done = onFinished { onFinished = nil; end(done) }
     }
 
     /// The one-tap answer: ✓ the ball dropped, ✗ it didn't. Only ever applies to the front shot; while something
@@ -328,6 +331,7 @@ final class LiveModel {
 
     /// Drives the aim lifecycle and the shot FIFO from each perception result (and hides the badge on aim/motion).
     func drive(_ r: PerceptionResult) {
+        guard !hasEnded else { return }
         let ballMoving = r.confirmed.contains { $0.speed > 0.1 }
         let cueCreeping = r.confirmed.contains { r.marks[$0.id] == .cue && $0.speed > 0.04 }
         // Partial dropout: a confirmed ball measured within the last `dropoutWindow` s but not this frame may be the
