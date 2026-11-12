@@ -21,6 +21,8 @@ struct StoredTableMeasurement: TableMeasurementSource {
     var reduceMotion = false
     var noLoops = false
     var meshFactory: ((UInt16) -> any GameMeshLink)? = { MeshGameLink(sessionTag: $0) }
+    /// Saves finished racks (plan 011). nil (UI-test fakes) = nothing is saved.
+    var recorder: (any GameRecorder)?
 
     init(roster: any RosterStore, owners: any OwnerStore, settings: any SettingsStore, mesh: any GameLobbyMesh,
          measurement: any TableMeasurementSource, defaults: UserDefaults) {
