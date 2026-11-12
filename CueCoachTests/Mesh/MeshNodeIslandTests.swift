@@ -190,7 +190,7 @@ extension MeshNodeTests {
         let a4 = Self.view(4, outcome: Self.pot1), b4 = Self.view(4, outcome: Self.miss1, isGuess: true)
         Self.see(net, [(a, a4), (b, b4)])                               // they disagree on shot 4
         net.run(for: 1)
-        #expect(net.node(a).commitSeq == 1 && net.node(b).commitSeq <= 1, "an island never commits")
+        #expect(net.node(a).commitSeq == 1, "the old host's island never commits (a lone claimant may, alone)")
         net.heal()
         net.run(for: 3)
         Self.expectConverged(net)

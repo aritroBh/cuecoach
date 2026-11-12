@@ -1,5 +1,6 @@
 import Foundation
 import Rules
+import Sync
 
 /// Tunables. Every number marked *assumption* in mesh-identity.md is here so device tests can tune it.
 struct MeshConfig: Sendable {
@@ -161,6 +162,27 @@ struct MeshNode: Sendable {
     private var clipOfferDeadline: [UUID: Double] = [:]
     private var clipReceivers: [UUID: (from: PeerID, receiver: ClipReceiver)] = [:]
 
+    // islands (plan 013a, §2.5)
+    /// The game clock as this phone last knew it while a client (its fit to that host + that host's game offset),
+    /// frozen when the host was lost. nil = this phone's own clock is the game clock (it hosted first).
+    private var gameFit: (clock: ClockSyncEstimator, offset: Int64)?
+    /// Client: the host's `Heartbeat.gameOffset`.
+    private var hostGameOffset: Int64 = 0
+    /// This phone's own settles that no log holds yet, with the stroke on this phone's clock (ns).
+    private var kept: [(event: GameEvent, stroke: Int64)] = []
+    /// Shot results (`.shot` / `.shotLost`) in the committed prefix when last counted.
+    private var committedResults = 0
+    /// Every phone seen in a roster since joining, minus those that left gracefully: the island denominator.
+    private var gameMembers: Set<PeerID> = []
+    private var departed: Set<PeerID> = []
+    /// Highest commit point reached while not an island (entries after it are island entries, merged on heal).
+    private var firmSeq: UInt64 = 0
+    /// Host: island logs being received, by sender.
+    private var islandIn: [PeerID: (commitSeq: UInt64, entries: [LogEntry])] = [:]
+    /// Host while collecting: complete island logs, merged once collecting ends.
+    private var islandStash: [Island] = []
+    private var reportedIsland = false
+
     private var step = MeshStep()
 
     init(id: PeerID = PeerID(), status: PeerStatus, config: MeshConfig = MeshConfig()) {
@@ -179,8 +201,16 @@ struct MeshNode: Sendable {
     var lastSeq: UInt64 { log.last?.seq ?? 0 }
     var isHost: Bool { role == .host }
     var storedClipCount: Int { localClips.count }
-    /// Plan 013a: after first joining, discovering or hosting without a majority. A client is never an island.
-    var isIsland: Bool { false }
+    /// Plan 013a: after first joining, discovering, or hosting a roster that is not a strict majority of the game's
+    /// members (every phone seen in a roster, minus graceful leaves). A client is never an island.
+    var isIsland: Bool {
+        guard everJoined, rejected == nil, !left else { return false }
+        switch role {
+        case .client: return false
+        case .discovering: return true
+        case .host: return roster.count * 2 <= gameMembers.union(roster).count
+        }
+    }
 
     // MARK: - Inputs
 
@@ -194,7 +224,7 @@ struct MeshNode: Sendable {
         connected.insert(p)
         detector.heard(p, at: now)
         send(.peerStatus(status), to: [p])
-        if isHost { send(heartbeat, to: [p]) }
+        if isHost { send(heartbeat(now: now), to: [p]) }
         return flush()
     }
 
@@ -206,6 +236,7 @@ struct MeshNode: Sendable {
     private mutating func disconnect(_ p: PeerID, graceful: Bool, now: Double) {
         connected.remove(p)
         detector.forget(p)
+        if graceful { departed.insert(p); gameMembers.remove(p) }
         guard rejected == nil, !left else { return }
         if isHost {
             dropMembers([p], graceful: graceful, now: now)
@@ -316,7 +347,7 @@ struct MeshNode: Sendable {
                 profiles[from] = p.summary
                 step.updates.append(.profile(from: from, p.summary))
             }
-        case .islandLog: break
+        case .islandLog(let l): onIslandLog(l, from: from, now: now)
         case .unknown: break
         }
         return flush()
@@ -326,7 +357,7 @@ struct MeshNode: Sendable {
         guard rejected == nil, !left else { return flush() }
         if now - lastLiveness >= config.heartbeatInterval {
             lastLiveness = now
-            if isHost { send(heartbeat, to: Array(connected)) }
+            if isHost { send(heartbeat(now: now), to: Array(connected)) }
             send(.peerStatus(status), to: Array(connected))
         }
         switch role {
@@ -350,7 +381,19 @@ struct MeshNode: Sendable {
     mutating func append(_ e: GameEvent, now: Double) -> MeshStep { append(e, now: now, flushing: true) }
 
     /// Plan 013a: this phone's own settle (`.shot` / `.shotLost`) with its stroke time on this phone's clock (s).
-    mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep { flush() }
+    /// The host stamps the stroke on the game clock and appends; any other phone keeps it until a shot result commits
+    /// after it (the host answered that stroke), and re-runs it as a new host or sends it on adopting one.
+    mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep {
+        guard rejected == nil, !left else { return flush() }
+        let stroke = Self.ns(strokeAt)
+        if isHost && collecting == nil {
+            _ = append(Self.stamped(e, gameNs(fromLocal: stroke)), now: now, flushing: false)
+        } else {
+            kept.append((e, stroke))
+            if kept.count > 16 { kept.removeFirst() }
+        }
+        return flush()
+    }
 
     mutating func openRuleVote(now: Double) -> MeshStep {
         guard isHost else { return flush() }
@@ -448,8 +491,11 @@ struct MeshNode: Sendable {
 
     // MARK: - Election + migration
 
-    private var heartbeat: MeshMessage {
-        .heartbeat(Heartbeat(term: term, host: id, lastSeq: lastSeq, commitSeq: commitSeq, phase: phase))
+    private func heartbeat(now: Double) -> MeshMessage {
+        let t = Self.ns(now)
+        let offset = gameFit == nil ? nil : gameNs(fromLocal: t).map { $0 - t }
+        return .heartbeat(Heartbeat(term: term, host: id, lastSeq: lastSeq, commitSeq: commitSeq, phase: phase,
+                                    gameOffset: offset))
     }
 
     private var clients: [PeerID] { roster.filter { $0 != id } }
@@ -466,6 +512,8 @@ struct MeshNode: Sendable {
 
     private mutating func hostLost(now: Double) {
         let gone = hostID
+        // Keep stamping strokes on the game clock: freeze the last fit to the lost host (§2.5, drifts ≈ 3 ms/min).
+        if clock.estimate != nil { gameFit = (clock, hostGameOffset) }
         lostRosterSize = roster.count
         if let gone { roster.removeAll { $0 == gone }; detector.forget(gone) }
         hostID = nil
@@ -499,7 +547,7 @@ struct MeshNode: Sendable {
         collecting = survivors.isEmpty ? nil : survivors
         collectDeadline = now + config.collectTimeout
         send(.hostClaim(HostClaim(term: term, lastSeq: lastSeq)), to: Array(connected))
-        send(heartbeat, to: Array(connected))
+        send(heartbeat(now: now), to: Array(connected))
         step.updates.append(.roleChanged(.host, term: term))
         broadcastRoster()
         if collecting == nil { finishCollecting(now: now) }
@@ -508,6 +556,12 @@ struct MeshNode: Sendable {
     /// Accepting `host` at `newTerm` (from a heartbeat, claim or welcome).
     private mutating func adopt(host h: PeerID, term newTerm: UInt64, now: Double) {
         let wasHost = isHost
+        // Plan 013a: my island tail (a host's entries after its firm commit point) and my own unlogged settles, on the
+        // game clock as I know it now (before the clock resets for the new host).
+        let islandBase = firmSeq
+        let islandTail = wasHost ? log.filter { $0.seq > islandBase } : []
+        let settles = keptSettles()
+        kept = []
         term = newTerm
         hostID = h
         role = .client(host: h)
@@ -533,6 +587,17 @@ struct MeshNode: Sendable {
             send(.logEntries(Array(log[i..<min(i + config.logBatch, log.count)])), to: [h])
             i += config.logBatch
         }
+        if !islandTail.isEmpty || !settles.isEmpty {
+            var j = 0
+            repeat {
+                let batch = Array(islandTail[j..<min(j + config.logBatch, islandTail.count)])
+                j += config.logBatch
+                let last = j >= islandTail.count
+                send(.islandLog(IslandLog(commitSeq: islandBase, entries: batch, settles: last ? settles : [], last: last)),
+                     to: [h])
+            } while j < islandTail.count
+        }
+        hostGameOffset = 0
         send(.hello(hello), to: [h])
         step.updates.append(.roleChanged(role, term: term))
     }
@@ -552,6 +617,7 @@ struct MeshNode: Sendable {
         guard hb.host == from else { return }
         if from == hostID, hb.term == term {
             guard !isHost else { return }
+            hostGameOffset = hb.gameOffset ?? 0
             if synced {
                 commitSeq = max(commitSeq, min(hb.commitSeq, lastSeq))
                 if hb.lastSeq > lastSeq { requestTail(now: now) }
@@ -561,8 +627,9 @@ struct MeshNode: Sendable {
         }
         if wins(term: hb.term, claimant: from) {
             adopt(host: from, term: hb.term, now: now)
+            hostGameOffset = hb.gameOffset ?? 0
         } else if isHost {
-            send(heartbeat, to: [from])          // the stale side will step down
+            send(heartbeat(now: now), to: [from])          // the stale side will step down
         }
     }
 
@@ -570,7 +637,7 @@ struct MeshNode: Sendable {
         if wins(term: c.term, claimant: from) {
             adopt(host: from, term: c.term, now: now)
         } else if isHost {
-            send(heartbeat, to: [from])
+            send(heartbeat(now: now), to: [from])
         }
     }
 
@@ -659,6 +726,11 @@ struct MeshNode: Sendable {
             if rank(sorted) > rank(log) { log = sorted }
         }
         tails = [:]
+        // Plan 013a: re-run the shot in flight from my own settles, and merge island logs that came in meanwhile.
+        let islands = [Island(commitSeq: commitSeq, entries: [], settles: keptSettles())] + islandStash
+        kept = []
+        islandStash = []
+        heal(islands)
         let hellos = pendingHellos
         pendingHellos = []
         for p in hellos { welcome(p) }
@@ -813,6 +885,76 @@ struct MeshNode: Sendable {
         }
     }
 
+    // MARK: - Islands (plan 013a, §2.5)
+
+    struct Island: Sendable {
+        var commitSeq: UInt64
+        var entries: [LogEntry]
+        var settles: [IslandSettle]
+    }
+
+    /// Stroke time on the game clock (ns): a client through its host fit + the host's game offset; otherwise through
+    /// the frozen fit to the last host, or this phone's own clock if it hosted first. nil = a client without a fit.
+    private func gameNs(fromLocal t: Int64) -> Int64? {
+        if case .client = role { return clock.hostTime(fromLocal: t).map { $0 + hostGameOffset } }
+        guard let g = gameFit else { return t }
+        return g.clock.hostTime(fromLocal: t).map { $0 + g.offset }
+    }
+
+    private func keptSettles() -> [IslandSettle] {
+        kept.map { k in
+            let t = gameNs(fromLocal: k.stroke)
+            return IslandSettle(event: Self.stamped(k.event, t), strokeHostTime: t)
+        }
+    }
+
+    static func stamped(_ e: GameEvent, _ t: Int64?) -> GameEvent {
+        guard case .shot(var r) = e else { return e }
+        r.strokeHostTime = t
+        return .shot(r)
+    }
+
+    private mutating func onIslandLog(_ l: IslandLog, from: PeerID, now: Double) {
+        guard isHost else { ignoredMessages += 1; return }
+        var got = islandIn[from] ?? (l.commitSeq, [])
+        got.entries += l.entries
+        guard l.last else { islandIn[from] = got; return }
+        islandIn[from] = nil
+        let island = Island(commitSeq: got.commitSeq, entries: got.entries, settles: l.settles)
+        if collecting != nil { islandStash.append(island) } else { heal([island]) }
+    }
+
+    /// Merge island tails and settles into my log (INTERFACES "Host loss and islands", Heal). My entries up to
+    /// `keep` never change; the rest is rewritten after its longest unchanged prefix and re-sent to my clients.
+    private mutating func heal(_ islands: [Island]) {
+        let parts = islands.filter { !$0.entries.isEmpty || !$0.settles.isEmpty }
+        guard isHost, let low = parts.map(\.commitSeq).min() else { return }
+        let base = min(low, lastSeq)
+        let keep = min(max(base, firmSeq), lastSeq)
+        let fixed = log.filter { $0.seq > base && $0.seq <= keep }.map(\.event)
+        let mine = log.filter { $0.seq > keep }.map(\.event)
+        let others = parts.map { p in
+            p.entries.filter { $0.seq > p.commitSeq }.sorted { $0.seq < $1.seq }.map(\.event)
+                + p.settles.filter { if case .shot = $0.event { true } else { false } }.map(\.event)
+        }
+        let gaps = parts.flatMap { p in
+            p.settles.compactMap { s -> (event: GameEvent, time: Double)? in
+                guard case .shotLost = s.event, let t = s.strokeHostTime else { return nil }
+                return (s.event, Double(t) / 1e9)
+            }
+        }
+        let merged = IslandHeal.merge(fixed: fixed, mine: mine, others: others, gaps: gaps)
+        var same = 0
+        while same < min(mine.count, merged.count), mine[same] == merged[same] { same += 1 }
+        guard same < max(mine.count, merged.count) else { return }
+        let cut = keep + UInt64(same)
+        log.removeAll { $0.seq > cut }
+        for e in merged[same...] { log.append(LogEntry(seq: lastSeq + 1, term: term, event: e)) }
+        for (p, a) in acks { acks[p] = min(a, cut) }
+        for p in clients { sendLog(from: cut + 1, to: p) }
+        advanceCommit()
+    }
+
     // MARK: - Client
 
     private mutating func clientTick(now: Double) {
@@ -862,7 +1004,17 @@ struct MeshNode: Sendable {
     private var lastReported: (UInt64, UInt64) = (0, 0)
 
     private mutating func flush() -> MeshStep {
+        if everJoined { gameMembers.formUnion(roster.filter { !departed.contains($0) }) }
+        if !isIsland { firmSeq = max(firmSeq, commitSeq) }
+        if isIsland != reportedIsland {
+            reportedIsland = isIsland
+            step.updates.append(.island(reportedIsland))
+        }
         if (lastSeq, commitSeq) != lastReported {
+            // A shot result committed after a kept settle: the host answered that stroke (plan 013a).
+            let results = log.prefix { $0.seq <= commitSeq }.filter { $0.event.isShotResult }.count
+            if results > committedResults, !isHost { kept = [] }
+            committedResults = results
             lastReported = (lastSeq, commitSeq)
             step.updates.append(.logChanged(lastSeq: lastSeq, commitSeq: commitSeq))
         }
@@ -871,4 +1023,88 @@ struct MeshNode: Sendable {
     }
 
     static func ns(_ seconds: Double) -> Int64 { Int64((seconds * 1e9).rounded()) }
+}
+
+/// Plan 013a: the heal merge over log events (pure). Timed shots go through `IslandMerge`; everything else (untimed
+/// shots, taps, corrections, gaps, rule set) follows the timed shot before it on its own island.
+enum IslandHeal {
+    /// The `IslandShot` view of a timed shot record; a D31 guess is less confident.
+    static func view(_ e: GameEvent) -> IslandShot? {
+        guard case .shot(let r) = e, let t = r.strokeHostTime else { return nil }
+        return IslandShot(id: r.shotID, strokeTime: Double(t) / 1e9,
+                          preState: r.preState?.balls.mapValues(\.position) ?? [:], outcome: r.outcome,
+                          confidence: r.isGuess ? 0.5 : 1)
+    }
+
+    /// The events to log after `fixed + mine`'s logged part: `fixed` is already logged (and never re-emitted), `mine`
+    /// is my rewritable tail, `others` are the senders' tails and settles, `gaps` kept `.shotLost` settles (game time, s).
+    static func merge(fixed: [GameEvent], mine: [GameEvent], others: [[GameEvent]],
+                      gaps: [(event: GameEvent, time: Double)]) -> [GameEvent] {
+        let islands = [fixed + mine] + others
+        var records: [UUID: MeshShotRecord] = [:]
+        for l in islands.reversed() { for case .shot(let r) in l { records[r.shotID] = r } }   // mine wins an id
+        let views = islands.map { $0.compactMap(view) }
+        let clusters = IslandMerge.merge(views)
+        var clusterOf: [UUID: Int] = [:]
+        for (i, c) in clusters.enumerated() { for m in c.members { clusterOf[m] = i } }
+        let logged = Set((fixed + mine).compactMap { if case .shot(let r) = $0 { r.shotID } else { nil } })
+        let fixedIDs = Set(fixed.compactMap { view($0)?.id })
+
+        var knownShots = logged.union(clusterOf.keys)
+        var knownEvents = Set(fixed + mine)
+        var after: [Int: [GameEvent]] = [:]   // anchor cluster → events; -1 = before every shot
+        func anchor(_ list: [GameEvent], skip: Int, dedupe: Bool) {
+            var a = -1
+            for (i, e) in list.enumerated() {
+                if let v = view(e) { a = clusterOf[v.id] ?? a; continue }
+                guard i >= skip else { continue }
+                if dedupe {
+                    if case .shot(let r) = e {
+                        guard knownShots.insert(r.shotID).inserted else { continue }
+                    } else {
+                        guard knownEvents.insert(e).inserted else { continue }
+                    }
+                }
+                after[a, default: []].append(e)
+            }
+        }
+        anchor(fixed + mine, skip: fixed.count, dedupe: false)
+        for o in others { anchor(o, skip: 0, dedupe: true) }
+
+        let all = views.joined()
+        var gapList: [(event: GameEvent, time: Double)] = []
+        for g in gaps.sorted(by: { $0.time < $1.time })
+        where !all.contains(where: { abs($0.strokeTime - g.time) <= IslandMerge.timeTolerance })
+            && !gapList.contains(where: { abs($0.time - g.time) <= IslandMerge.timeTolerance }) {
+            gapList.append(g)
+        }
+        let time = Dictionary(all.map { ($0.id, $0.strokeTime) }, uniquingKeysWith: min)
+
+        var out = after[-1] ?? []
+        var g = 0
+        for (i, c) in clusters.enumerated() {
+            let start = c.members.compactMap { time[$0] }.min() ?? 0
+            while g < gapList.count, gapList[g].time < start { out.append(gapList[g].event); g += 1 }
+            if !c.members.contains(where: fixedIDs.contains) {
+                // Agreeing views: keep the logged record (no churn). Disagreeing: the merge's pick, flagged.
+                let pick = c.needsTap ? c.shot.id : (c.members.first(where: logged.contains) ?? c.shot.id)
+                if var r = records[pick] {
+                    r.needsTap = c.needsTap || c.members.contains { records[$0]?.needsTap == true }
+                    out.append(.shot(r))
+                }
+            }
+            out += after[i] ?? []
+        }
+        out += gapList[g...].map(\.event)
+        return out
+    }
+}
+
+private extension GameEvent {
+    var isShotResult: Bool {
+        switch self {
+        case .shot, .shotLost: true
+        default: false
+        }
+    }
 }
