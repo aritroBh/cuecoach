@@ -313,18 +313,17 @@ enum RuleRating {
     static func rate(_ r: ShotRecord, ids: [Int: BallID], engine: RulesEngine, game: GameState,
                      pocketTimes: [Int: Double]? = nil) -> (rating: DecisionRating, result: RuleResult) {
         let result = engine.apply(outcome(r, ids: ids, pocketTimes: pocketTimes), to: game)
-        let shooter = game.shooter
-        let rating: DecisionRating
-        if !result.fouls.isEmpty {
-            rating = (result.winner != nil && result.winner != shooter) ? .blunder : .mistake
-        } else if result.winner == shooter {
-            rating = .best
-        } else if !result.turnPasses && r.pocketed.keys.contains(where: { $0 != r.cueID }) {
-            rating = .good
-        } else {
-            rating = .okay
-        }
+        let rating = classify(result, shooter: game.shooter, pocketedObjectBall: r.pocketed.keys.contains { $0 != r.cueID })
         return (rating, result)
+    }
+
+    /// The D18 class of a rules result for `shooter` (the team that shot). The shell's log fold uses it for a shot
+    /// whose record carries no rating.
+    static func classify(_ result: RuleResult, shooter: Int, pocketedObjectBall: Bool) -> DecisionRating {
+        if !result.fouls.isEmpty { return (result.winner != nil && result.winner != shooter) ? .blunder : .mistake }
+        if result.winner == shooter { return .best }
+        if !result.turnPasses && pocketedObjectBall { return .good }
+        return .okay
     }
 }
 
@@ -468,6 +467,9 @@ struct SettledShot: Hashable, Sendable {
     /// Identified balls only (D29), table metres: at shot start, and after it (balls off the table absent).
     var before: [BallID: Vec2] = [:]
     var after: [BallID: Vec2] = [:]
+    /// The outcome Live rated (`RuleRating.outcome` with pocket times). The shell's log fold re-applies it, so the
+    /// turn and rules state follow the outcome (`turnPasses` above is Live's own view of the same result).
+    var outcome = ShotOutcome()
 }
 
 /// What Live tells the app shell (wired by `LiveScreenAdapter` to `LiveSession`). Defaults do nothing, so Live
