@@ -25,11 +25,19 @@ import UIKit
     private(set) var isStopped = false
     @ObservationIgnored private let session: any MeshSession
     @ObservationIgnored private var task: Task<Void, Never>?
-    // Plan 009 log members, stubbed until plan 010 forwards the session's log: nothing is appended or committed.
-    let isHost = true
-    let commitSeq: UInt64 = 0
+    /// `.host` only: false while discovering and as a client. Last values stay readable after `stop()`.
+    private(set) var isHost = false
+    /// The last commit point forwarded to `onCommittedLog`.
+    private(set) var commitSeq: UInt64 = 0
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?
-    func append(_ event: GameEvent) {}
+
+    @ObservationIgnored private var lastAppend: Task<Void, Never>?
+
+    /// The session turns a client's append into a `.proposal` to the host. Appends reach it in call order.
+    func append(_ event: GameEvent) {
+        let s = session, prev = lastAppend
+        lastAppend = Task { await prev?.value; await s.append(event) }
+    }
 
     convenience init(sessionTag: UInt16) {
         UIDevice.current.isBatteryMonitoringEnabled = true
@@ -49,9 +57,22 @@ import UIKit
         task = Task { [weak self] in
             await s.start()
             for await u in s.updates {
-                if case .rosterChanged(let roster) = u { self?.peerCount = max(1, roster.count) }
+                switch u {
+                case .rosterChanged(let roster): self?.peerCount = max(1, roster.count)
+                case .roleChanged(let role, _): self?.isHost = role == .host
+                case .logChanged: await self?.forwardCommitted(from: s)
+                default: break
+                }
             }
         }
+    }
+
+    /// One fresh snapshot per `logChanged`, forwarded in order; a commit point not newer than the last is dropped.
+    private func forwardCommitted(from s: any MeshSession) async {
+        let snap = await s.snapshot()
+        guard !Task.isCancelled, snap.commitSeq > commitSeq else { return }
+        commitSeq = snap.commitSeq
+        onCommittedLog?(snap.log.filter { $0.seq <= snap.commitSeq }, snap.commitSeq)
     }
 
     func stop() {
