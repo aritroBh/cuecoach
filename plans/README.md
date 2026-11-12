@@ -18,7 +18,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 004 | Pin the ball model's I/O contract | P2 | S | — | DONE (merged; Grok APPROVE; unit 1209/1209) |
 | 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | DONE (wt/plan-005: D36 C + size hint; A dropped per D46; Grok REJECT → fixed → Codex APPROVE) |
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
-| 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | TODO |
+| 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | DONE (wt/plan-007 + D42 give-up; Grok REJECT → fixed; Codex REJECT ×2 → fixed → APPROVE) |
 | 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | TODO |
 | 009 | Every phone folds one shot log (D39, D41 next-shooter event, D38 gap) | P1 | L | 002, 008 (007 recommended) | TODO |
 | 010 | Mesh link forwards the committed log to the game | P1 | M | 009 | TODO |

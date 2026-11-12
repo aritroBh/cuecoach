@@ -391,3 +391,202 @@ import Training
         #expect(AutoTableLocating(keypoints: NoKeypoints()).auto.config.fusion.prior == nil)
     }
 }
+
+/// D37: ✕ in a game asks "End game?"; on confirm an open shot finishes settling before review opens (never dropped).
+@MainActor
+@Suite struct CloseSettlesOpenShotTests {
+    let a = ShellPlayer(id: UUID(), name: "Ari", symbol: "hare.fill", colorName: "teal")
+    let b = ShellPlayer(id: UUID(), name: "Bo", symbol: "bolt.fill", colorName: "orange")
+    @MainActor final class Log { var events: [String] = []; var shots: [SettledShot] = [] }
+
+    func frame(_ t: Double, moving: Bool = false, started: Bool = false, shot: ShotRecord? = nil) -> PerceptionResult {
+        let cue = TrackedBall(id: 1, position: Vec2(1.2, 0.6), velocity: moving ? Vec2(0.8, 0) : .zero, kind: .cue,
+                              tentativeNumber: 0, confirmed: true)
+        var r = PerceptionResult(timestamp: t, detections: [], tracks: [cue], marks: [1: .cue], atRest: !moving, aim: nil,
+                                 detectMs: 0)
+        r.shotStarted = started; r.shot = shot
+        r.ballIDs = [1: .cue, 2: BallID(3)!]
+        r.pocketsInView = Set(Pocket.allCases)
+        return r
+    }
+
+    func setup() -> (GameSessionModel, LiveModel, Log) {
+        let game = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
+        let session = LiveSession(mode: .game, game: game, drill: nil)
+        let m = LiveModel(mode: .game)
+        let log = Log()
+        var h = LiveScreenAdapter.hooks(for: session)
+        let d0 = h.settledShot
+        h.settledShot = { s in log.events.append("settled"); log.shots.append(s); d0(s) }
+        let b0 = h.ballsSettled
+        h.ballsSettled = { log.events.append("unrated"); b0() }
+        m.hooks = h
+        return (game, m, log)
+    }
+
+    @Test func closingAGameWithAnOpenShotWaitsForItToSettle() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))         // the shot ended, the table is not quiet yet
+        #expect(m.hasOpenShot, "\(m.lifecycleDebugDescription)")
+        m.requestEnd { log.events.append("end") }
+        #expect(m.isFinishing)
+        #expect(log.events.isEmpty, "the end waits for the open shot")
+        m.drive(frame(2.1, moving: true))                  // still rolling
+        #expect(log.events.isEmpty)
+        m.drive(frame(2.2))                                // quiet: the shot closes, then the end fires
+        #expect(log.events == ["settled", "end"])
+        #expect(!m.hasOpenShot)
+        #expect(game.reviewData().shots.count == 1, "the shot reached the review")
+        m.drive(frame(2.3))
+        #expect(log.events == ["settled", "end"], "the end fires once")
+    }
+
+    @Test func closingWithNoOpenShotEndsAtOnce() {
+        let (_, m, log) = setup()
+        #expect(!m.hasOpenShot)
+        m.requestEnd { log.events.append("end") }
+        #expect(log.events == ["end"])
+    }
+
+    @Test func aSecondCloseWhileFinishingDoesNotEndTwice() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.requestEnd { log.events.append("end") }
+        m.requestEnd { log.events.append("end2") }      // D42: a second ✕ while finishing forces the end now
+        #expect(log.events == ["settled", "end"], "the open shot closes with what is known, then the end fires once")
+        #expect(!m.hasOpenShot)
+        m.drive(frame(2.2))
+        #expect(log.events == ["settled", "end"])
+    }
+
+    /// D42: the ~5 s give-up (and the second ✕) close a shot that never goes quiet; it still reaches the review.
+    @Test func forcingTheEndClosesAShotThatNeverGoesQuiet() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.requestEnd { log.events.append("end") }
+        m.drive(frame(2.1, moving: true))                  // never quiet
+        #expect(log.events.isEmpty)
+        m.forceEnd()
+        #expect(log.events == ["settled", "end"])
+        #expect(game.reviewData().shots.count == 1, "the forced shot reached the review")
+        m.forceEnd()
+        #expect(log.events == ["settled", "end"], "forcing again does nothing")
+    }
+
+    /// Grok 4.7 review of D42: forcing never turns an unseen uncertain pocket into a confident miss. The ball doesn't
+    /// count (D31: uncertain never pocketed) and the shot is flagged as a guess.
+    @Test func forcingARunningLookWithAnUncertainPocketClosesItAsAGuess() throws {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        var rec = ShotRecord(start: 1, end: 2, preState: [1: Vec2(1.2, 0.6), 2: Vec2(1.6, 0.4)], finalState: [1: Vec2(1.2, 0.6)],
+                             cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        rec.uncertainPockets = [2: .footLeft]
+        m.drive(frame(2, shot: rec))                       // still: the post-settle look starts (Codex review)
+        #expect(m.lifecycleDebugDescription.contains("looking"), "\(m.lifecycleDebugDescription)")
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        #expect(log.events == ["settled", "end"])
+        let shot = try #require(log.shots.first)
+        #expect(shot.isGuess, "an unresolved pocket makes the forced close a guess")
+        #expect(shot.pocketed[BallID(3)!] == nil, "an uncertain ball is never counted pocketed")
+    }
+
+    /// A shot whose every pocket is known is not a guess when forced.
+    @Test func forcingAShotWithNoUncertaintyIsNotAGuess() throws {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        #expect(try #require(log.shots.first).isGuess == false)
+    }
+
+    /// Forced with lost shots open: a relock loses every unclosed shot (and the one in flight); with no pre-shot table
+    /// each closes unrated, one close per shot, then the end fires.
+    @Test func forcingClosesEveryLostShot() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.drive(frame(3, moving: true, started: true))     // the next shot is in flight
+        m.perceptionReset()                                // ... and lost
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        #expect(log.events == ["unrated", "unrated", "end"])
+        #expect(!m.hasOpenShot)
+    }
+
+    /// Grok 4.7 review of D42: once Live is gone (menu "End game", dismissal) a late give-up does nothing.
+    @Test func anAbandonedEndIsNeverForcedLater() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.requestEnd { log.events.append("end") }
+        m.abandonEnd()
+        m.forceEnd()
+        #expect(log.events.isEmpty)
+        #expect(!m.isFinishing)
+    }
+
+    /// Codex review: "End game" while the balls still roll (shot started, no record yet) must wait for that shot.
+    @Test func endingWhileAShotIsInFlightWaitsForIt() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))     // in flight: the segmenter hasn't emitted the record yet
+        #expect(m.hasOpenShot)
+        m.requestEnd { log.events.append("end") }
+        #expect(log.events.isEmpty, "the end waits for the shot in flight")
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        #expect(log.events.isEmpty)
+        m.drive(frame(2.2))
+        #expect(log.events == ["settled", "end"])
+        #expect(game.reviewData().shots.count == 1)
+    }
+
+    /// Codex review: forcing while a shot is still in flight closes it like a shot lost to a relock (one close), then ends.
+    @Test func forcingWhileAShotIsInFlightClosesItOnce() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        #expect(log.events.count == 2 && log.events.last == "end", "\(log.events)")
+        #expect(!m.hasOpenShot)
+    }
+
+    /// Codex review: once the end has fired, a late frame (even one carrying the in-flight shot's record) changes nothing.
+    @Test func framesAfterTheEndAreIgnored() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        let closes = log.events
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, shot: rec))
+        m.drive(frame(2.2))
+        #expect(log.events == closes, "the same shot never closes twice")
+        #expect(game.reviewData().shots.count <= 1)
+    }
+
+    @Test func forcingBeforeAnyEndRequestDoesNothing() {
+        let (_, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, moving: true, shot: rec))
+        m.forceEnd()
+        #expect(log.events.isEmpty)
+        #expect(m.hasOpenShot)
+    }
+
+    @Test func trainingCloseNeverAsks() {
+        #expect(!LiveModel(mode: .training(level: 2)).asksBeforeClosing)
+        #expect(LiveModel(mode: .game).asksBeforeClosing)
+    }
+}

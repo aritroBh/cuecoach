@@ -168,7 +168,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Plan 002 live review rates + replays live shots: merged (Grok REJECT → guessed shot keeps no replay → APPROVE)
 - [x] Plans 009–013 drafted and committed; D42–D46 recorded (user answers)
 - [x] Full CueCoachTests on merged head: 1218/1218, pushed
-- [ ] Plan 007 ✕ asks "End game?" + D42 give-up: Grok REJECT (2 BLOCKERs) → fixed, 18/18 + UI green → Grok re-review running
+- [x] Plan 007 ✕ asks "End game?" + D42 give-up: Grok REJECT → fixed; Codex REJECT ×2 (in-flight shot, late record) → fixed → APPROVE; unit 1230/1230 + AppShell UI 12/12 before the last fix; merged
 - [x] Plan 005 table-size prior + size hint (D36 C; A dropped, D46): Grok REJECT (8/9 ft overlap) → fixed → Codex APPROVE; merged. Follow-up MINOR: a steady 2.21 m fit that settles 8 ft but fails sizeIsTrusted shows partialTable, not the size hint (AutoLocatorAdapter.swift:180)
 - [ ] Plan 008 lost shot pulses turn discs + review gap (D38/D41): worker running on 1-core + 007
 - [ ] Merge 007, 005, 008 → combined full unit suite → push

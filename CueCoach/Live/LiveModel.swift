@@ -99,11 +99,68 @@ final class LiveModel {
         /// D31: the shot in flight at a relock.
         var guess: LostShotGuess?
 
+        /// A pocket neither answered nor seen either way (only a forced close meets one).
+        var hasUnresolvedPocket: Bool {
+            guard let res = resolver else { return false }
+            return res.candidates.keys.contains { answers[$0] == nil && verdicts[$0] != .pocketed && verdicts[$0] != .onTable }
+        }
         var openAsk: Int? {
             verdicts.filter { $0.value == .ask && answers[$0.key] == nil }.keys.sorted().first
         }
     }
     private var shots: [ShotEntry] = []
+    /// A shot is still rolling (no record yet), or has ended but not closed (asking, looking, lost, or waiting
+    /// for a quiet table).
+    var hasOpenShot: Bool { !shots.isEmpty || aimEvents.phase == .moving }
+    /// D37: the player confirmed "End game"; Live stays up until the open shot closes.
+    private(set) var isFinishing = false
+    private var onFinished: (@MainActor () -> Void)?
+    /// The end fired: later frames change nothing (Codex review: a late record must not close a shot twice).
+    private(set) var hasEnded = false
+    private func end(_ done: @MainActor () -> Void) { hasEnded = true; done() }
+    /// D37: only a game asks before ✕ closes Live; Training closes at once.
+    var asksBeforeClosing: Bool { mode == .game }
+    /// D37: end once every open shot has closed (through the normal FIFO, the pocket question still answerable).
+    /// `done` runs exactly once.
+    /// D42: a second request while finishing forces the end at once.
+    func requestEnd(_ done: @escaping @MainActor () -> Void) {
+        guard !isFinishing else { return forceEnd() }
+        guard hasOpenShot else { return end(done) }
+        isFinishing = true
+        onFinished = done
+    }
+    /// Live went away (menu "End game", dismissal) while finishing: nothing may close or fire later.
+    func abandonEnd() { isFinishing = false; onFinished = nil }
+    /// D42: stop waiting for a quiet table (second ✕, or the screen's ~5 s give-up). Every open shot closes now, in
+    /// order, with what is known: a running look freezes; an answered pocket stands; a pocket still unresolved is
+    /// never counted (D31) and makes the shot a guess (Grok 4.7 review).
+    func forceEnd() {
+        guard isFinishing, let done = onFinished else { return }
+        onFinished = nil
+        pocketConfirm = nil
+        // Codex review: a shot still rolling closes like one lost to a relock (D31 guess, else unrated).
+        if aimEvents.phase == .moving { shots.append(lostEntry()); aimEvents = AimEvents() }
+        while !shots.isEmpty {
+            var head = shots.removeFirst()
+            switch head.state {
+            case .looking:
+                head.verdicts = head.resolver?.frozen() ?? [:]
+                close(head, guessed: head.hasUnresolvedPocket)
+            case .decided:
+                close(head, guessed: head.hasUnresolvedPocket)
+            case .lost:
+                if let (rec, ids) = head.guess?.record() {
+                    onCloseForTesting?(head.id, rec, true)
+                    shotSettled(rec, ids: ids, guessed: true)
+                } else {
+                    onCloseForTesting?(head.id, nil, false)
+                    shotSettledNoAim = true
+                    hooks.ballsSettled()
+                }
+            }
+        }
+        end(done)
+    }
     private var nextShotID = 0
     private func newID() -> Int { defer { nextShotID += 1 }; return nextShotID }
     private func lostEntry() -> ShotEntry {
@@ -222,6 +279,7 @@ final class LiveModel {
                 close(head)
             }
         }
+        if !hasOpenShot, let done = onFinished { onFinished = nil; end(done) }
     }
 
     /// The one-tap answer: ✓ the ball dropped, ✗ it didn't. Only ever applies to the front shot; while something
@@ -232,7 +290,7 @@ final class LiveModel {
         drain()
     }
 
-    private func close(_ e: ShotEntry) {
+    private func close(_ e: ShotEntry, guessed: Bool = false) {
         guard var rec = e.record, let res = e.resolver else { return }
         for (tid, pk) in res.candidates {
             let dropped = e.answers[tid] ?? (e.verdicts[tid] == .pocketed)
@@ -240,7 +298,7 @@ final class LiveModel {
             rec.uncertainPockets[tid] = nil
         }
         onCloseForTesting?(e.id, rec, true)
-        shotSettled(rec, ids: e.ids)
+        shotSettled(rec, ids: e.ids, guessed: guessed)
     }
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
@@ -282,6 +340,7 @@ final class LiveModel {
 
     /// Drives the aim lifecycle and the shot FIFO from each perception result (and hides the badge on aim/motion).
     func drive(_ r: PerceptionResult) {
+        guard !hasEnded else { return }
         let ballMoving = r.confirmed.contains { $0.speed > 0.1 }
         let cueCreeping = r.confirmed.contains { r.marks[$0.id] == .cue && $0.speed > 0.04 }
         // Partial dropout: a confirmed ball measured within the last `dropoutWindow` s but not this frame may be the
