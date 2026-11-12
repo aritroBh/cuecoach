@@ -19,4 +19,10 @@ import Testing
         let boot = ShellEnvironment.production(makeStack: { try PersistenceStack(inMemory: true) })
         #expect(boot.environment != nil)
     }
+
+    /// Plan 011: production saves finished racks to the on-disk competitive store.
+    @Test func productionSavesFinishedRacks() {
+        let boot = ShellEnvironment.production(makeStack: { try PersistenceStack(inMemory: true) })
+        #expect(boot.environment?.recorder is StackGameRecorder)
+    }
 }

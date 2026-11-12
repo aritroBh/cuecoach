@@ -65,7 +65,7 @@ struct ShellMain: View {
         .environment(\.shellNoLoops, env.noLoops)
         .environment(\.sbForceReduceMotion, env.reduceMotion)
         .cueCoachTheme()
-        .onAppear { router.meshFactory = env.meshFactory }
+        .onAppear { router.meshFactory = env.meshFactory; router.recorder = env.recorder }
         #if DEBUG
         .task { await ShellAutopilot.run(env: env, router: router) }
         #endif

@@ -562,6 +562,7 @@ import Engine
     var peerCount = 2
     var isStopped = false
     let isHost: Bool
+    var hasGameQuorum = true
     private(set) var commitSeq: UInt64 = 0
     var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
     private(set) var log: [LogEntry] = []

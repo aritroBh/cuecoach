@@ -109,10 +109,21 @@ import Training
         #expect(!data.isFinished)                 // ended mid-rack: no winner yet
     }
 
+    /// Plan 011: each game gets the router's recorder.
+    @Test func startGameHandsTheRecorderToTheGame() throws {
+        let r = AppRouter()
+        let recorder = StackGameRecorder(stack: try PersistenceStack(inMemory: true))
+        r.recorder = recorder
+        r.startGame(config)
+        guard case .live(let s)? = r.stage, let game = s.game else { Issue.record("no game"); return }
+        #expect(game.recorder === recorder)
+    }
+
     @MainActor final class FakeLink: GameMeshLink {
         var peerCount = 1
         var isStopped = false
         var isHost = true
+        var hasGameQuorum = true
         var commitSeq: UInt64 = 0
         var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
         func append(_ event: GameEvent) {}

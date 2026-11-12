@@ -20,6 +20,9 @@ import UIKit
     func append(_ event: GameEvent)
     /// This phone is a joiner: it never records its own shot results (D39). False while the role is unresolved.
     var isJoiner: Bool { get }
+    /// This phone's current members are a strict majority of the game's members (every phone seen in this game's
+    /// roster), not of the shrunken commit quorum: an island (a lone survivor of two) has none. Plan 011 saves only with it.
+    var hasGameQuorum: Bool { get }
     /// Teardown: returns once this phone's inputs are committed (a joiner also lets the host's commits go quiet),
     /// or at `deadline`.
     func drain(until deadline: Date) async
@@ -40,6 +43,11 @@ extension GameMeshLink {
     /// Only as `.host`, never while discovering: plan 011 saves when `isHost` and a majority. Readable after `stop()`.
     var isHost: Bool { role == .host }
     var isJoiner: Bool { if case .client = role { true } else { false } }
+    var hasGameQuorum: Bool { members.count * 2 > gameMembers.count }
+    /// Every phone seen in this game's roster (the game's members).
+    private(set) var gameMembers: Set<PeerID> = []
+    /// The roster as this link last heard it.
+    private var members: [PeerID] = []
     /// Last log seq this link has seen in a snapshot (a processing barrier for tests).
     private(set) var handledLastSeq: UInt64 = 0
     /// The last commit point forwarded to `onCommittedLog`.
@@ -112,7 +120,7 @@ extension GameMeshLink {
             await s.start()
             for await u in s.updates {
                 switch u {
-                case .rosterChanged(let roster): self?.peerCount = max(1, roster.count)
+                case .rosterChanged(let roster): self?.peerCount = max(1, roster.count); self?.see(roster)
                 case .roleChanged(let role, _): self?.resolve(role)
                 case .logChanged: await self?.forwardCommitted(from: s)
                 default: break
@@ -126,6 +134,7 @@ extension GameMeshLink {
         let snap = await s.snapshot()
         guard !Task.isCancelled else { return }
         resolve(snap.role)
+        see(snap.roster)
         handledLastSeq = max(handledLastSeq, snap.log.last?.seq ?? 0)
         guard snap.commitSeq > commitSeq else { return }
         for entry in snap.log where entry.seq > commitSeq && entry.seq <= snap.commitSeq {
@@ -134,6 +143,11 @@ extension GameMeshLink {
         commitSeq = snap.commitSeq
         lastCommitAdvance = Date()
         onCommittedLog?(snap.log.filter { $0.seq <= snap.commitSeq }, snap.commitSeq)
+    }
+
+    private func see(_ roster: [PeerID]) {
+        members = roster
+        gameMembers.formUnion(roster)
     }
 
     func stop() {

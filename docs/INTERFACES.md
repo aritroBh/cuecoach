@@ -430,6 +430,7 @@ enum GameEvent: Hashable, Codable, Sendable {
     var isStopped: Bool { get }
     var isHost: Bool { get }
     var commitSeq: UInt64 { get }
+    var hasGameQuorum: Bool { get }             // plan 011: current roster > half of every phone seen in this game
     var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)? { get set }
     func start()
     func stop()
@@ -483,50 +484,45 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 - `rulesAdvanced(_:)`, `record(rating:)` and the two-value `shotSettled(rating:turnPasses:)` /
   `LiveSession.settled(rating:turnPasses:)` are gone (callers pass a `SettledShot` with its outcome): the shell no longer binds `LiveHooks.gameAdvanced`; the fold owns the rules state.
 
-## Proposed (plan 006 — not approved)
-
-Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. `Shot.isGuess` is a Competitive V3 migration and is not part of this contract.
-
-Plan 002 adds `before` and `after` on `SettledShot` and `SessionShot`. This section uses that shape.
+## Game saving (plan 011; D37, D40, D45)
 
 ```swift
-// The widened MeshShotRecord, the new GameEvent cases (a protocol major-2 bump, since adding a case breaks
-// logEntries on an older build), the GameMeshLink log members and the GameSessionModel fold moved to
-// "Shot log (plan 009)" above. What remains here is the save follow-up (plan 011).
-
-// Host or solo phone → competitive store only. Joiners never call it. Training never builds one.
-protocol GameRecorder: Sendable {
-    func record(_ game: FinishedGame) throws
+// CueCoach/Persistence/GameRecorder.swift. Main actor: PersistenceStack is @MainActor.
+@MainActor protocol GameRecorder: AnyObject {
+    func record(_ game: FinishedGame) throws   // upsert by id: a repeat changes nothing
 }
+@MainActor final class StackGameRecorder: GameRecorder { init(stack: PersistenceStack) }   // competitiveContext only
 
-struct FinishedGame: Sendable {
-    var id: UUID                        // first committed shot's shotID
+struct FinishedGame: Hashable, Sendable {
+    var id: UUID                        // first committed shot's shotID (a gap counts); also the Session's id
     var ruleSet: RuleSetID
-    var tableSize: TableSize
-    var teams: [StoredTeam]             // lineup at start; mid-game swaps are not logged yet
-    var winnerTeam: Int?                // nil = unfinished, and only if the user chose to save those
+    var tableSize: TableSize            // on Session (Game has no table size)
+    var format: GameFormat              // on Session; from the even team size (setup forbids uneven teams)
+    var teams: [StoredTeam]             // config lineup; mid-game swaps are not logged yet (orderChanges [])
+    var winnerTeam: Int                 // D40: only a rack with a winner is saved
     var winProbSeries: [Double]         // [] until the engine runs; profile WPA skips an empty series
-    var startedAt: Date
-    var endedAt: Date?                  // nil only for an unfinished save
-    var shots: [RecordedShot]           // isGuess shots omitted until V3
+    var startedAt: Date                 // the GameSessionModel's creation
+    var endedAt: Date                   // when the winning commit folded
+    var shots: [RecordedShot]           // isGuess (until plan 012) and D38 gap shots omitted; others keep their index
 }
 
-struct RecordedShot: Sendable {
+struct RecordedShot: Hashable, Sendable {
     var id: UUID
-    var index: Int
-    var shooterID: UUID
-    var team: Int
+    var index: Int                      // the folded shot index (gaps and guesses leave holes)
+    var shooterID: UUID                 // ShellPlayer.id (guests as plain ids, design §6)
+    var team: Int                       // not a Shot column: saved review derives it from StoredTeam.memberIDs
     var attributionSource: AttributionSource   // .turnOrder, or .tap after shooterCorrection
-    var preState: TableState
+    var preState: TableState            // empty ball map when unknown
     var postState: TableState
     var calledPocket: Pocket?           // nil
-    var firstContact: BallID?
+    var firstContact: BallID?           // ShotOutcome.firstContact
     var railsAfterContact: Int          // 0 means unknown, not "no rail"
     var pocketed: [BallID: Pocket]
     var fouls: [Foul]
-    var features: ShotFeatures          // extract(pre:post:empty trace) when the cue is in pre; else neutral and skip in Aggregates
+    var features: StoredShotFeatures    // ShotFeatures.extract(pre:post:empty trace) when the cue is in pre; else neutral
+                                        // (the Shot → CompetitiveShot projection must skip neutral ones: no column says so)
     var made: Bool                      // an object ball was pocketed
-    var onTarget: Bool                  // made, when nothing was called
+    var onTarget: Bool                  // made (nothing is called)
     var cueResult: CueResult            // .notApplicable
     var decisionRating: DecisionRating
     var executionRating: ExecutionRating // .made / .miss from `made`; position .notApplicable
@@ -536,9 +532,35 @@ struct RecordedShot: Sendable {
     var clipRef: String?                // nil
 }
 
-// finishRack() — if isHost (or mesh == nil) and commitSeq covers the rack and the roster still has a
-//                majority, GameRecorder.record. Skips isGuess shots. Training has no GameSessionModel, so
-//                this is unreachable from LiveSession.mode == .training.
+// GameSessionModel
+@ObservationIgnored var recorder: (any GameRecorder)?   // AppRouter.recorder, from ShellEnvironment.recorder
+func finishedGame() -> FinishedGame?                    // nil while the folded rules state has no winner
 ```
 
-`GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
+Rules:
+- One writer: solo (`mesh == nil`), or `mesh.isHost && mesh.hasGameQuorum`. `isHost` is role `.host` only; never
+  `!isJoiner`: a discovering phone never saves. A commit alone is not enough: after a host loss `MeshNode` shrinks its
+  commit quorum, so a lone survivor of two phones commits alone. `GameMeshLink.hasGameQuorum` is true only when the
+  current roster is a strict majority of the game's members (every phone seen in this game's roster; a late joiner
+  only raises the bar). An island never saves; plan 013 saves island games after the merge.
+- The saved rack is the folded shots up to and including the one that gave it its winner. A retry after a failed
+  save sends the same rack; shots committed after the win are never added.
+- D45: the save runs in `GameSessionModel` on the commit that gives the folded rack its winner, not in `endGame`.
+  `endGame` never writes. Once saved, later commits and `endGame` write nothing more; a save that throws is logged
+  (`os.Logger`) and retried on the next commit, and never blocks review.
+- D40: no winner, no row. A quit or kill mid-rack leaves nothing.
+- `StackGameRecorder` inserts `Session` + `Game` (index 0) + `Shot`s into `competitiveContext` only, upserting by id
+  (an existing row is updated in place, never duplicated), and saves once. It never takes a training context.
+- Training has no `GameSessionModel` (`LiveSession.game == nil`), so it can't reach the recorder.
+
+## Proposed (plan 006 — not approved)
+
+Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. `Shot.isGuess` is a Competitive V3 migration and is not part of this contract.
+
+Plan 002 adds `before` and `after` on `SettledShot` and `SessionShot`. This section uses that shape.
+
+```swift
+// The widened MeshShotRecord, the new GameEvent cases (a protocol major-2 bump, since adding a case breaks
+// logEntries on an older build), the GameMeshLink log members and the GameSessionModel fold moved to
+// "Shot log (plan 009)" above; GameRecorder, FinishedGame and RecordedShot moved to "Game saving (plan 011)".
+```
