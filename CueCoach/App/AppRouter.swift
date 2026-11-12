@@ -92,6 +92,7 @@ final class AppRouter {
     func startGame(_ config: GameConfig) {
         if case .live(let old)? = stage { old.game?.mesh?.stop(); old.game?.mesh = nil }
         let game = GameSessionModel(config: config)
+        game.recorder = recorder
         if let tag = config.sessionTag, let link = meshFactory?(tag) {
             link.start()
             game.mesh = link

@@ -42,10 +42,12 @@ struct StoredTableMeasurement: TableMeasurementSource {
     static func production(makeStack: () throws -> PersistenceStack = { try PersistenceStack() }) -> Boot {
         guard let stack = try? makeStack() else { return .storeUnavailable }
         let owners = PersistenceOwnerStore(stack: stack)
-        return .ready(ShellEnvironment(roster: PersistenceRoster(stack: stack), owners: owners,
-                                       settings: PersistenceSettingsStore(stack: stack),
-                                       mesh: MPCGameLobby(localName: { owners.owner?.name ?? "Phone" }),
-                                       measurement: StoredTableMeasurement(), defaults: .standard))
+        let env = ShellEnvironment(roster: PersistenceRoster(stack: stack), owners: owners,
+                                   settings: PersistenceSettingsStore(stack: stack),
+                                   mesh: MPCGameLobby(localName: { owners.owner?.name ?? "Phone" }),
+                                   measurement: StoredTableMeasurement(), defaults: .standard)
+        env.recorder = StackGameRecorder(stack: stack)
+        return .ready(env)
     }
 
     static func current(_ args: [String] = ProcessInfo.processInfo.arguments) -> Boot {

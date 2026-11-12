@@ -20,6 +20,8 @@ struct SessionShot: Hashable, Sendable {
     var after: [BallID: Vec2] = [:]
     /// `.turnOrder` (D17), or `.tap` once a logged `shooterCorrection` fixed this shot's team.
     var attribution: AttributionSource = .turnOrder
+    /// `ShotOutcome.firstContact` (nil for a gap).
+    var firstContact: BallID? = nil
 }
 
 /// In-game state the chrome shows: whose turn (D17 rotation), the post-shot badge, rated shots for review.
@@ -69,6 +71,11 @@ final class GameSessionModel {
     @ObservationIgnored private var askAnsweredAt = -1
     /// Saves the finished rack (plan 011). nil = nothing is saved.
     @ObservationIgnored var recorder: (any GameRecorder)?
+    @ObservationIgnored private let startedAt = Date()
+    /// When the fold first gave the rack a winner (the saved `endedAt`).
+    @ObservationIgnored private var wonAt: Date?
+    /// This phone saved the rack: later commits and `endGame` write nothing more.
+    @ObservationIgnored private var saved = false
 
     init(config: GameConfig) {
         self.config = config
@@ -202,7 +209,26 @@ final class GameSessionModel {
         }
         // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
         if !fresh.isEmpty { pushLegal() }
+        saveIfWon()
     }
+
+    /// D45: the commit that gives the rack its winner saves it, on the one writer: solo, or the host (role `.host`
+    /// only, never `!isJoiner`; a discovering phone never saves). The majority is the commit itself: only the
+    /// committed prefix is folded. A throw is logged and retried on the next commit; it never blocks play or review.
+    private func saveIfWon() {
+        guard winner != nil else { return }
+        if wonAt == nil { wonAt = Date() }
+        guard !saved, let recorder, mesh == nil || mesh?.isHost == true, let game = finishedGame() else { return }
+        do {
+            try recorder.record(game)
+            saved = true
+        } catch {
+            StackGameRecorder.log.error("saving the finished rack failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// The folded rack's winning team, when it has one.
+    private var winner: Int? { rulesState.winner.flatMap { config.teams.indices.contains($0) ? $0 : nil } }
 
     /// The shooter's legal targets in the committed folded state, to Live's rings.
     private func pushLegal() {
@@ -245,7 +271,8 @@ final class GameSessionModel {
                 shots.append(SessionShot(id: r.shotID, index: shots.count, shooter: shooter, team: shootingTeam,
                                          rating: rating, pocketed: r.outcome.pocketed, fouls: result.fouls,
                                          isGuess: r.isGuess, before: Self.positions(r.preState),
-                                         after: Self.positions(r.postState), attribution: attribution))
+                                         after: Self.positions(r.postState), attribution: attribution,
+                                         firstContact: r.outcome.firstContact))
                 rulesState = result.nextState
                 if result.turnPasses { passTurn() }
             case .shotLost(let id, _):
@@ -269,7 +296,18 @@ final class GameSessionModel {
     private static func positions(_ t: TableState?) -> [BallID: Vec2] { t?.balls.mapValues(\.position) ?? [:] }
 
     /// The finished rack to save, or nil while the folded rules state has no winner (D40).
-    func finishedGame() -> FinishedGame? { nil }
+    /// Shots keep their folded index; D38 gaps and D31 guesses are left out (plan 012 saves guesses).
+    /// nil too when the teams fit no `GameFormat` (setup forbids uneven or over-four teams).
+    func finishedGame() -> FinishedGame? {
+        guard let winner, let first = shots.first,
+              let format = GameFormat.allCases.first(where: { $0.playersPerTeam == config.playersPerTeam }),
+              config.teams.allSatisfy({ $0.count == format.playersPerTeam }) else { return nil }
+        let teams = config.teams.map { t in StoredTeam(memberIDs: t.map(\.id), shootingOrder: t.map(\.id)) }
+        return FinishedGame(id: first.id, ruleSet: config.ruleSet, tableSize: config.tableSize, format: format,
+                            teams: teams, winnerTeam: winner, winProbSeries: [], startedAt: startedAt,
+                            endedAt: wonAt ?? Date(),
+                            shots: shots.compactMap { RecordedShot($0, tableSize: config.tableSize) })
+    }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one
     /// rack per game session), finished only when the rack is over (a mid-rack quit stays locked).
