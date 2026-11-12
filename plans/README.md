@@ -25,7 +25,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | DONE (merged acd3ebd; Codex REJECT → APPROVE; unit 1320/1320, AppShell UI 12/12) |
 | 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | DONE (merged e50bac2; Codex APPROVE; unit 1329/1329, AppShell UI 12/12) |
 | 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | TODO (Q12 = D44 island + merge; "needs tap" UI still to mock first) |
-| 014 | Pro 8 (88″) and 86″ table presets (D46) | P2 | M | 005 (009 for the mesh step) | TODO |
+| 014 | Pro 8 (88″) and 86″ table presets (D46) | P2 | M | 005 (009 for the mesh step) | STOPPED at step 4 (wt/plan-014): -O matrix 1 standard-table false lock (dist-2.0m seed 3, 7 ft locked wrong size, 17.4 cm), in-scope 87.3 % < 92.0; needs a head/user decision |
 | 015 | Fix a recorded shot's shooter from Game Review by long-press (D49) | P2 | M | 009, 011 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
