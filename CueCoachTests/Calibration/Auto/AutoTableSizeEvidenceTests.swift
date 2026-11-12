@@ -100,7 +100,9 @@ struct AutoTableSizeEvidenceTests {
 /// axis picks one of two presets by a 2 % margin. Cross-vendor review (GLM-5): it measures the size only if its axis
 /// alone leaves exactly one preset, the corner-partial rule.
 struct AutoTableThreeRailSizeTests {
-    @Test(arguments: [(2.032, true), (2.337, true), (2.54, true), (2.43, false), (2.40, false), (2.17, false)])
+    // D46: Pro 8 (2.235 m) is 4.4 % below 8 ft, so an 8 ft axis alone no longer leaves one preset.
+    @Test(arguments: [(2.032, true), (2.337, false), (2.54, true), (2.43, false), (2.40, false), (2.17, false),
+                      (2.235, false), (2.6, true)])
     func threeRailSizeIsMeasuredOnlyWhenOnePresetFits(length: Double, measured: Bool) {
         #expect(AutoRectFitter.uniquePreset(length: length) == measured, "\(length)")
     }

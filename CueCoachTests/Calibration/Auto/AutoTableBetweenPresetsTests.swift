@@ -114,7 +114,7 @@ struct AutoTableUnlistedSizeTests {
     }
 
     /// Per-frame fits are ±5 % on length at shallow views: noisy preset tables lock as their preset.
-    @Test(arguments: TableSize.allCases)
+    @Test(arguments: [TableSize.sevenFoot, .eightFoot, .nineFoot])
     func noisyPresetFitsStillLockAsThePreset(size: TableSize) throws {
         var rng = AutoTestRNG(seed: 5)
         let L = size.playingLength
@@ -123,8 +123,20 @@ struct AutoTableUnlistedSizeTests {
         #expect(f.fused?.snappedSize == size)
     }
 
+    /// D46: 86″ and Pro 8 sit 2.3 % apart, inside the per-frame ambiguity margin's reach, so noisy fits of them lock
+    /// as themselves when the player picked the size (the prior, D36 C).
+    @Test(arguments: [TableSize.eightySixInch, .proEight])
+    func noisyFitsOfAChosenNewPresetLockAsIt(size: TableSize) throws {
+        var rng = AutoTestRNG(seed: 5)
+        let L = size.playingLength
+        let f = Self.fused((0..<30).map { _ in L * (1 + rng.uniform(-0.035, 0.035)) }, prior: size)
+        #expect(f.locked)
+        #expect(f.fused?.snappedSize == size)
+    }
+
+    /// 2.11 m sits between 7 ft and 86″ (D46), within 6 % of both and nearly as close to each: no preset.
     @Test func anInSpanUnlistedSizeTellsTheUserItsTheSize() {
-        let f = Self.fused(Array(repeating: 2.18, count: 30))
+        let f = Self.fused(Array(repeating: 2.11, count: 30))
         #expect(!f.locked)
         #expect(f.sizeBetweenPresets)
         #expect(AutoTableLocating.convergingFailure(spread: 0.005, awaitingSize: true, sizeBetweenPresets: true) == .unusualSize)
@@ -188,7 +200,8 @@ struct AutoTableUnlistedSizeTests {
         #expect(AutoRectFitter.sizeVerdict(length: L, width: W, prior: .sevenFoot) == .ambiguous)
         // Never touches an unambiguous verdict.
         #expect(AutoRectFitter.sizeVerdict(length: 2.34, width: 1.17, prior: .nineFoot) == .preset(.eightFoot))
-        #expect(AutoRectFitter.sizeVerdict(length: 2.18, width: 1.09, prior: .eightFoot) == .measured)
+        #expect(AutoRectFitter.sizeVerdict(length: 2.18, width: 1.09, prior: .eightFoot) == .preset(.eightySixInch))
+        #expect(AutoRectFitter.sizeVerdict(length: 1.80, width: 0.90, prior: .sevenFoot) == .measured)
     }
 
     /// Steady four-rail fits measuring ≈ 2.435 m (8 ft read ~4 % long, or 9 ft read ~4 % short). The rendered table
@@ -226,10 +239,10 @@ struct AutoTableUnlistedSizeTests {
         #expect(run.perFrame.contains { $0.frame.rejection == "size ambiguous" })
     }
 
-    /// Rendered end to end: an in-span 2.18 m table waits with the between-presets flag set.
+    /// Rendered end to end: an in-span 2.11 m table (between 7 ft and 86″) waits with the between-presets flag set.
     @Test func renderedBetweenPresetsTableWaitsWithTheSizeHint() throws {
         var scene = AutoSyntheticScene()
-        scene.lengthOverride = 2.18
+        scene.lengthOverride = 2.11
         let run = autoRun(scene, elevation: 40, frames: 18)
         #expect(run.estimate.state != .locked)
         #expect(run.estimate.frame.sizeBetweenPresets)
