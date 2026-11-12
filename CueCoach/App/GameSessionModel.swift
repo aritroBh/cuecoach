@@ -175,8 +175,8 @@ final class GameSessionModel {
 
     // MARK: The log
 
-    /// Solo, or this phone hosts the mesh.
-    private var writesLog: Bool { mesh?.isHost ?? true }
+    /// Solo, the host, or a phone whose role is unresolved (the link buffers it; a joiner then drops its shots).
+    private var writesLog: Bool { !(mesh?.isJoiner ?? false) }
 
     /// Solo: commits at once. Mesh: the host appends (a client proposes); the commit comes back through `ingest`.
     private func append(_ event: GameEvent) {

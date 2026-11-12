@@ -449,15 +449,18 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 - `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
   `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
 - `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
-  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped);
-  `roleChanged` sets the role; `isHost` is false only as a client (true while discovering, so early settles reach the
-  link). Appends made while discovering are queued and flushed in order when the role resolves: a host appends all;
-  a joiner drops its own `.shot`/`.shotLost` (D39) and proposes the rest (D41 disc taps survive). Otherwise `append`
+  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped).
+  The role comes from `roleChanged` and from each forwarded snapshot. `isHost` only as `.host` (never while
+  discovering: plan 011 saves on `isHost`); `isJoiner` only as a client; the model writes unless `isJoiner`.
+  Inputs made while discovering are buffered and flushed in order when the role resolves: a host appends all; a
+  joiner drops its own `.shot`/`.shotLost` (D39) and proposes the rest (D41 disc taps survive). Otherwise `append`
   forwards to `MeshSession.append`, in call order. `commitSeq` is the last forwarded value and stays readable after `stop()`.
-- `drainAppends(within:then:)` (default: `then` at once): waits until the queue is empty and the host's own appends
-  are committed and forwarded, at most `within` seconds (D42), then calls `then`. `AppRouter.endGame()` drains for
-  ≤ 2 s before it stops the link and builds review, so the last settled shot is reviewed. A joiner's in-flight
-  proposal is not tracked.
+- `isJoiner` (default `!isHost`) and `drain(until:) async` (default: returns at once) on `GameMeshLink`. Drain:
+  host, every local input seen committed; joiner, every proposal seen committed (matched by event), then no
+  uncommitted tail and no `commitSeq` advance for 300 ms. Always ends at the deadline.
+- `AppRouter.endGame()` leaves Live at once: the review stage gets a loading `GameReviewModel` whose
+  `MeshReviewSource` awaits the drain (cancelled at End + 2 s, D42), snapshots `reviewData()`, then stops the link.
+  It loads once; a repeat `endGame()` / `liveClosed()` is a no-op. Solo games review at once.
 - `ingest(log:commitSeq:)`: folds the entries with `seq ≤ commitSeq`, in `seq` order. The uncommitted tail never shows.
   The model sets `mesh.onCommittedLog` to it when `mesh` is set.
 - Fold (pure, from scratch on every change, from the `GameConfig` lineup and `TargetLegality.startingGame`):
