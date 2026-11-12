@@ -81,6 +81,8 @@ final class AppRouter {
     private(set) var stage: ShellStage?
     /// Builds the game's mesh from the lobby's session tag (production: `MeshGameLink`).
     @ObservationIgnored var meshFactory: ((UInt16) -> any GameMeshLink)?
+    /// Saves each game's finished rack (production: `StackGameRecorder`; nil = nothing is saved).
+    @ObservationIgnored var recorder: (any GameRecorder)?
 
     func openGame() { path = [.gameHub] }
     func openNewGame() { path = [.gameHub, .newGame] }

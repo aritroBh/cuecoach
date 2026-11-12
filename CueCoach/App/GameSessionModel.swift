@@ -67,6 +67,8 @@ final class GameSessionModel {
     @ObservationIgnored private var badged: Set<UUID> = []
     /// D38: an aim answered the ask once this many events were folded (the current shooter keeps the turn).
     @ObservationIgnored private var askAnsweredAt = -1
+    /// Saves the finished rack (plan 011). nil = nothing is saved.
+    @ObservationIgnored var recorder: (any GameRecorder)?
 
     init(config: GameConfig) {
         self.config = config
@@ -265,6 +267,9 @@ final class GameSessionModel {
     }
 
     private static func positions(_ t: TableState?) -> [BallID: Vec2] { t?.balls.mapValues(\.position) ?? [:] }
+
+    /// The finished rack to save, or nil while the folded rules state has no winner (D40).
+    func finishedGame() -> FinishedGame? { nil }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one
     /// rack per game session), finished only when the rack is over (a mid-rack quit stays locked).
