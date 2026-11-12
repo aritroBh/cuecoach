@@ -128,13 +128,13 @@ struct GameSetupView: View {
                 ForEach(TableSize.allCases, id: \.self) { s in
                     let measured = model.measuredTable == s
                     ChoiceTile(selected: model.tableSize == s, id: "setup.table.\(s.rawValue)",
-                               label: "\(SettingsViewModel.feet(s)) foot" + (measured ? ", measured" : "")) {
+                               label: SettingsViewModel.tableSpokenLabel(s) + (measured ? ", measured" : "")) {
                         model.tableSize = s
                     } content: {
                         SATableSilhouette(size: s).frame(height: 40)
                         HStack(spacing: 4) {
                             if measured { Image(systemName: "ruler.fill").axFont(.small, weight: .semibold).foregroundStyle(AX.legal) }
-                            Text("\(SettingsViewModel.feet(s)) ft").axFont(.headline).monospacedDigit()
+                            Text(SettingsViewModel.tableShortLabel(s)).axFont(.headline).monospacedDigit()
                         }
                     }
                 }

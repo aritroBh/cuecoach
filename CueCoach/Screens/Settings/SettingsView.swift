@@ -223,7 +223,9 @@ public struct SettingsView: View {
             AXSectionHeader("Table")
             SACard(padding: 12) {
                 VStack(alignment: .leading, spacing: 8) {
-                    SAAdaptiveStack(spacing: 8) {
+                    // Five sizes (D46): three per row, one per row at accessibility type sizes.
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8),
+                                             count: typeSize.isAccessibilitySize ? 1 : 3), spacing: 8) {
                         ForEach(TableSize.allCases, id: \.self) { size in
                             TableTile(size: size, selected: model.tableSize == size,
                                       label: model.tableAccessibilityLabel(size)) {
@@ -417,7 +419,7 @@ private struct TableTile: View {
         Button(action: action) {
             VStack(spacing: 8) {
                 SATableSilhouette(size: size).frame(height: 44)
-                Text("\(SettingsViewModel.feet(size)) ft")
+                Text(SettingsViewModel.tableShortLabel(size))
                     .axFont(.headline).monospacedDigit()
                     .foregroundStyle(selected ? AX.ink : AX.inkMuted)
             }

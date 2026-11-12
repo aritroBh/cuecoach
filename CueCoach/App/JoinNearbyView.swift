@@ -180,10 +180,10 @@ private struct LineupStrip: View {
             HStack(spacing: 12) {
                 SARuleBall(number: SettingsViewModel.ruleBall(lineup.ruleSet), size: 32)
                 SATableSilhouette(size: lineup.tableSize).frame(width: 56, height: 28)
-                Text("\(SettingsViewModel.feet(lineup.tableSize)) ft").axFont(.headline).foregroundStyle(AX.inkMuted)
+                Text(SettingsViewModel.tableShortLabel(lineup.tableSize)).axFont(.headline).foregroundStyle(AX.inkMuted)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(SettingsViewModel.ruleLabel(lineup.ruleSet)), \(SettingsViewModel.feet(lineup.tableSize)) foot table")
+            .accessibilityLabel("\(SettingsViewModel.ruleLabel(lineup.ruleSet)), \(SettingsViewModel.tableSpokenLabel(lineup.tableSize)) table")
             .accessibilityIdentifier("join.lineup.rules.\(lineup.ruleSet.rawValue)")
             FlowRow(spacing: 8) {
                 ForEach(order, id: \.self) { seat in
