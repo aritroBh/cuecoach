@@ -198,7 +198,7 @@ import Rules
         live.settled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
         r.endGame()
         #expect(await poll(3) { if case .review = r.stage { true } else { false } })
-        guard case .review(let data)? = r.stage else { Issue.record("no review"); return }
+        guard case .review(let review)? = r.stage, let data = review.data else { Issue.record("no review"); return }
         #expect(data.shots.map(\.rating) == [.best])
         #expect(await poll(2) { host.0.isStopped })
         joiner.0.stop()

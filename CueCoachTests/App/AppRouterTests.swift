@@ -103,7 +103,7 @@ import Training
         guard case .live(let s)? = r.stage, let game = s.game else { Issue.record("no game"); return }
         game.shotSettled(SettledShot(rating: .great, turnPasses: true, outcome: ShotOutcome()))
         r.endGame()
-        guard case .review(let data)? = r.stage else { Issue.record("no review"); return }
+        guard case .review(let review)? = r.stage, let data = review.data else { Issue.record("no review"); return }
         #expect(data.shots.count == 1)
         #expect(data.shots.first?.rating == .great)
         #expect(!data.isFinished)                 // ended mid-rack: no winner yet

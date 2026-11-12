@@ -108,12 +108,8 @@ struct ShellMain: View {
                 // The camera is the ground: Live always draws in Astryx dark (D34 design call). Scoped through the
                 // environment, not `preferredColorScheme`, which would stick to the cover when it turns into Review.
                 .environment(\.colorScheme, .dark)
-        case .review(let data)?:
-            GameReviewView(model: {
-                let m = GameReviewModel(data: data)
-                m.onDone = { [router] in router.finishReview() }
-                return m
-            }())
+        case .review(let model)?:
+            GameReviewView(model: model)
             .environment(\.sbForceReduceMotion, env.reduceMotion)
         case nil:
             AXLive.stage

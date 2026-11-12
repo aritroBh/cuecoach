@@ -69,7 +69,7 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
 /// What fills the full-screen cover above the navigation stack.
 @MainActor enum ShellStage {
     case live(LiveSession)
-    case review(GameReviewData)
+    case review(GameReviewModel)
 }
 
 /// The app's navigation state machine (docs/design/app-shell.md).
@@ -106,17 +106,23 @@ final class AppRouter {
     /// commit), at most 2 s (D42: never stuck), then reviews what is committed.
     func endGame() {
         guard case .live(let s)? = stage, let game = s.game, ending !== s else { return }
-        guard let link = game.mesh else { stage = .review(game.reviewData()); return }
+        guard let link = game.mesh else { stage = .review(review(game.reviewData())); return }
         ending = s
         link.drainAppends(within: 2) { [weak self] in
             link.stop()
             if game.mesh === link { game.mesh = nil }
             guard let self, self.ending === s else { return }
             self.ending = nil
-            if case .live(let now)? = self.stage, now === s { self.stage = .review(game.reviewData()) }
+            if case .live(let now)? = self.stage, now === s { self.stage = .review(self.review(game.reviewData())) }
         }
     }
     @ObservationIgnored private var ending: LiveSession?
+
+    private func review(_ data: GameReviewData) -> GameReviewModel {
+        let m = GameReviewModel(data: data)
+        m.onDone = { [weak self] in self?.finishReview() }
+        return m
+    }
 
     /// LiveScreen dismissed itself (its own ✕). Game → review; Training → back to the drill picker.
     func liveClosed() {
