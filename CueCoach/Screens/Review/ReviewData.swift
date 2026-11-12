@@ -118,15 +118,17 @@ extension GameReviewData {
 
         let shots = game.shots.sorted { $0.index < $1.index }.map { s -> ReviewShot in
             let pre = s.preState, post = s.postState
-            let decodable = !pre.balls.isEmpty
+            // A D31 guess has no camera-seen after table: no replay rather than a made-up one (as live review).
+            let decodable = !pre.balls.isEmpty && !s.isGuess
             let pocketed = s.pocketed
             let traced = analysis?.actualPaths(shotID: s.id)
-            let paths = traced ?? (decodable ? ReviewPaths.straight(pre: pre, post: post, pocketed: pocketed) : [:])
+            let paths = s.isGuess ? [:]
+                : traced ?? (decodable ? ReviewPaths.straight(pre: pre, post: post, pocketed: pocketed) : [:])
             return ReviewShot(id: s.id, index: s.index, shooter: player(s.shooterID), team: team(of: s.shooterID),
                               rating: s.decisionRating, pre: decodable ? pre : nil, post: decodable ? post : nil,
                               pocketed: pocketed, fouls: s.fouls, paths: paths,
                               alternative: analysis?.alternative(shotID: s.id), wpaDelta: s.wpaDelta,
-                              pathsAreTraced: traced != nil)
+                              pathsAreTraced: traced != nil && !s.isGuess, isGuess: s.isGuess)
         }
 
         var score = [0, 0]

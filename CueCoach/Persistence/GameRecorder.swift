@@ -48,12 +48,14 @@ struct RecordedShot: Hashable, Sendable {
     var isClutch: Bool
     var timeOnShot: Double
     var clipRef: String?
+    /// D31/D43: `pocketed` is a best guess; stored as `Shot.isGuess` so stats skip it.
+    var isGuess: Bool
 }
 
 extension RecordedShot {
-    /// A rated, non-guessed folded shot, per the field table (design §3). nil for a D38 gap or a D31 guess.
+    /// A rated folded shot (a D31 guess too, flagged), per the field table (design §3). nil for a D38 gap.
     init?(_ s: SessionShot, tableSize: TableSize) {
-        guard let rating = s.rating, !s.isGuess else { return nil }
+        guard let rating = s.rating else { return nil }
         let spec = TableSpec(size: tableSize)
         let pre = TableState(spec: spec, balls: s.before.mapValues { BallState(position: $0) })
         let post = TableState(spec: spec, balls: s.after.mapValues { BallState(position: $0) })
@@ -66,7 +68,7 @@ extension RecordedShot {
                   railsAfterContact: 0, pocketed: s.pocketed, fouls: s.fouls, features: StoredShotFeatures(features),
                   made: made, onTarget: made, cueResult: .notApplicable, decisionRating: rating,
                   executionRating: ExecutionRating(result: made ? .made : .miss, position: .notApplicable),
-                  wpaDelta: 0, isClutch: false, timeOnShot: -1, clipRef: nil)
+                  wpaDelta: 0, isClutch: false, timeOnShot: -1, clipRef: nil, isGuess: s.isGuess)
     }
 }
 
@@ -126,7 +128,7 @@ extension StoredShotFeatures {
                                 pocketed: r.pocketed, fouls: r.fouls, features: r.features, made: r.made,
                                 onTarget: r.onTarget, cueResult: r.cueResult, decisionRating: r.decisionRating,
                                 executionRating: r.executionRating, wpaDelta: r.wpaDelta, isClutch: r.isClutch,
-                                timeOnShot: r.timeOnShot, clipRef: r.clipRef)
+                                timeOnShot: r.timeOnShot, clipRef: r.clipRef, isGuess: r.isGuess)
                 ctx.insert(shot)
                 shot.game = game
             }
@@ -155,5 +157,6 @@ extension StoredShotFeatures {
         shot.isClutch = r.isClutch
         shot.timeOnShot = r.timeOnShot
         shot.clipRef = r.clipRef
+        shot.isGuess = r.isGuess
     }
 }
