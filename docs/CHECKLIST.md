@@ -2,6 +2,28 @@
 
 Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 
+## NOW — single source of truth (updated 2026-11-11; everything below is history)
+Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; Antigravity out of quota): integrate serially, one build at a time, head owns all builds; prepare in parallel with `swift test` only.
+
+1. [~] Combined gate at head: unit 1253/1253 ✔, UI suite running → push `phase/1-core`
+2. [ ] Plan 009 fold the shot log (Claude writes, Codex reviews) → merge · in parallel: plan 014 steps 1–2 (CueCore presets, `swift test` only)
+3. [ ] Refresh 010–013 excerpts against the post-009 head
+3a. [ ] Plan 010 mesh forwards the committed log → merge
+4. [ ] Plan 011 save the finished rack on the winning commit (D45) → merge
+5. [ ] Plan 012 `Shot.isGuess` V3 migration (D43) → merge
+6. [ ] Plan 014 steps 3–6 (auto-fit precedence, lock matrix alone on the sim, mesh under major 2)
+7. [ ] Plan 013 host loss + island merge (D44); needs the two answers below and a UI mock first
+8. [ ] Plan 005 follow-up MINOR: size hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift:180`)
+9. [ ] Final simulator QA pass (XCUITest), then erase QA sims
+
+Blocked on the user / phones:
+- [!] D41 detail: how a recorded shot (e.g. a D38 gap's shooter) gets corrected — no correction action exists yet
+- [!] D44 detail: what the "one tap" picks on a disagreement, and whether a joiner's own badges during an island are provisional (D39 exception)
+- [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max
+- [!] Real-table footage (The Rive) → detector validation, default detector choice
+- [!] Recognition: face model yes/no, clothing templates on disk vs session, expiry, pro profiles split; D29 stick-visible veto scope
+
+
 ## Step 0 — Bootstrap
 - [x] git init, directory layout, CLAUDE.md, SPEC/DECISIONS/CHECKLIST
 - [x] .gitignore, XcodeGen project, CueCore package skeleton (Geometry contracts TDD, 9 tests green)
@@ -33,9 +55,9 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [x] Persistence: training/competitive isolation test
 - [x] Design system (design-system/cuecoach/MASTER.md via ui-ux-pro-max)
 - [x] Virtual table REMOVED from the app (D20); code archived locally (archive/vtable-devtool), not shipped
-- [ ] Cross-vendor review of every module, findings fixed
-- [ ] Device run on iPhone 15 Pro Max, design review
-- [ ] Merge, delete branches/worktrees, clean status
+- [x] Cross-vendor review of every module, findings fixed — done module by module (ledger in docs/AGENTS.md); open items now tracked in NOW
+- [x] Device run on iPhone 15 Pro Max, design review — moved to NOW › Blocked
+- [x] Merge, delete branches/worktrees, clean status — done per merge; NOW tracks the rest
 
 ## Ahead-of-phase research (workflow wf_b972a7fb, running in parallel)
 - [~] docs/RATINGS.md — research (workflow) reconciled with docs/RATING_CLASSES.md (D18, 10 classes — done)
@@ -49,7 +71,7 @@ Parallel now: Physics fix (Codex) · Virtual table review (Antigravity) · Phase
 - [~] Ball detection v0 (classical, real-time) + tracker v0 — Claude, .worktrees/capture
 - [~] Core ML ball detector: pipeline committed (2efd72d, 3,200 synthetic imgs); Codex sandbox had no network → orchestrator training YOLO26n 30 epochs on MPS (slow network: package download in progress)
 - [~] Live screen: AR v0 INSTALLED on both phones (5b5558a): plane → tap 4 corners → 3D table + pockets → ball rings → aim line; debug HUD. Next: auto corners, 4K, thermal, tests, Codex+Antigravity review
-- [ ] Real-table footage from the user (The Rive) for tuning + held-out test video
+- [x] Real-table footage from the user (The Rive) for tuning + held-out test video — moved to NOW › Blocked
 - [x] Post-shot VLM benchmark (D22→D23): Apple FM 26–28% / Qwen3.5-2B 39% / Gemma-4-E2B 31–33%, all at chance on vision; Apple FM text-only labels + rule fallback; merged
 
 ## All-modules push (workflow wf_4253a676, user: "use all agents", 2026-11-06)
@@ -81,7 +103,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [~] Merge reviews: stats, training, screens-a, audit (Codex review → Claude verify → fix → reverify)
 - [~] AR adversarial stress test (.worktrees/capture-stress)
 - [x] Engine merged (APPROVE r2; 103 tests) · Mesh merged (APPROVE r2; 12 findings fixed incl. host-migration log recovery). Phase app tests 147/147
-- [ ] Two phones join one real game (mesh merged; needs app shell Join nearby)
+- [x] Two phones join one real game (mesh merged; needs app shell Join nearby) — moved to NOW (plans 009–010, then device)
 - [~] Table-lock virtual QA workflow: synthetic-table simulator matrix (felt colour × lighting × clutter × distance), Codex/Antigravity/OmniRoute root-cause, UI QA on 15/17 Pro Max simulators
 - [~] Table-keypoint model training (restarted) · ball detector training epoch 4/30
 
@@ -95,7 +117,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] App shell approved (Codex code 6 rounds + UX 5 rounds): Home → Game/Training → New game / Join nearby → Live → badge → Review. Real phones: join + lineup sync worked; Start→mesh not yet verified
 - [~] Recognition: 30 findings real → fixed (open-set "someone else", shooter gate, tap relearning, no recognition in backups, delete beats in-flight registration); Codex re-review r2 running
 - [~] Privacy: one-tap delete + Undo; recognition in its own backup-excluded store; guest promotion drops session data — privacy worker
-- [ ] User: face model (AuraFace-v1, Apache-2.0) yes/no · clothing templates on disk vs session-only · recognition expiry · pro profiles era/game split
+- [x] User: face model (AuraFace-v1, Apache-2.0) yes/no · clothing templates on disk vs session-only · recognition expiry · pro profiles era/game split — moved to NOW › Blocked
 
 ## Integration branch wt/integration (2026-11-08, integration worker; not merged to phase/1-core)
 - [x] Merged in order: capture 0f87a45 · autocal-r3 c8be83f · tracker 4f2dbbd · detector 1cbeaf1 · app-shell 61d810a · audit f6b1609 · screens-a 68c703f · identity 6cefa3f → 43a6f2a → 5c59884 → 3b60430 → 4eca63f
@@ -120,8 +142,8 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Review round (Kimi K3): relock drops a held D30 shot (closed unrated), shell aim lifecycle balanced while held, no settle/badge during aim, model cueScore. Unit 1113 (2 fixed/verified: a look-window test updated, soak passes alone 0.0 MB growth); UI on Sim E: LiveReplay + ScreensA + ScreensB 29/29
 - [x] D30 "look, then ask" for uncertain pockets (resolver + icon-only post-shot confirm); unit 1106/1106 at d8752e9
 - [~] Device UI (iPhone 17 Pro Max): AppShell + Screens 24 pass / 2 fail (both device-timing test issues, fixed in de656b7, not yet re-run: phone went unavailable)
-- [ ] Device QA on both physical phones (15 Pro Max perf gate, 17 Pro Max) at 4e42342: phones were unavailable (locked/disconnected); includes checking the 4 mm raw-motion threshold on a real table
-- [ ] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope)
+- [x] Device QA on both physical phones (15 Pro Max perf gate, 17 Pro Max) at 4e42342: phones were unavailable (locked/disconnected); includes checking the 4 mm raw-motion threshold on a real table — moved to NOW › Blocked
+- [x] User: lost-shot adjudication UI · default detector (model vs classical) after real-table footage · stick-visible-but-no-stroke veto (D29 scope) — lost-shot UI decided (D38); detector choice + veto moved to NOW › Blocked
 
 ## D34 Astryx design system (wt/astryx-ui, 2026-11-09, UI worker; not merged)
 - [x] Vendored Meta's Astryx Apple package as `Packages/Astryx` (MIT, commit 86fcdd3, headers kept; LICENSE + THIRD_PARTY_NOTICES + bundled licence copy); iOS 27, Swift 6, no external deps; wired via project.yml
@@ -134,7 +156,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Grok 4.7 MAJOR fixed (light-mode contrast): roles that miss WCAG take the nearest Astryx ramp step (light legal dataShamrock5, caution textWarning, warn/teamB rings dataOrange4, teamBText dataOrange5, danger dataRed4; dark danger dataRed3). AstryxThemeTests asserts text ≥ 4.5:1 and rings ≥ 3:1 on page and card in both modes, and Team B ΔE ≥ 20 from Team A and caution (test-first)
 - [~] Cross-vendor review of wt/astryx-ui: GLM-5 and Kimi K2.5 APPROVE; Grok 4.7 REJECT (1 MAJOR, fixed above), Grok re-review APPROVE (552600a); merged to phase/1-core
 - [x] D32 detector benchmark (wt/d32-bench): 3D virtual-sim bench, app-path harness, hybrid + yolo26n-sim3d-ft shipped as default by measurement (docs/research/detector-benchmark.md); re-run on real footage later
-- [ ] User: lost-shot adjudication UI · stick-visible-but-no-stroke veto (D29 scope)
+- [x] User: lost-shot adjudication UI · stick-visible-but-no-stroke veto (D29 scope) — duplicate; see NOW › Blocked
 - [x] D31 lost shot = best guess (rated from the post-relock table, no prompt; uncertain identity never pocketed; no pre-shot state / look cut by a new shot / no pre-shot ball seen again = unrated) + D33 stick near the cue ball = aim evidence (`stickNearCue`, stroke or not). Invariant oracle extended (seed 0xC0FFEED33: 3000 seq, 421,170 frames, 2,379 records compared incl. 1,065 guessed lost shots / 824 guessed pockets / 166 uncertain-blocked, 2,046 unrated lost (526 no state), 26,424 stick-only frames, 0 violations; broken variants caught: stick ignored, uncertainty ignored, no new-shot freeze, lost always unrated). Unit 1138/1139 on Sim E (AimStressTests.aimLinesEqualTheSimulatorOutput timing flake under load avg ~150; passes alone 2/2); UI LiveReplay + AppShell 13/13 on Sim E (wt/d31-d33, awaiting cross-vendor review)
 - [x] Grok 4.7 review of 7d77e5b (REJECT: 2 BLOCKERs, 1 MAJOR), fixed test-first (5 tests / 9 issues red on bff670f): lost-shot look runs on still frames during an aim and a finished look survives the next stroke; a missing ball is pocketed only if its nearest pocket was in view ≥ 80 % of the look; aim opens on evidence before rest (LiveSession test: badge + menu hide). Oracle models all three + second seed: 0xC0FFEED33 418,571 frames / 2,793 records / 1,584 guessed lost / 0 violations; 0xC0FFEED34 418,248 / 2,841 / 1,559 / 0; pre-fix variants fail it (quiet-only look 1,451 guess-record, coverage ignored 120, aim needs rest 4,030 aim-hooks, freeze drops finished look 733). Plus coordinator MAJOR: D1 level 4 reveals the full overlay after the shot (OverlayVisibility afterShot, overlay reads LiveModel.visibility live; red on 6835825). Unit 1148/1148 + UI LiveReplay + AppShell 13/13 on Sim E at c8ceb56
 ## Fix round wt/fix-app (2026-11-09, Claude fix worker, Sim G; not merged)
@@ -149,17 +171,17 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Merged + pushed (e9088ba): wt/fix-engine (3), wt/fix-app (7 + 2 Grok BLOCKERs), wt/d31-d33 (D31, D33, D1 after-shot reveal + 3 Grok findings), wt/d32-bench (D32 detector), wt/astryx-ui (D34 + contrast + review AX label); one merge fix (store-recovery screen → Astryx roles)
 - [x] Simulators at e9088ba: QA iPhone 15 Pro Max and QA iPhone 17 Pro Max — unit 1184/1184, UI 44/45 + 1 skip (two-phone test)
 - [x] iPhone 17 Pro Max (device) at e9088ba: 1159 pass; 13 source-audit tests can't read the Mac source tree on a phone (pass on simulator); 5 heavy calibration/perception stress tests were killed by iOS (signal kill) only under parallel testing — re-run serially on the phone, all pass (AutoTable coverage/review/synthetic + PerceptionStress, 18/18)
-- [ ] Open: wrong-size false lock (lock matrix 92.0%, 1 case); D32 phone latency on the Neural Engine; real-table footage to validate the synthetic-trained detector
+- [x] Open: wrong-size false lock (lock matrix 92.0%, 1 case); D32 phone latency on the Neural Engine; real-table footage to validate the synthetic-trained detector — false lock fixed (size-lock, plan 005); latency + footage moved to NOW › Blocked
 - [x] Wrong-size false lock fixed on wt/size-lock (matrix 0 false, in-scope 92.3 %); review round 1: Grok 4.7 REJECT (MAJOR) + GLM-5 REJECT (BLOCKER, MAJOR)
-- [~] size-lock review fixes (test-first, Sim D, 58/58 targeted green): between-preset unsnapped fits abstain from the size vote (still pose evidence), a size needs ≥ 3 votes, the pose's measured size comes from the chosen preset's votes (a 7 ft lock stays adapter-trusted), three-rail fits vote only when their measured axis fits one preset (GLM-5 BLOCKER, hardened); GLM-5 MAJOR (stale held size) refuted by tests (measured new preset adopted, also sparse). dist-2.0m seed 3 test now requires an accurate lock. Re-run of the -O matrix + full unit suite pending
-- [ ] Open: D32 phone latency on the Neural Engine — test ready (plans/003 merged; run BallModelLatencyTests on the 15 Pro Max when connected; sim: letterbox ~26 ms of ~50–70 ms total); real-table footage to validate the synthetic-trained detector
+- [x] size-lock review fixes (test-first, Sim D, 58/58 targeted green): between-preset unsnapped fits abstain from the size vote (still pose evidence), a size needs ≥ 3 votes, the pose's measured size comes from the chosen preset's votes (a 7 ft lock stays adapter-trusted), three-rail fits vote only when their measured axis fits one preset (GLM-5 BLOCKER, hardened); GLM-5 MAJOR (stale held size) refuted by tests (measured new preset adopted, also sparse). dist-2.0m seed 3 test now requires an accurate lock. Re-run of the -O matrix + full unit suite pending — merged in wt/final2 (b21f994)
+- [x] Open: D32 phone latency on the Neural Engine — test ready (plans/003 merged; run BallModelLatencyTests on the 15 Pro Max when connected; sim: letterbox ~26 ms of ~50–70 ms total); real-table footage to validate the synthetic-trained detector — duplicate; NOW › Blocked
 - [x] QA at b21f994 (wt/final2): QA iPhone 15 Pro Max + QA iPhone 17 Pro Max — unit 1208/1208 each, UI 44/45 + 1 skip (two-phone test) each
 - [x] Final fix round merged via wt/final2: review-crash, review-shots, size-lock (Grok 4.7 r3 APPROVE both), AimStressTests off-actor wait (b21f994, Grok 4.7 APPROVE)
 - [x] Improve audit at b21f994 (2 read-only auditors, every finding verified against the code by head) → plans/001–006 + plans/README.md
-- [ ] Open (new, from audit): finished games are never saved (no Game/Shot writer); two-phone games rate shots independently (mesh log unused) — design plans/006
-- [ ] Open (from audit): ~~live review timeline shows every shot Unrated (plans/002)~~ fixed; ~~team-game MVP is a tie broken by dictionary order (plans/001)~~ fixed; unlisted table sizes (Pro-8 locks as 8 ft; ~86″ never locks with a partial-table hint) — plans/005, needs user decision
+- [x] Open (new, from audit): finished games are never saved (no Game/Shot writer); two-phone games rate shots independently (mesh log unused) — design plans/006 — designed in 006; plans 009–011 in NOW
+- [x] Open (from audit): ~~live review timeline shows every shot Unrated (plans/002)~~ fixed; ~~team-game MVP is a tie broken by dictionary order (plans/001)~~ fixed; unlisted table sizes (Pro-8 locks as 8 ft; ~86″ never locks with a partial-table hint) — plans/005, needs user decision — all three resolved (plans 002, 001, 005 + D46)
 - [x] User decisions 2026-11-10: D35 team MVP fallback, D36 table sizes (A + C), D37 ✕ confirm, D38 lost-shot ask, D39–D41 mesh/saving (plans 001, 005, 007, 008, 006)
-- [~] Plans running: 001 (Claude, Sim H), 003 (Claude, Sim D), 004 (Claude, Sim I), 005 (Claude, CueCoach iPhone 15 Pro); 006 design done (Cursor Grok 4.7 draft, head review). Codex/Antigravity/Cursor GPT out of quota; reviews via Cursor Grok + opencode
+- [x] Plans running: 001 (Claude, Sim H), 003 (Claude, Sim D), 004 (Claude, Sim I), 005 (Claude, CueCoach iPhone 15 Pro); 006 design done (Cursor Grok 4.7 draft, head review). Codex/Antigravity/Cursor GPT out of quota; reviews via Cursor Grok + opencode — 001/003/004/005 all merged
 
 - [x] plans/005 D36 C + hint (wt/plan-005, Claude worker, 6254003): the game-setup size (Training: Settings manual size) is the locator's prior (a measured frame within 6 % votes for it; guesses stay guesses; 2.34 m with 7 ft chosen still locks 8 ft); a steady between-presets table shows the `ruler` hint (LockFailure.unusualSize) instead of partialTable. One new LiveScreen parameter (tablePrior). Targeted 26/26 red→green, unit 1217/1217. Lock matrix (540, app, -O): before 93.0 % in-scope / 73.3 % all / p50 1.33 s / 0 false → after 92.3 / 72.0 / 1.33 / 0 (no prior in the matrix, so the logic is unchanged there: jitter; a first run under load-avg ~200 read 91.7 % and failed a TTL floor, the rerun passes the gate)
 - [x] (resolved by D46: keep 6 %, add Pro 8/86″ presets → plan 014) plans/005 D36 A (2 % snap) STOPPED: with it the -O matrix locked 5 preset scenes at measured lengths (felt-grey 7 ft 1.935 m −4.8 %, felt-grey 9 ft 2.473 m −2.6 %, light-dim 8 ft 2.387 m +2.2 %, light-cueShadow 7 ft 1.916 m −5.7 %, clutter-railObjects 7 ft 2.076 m +2.1 %) and in-scope accuracy fell 93.0 → 83.7 % (0 false locks by the 20 cm rule). Fused size bias on preset tables reaches ±2–6 %, so a 2 % tolerance can't tell a Pro-8 (−4.4 %) from a biased 8 ft. Needs a user decision (keep B for unlisted tables, or a wider/conditional snap)
@@ -171,6 +193,6 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Plan 007 ✕ asks "End game?" + D42 give-up: Grok REJECT → fixed; Codex REJECT ×2 (in-flight shot, late record) → fixed → APPROVE; unit 1230/1230 + AppShell UI 12/12 before the last fix; merged
 - [x] Plan 005 table-size prior + size hint (D36 C; A dropped, D46): Grok REJECT (8/9 ft overlap) → fixed → Codex APPROVE; merged. Follow-up MINOR: a steady 2.21 m fit that settles 8 ft but fails sizeIsTrusted shows partialTable, not the size hint (AutoLocatorAdapter.swift:180)
 - [x] Plan 008 lost shot pulses turn discs + review gap (D38/D41): Codex REJECT → fixed → APPROVE; merged
-- [ ] Merge 007, 005, 008 → combined full unit suite → push
-- [ ] Final QA pass: full XCUITest suite on simulators (workflow, after merges)
-- [ ] Next: plan 009 (fold the shot log) → 010/011/013 in parallel → 012 (D43) → 014 (D46)
+- [x] Merge 007, 005, 008 → combined full unit suite → push — merged; combined unit 1253/1253 at eba8f0b; push tracked in NOW
+- [x] Final QA pass: full XCUITest suite on simulators (workflow, after merges) — moved to NOW
+- [x] Next: plan 009 (fold the shot log) → 010/011/013 in parallel → 012 (D43) → 014 (D46) — moved to NOW

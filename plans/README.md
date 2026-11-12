@@ -16,7 +16,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 002 | Live shots carry before/after ball positions to Game Review | P1 | M | 001 | DONE (wt/plan-002; Grok 4.7 REJECT → fixed: guessed shots keep no replay → APPROVE) |
 | 003 | Ball-model latency measurable on device (ANE) + HUD | P1 | M | — | DONE (merged; Grok APPROVE; sim only: .all total p95 ~60–86 ms, letterbox ~26 ms; device not yet run) |
 | 004 | Pin the ball model's I/O contract | P2 | S | — | DONE (merged; Grok APPROVE; unit 1209/1209) |
-| 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 = A + C) | DONE (wt/plan-005: D36 C + size hint; A dropped per D46; Grok REJECT → fixed → Codex APPROVE) |
+| 005 | Unlisted table sizes lock true or say why | P2 | M | — (decided: D36 C; A dropped by D46) | DONE (wt/plan-005: D36 C + size hint; A dropped per D46; Grok REJECT → fixed → Codex APPROVE) |
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
 | 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | DONE (wt/plan-007 + D42 give-up; Grok REJECT → fixed; Codex REJECT ×2 → fixed → APPROVE) |
 | 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | DONE (wt/plan-008; Codex REJECT (gap-only review showed "No shots") → fixed → APPROVE) |
@@ -35,13 +35,13 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED 
 - **Latency fallback (not yet planned):** it waits on 003's device numbers. If the `.all` p95 is under 33 ms on the iPhone 15 Pro Max, it isn't needed.
 - 006 after 002: a saved `Shot` stores the before/after states that 002 introduces.
 - 009–013 are plan 006's follow-ups, planned at `5cd3fcf`. 009 needs 002 (before/after) and 008 (gap shot,
-  `needsShooter`) merged; it adds two `GameEvent` cases and bumps the mesh protocol to major 2. 010, 011 and 013
-  build on 009 and can run in parallel after it, but 011 and 010 must agree on reading `isHost`/`commitSeq` before
+  `needsShooter`) merged; it adds two `GameEvent` cases and bumps the mesh protocol to major 2. Integrate serially (2026-11-11 Codex process review; one build at a time):
+  009 → 010 → 011 → 012 → 014 → 013. Preparation (014 geometry, 013 merge design + UI mock) may run earlier. 011 and 010 must agree on reading `isHost`/`commitSeq` before
   `endGame` stops the link. 012 waits on 011 (approved, D43). Q12 is answered (D44); 013's "needs tap" UI gets a mock before step 2. 011 saves on the winning commit (D45), not in `endGame`.
 
 ## Decisions
 - Plan 001: D35. With no WPA data, the team MVP is the winning team's best-rated shooter.
-- Plan 005: D36 = **A + C**. Snap within 2 %, otherwise lock at the measured size; the setup/Settings size is a prior.
+- Plan 005: D36 C only (A, the 2 % snap, dropped by D46). Snap to a preset within 6 %; the setup/Settings size is the lock prior; a steady between-presets table gets the size hint.
 - Plan 007: D37. Plan 008: D38 + D41. Plan 006: D39 (joiner waits for host rating), D40 (discard mid-rack quits), D41 (disc = next shooter only).
 
 ## Findings considered and not planned (yet)

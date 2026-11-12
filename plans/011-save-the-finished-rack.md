@@ -43,7 +43,7 @@ discarded. **D37:** the recorder runs after the last open shot settles. One writ
 ## Scope
 **In scope:** `docs/INTERFACES.md` (move `GameRecorder`, `FinishedGame`, `RecordedShot` out of "Proposed");
 a new `CueCoach/Persistence/GameRecorder.swift` (protocol + `StackGameRecorder`); `GameSessionModel.swift`
-(`finishedGame() -> FinishedGame?`); `AppRouter.swift` (`recorder` property, call in `endGame`); `ShellEnvironment.swift`
+(`finishedGame() -> FinishedGame?`, recorder call on the winning commit); `AppRouter.swift` (`recorder` injection); `ShellEnvironment.swift`
 and `AppShellRoot.swift` (injection only); a new `CueCoachTests/Persistence/GameRecorderTests.swift`; `AppRouterTests.swift`.
 
 **Out of scope:** schema changes (`Shot.isGuess` is plan 012), unfinished or resumable racks, clips/highlights,
@@ -52,7 +52,7 @@ the stats projection, partition handling (plan 013), any UI.
 ## Steps
 ### Step 1: Contract
 Move the three types into a "Game saving (plan 011)" section. Record the rules: one writer (host or solo); write
-only when `winnerTeam != nil` (D40); after the last settle (D37); skip `isGuess` shots and D38 gap shots (`rating == nil`)
+only when `winnerTeam != nil` (D40), at the commit that gives the rack its winner (D45), not in `endGame`; skip `isGuess` shots and D38 gap shots (`rating == nil`)
 and keep the others' original `index`; `Game.id` = first committed shot id; one `Session` per saved game, carrying
 `tableSize` and `format`. **Verify**: `grep -n "GameRecorder" docs/INTERFACES.md` → in the new section, not under Proposed.
 
@@ -64,6 +64,7 @@ and keep the others' original `index`; `Game.id` = first committed shot id; one 
 - `featuresComeFromPositionsWhenTheCueIsInPre`; `neutralFeaturesWhenNoCueInPre`.
 - `guessedAndGapShotsAreNotSaved`.
 - `midRackEndSavesNothing` (D40).
+- `winningCommitSavesBeforeEnd` (D45): the winning shot commits, then the app is killed (no `endGame`) → one `Game` saved.
 - `joinerNeverWrites`; `hostWithoutMajorityNeverWrites` (fake link from plan 009).
 - `endingTwiceWritesOnce` (same `Game.id`: update, not a second row).
 - `trainingNeverWritesACompetitiveGame` (design §5): training `LiveSession`, settle a shot, `liveClosed`, `endGame`;
@@ -74,8 +75,9 @@ and keep the others' original `index`; `Game.id` = first committed shot id; one 
 - `GameSessionModel.finishedGame()` builds a `FinishedGame` from the folded shots, or nil when there's no winner.
   Shooter ids are `ShellPlayer.id` (guests included as plain ids, design §6).
 - `StackGameRecorder(stack:)` inserts `Session` + `Game` + `Shot`s into `competitiveContext` only, upserting by id, and saves once.
-- `AppRouter.endGame()`: before `mesh?.stop()`, if `mesh == nil || (mesh.isHost && majority && commitSeq covers the rack)`,
-  call `recorder?.record(game.finishedGame())`. A thrown error is logged with `os.Logger` and never blocks review.
+- On the commit that sets the rack's winner (`GameSessionModel`, fed by the folded log), if `mesh == nil || (mesh.isHost && majority)`,
+  call `recorder?.record(game.finishedGame())`. Upsert by id, so a later `endGame` or a repeated commit changes nothing.
+  `endGame` does not write. A thrown error is logged with `os.Logger` and never blocks review.
 **Verify**: targeted → passes; full unit → passes; `AppShellUITests` → passes.
 
 ## Done criteria
@@ -84,14 +86,12 @@ and keep the others' original `index`; `Game.id` = first committed shot id; one 
 - [ ] `git diff --name-only` ⊆ the in-scope list plus `plans/README.md`
 
 ## STOP conditions
-- Plan 007 isn't merged, so `endGame` can still run with an open shot in the FIFO (D37 not guaranteed).
 - `Shot.init` or `Game.init` would need a new column for any field above (that is a migration; ask).
 - A team has more than four players or teams differ in size so `GameFormat` can't be chosen. Report, don't guess.
 - Upserting by `@Attribute(.unique) id` doesn't update in place on the simulator.
 
 ## Maintenance notes
-- **D45 (user, after this plan was drafted) overrides design §4:** save as soon as the winning shot is committed, not in `endGame`; a kill after the win keeps the game. Executor: trigger the recorder on the commit that gives the rack a winner (idempotent upsert by id, so a later `endGame` changes nothing). If that is not cleanly possible, STOP and report.
-  Saving on the winning commit instead is a product question; ask before changing it.
+- D45 overrides design §4 (save in `endGame`); the steps above already follow D45.
 - `features` written as `neutral` must be skipped by whoever builds the `Shot → CompetitiveShot` projection (design §3).
   Mark it in that plan; there is no column that says so.
 - Plan 012 lets guessed shots be saved. Plan 013 forbids writes while partitioned.

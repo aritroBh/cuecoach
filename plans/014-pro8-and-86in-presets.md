@@ -56,10 +56,12 @@ Out: the snap tolerance (stays 6 %), the lock prior logic (plan 005), the D36 be
    the compiler flags. In `feet: Int`-style labels, the UI shows "Pro 8" and "86″". If a label can't fit an `Int`,
    change that property to a short `String` label and update its callers. **Verify**: `swift test` passes.
 3. **Auto-fit**: check whether the auto-fit snap list is `TableSize.allCases`. If yes, the new presets now snap within
-   6 %. Pro 8 and 8 ft are 4.4 % apart, so a measured 2.30 m could snap to either. The nearest preset must win, with
-   ties to the chosen prior. Add a red test in `CueCoachTests/Calibration` (pattern:
-   `AutoTableUnlistedSizeTests` from plan 005): steady fits at 2.235 m lock as `.proEight`, and at 2.337 m as
-   `.eightFoot`. Then make it pass.
+   6 %. Pro 8 and 8 ft are 4.4 % apart, so a measured 2.30 m could snap to either. Precedence (D36 C): if the player chose a size and the
+   measurement is within 6 % of it, the chosen size wins; with no prior (or the prior > 6 % off), the nearest preset
+   wins. Add a red test in `CueCoachTests/Calibration` (pattern:
+   `AutoTableUnlistedSizeTests` from plan 005): with no prior, steady fits at 2.235 m lock as `.proEight` and at 2.337 m as
+   `.eightFoot`; with prior `.eightFoot`, a 2.25 m fit locks as `.eightFoot`; with prior `.proEight`, a 2.30 m fit
+   locks as `.proEight`. Then make it pass.
 4. **Lock matrix**: run the -O lock matrix the way plan 005 did (`scratchpad/matrix.sh`; `TEST_RUNNER_VQA_MATRIX=1`,
    `TEST_RUNNER_VQA_LOCATORS=app`, `SWIFT_OPTIMIZATION_LEVEL=-O`, `VirtualTableTests/lockMatrix()`). Gate: 0 false
    locks, in-scope ≥ 92.0 %. A standard 8 ft scene that now locks as Pro 8 counts as a false lock: **STOP** and report
