@@ -101,23 +101,19 @@ final class AppRouter {
         stage = .live(LiveSession(mode: .training(level), game: nil, drill: drill))
     }
 
-    /// End game (menu) → review. Ignored in Training or when nothing is live.
-    /// A mesh game first lets this phone's last appends commit (D37 waits for the settle; the shot then needs its
-    /// commit), at most 2 s (D42: never stuck), then reviews what is committed.
+    /// End game (menu) → review. Ignored in Training or when nothing is live, so a repeat is a no-op.
+    /// Live leaves at once. A mesh game's review loads: it waits for this phone's inputs to commit, at most
+    /// `endCap` seconds from End (D42: never stuck), then reviews what is committed and stops the link.
     func endGame() {
-        guard case .live(let s)? = stage, let game = s.game, ending !== s else { return }
+        guard case .live(let s)? = stage, let game = s.game else { return }
         guard let link = game.mesh else { stage = .review(review(game.reviewData())); return }
-        ending = s
-        Task { [weak self] in
-            await link.drain(until: Date().addingTimeInterval(2))
-            link.stop()
-            if game.mesh === link { game.mesh = nil }
-            guard let self, self.ending === s else { return }
-            self.ending = nil
-            if case .live(let now)? = self.stage, now === s { self.stage = .review(self.review(game.reviewData())) }
-        }
+        let m = GameReviewModel(source: MeshReviewSource(game: game, link: link,
+                                                         deadline: Date().addingTimeInterval(endCap)))
+        m.onDone = { [weak self] in self?.finishReview() }
+        stage = .review(m)
+        Task { await m.load() }   // the link stops even if the review is never shown
     }
-    @ObservationIgnored private var ending: LiveSession?
+    @ObservationIgnored var endCap: Double = 2
 
     private func review(_ data: GameReviewData) -> GameReviewModel {
         let m = GameReviewModel(data: data)
@@ -140,5 +136,38 @@ final class AppRouter {
     func finishReview() {
         stage = nil
         path = []
+    }
+}
+
+/// A mesh game's review: the drain (raced against `deadline`), then the snapshot, then the link stops. Loads once;
+/// a repeat `load()` (the view's own) awaits the same result.
+@MainActor final class MeshReviewSource: GameReviewSource {
+    private let game: GameSessionModel
+    private let link: any GameMeshLink
+    private let deadline: Date
+    private var result: Task<GameReviewData, Never>?
+
+    init(game: GameSessionModel, link: any GameMeshLink, deadline: Date) {
+        self.game = game; self.link = link; self.deadline = deadline
+    }
+
+    func load() async throws -> GameReviewData {
+        if let result { return await result.value }
+        let (game, link, deadline) = (game, link, deadline)
+        let task = Task {
+            let drained = Task { await link.drain(until: deadline) }
+            let cap = Task {   // a drain that overruns is cancelled at the deadline
+                try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+                drained.cancel()
+            }
+            await drained.value
+            cap.cancel()
+            let data = game.reviewData()
+            link.stop()
+            if game.mesh === link { game.mesh = nil }
+            return data
+        }
+        result = task
+        return await task.value
     }
 }
