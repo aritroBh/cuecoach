@@ -95,3 +95,4 @@ and keep the others' original `index`; `Game.id` = first committed shot id; one 
 - `features` written as `neutral` must be skipped by whoever builds the `Shot → CompetitiveShot` projection (design §3).
   Mark it in that plan; there is no column that says so.
 - Plan 012 lets guessed shots be saved. Plan 013 forbids writes while partitioned.
+- **From the plan 010 review (Codex, 2026-11-12):** the writer guard must use `link.isHost` (true only in role `.host`), never `!isJoiner`. A discovering phone queues inputs but has no host authority and must never save.
