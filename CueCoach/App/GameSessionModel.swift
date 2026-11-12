@@ -250,7 +250,7 @@ final class GameSessionModel {
                 shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
                 needsShooter = true
                 lostAt = i
-            case .nextShooter(let team):
+            case .nextShooter(let team, _):
                 guard hasLineup, teams.indices.contains(team), !teams[team].isEmpty else { break }
                 needsShooter = false
                 if team != currentTeam { hand(to: team) }

@@ -126,8 +126,9 @@ enum GameEvent: Hashable, Codable, Sendable {
     case shot(MeshShotRecord)
     /// Fix a recorded shot's team (attribution `.tap`).
     case shooterCorrection(shotID: UUID, team: Int)
-    /// D41: a turn-disc tap. Changes only who shoots next.
-    case nextShooter(team: Int)
+    /// D41: a turn-disc tap. Changes only who shoots next. `id` tells two identical taps apart (a joiner's drain
+    /// waits for its own); decoded with decodeIfPresent, so nil = a payload without one.
+    case nextShooter(team: Int, id: UUID? = UUID())
     /// D38: a lost shot with no guess. A gap (no rating, no rules change) that asks who shoots next.
     case shotLost(shotID: UUID, shooterTeam: Int)
 }

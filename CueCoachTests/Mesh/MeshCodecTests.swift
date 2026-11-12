@@ -195,6 +195,13 @@ import Rules
         }
     }
 
+    /// Codex 010 review 3: each tap has an id; a payload without one still decodes (nil id).
+    @Test func nextShooterCarriesAnIdAndDecodesWithoutOne() throws {
+        #expect(GameEvent.nextShooter(team: 1) != GameEvent.nextShooter(team: 1))
+        let old = try JSONDecoder().decode(GameEvent.self, from: Data(#"{"nextShooter":{"team":1}}"#.utf8))
+        #expect(old == .nextShooter(team: 1, id: nil))
+    }
+
     /// New GameEvent cases are a wire break: the frame header and the Hello both speak major 2 only.
     @Test func frameHeaderIsMajorTwo() throws {
         #expect(ProtocolVersion.current == ProtocolVersion(major: 2, minor: 0))
