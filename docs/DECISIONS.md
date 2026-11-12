@@ -53,3 +53,4 @@
 | D47 | 2026-11-11 | D44 detail: on reconnect, a shot the phones disagree on shows both versions side by side (ball glyphs); one tap picks the right one and the game replays from that shot. | User |
 | D48 | 2026-11-11 | D39 exception while cut off (D44 island): the joiner shows its own post-shot badge as provisional; after reconnect the merged result replaces it. Outside an island D39 holds. | User |
 | D49 | 2026-11-11 | D41 correction action: long-press a shot on the Game Review timeline → pick its shooter (never during aiming). The game replays from that shot (`.shooterCorrection`). | User |
+| D50 | 2026-11-12 | D46 detail: with no size picked, auto-calibration snaps only to 7/8/9 ft (as before). Pro 8 and 86″ are lock candidates only when the player picked one (it is the prior). Letting auto guess them dropped standard-table in-scope locks 92 % → 87 % and false-locked a 7 ft table as 86″. | User |
