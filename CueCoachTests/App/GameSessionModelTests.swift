@@ -41,7 +41,7 @@ import Engine
         let s = teams()
         s.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot(1)))
         #expect(s.shooter == a1)
-        s.shotSettled(rating: .mistake, turnPasses: true)
+        s.shotSettled(SettledShot(rating: .mistake, turnPasses: true, outcome: Self.miss))
         #expect(s.shooter == b1)
     }
 
@@ -69,8 +69,8 @@ import Engine
 
     @Test func ratedShotsAreRecordedWithTheShooter() {
         let s = teams()
-        s.shotSettled(rating: .great, turnPasses: true)
-        s.shotSettled(rating: .blunder, turnPasses: true)
+        s.shotSettled(SettledShot(rating: .great, turnPasses: true, outcome: Self.miss))
+        s.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.miss))
         #expect(s.shots.map(\.rating) == [.great, .blunder])
         #expect(s.shots.map(\.shooter) == [a1, b1])
         #expect(s.shots.map(\.team) == [0, 1])
@@ -78,7 +78,7 @@ import Engine
 
     @Test func badgeSignalNamesShooterAndTeam() throws {
         let s = teams()
-        let sig = try #require(s.shotSettled(rating: .good, turnPasses: true))
+        let sig = try #require(s.shotSettled(SettledShot(rating: .good, turnPasses: true, outcome: Self.miss)))
         #expect(sig.rating == .good)
         #expect(sig.shooterName == "A1")
         #expect(sig.team == 0)
@@ -86,7 +86,7 @@ import Engine
 
     @Test func reviewDataHasTeamsShotsAndTable() {
         let s = teams()
-        s.shotSettled(rating: .best, turnPasses: false)
+        s.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot(1)))
         let d = s.reviewData()
         #expect(d.teams.map { $0.map(\.name) } == [["A1", "A2"], ["B1", "B2"]])
         #expect(d.shots.map(\.index) == [0])
@@ -108,7 +108,7 @@ import Engine
 
     @Test func quittingMidRackIsNotFinished() {
         let s = teams()
-        s.shotSettled(rating: .good, turnPasses: true)
+        s.shotSettled(SettledShot(rating: .good, turnPasses: true, outcome: Self.miss))
         let d = s.reviewData()
         #expect(!d.isFinished)
         #expect(d.winnerTeam == nil)
@@ -176,9 +176,9 @@ import Engine
     @Test func liveTeamMVPIsTheWinningTeamsBestRatedShooter() {
         let s = teams()
         // Rotation A1, B1, A2, B2 (D17). Team A (0) wins. A2 rates better than A1; B1 rates best but loses.
-        s.shotSettled(rating: .okay, turnPasses: true)       // A1
-        s.shotSettled(rating: .brilliant, turnPasses: true)  // B1 (losing team: never MVP)
-        s.shotSettled(rating: .great, turnPasses: true)      // A2
+        s.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))       // A1
+        s.shotSettled(SettledShot(rating: .brilliant, turnPasses: true, outcome: Self.miss))  // B1 (losing team: never MVP)
+        s.shotSettled(SettledShot(rating: .great, turnPasses: true, outcome: Self.miss))      // A2
         s.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))   // B2 loses the rack
         let data = s.reviewData()
         #expect(!GameReviewModel(data: data).isLocked)
@@ -193,10 +193,12 @@ import Engine
         s.legalChanged = { pushed.append($0) }
         s.shotLost()
         #expect(s.needsShooter)
+        #expect(pushed.count == 1, "a committed gap re-pushes the folded legality")
         s.handTurn(toTeam: 1)
         #expect(!s.needsShooter)
         #expect(s.shooter == b1)
-        #expect(pushed.count == 1, "the chosen team's legal targets are pushed")
+        #expect(pushed.count == 2, "the chosen team's legal targets are pushed")
+        #expect(pushed.last == s.rulesEngine.legalTargets(s.rules.1))
         let gap = try #require(s.shots.first)
         #expect(gap.rating == nil)
         #expect(gap.shooter == a1 && gap.team == 0, "D41: a disc tap never changes the recorded shot")
@@ -212,9 +214,9 @@ import Engine
         #expect(!s.needsShooter)
         #expect(s.shooter == a1)
         #expect(s.turnIndex == turns, "same team: no hand-over")
-        #expect(pushed.count == 1)
+        #expect(pushed.count == 2)
         s.handTurn(toTeam: 0)   // no ask open: still a no-op
-        #expect(pushed.count == 1)
+        #expect(pushed.count == 2)
     }
 
     @Test func aNewShotClearsTheAsk() {
@@ -232,9 +234,9 @@ import Engine
         let s = teams()
         s.shotLost()                                          // A1: gap
         s.handTurn(toTeam: 1)                                 // B1
-        s.shotSettled(rating: .okay, turnPasses: true)        // B1 → A2
+        s.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))        // B1 → A2
         s.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1)))   // A2 keeps the table
-        s.shotSettled(rating: .okay, turnPasses: true)        // A2 misses → B2
+        s.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))        // A2 misses → B2
         s.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))   // B2 loses the rack
         let mvp = try #require(GameReviewModel(data: s.reviewData()).mvp)
         #expect(mvp.player.name == "A2")
@@ -244,7 +246,7 @@ import Engine
         one.shotLost()                                        // A1: gap
         one.handTurn(toTeam: 0)
         one.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1)))   // A1 keeps the table
-        one.shotSettled(rating: .okay, turnPasses: true)      // A1 misses → B1
+        one.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))      // A1 misses → B1
         one.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))   // B1 loses the rack
         let m1 = try #require(GameReviewModel(data: one.reviewData()).mvp)
         #expect(m1.player.name == "A1")
@@ -511,7 +513,48 @@ import Engine
         #expect(s.rotation.map(\.name) == ["A2", "B1", "A1", "B2"])
         #expect(s.shooter == b1)
     }
+
+    // MARK: Codex review of plan 009: committed folds drive Live's rings
+
+    @Test func committedShotRefreshesLegality() throws {
+        let (s, link) = meshGame(host: true)
+        var pushed: [Set<BallID>] = []
+        s.legalChanged = { pushed.append($0) }
+        s.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1)))
+        #expect(pushed.isEmpty, "nothing folds before the commit")
+        link.commit()
+        let solids = try #require(pushed.last)
+        #expect(pushed.count == 1)
+        #expect(solids == s.rulesEngine.legalTargets(s.rules.1))
+        #expect(!solids.isEmpty && solids.allSatisfy { $0.group == .solids })
+        link.commit()                                  // same log again: nothing new folds, nothing pushed
+        #expect(pushed.count == 1)
+        // A miss hands B the table: B's (stripes) targets follow at once.
+        s.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))
+        link.commit()
+        #expect(pushed.count == 2)
+        #expect(pushed.last?.allSatisfy { $0.group == .stripes } == true)
+    }
+
+    @Test func committedCorrectionRefreshesLegality() throws {
+        let (s, link) = meshGame(host: false)
+        var pushed: [Set<BallID>] = []
+        s.legalChanged = { pushed.append($0) }
+        let x = UUID()
+        let log = entries([record(Self.pot(1), rating: .good, id: x),     // A1 takes solids, keeps the table
+                           .shotLost(shotID: UUID(), shooterTeam: 0), .shooterCorrection(shotID: x, team: 1)])
+        link.receive(log, commitSeq: 1)
+        #expect(pushed.last?.allSatisfy { $0.group == .solids } == true)
+        link.receive(log, commitSeq: 3)
+        // Corrected: B1 potted the 1 (B takes solids) and keeps the table, then lost a shot.
+        #expect(s.shots.first?.team == 1)
+        #expect(s.rules.1.groups?[1] == .solids)
+        #expect(pushed.count == 2)
+        #expect(pushed.last == s.rulesEngine.legalTargets(s.rules.1))
+        #expect(pushed.last?.allSatisfy { $0.group == .solids } == true)
+    }
 }
+
 
 /// Test double for the game's mesh link: a host appends to its log, a client proposes; `commit`/`receive` stand in
 /// for the majority ack and the host's log arriving.
