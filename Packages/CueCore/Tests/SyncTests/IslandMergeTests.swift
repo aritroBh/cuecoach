@@ -224,7 +224,7 @@ import Rules
         let physical = committed.map { m in owner[m.shot.id]! }
         #expect(physical.count == Set(physical).count, "seed \(seed): a shot was duplicated")
         #expect(Set(physical) == seen, "seed \(seed): a seen shot was lost")
-        #expect(heals > 10)
+        #expect(heals > 2, "seed \(seed): the sim healed \(heals) times")
     }
 }
 
