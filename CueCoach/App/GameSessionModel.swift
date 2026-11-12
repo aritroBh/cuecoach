@@ -76,6 +76,8 @@ final class GameSessionModel {
     @ObservationIgnored private var wonAt: Date?
     /// This phone saved the rack: later commits and `endGame` write nothing more.
     @ObservationIgnored private var saved = false
+    /// Folded shots up to and including the one that gave the rack its winner (the saved rack's boundary).
+    @ObservationIgnored private var winningShotCount: Int?
 
     init(config: GameConfig) {
         self.config = config
@@ -213,12 +215,14 @@ final class GameSessionModel {
     }
 
     /// D45: the commit that gives the rack its winner saves it, on the one writer: solo, or the host (role `.host`
-    /// only, never `!isJoiner`; a discovering phone never saves). The majority is the commit itself: only the
-    /// committed prefix is folded. A throw is logged and retried on the next commit; it never blocks play or review.
+    /// only, never `!isJoiner`; a discovering phone never saves) with a majority of the game's members
+    /// (`hasGameQuorum`; an island never saves, plan 013 merges first). A throw is logged and retried on the next
+    /// commit with the same rack (shots up to the winning one); it never blocks play or review.
     private func saveIfWon() {
         guard winner != nil else { return }
         if wonAt == nil { wonAt = Date() }
-        guard !saved, let recorder, mesh == nil || mesh?.isHost == true, let game = finishedGame() else { return }
+        guard !saved, let recorder, let game = finishedGame() else { return }
+        if let mesh, !(mesh.isHost && mesh.hasGameQuorum) { return }
         do {
             try recorder.record(game)
             saved = true
@@ -247,6 +251,7 @@ final class GameSessionModel {
         shots = []
         needsShooter = false
         rulesState = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count).1
+        winningShotCount = nil
         var corrected: [UUID: Int] = [:]
         for case .shooterCorrection(let id, let team, _) in events { corrected[id] = team }
         var lostAt = -1
@@ -274,6 +279,7 @@ final class GameSessionModel {
                                          after: Self.positions(r.postState), attribution: attribution,
                                          firstContact: r.outcome.firstContact))
                 rulesState = result.nextState
+                if winningShotCount == nil, rulesState.winner != nil { winningShotCount = shots.count }
                 if result.turnPasses { passTurn() }
             case .shotLost(let id, _):
                 shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
@@ -296,7 +302,8 @@ final class GameSessionModel {
     private static func positions(_ t: TableState?) -> [BallID: Vec2] { t?.balls.mapValues(\.position) ?? [:] }
 
     /// The finished rack to save, or nil while the folded rules state has no winner (D40).
-    /// Shots keep their folded index; D38 gaps and D31 guesses are left out (plan 012 saves guesses).
+    /// Shots up to the winning one keep their folded index; D38 gaps and D31 guesses are left out (plan 012 saves
+    /// guesses). Shots committed after the win are not part of the rack.
     /// nil too when the teams fit no `GameFormat` (setup forbids uneven or over-four teams).
     func finishedGame() -> FinishedGame? {
         guard let winner, let first = shots.first,
@@ -306,7 +313,8 @@ final class GameSessionModel {
         return FinishedGame(id: first.id, ruleSet: config.ruleSet, tableSize: config.tableSize, format: format,
                             teams: teams, winnerTeam: winner, winProbSeries: [], startedAt: startedAt,
                             endedAt: wonAt ?? Date(),
-                            shots: shots.compactMap { RecordedShot($0, tableSize: config.tableSize) })
+                            shots: shots.prefix(winningShotCount ?? shots.count)
+                                .compactMap { RecordedShot($0, tableSize: config.tableSize) })
     }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one

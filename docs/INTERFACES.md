@@ -430,6 +430,7 @@ enum GameEvent: Hashable, Codable, Sendable {
     var isStopped: Bool { get }
     var isHost: Bool { get }
     var commitSeq: UInt64 { get }
+    var hasGameQuorum: Bool { get }             // plan 011: current roster > half of every phone seen in this game
     var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)? { get set }
     func start()
     func stop()
@@ -537,9 +538,13 @@ func finishedGame() -> FinishedGame?                    // nil while the folded 
 ```
 
 Rules:
-- One writer: solo (`mesh == nil`), or `mesh.isHost` (role `.host` only). Never `!isJoiner`: a discovering phone
-  never saves. The majority is the commit itself: only the committed prefix is folded, and an entry commits only
-  once a majority (host included) acked it. Partition handling is plan 013.
+- One writer: solo (`mesh == nil`), or `mesh.isHost && mesh.hasGameQuorum`. `isHost` is role `.host` only; never
+  `!isJoiner`: a discovering phone never saves. A commit alone is not enough: after a host loss `MeshNode` shrinks its
+  commit quorum, so a lone survivor of two phones commits alone. `GameMeshLink.hasGameQuorum` is true only when the
+  current roster is a strict majority of the game's members (every phone seen in this game's roster; a late joiner
+  only raises the bar). An island never saves; plan 013 saves island games after the merge.
+- The saved rack is the folded shots up to and including the one that gave it its winner. A retry after a failed
+  save sends the same rack; shots committed after the win are never added.
 - D45: the save runs in `GameSessionModel` on the commit that gives the folded rack its winner, not in `endGame`.
   `endGame` never writes. Once saved, later commits and `endGame` write nothing more; a save that throws is logged
   (`os.Logger`) and retried on the next commit, and never blocks review.

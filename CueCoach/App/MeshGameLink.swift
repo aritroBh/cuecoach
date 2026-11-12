@@ -43,7 +43,7 @@ extension GameMeshLink {
     /// Only as `.host`, never while discovering: plan 011 saves when `isHost` and a majority. Readable after `stop()`.
     var isHost: Bool { role == .host }
     var isJoiner: Bool { if case .client = role { true } else { false } }
-    var hasGameQuorum: Bool { true }
+    var hasGameQuorum: Bool { members.count * 2 > gameMembers.count }
     /// Every phone seen in this game's roster (the game's members).
     private(set) var gameMembers: Set<PeerID> = []
     /// The roster as this link last heard it.
