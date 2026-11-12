@@ -73,6 +73,8 @@ final class GameSessionModel {
     @ObservationIgnored private var askAnsweredAt = -1
     /// Plan 013a: the stroke clock (`MultipeerMeshSession.hostNow()`, seconds); a settle's stroke is the last aim end.
     @ObservationIgnored var now: () -> Double = { MultipeerMeshSession.hostNow() }
+    /// The last aim end (the stroke), consumed by the next settle or lost shot.
+    @ObservationIgnored private var strokeAt: Double?
     /// Saves the finished rack (plan 011). nil = nothing is saved.
     @ObservationIgnored var recorder: (any GameRecorder)?
     @ObservationIgnored private let startedAt = Date()
@@ -159,25 +161,41 @@ final class GameSessionModel {
         }
     }
 
-    /// The balls settled and Live rated the shot. The host (or this phone alone) logs it; a client drops its own
-    /// settle (D39: the host rates) and re-pushes the committed legality over what Live published locally. Shot, badge
-    /// and turn come from the fold. Returns the badge signal when the shot folded at once (solo), else nil.
+    /// The balls settled and Live rated the shot. Solo logs it at once. In a mesh every phone hands it to
+    /// `mesh.settled` with its stroke (plan 013a): the host logs it, a client keeps it for a re-run after a host loss
+    /// (D39: the host rates; the client re-pushes the committed legality over what Live published locally). An island
+    /// shows its own rating as a provisional badge (D48). Shot, badge and turn come from the fold. Returns the badge
+    /// signal when the shot folded at once (solo), else nil.
     @discardableResult
     func shotSettled(_ shot: SettledShot) -> PostShotRating? {
-        guard writesLog else { pushLegal(); return nil }
         let id = UUID()
-        append(.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
-                                    postState: table(shot.after), preState: table(shot.before),
-                                    decisionRating: shot.rating, isGuess: shot.isGuess)))
+        let event = GameEvent.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
+                                                  postState: table(shot.after), preState: table(shot.before),
+                                                  decisionRating: shot.rating, isGuess: shot.isGuess))
+        if let mesh {
+            mesh.settled(event, strokeAt: takeStroke())
+            guard writesLog else { pushLegal(); return nil }
+            if mesh.isIsland, badged.insert(id).inserted {
+                badge.receive(.rated(PostShotRating(shotID: id, rating: shot.rating, shooterName: shooter.name,
+                                                    team: shootingTeam, isProvisional: true)))
+            }
+        } else {
+            append(event)
+        }
         guard let s = shots.last(where: { $0.id == id }), let rating = s.rating else { return nil }
         return PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)
     }
 
-    /// D38: a game shot was lost with no guess. The host (or this phone alone) logs a gap for the current shooter,
-    /// which asks who shoots next; the shooter stays until a disc tap or the next aim.
+    /// D38: a game shot was lost with no guess. Solo logs a gap for the current shooter, which asks who shoots next;
+    /// the shooter stays until a disc tap or the next aim. In a mesh it goes to `mesh.settled` like a settle.
     func shotLost() {
-        guard writesLog else { pushLegal(); return }
-        append(.shotLost(shotID: UUID(), shooterTeam: shootingTeam))
+        let event = GameEvent.shotLost(shotID: UUID(), shooterTeam: shootingTeam)
+        if let mesh {
+            mesh.settled(event, strokeAt: takeStroke())
+            if !writesLog { pushLegal() }
+        } else {
+            append(event)
+        }
     }
 
     /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
@@ -186,7 +204,16 @@ final class GameSessionModel {
         needsShooter = false
         badge.receive(.aimStarted)
     }
-    func aimEnded() { badge.receive(.aimEnded) }
+    func aimEnded() {
+        strokeAt = now()
+        badge.receive(.aimEnded)
+    }
+
+    /// The stroke of the shot that just settled: the last aim end, else now.
+    private func takeStroke() -> Double {
+        defer { strokeAt = nil }
+        return strokeAt ?? now()
+    }
 
     // MARK: The log
 
@@ -211,7 +238,8 @@ final class GameSessionModel {
         let unseen = shots.filter { !badged.contains($0.id) }
         badged.formUnion(unseen.map(\.id))
         if let s = unseen.last(where: { $0.rating != nil }), let rating = s.rating {
-            badge.receive(.rated(PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)))
+            badge.receive(.rated(PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team,
+                                                isProvisional: mesh?.isIsland == true)))
         }
         // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
         if !fresh.isEmpty { pushLegal() }
@@ -226,7 +254,7 @@ final class GameSessionModel {
         guard winner != nil else { return }
         if wonAt == nil { wonAt = Date() }
         guard !saved, let recorder, let game = finishedGame() else { return }
-        if let mesh, !(mesh.isHost && mesh.hasGameQuorum) { return }
+        if let mesh, !(mesh.isHost && mesh.hasGameQuorum) || mesh.isIsland { return }   // plan 013a: never an island
         do {
             try recorder.record(game)
             saved = true
@@ -281,7 +309,7 @@ final class GameSessionModel {
                                          rating: rating, pocketed: r.outcome.pocketed, fouls: result.fouls,
                                          isGuess: r.isGuess, before: Self.positions(r.preState),
                                          after: Self.positions(r.postState), attribution: attribution,
-                                         firstContact: r.outcome.firstContact))
+                                         firstContact: r.outcome.firstContact, needsTap: r.needsTap))
                 rulesState = result.nextState
                 if winningShotCount == nil, rulesState.winner != nil { winningShotCount = shots.count }
                 if result.turnPasses { passTurn() }

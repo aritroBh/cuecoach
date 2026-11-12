@@ -453,13 +453,16 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 `GameSessionModel` rules:
 - `shotSettled(_:)`: host or solo appends `.shot(MeshShotRecord)` built from the `SettledShot` (fresh `shotID`,
   `shooterTeam` = shooting team, `outcome`, `before`/`after` as `preState`/`postState`, `decisionRating` = its
-  rating, `isGuess`). A client drops its own settle (D39). Badge, shot and turn come from the fold, never from this
-  call. Returns the badge signal when the shot folded at once (solo), else nil.
-- `shotLost()`: host or solo appends `.shotLost(shotID:shooterTeam:)`. A client drops it.
+  rating, `isGuess`). Plan 013a: in a mesh the record goes to `mesh.settled(_:strokeAt:)` on every phone (the host
+  logs it; a client keeps it for a re-run, never proposes it, D39). Badge, shot and turn come from the fold, never from
+  this call (an island's own provisional badge aside, D48). Returns the badge signal when the shot folded at once
+  (solo), else nil.
+- `shotLost()`: solo appends `.shotLost(shotID:shooterTeam:)`; in a mesh it goes to `mesh.settled` like a settle.
 - `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
   `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
 - `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
-  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped).
+  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped;
+  plan 013a: one at the same `commitSeq` is forwarded only when an island merge rewrote that committed prefix).
   The role comes from `roleChanged` and from each forwarded snapshot. `isHost` only as `.host` (never while
   discovering: plan 011 saves on `isHost`); `isJoiner` only as a client; the model writes unless `isJoiner`.
   Inputs made while discovering are buffered and flushed in order when the role resolves: a host appends all; a
