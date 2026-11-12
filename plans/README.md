@@ -20,7 +20,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 006 | Design: authoritative mesh shot log, then game saving | P1 | M (spike) | 001, 002 | DONE (wt/plan-006: design + D39–D41; 5 follow-up plans listed) |
 | 007 | ✕ asks "End game?", open shot settles first (D37) | P1 | M | 001, 002 | DONE (wt/plan-007 + D42 give-up; Grok REJECT → fixed; Codex REJECT ×2 → fixed → APPROVE) |
 | 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | DONE (wt/plan-008; Codex REJECT (gap-only review showed "No shots") → fixed → APPROVE) |
-| 009 | Every phone folds one shot log (D39, D41 next-shooter event, D38 gap) | P1 | L | 002, 008 (007 recommended) | DONE (wt/plan-009; review pending) |
+| 009 | Every phone folds one shot log (D39, D41 next-shooter event, D38 gap) | P1 | L | 002, 008 (007 recommended) | DONE (merged 38ac5c3; Codex REJECT → fixed → APPROVE; unit 1279/1279, AppShell UI 12/12) |
 | 010 | Mesh link forwards the committed log to the game | P1 | M | 009 | TODO |
 | 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | TODO |
 | 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | TODO (D43: migration approved; after 011) |

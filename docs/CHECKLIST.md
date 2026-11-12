@@ -6,7 +6,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; Antigravity out of quota): integrate serially, one build at a time, head owns all builds; prepare in parallel with `swift test` only.
 
 1. [x] Combined gate: unit 1253/1253; UI 41 + 1 skip, 3 ScreensB failures = the "empty review" sample still held one unrated shot, which D38/plan 008 now shows as a gap → sample emptied, ScreensB 11/11; pushed
-2. [~] Plan 009 fold the shot log (Claude worker in wt/plan-009, sole build owner; Codex reviews) → merge. (014 steps 1–2 stay serial: new enum cases break app switches, which only an app build can check.)
+2. [x] Plan 009 merged (38ac5c3): Codex REJECT → fixed → APPROVE; unit 1279/1279, AppShell UI 12/12. Cleanup MINOR: remove test-only `LiveHooks.settled` bridge (with 010). (014 steps 1–2 stay serial: new enum cases break app switches, which only an app build can check.)
 3. [ ] Refresh 010–013 excerpts against the post-009 head
 3a. [ ] Plan 010 mesh forwards the committed log → merge
 4. [ ] Plan 011 save the finished rack on the winning commit (D45) → merge
