@@ -474,6 +474,20 @@ import Training
         #expect(!m.hasOpenShot)
     }
 
+    /// Codex review: once the end has fired, a late frame (even one carrying the in-flight shot's record) changes nothing.
+    @Test func framesAfterTheEndAreIgnored() {
+        let (game, m, log) = setup()
+        m.drive(frame(1, moving: true, started: true))
+        m.requestEnd { log.events.append("end") }
+        m.forceEnd()
+        let closes = log.events
+        let rec = ShotRecord(start: 1, end: 2, preState: [:], finalState: [:], cueID: 1, firstContact: 2, rails: [], pocketed: [:])
+        m.drive(frame(2, shot: rec))
+        m.drive(frame(2.2))
+        #expect(log.events == closes, "the same shot never closes twice")
+        #expect(game.reviewData().shots.count <= 1)
+    }
+
     @Test func forcingBeforeAnyEndRequestDoesNothing() {
         let (_, m, log) = setup()
         m.drive(frame(1, moving: true, started: true))
