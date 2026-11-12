@@ -22,7 +22,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 008 | Lost shot with no guess pulses turn discs, review gap (D38, D41) | P1 | M | 001, 002, 007 | DONE (wt/plan-008; Codex REJECT (gap-only review showed "No shots") → fixed → APPROVE) |
 | 009 | Every phone folds one shot log (D39, D41 next-shooter event, D38 gap) | P1 | L | 002, 008 (007 recommended) | DONE (merged 38ac5c3; Codex REJECT → fixed → APPROVE; unit 1279/1279, AppShell UI 12/12) |
 | 010 | Mesh link forwards the committed log to the game | P1 | M | 009 | DONE (merged eaa717d; Codex REJECT ×4 → APPROVE; unit 1299/1299, AppShell UI 12/12) |
-| 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | TODO |
+| 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | DONE (wt/plan-011; review pending) |
 | 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | TODO (D43: migration approved; after 011) |
 | 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | TODO (Q12 = D44 island + merge; "needs tap" UI still to mock first) |
 | 014 | Pro 8 (88″) and 86″ table presets (D46) | P2 | M | 005 (009 for the mesh step) | TODO |
