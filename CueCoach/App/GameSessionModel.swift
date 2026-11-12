@@ -220,7 +220,7 @@ final class GameSessionModel {
         needsShooter = false
         rulesState = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count).1
         var corrected: [UUID: Int] = [:]
-        for case .shooterCorrection(let id, let team) in events { corrected[id] = team }
+        for case .shooterCorrection(let id, let team, _) in events { corrected[id] = team }
         var lostAt = -1
         for i in 0...events.count {
             for w in swaps where w.afterEvent == i { applySwap(w.team, w.a, w.b) }

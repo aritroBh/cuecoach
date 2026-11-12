@@ -417,7 +417,9 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
 enum GameEvent: Hashable, Codable, Sendable {
     case ruleSetChosen(RuleSetID)
     case shot(MeshShotRecord)
-    case shooterCorrection(shotID: UUID, team: Int)  // fix a recorded shot (no UI yet): attribution .tap, D17 replayed
+    case shooterCorrection(shotID: UUID, team: Int, id: UUID? = UUID())
+                                                     // fix a recorded shot (no UI yet): attribution .tap, D17 replayed;
+                                                     // id as for nextShooter
     case nextShooter(team: Int, id: UUID? = UUID())  // D41 disc tap: only who shoots next; works before the first shot.
                                                      // id tells identical taps apart (decodeIfPresent: nil = absent)
     case shotLost(shotID: UUID, shooterTeam: Int)    // D38 gap: rating nil, no rules change, asks for the shooter
@@ -457,7 +459,8 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
   joiner drops its own `.shot`/`.shotLost` (D39) and proposes the rest (D41 disc taps survive). Otherwise `append`
   forwards to `MeshSession.append`, in call order. `commitSeq` is the last forwarded value and stays readable after `stop()`.
 - `isJoiner` (default `!isHost`) and `drain(until:) async` (default: returns at once) on `GameMeshLink`. Drain:
-  host, every local input seen committed; joiner, every proposal seen committed (matched by event identity: shots by shotID, taps by id), then no
+  host, every local input seen committed; joiner, every proposal seen committed (matched by event identity: shots and lost shots by shotID, taps and corrections by id;
+  `.ruleSetChosen` is appended only by the host node at a vote close, never proposed), then no
   uncommitted tail and no `commitSeq` advance for 300 ms. Always ends at the deadline.
 - `AppRouter.endGame()` leaves Live at once: the review stage gets a loading `GameReviewModel` whose
   `MeshReviewSource` awaits the drain (cancelled at End + 2 s, D42), snapshots `reviewData()`, then stops the link.
