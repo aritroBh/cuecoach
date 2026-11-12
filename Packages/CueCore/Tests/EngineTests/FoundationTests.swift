@@ -116,3 +116,12 @@ import Physics
         }
     }
 }
+
+// D46: the evaluator seeds its RNG from the table size; the shipped sizes keep their seeds when presets are added.
+@Test func tableSizeSeedStaysStableWhenPresetsAreAdded() {
+    #expect(TableSize.sevenFoot.hashValueStable == 0)
+    #expect(TableSize.eightFoot.hashValueStable == 1)
+    #expect(TableSize.nineFoot.hashValueStable == 2)
+    #expect(TableSize.eightySixInch.hashValueStable == 3)
+    #expect(TableSize.proEight.hashValueStable == 4)
+}

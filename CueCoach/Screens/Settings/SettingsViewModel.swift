@@ -175,11 +175,28 @@ public final class SettingsViewModel {
     nonisolated static func silhouetteScale(_ size: TableSize) -> Double {
         size.playingLength / TableSize.nineFoot.playingLength
     }
-    nonisolated static func feet(_ size: TableSize) -> Int {
-        switch size { case .sevenFoot: 7; case .eightFoot: 8; case .nineFoot: 9 }
+    /// Tile label (D46: Pro 8 and 86″ are named, not rounded to feet).
+    nonisolated static func tableShortLabel(_ size: TableSize) -> String {
+        switch size {
+        case .sevenFoot: "7 ft"
+        case .eightySixInch: "86″"
+        case .proEight: "Pro 8"
+        case .eightFoot: "8 ft"
+        case .nineFoot: "9 ft"
+        }
+    }
+    /// VoiceOver name of a size ("… table" is appended by callers).
+    nonisolated static func tableSpokenLabel(_ size: TableSize) -> String {
+        switch size {
+        case .sevenFoot: "7 foot"
+        case .eightySixInch: "86 inch"
+        case .proEight: "Pro 8"
+        case .eightFoot: "8 foot"
+        case .nineFoot: "9 foot"
+        }
     }
     func tableAccessibilityLabel(_ size: TableSize) -> String {
-        let base = "\(Self.feet(size)) foot table"
+        let base = "\(Self.tableSpokenLabel(size)) table"
         return tableNote == .autoMeasured && size == tableSize ? base + ", measured" : base
     }
 

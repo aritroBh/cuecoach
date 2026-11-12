@@ -132,7 +132,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
     static func sizeIsTrusted(_ p: AutoTablePose, prior: TableSize? = nil) -> Bool {
         if let s = p.snappedSize, s == prior { return true }
         let est = (p.measuredLength + 2 * p.measuredWidth) / 2
-        return !SizeAmbiguity.isAmbiguous(measuredLength: est, snapped: p.snappedSize)
+        return !SizeAmbiguity.isAmbiguous(measuredLength: est, snapped: p.snappedSize, prior: prior)
     }
 
     /// The candidate's six pocket centres in working-image pixels (where the keypoint model's mouths land).

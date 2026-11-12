@@ -318,7 +318,8 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             fit = f2; pose0 = p2; allPts = kept; diag.reprojectionRMS = rms2; diag.droppedRail = k
             // One axis measured by its two rails, the other at 2:1: a size only if that axis fits exactly one preset
             // (8 and 9 ft overlap within 6 %; cross-vendor review, GLM-5). Otherwise pose under its preset, no vote.
-            sizeMeasured = AutoRectFitter.uniquePreset(length: (f2.measuredL + 2 * f2.measuredW) / 2)
+            sizeMeasured = AutoRectFitter.uniquePreset(length: (f2.measuredL + 2 * f2.measuredW) / 2,
+                                                       prior: config.fusion.prior)
         }
         guard viewElevation(camera, center: pose0.center, up: plane.normal) >= config.minViewElevation else {
             diag.rejection = "view too shallow"; return nil
@@ -542,7 +543,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             diag.rejection = "reprojection"; return nil
         case .preset, .measured: break
         }
-        var spec = TableSpec(size: AutoRectFitter.snap(length: L, width: W).size)
+        var spec = TableSpec(size: AutoRectFitter.snap(length: L, width: W, prior: config.fusion.prior).size)
         var snapped: TableSize?
         let final: AutoRect
         if case .preset(let size) = verdict {
@@ -746,7 +747,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             // 4. Hypotheses: which visible rail is long, and the preset.
             struct Hyp { var rect: AutoRect; var size: TableSize; var iou: Double; var iLong: Bool }
             var hyps: [Hyp] = []
-            for size in TableSize.allCases {
+            for size in TableSize.autoSnapCandidates(prior: config.fusion.prior) {   // D50
                 let spec = TableSpec(size: size)
                 for iLong in [true, false] {
                     // Rail i runs along dj from the corner; rail j along di.
@@ -768,7 +769,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             // Measured only when a visible opposite rail's spacing alone leaves exactly one preset for this
             // orientation; otherwise the preset is whichever outline filled the cloth mask best — a guess (a cloth
             // the colour of its rails fills the outline one size up).
-            let fits = TableSize.allCases.filter { size in
+            let fits = TableSize.autoSnapCandidates(prior: config.fusion.prior).filter { size in
                 let spec = TableSpec(size: size)
                 let li = best.iLong ? spec.length : spec.width, lj = best.iLong ? spec.width : spec.length
                 if let e = extentAlongDi, abs(e - lj) / lj > 0.06 { return false }
@@ -864,7 +865,7 @@ final class ClassicalAutoTableLocator: AutoTableLocator {
             diag.rejection = "partial: no rail pair [\(info.joined(separator: ", "))]"; return nil
         }
         let W = pr.d - 2 * c
-        let sizes = TableSize.allCases.filter { abs(TableSpec(size: $0).width - W) / TableSpec(size: $0).width <= 0.03 }
+        let sizes = TableSize.autoSnapCandidates(prior: config.fusion.prior).filter { abs(TableSpec(size: $0).width - W) / TableSpec(size: $0).width <= 0.03 }
         guard sizes.count == 1, let size = sizes.first else { diag.rejection = "partial: width not a preset"; return nil }
         let L = TableSpec(size: size).length
         guard let li = AutoLine.fit(rails[pr.i].lifted), let lj = AutoLine.fit(rails[pr.j].lifted) else { return nil }

@@ -8,8 +8,9 @@ import Testing
 @Suite("AutoTableLocator — round 3")
 struct AutoTableR3Tests {
 
+    /// D50: with no size picked only 7/8/9 ft are snap candidates; Pro 8 / 86″ verdicts are in AutoTableProEightTests.
     @Test func cleanMeasurementsSnapToTheirPreset() {
-        for s in TableSize.allCases {
+        for s in [TableSize.sevenFoot, .eightFoot, .nineFoot] {
             let L = s.playingLength * 1.008
             #expect(AutoRectFitter.sizeVerdict(length: L, width: L / 2) == .preset(s))
         }

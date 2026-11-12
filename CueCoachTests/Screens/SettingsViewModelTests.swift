@@ -199,6 +199,19 @@ struct Boom: Error {}
         #expect(m.tableAccessibilityLabel(.eightFoot) == "8 foot table, measured")
     }
 
+    /// D46: five sizes in length order; Pro 8 and 86″ are named, not rounded to feet.
+    @Test func tableLabelsCoverTheFivePresets() {
+        let m = model(measured: .proEight)
+        #expect(TableSize.allCases.map(SettingsViewModel.tableShortLabel) == ["7 ft", "86″", "Pro 8", "8 ft", "9 ft"])
+        #expect(TableSize.allCases.map(SettingsViewModel.tableSpokenLabel)
+                == ["7 foot", "86 inch", "Pro 8", "8 foot", "9 foot"])
+        #expect(m.tableAccessibilityLabel(.eightySixInch) == "86 inch table")
+        #expect(m.tableAccessibilityLabel(.proEight) == "Pro 8 table, measured")
+        let box = CGSize(width: 100, height: 44)
+        let widths = TableSize.allCases.map { SettingsViewModel.silhouetteRect($0, in: box).width }
+        #expect(widths == widths.sorted() && Set(widths).count == 5)
+    }
+
     @Test func shortLabelsAreAtMostTwoWords() {
         for r in RuleSetID.allCases {
             #expect(SettingsViewModel.ruleShortLabel(r).split(separator: " ").count <= 2)

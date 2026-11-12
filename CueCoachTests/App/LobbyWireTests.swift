@@ -22,15 +22,16 @@ import Rules
 
     @Test func foreignOrOldAdvertIsIgnored() {
         #expect(LobbyWire.game(from: ["v": "0"], peerKey: "x") == nil)
+        #expect(LobbyWire.game(from: ["v": "1", "g": "x", "r": "barEight"], peerKey: "x") == nil)
         #expect(LobbyWire.game(from: nil, peerKey: "x") == nil)
     }
 
     @Test func hostileAdvertCountsAreClamped() {
-        let info = ["v": "1", "g": "x", "r": "barEight", "f": "999999", "t": "1000000"]
+        let info = ["v": LobbyWire.version, "g": "x", "r": "barEight", "f": "999999", "t": "1000000"]
         let g = LobbyWire.game(from: info, peerKey: "p")
         #expect(g?.seatsTotal == 8)
         #expect(g?.seatsFilled == 8)
-        #expect(LobbyWire.game(from: ["v": "1", "g": "x", "r": "barEight", "f": "-3", "t": "-1"], peerKey: "p")?.seatsTotal == 2)
+        #expect(LobbyWire.game(from: ["v": LobbyWire.version, "g": "x", "r": "barEight", "f": "-3", "t": "-1"], peerKey: "p")?.seatsTotal == 2)
     }
 
     @Test func oversizedOrMalformedLineupsAreRejected() {
@@ -78,6 +79,24 @@ import Rules
                                         .start(cfg, sessionTag: 77), .phones([NearbyPhone(id: "p", name: "Kim")])] {
             #expect(try LobbyWire.decode(LobbyWire.encode(msg)) == msg)
         }
+    }
+
+    /// D46: a lobby set to Pro 8 or 86″ carries that size to joiners on this build.
+    @Test(arguments: [TableSize.proEight, .eightySixInch])
+    func newTablePresetsRoundTrip(size: TableSize) throws {
+        let cfg = GameConfig(ruleSet: .wpaEight, tableSize: size, teams: [[sam], [sam]])
+        let lineup = LobbyLineup(ruleSet: .wpaNine, tableSize: size, seats: [[sam, nil], [nil, sam]])
+        for msg: LobbyWire.Message in [.lineup(lineup), .start(cfg, sessionTag: 77)] {
+            #expect(try LobbyWire.decode(LobbyWire.encode(msg)) == msg)
+        }
+    }
+
+    /// D46: lobby v1 builds cannot decode Pro 8 / 86″, so they would drop such a start silently. v2 adverts are
+    /// invisible to them (and theirs to us): an old build never joins a lobby it cannot follow.
+    @Test func lobbyVersionIsTwoSinceTheNewPresets() {
+        #expect(LobbyWire.version == "2")
+        let g = NearbyGame(id: "ab12", host: nil, ruleSet: .barEight, seatsFilled: 1, seatsTotal: 2)
+        #expect(LobbyWire.discoveryInfo(g)["v"] == "2")
     }
 
     @Test func garbageDoesNotDecode() {

@@ -208,6 +208,18 @@ import Rules
     }
 
     /// New GameEvent cases are a wire break: the frame header and the Hello both speak major 2 only.
+    /// D46: the Pro 8 and 86″ presets ride inside major 2 (plan 009's bump); no major change for them alone.
+    @Test(arguments: [TableSize.proEight, .eightySixInch])
+    func newTablePresetsRoundTripUnderTheCurrentMajor(size: TableSize) throws {
+        #expect(ProtocolVersion.current.major == 2)
+        let m = MeshMessage.calibration(CalibrationReport(homography: Array(repeating: 0.5, count: 9), residualPixels: 1,
+                                                          tableSize: size))
+        let data = try MeshCodec.encode(Self.envelope(m))
+        #expect(data[3] == 2)
+        #expect(try MeshCodec.decode(data).message == m)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"\(size.rawValue)\""))
+    }
+
     @Test func frameHeaderIsMajorTwo() throws {
         #expect(ProtocolVersion.current == ProtocolVersion(major: 2, minor: 0))
         #expect(ProtocolVersion.supportedMajors == [2])

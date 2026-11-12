@@ -361,7 +361,16 @@ struct Evaluator: Sendable {
 }
 
 extension TableSize {
-    var hashValueStable: Int { TableSize.allCases.firstIndex(of: self)! }
+    /// RNG seed per size. Fixed numbers, not `allCases` order: adding presets must not reseed shipped sizes.
+    var hashValueStable: Int {
+        switch self {
+        case .sevenFoot: 0
+        case .eightFoot: 1
+        case .nineFoot: 2
+        case .eightySixInch: 3
+        case .proEight: 4
+        }
+    }
 }
 
 extension BallInHand {

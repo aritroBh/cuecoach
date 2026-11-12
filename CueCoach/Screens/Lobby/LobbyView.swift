@@ -235,12 +235,21 @@ public struct LobbyView: View {
     private var tableBlock: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Table").axFont(.title).foregroundStyle(AX.ink)
-            HStack(alignment: .bottom, spacing: 0) {
-                ForEach(TableSize.allCases, id: \.self) { s in
-                    TableTile(size: s, selected: model.tableSize == s, measured: model.measuredTableSize == s) {
-                        model.selectTable(s)
+            // Five sizes (D46): three per row, one per row at accessibility type sizes. An eager Grid, not a lazy
+            // one: in the scroll view a lazy grid never builds the second row until it scrolls into view, so
+            // VoiceOver and UI tests can't reach 8 ft / 9 ft.
+            let perRow = typeSize.isAccessibilitySize ? 1 : 3
+            let sizes = TableSize.allCases
+            Grid(horizontalSpacing: 0, verticalSpacing: 12) {
+                ForEach(Array(stride(from: 0, to: sizes.count, by: perRow)), id: \.self) { i in
+                    GridRow {
+                        ForEach(sizes[i..<min(i + perRow, sizes.count)], id: \.self) { s in
+                            TableTile(size: s, selected: model.tableSize == s, measured: model.measuredTableSize == s) {
+                                model.selectTable(s)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
                     }
-                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -505,8 +514,6 @@ private struct TableTile: View {
     var measured: Bool
     var tap: () -> Void
 
-    var feet: Int { switch size { case .sevenFoot: 7; case .eightFoot: 8; case .nineFoot: 9 } }
-
     var body: some View {
         Button(action: tap) {
             VStack(spacing: 8) {
@@ -523,14 +530,14 @@ private struct TableTile: View {
                     }
                 }
                 .frame(minHeight: 56)
-                Text("\(feet) ft").axFont(.label, weight: .semibold)
+                Text(SettingsViewModel.tableShortLabel(size)).axFont(.label, weight: .semibold)
                     .foregroundStyle(selected ? AX.ink : AX.inkMuted)
             }
             .frame(minWidth: 96, minHeight: 88)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(feet) foot table\(selected ? ", selected" : "")\(measured ? ", measured" : "")")
+        .accessibilityLabel("\(SettingsViewModel.tableSpokenLabel(size)) table\(selected ? ", selected" : "")\(measured ? ", measured" : "")")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("lobby.table.\(size.rawValue)")
     }

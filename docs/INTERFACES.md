@@ -4,7 +4,8 @@ All `CueCore` types are value types, `Sendable`, `Codable` where they cross the 
 Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = head-left cushion nose, +x toward the foot (head spot at 0.25 L, foot spot at 0.75 L).
 
 ## Geometry (merged)
-`Vec2`, `TableSize` (7/8/9 ft), `TableSpec` (dims, pocket centres + mouths, spots, head string),
+`Vec2`, `TableSize` (7 ft, 86″, Pro 8 = 88″, 8 ft, 9 ft; `allCases` in length order, raw values persisted and on the
+mesh inside major 2, D46), `TableSpec` (dims, pocket centres + mouths, spots, head string),
 `Pocket` (6), `BallID` (0 = cue, 1–15; `.group`), `BallGroup`, `BallState` (pos, vel, ω, `MotionState`),
 `TableState` (spec + balls).
 
@@ -260,6 +261,10 @@ enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShap
   surface being locked: a candidate pose > 0.3 m from the one the evidence was seen on starts the count over) and a
   measured length that isn't ambiguous between two presets; keypoints come from `CoreMLTableKeypointProvider`
   (tablekp YOLO26n-pose, ANE, ≤ 10 Hz).
+- **Snap candidates (D50)**: every auto size check (per-frame verdict, ambiguity margin, one-axis `uniquePreset`,
+  corner-partial and side-pocket presets, `SizeAmbiguity`, `TableSizing.snap`) uses
+  `TableSize.autoSnapCandidates(prior:)`: 7/8/9 ft, plus the picked size (the D36 C prior) when it is Pro 8 or 86″.
+  With no size picked, Pro 8 and 86″ never lock (an 86″ table reads as between presets; a Pro 8 as 8 ft).
 - **Manual fallback**: tap the 2 nearest corner pockets (any order) → `TwoTapTable` fills the table from the plane +
   preset → drag any corner (loupe + snap) → ✓.
 - **Acceptance**: `CueCoachTests/VirtualTable` matrix + `LockGate` (0 false locks always; accurate-lock / TTL floors
@@ -287,7 +292,8 @@ struct GameConfig: Codable { var ruleSet; var tableSize; var teams: [[ShellPlaye
 enum LobbyEvent { gamesChanged, joined, rejectedFull, hostLeft, started(GameConfig), lineupChanged(LobbyLineup), unavailable, phonesChanged }
 ```
 `MPCGameLobby` implements it on its own MPC service `cuecoach-lb` (adverts in discovery info, JSON messages,
-encryption required). On Start every phone opens `MultipeerMeshSession.multipeer(sessionTag:)` with the
+encryption required). Advert version `LobbyWire.version = "2"` since D46 (v1 builds can't decode Pro 8 / 86″, so v1
+and v2 lobbies don't see each other). On Start every phone opens `MultipeerMeshSession.multipeer(sessionTag:)` with the
 host's random tag (`MeshGameLink`). `FakeGameLobbyMesh` drives tests; `OfflineGameLobby` = one phone.
 Guests are `ShellPlayer(isGuest: true)` in memory only, never written to SwiftData.
 Measured table size: Live writes `UserDefaults "cc.table.measured"` (TableSize raw value); setup preselects it.

@@ -27,7 +27,7 @@ struct AuditWPADimensionTests {
         let l = TableSize.allCases.map(\.playingLength)
         #expect(TableSpec(size: .sevenFoot).length < TableSpec(size: .eightFoot).length)
         #expect(TableSpec(size: .eightFoot).length < TableSpec(size: .nineFoot).length)
-        #expect(Set(l).count == 3)
+        #expect(l == l.sorted() && Set(l).count == TableSize.allCases.count)
     }
 
     // WPA: ball 2 1/4" +/- .005".
@@ -193,7 +193,7 @@ struct AuditBallIDTests {
 struct AuditCodableTests {
     // Wire/storage format pins: renaming a case breaks persisted data and mesh peers on older builds.
     @Test func enumRawValuesArePinned() throws {
-        #expect(TableSize.allCases.map(\.rawValue) == ["sevenFoot", "eightFoot", "nineFoot"])
+        #expect(TableSize.allCases.map(\.rawValue) == ["sevenFoot", "eightySixInch", "proEight", "eightFoot", "nineFoot"])
         #expect(Pocket.allCases.map(\.rawValue) == ["footLeft", "footRight", "sideLeft", "sideRight", "headLeft", "headRight"])
         #expect(MotionState.stationary.rawValue == "stationary" && MotionState.pocketed.rawValue == "pocketed")
         #expect(BallGroup.allCases.map(\.rawValue) == ["solids", "stripes"])

@@ -114,11 +114,21 @@ struct AutoTableUnlistedSizeTests {
     }
 
     /// Per-frame fits are ±5 % on length at shallow views: noisy preset tables lock as their preset.
-    @Test(arguments: TableSize.allCases)
+    @Test(arguments: [TableSize.sevenFoot, .eightFoot, .nineFoot])
     func noisyPresetFitsStillLockAsThePreset(size: TableSize) throws {
         var rng = AutoTestRNG(seed: 5)
         let L = size.playingLength
         let f = Self.fused((0..<30).map { _ in L * (1 + rng.uniform(-0.035, 0.035)) })
+        #expect(f.locked)
+        #expect(f.fused?.snappedSize == size)
+    }
+
+    /// D46/D50: 86″ and Pro 8 are snap candidates only when picked (the prior, D36 C); noisy fits then lock as them.
+    @Test(arguments: [TableSize.eightySixInch, .proEight])
+    func noisyFitsOfAChosenNewPresetLockAsIt(size: TableSize) throws {
+        var rng = AutoTestRNG(seed: 5)
+        let L = size.playingLength
+        let f = Self.fused((0..<30).map { _ in L * (1 + rng.uniform(-0.035, 0.035)) }, prior: size)
         #expect(f.locked)
         #expect(f.fused?.snappedSize == size)
     }

@@ -6,7 +6,8 @@ import Rules
 /// Lobby wire format: Bonjour discovery info for adverts + small JSON messages on a reliable MPC session.
 enum LobbyWire {
     static let serviceType = "cuecoach-lb"   // listed in NSBonjourServices (project.yml)
-    static let version = "1"
+    /// "2" since D46: v1 builds cannot decode Pro 8 / 86″ and would drop such a start, so the lobbies don't see each other.
+    static let version = "2"
     static let inviteContext = Data("cuecoach-lobby-v1".utf8)
     /// This phone + up to 7 more (MPC session limit 8).
     static let maxJoiners = 7

@@ -13,9 +13,10 @@ enum TableSizing {
     }
 
     /// Length and width in metres (playing surface). Width counts as 2× (tables are 2:1).
+    /// D50: no size was picked here, so only 7/8/9 ft are candidates (callers with a picked size use it directly).
     static func snap(length: Double, width: Double) -> Result {
         let est = (length + 2 * width) / 2
-        let best = TableSize.allCases.min { abs($0.playingLength - est) < abs($1.playingLength - est) }!
+        let best = TableSize.autoSnapCandidates(prior: nil).min { abs($0.playingLength - est) < abs($1.playingLength - est) }!
         return Result(size: best, relativeError: abs(best.playingLength - est) / best.playingLength)
     }
 }

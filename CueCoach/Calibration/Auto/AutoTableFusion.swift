@@ -179,7 +179,7 @@ struct AutoTableFusion: Sendable {
         if let s = preset {
             spec = TableSpec(size: s); snapped = s
         } else {
-            let (s, _) = AutoRectFitter.snap(length: mL, width: mW)
+            let (s, _) = AutoRectFitter.snap(length: mL, width: mW, prior: config.prior)
             spec = TableSpec(size: s)
             let len = (mL + 2 * mW) / 2
             spec.length = len; spec.width = len / 2
