@@ -230,6 +230,7 @@ import Rules
     }
 
     /// The old host comes back after a partition with a stale term: it steps down and adopts the new log.
+    /// Plan 013a changes the expectation on purpose: its island shot is merged in, not dropped (§2.5 item 4, D44).
     @Test func partitionedOldHostStepsDownOnHeal() {
         let (net, ids) = Self.mesh(3)
         let old = net.hosts.first!
@@ -237,7 +238,8 @@ import Rules
         net.act(old) { m, t in m.append(Self.shot(1), now: t) }
         net.run(for: 0.5)
         net.partition([old], others)
-        net.act(old) { m, t in m.append(Self.shot(2), now: t) }   // provisional, never replicated
+        let island = Self.shot(2)
+        net.act(old) { m, t in m.append(island, now: t) }   // provisional, never replicated
         net.run(for: 3)
         let newHost = net.hosts.first { $0 != old }!
         net.act(newHost) { m, t in m.append(Self.shot(3), now: t) }
@@ -248,7 +250,8 @@ import Rules
         #expect(net.hosts == [newHost])
         #expect(net.node(old).role == .client(host: newHost))
         #expect(net.node(old).term == net.node(newHost).term)
-        #expect(net.node(newHost).log.count == 2)
+        #expect(net.node(newHost).log.count == 3, "the minority island's shot is merged in")
+        #expect(net.node(newHost).log.last?.event == island)
     }
 
     /// Lobby: two phones that each claimed hosting before seeing each other converge to the better one.

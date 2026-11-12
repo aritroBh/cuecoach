@@ -57,6 +57,8 @@ enum MeshUpdate: Hashable, Sendable {
     case rejected(RejectReason)
     /// Session-only profile summary from a peer (SPEC §5.7). Opaque to the mesh; the identity module owns it.
     case profile(from: PeerID, Data)
+    /// Plan 013a: this phone became, or stopped being, an island (no host, or hosting without a majority).
+    case island(Bool)
 }
 
 struct Outbound: Hashable, Sendable {
@@ -177,6 +179,8 @@ struct MeshNode: Sendable {
     var lastSeq: UInt64 { log.last?.seq ?? 0 }
     var isHost: Bool { role == .host }
     var storedClipCount: Int { localClips.count }
+    /// Plan 013a: after first joining, discovering or hosting without a majority. A client is never an island.
+    var isIsland: Bool { false }
 
     // MARK: - Inputs
 
@@ -312,6 +316,7 @@ struct MeshNode: Sendable {
                 profiles[from] = p.summary
                 step.updates.append(.profile(from: from, p.summary))
             }
+        case .islandLog: break
         case .unknown: break
         }
         return flush()
@@ -343,6 +348,9 @@ struct MeshNode: Sendable {
 
     /// Host appends; a client forwards a proposal to the host.
     mutating func append(_ e: GameEvent, now: Double) -> MeshStep { append(e, now: now, flushing: true) }
+
+    /// Plan 013a: this phone's own settle (`.shot` / `.shotLost`) with its stroke time on this phone's clock (s).
+    mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep { flush() }
 
     mutating func openRuleVote(now: Double) -> MeshStep {
         guard isHost else { return flush() }

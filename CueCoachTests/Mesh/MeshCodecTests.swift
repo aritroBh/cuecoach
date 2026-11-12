@@ -54,6 +54,8 @@ import Rules
             .clipChunkAck(ClipChunkAck(shotID: shot, index: 2, ok: true)),
             .clipComplete(ClipComplete(shotID: shot, sha256: Data(repeating: 9, count: 32))),
             .profile(ProfileShare(summary: Data([1, 2, 3]))),
+            .islandLog(IslandLog(commitSeq: 3, entries: [entry], settles: [
+                IslandSettle(event: .shotLost(shotID: shot, shooterTeam: 1), strokeHostTime: 42)], last: true)),
         ]
     }
 
@@ -183,6 +185,22 @@ import Rules
         #expect(back == r)
         let env = Self.envelope(.logEntries([LogEntry(seq: 1, term: 1, event: .shot(r))]))
         #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+    }
+
+    /// Plan 013a fields are additive: a record or heartbeat without them decodes as nil / false.
+    @Test func plan013FieldsRoundTripAndDecodeWhenMissing() throws {
+        var r = MeshShotRecord(shotID: Self.shot, shooterTeam: 1, outcome: Self.sampleOutcome, postState: nil)
+        let old = try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r))
+        #expect(old.strokeHostTime == nil && !old.needsTap)
+        r.strokeHostTime = 1_234_567_890_123
+        r.needsTap = true
+        #expect(try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r)) == r)
+        let json = #"{"term":3,"host":"\#(Self.a.raw.uuidString)","lastSeq":1,"commitSeq":1,"phase":"aiming"}"#
+        let hb = try JSONDecoder().decode(Heartbeat.self, from: Data(json.utf8))
+        #expect(hb.gameOffset == nil)
+        var withOffset = hb
+        withOffset.gameOffset = -5_000
+        #expect(try MeshCodec.decode(MeshCodec.encode(Self.envelope(.heartbeat(withOffset)))).message == .heartbeat(withOffset))
     }
 
     @Test func nextShooterAndShotLostRoundTrip() throws {

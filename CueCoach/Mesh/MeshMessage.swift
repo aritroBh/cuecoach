@@ -30,6 +30,9 @@ struct Heartbeat: Hashable, Codable, Sendable {
     var lastSeq: UInt64
     var commitSeq: UInt64
     var phase: MeshPhase
+    /// Plan 013a: game clock − this host's clock, ns, at send time (a host that took over keeps the first host's
+    /// clock). nil = 0. Optional on the wire.
+    var gameOffset: Int64? = nil
 }
 
 /// Election inputs, gossiped by every phone (mesh-identity.md §2.4).
@@ -98,13 +101,21 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
     var decisionRating: DecisionRating? = nil
     /// D31 best guess.
     var isGuess = false
+    /// Plan 013a: stroke start on the game clock, ns (INTERFACES "Host loss and islands"); nil = unknown.
+    var strokeHostTime: Int64? = nil
+    /// Plan 013a: an island merge kept one of two disagreeing views (D47 asks a tap in 013b; a flag only for now).
+    var needsTap = false
 
-    private enum CodingKeys: String, CodingKey { case shotID, shooterTeam, outcome, postState, preState, decisionRating, isGuess }
+    private enum CodingKeys: String, CodingKey {
+        case shotID, shooterTeam, outcome, postState, preState, decisionRating, isGuess, strokeHostTime, needsTap
+    }
 
     init(shotID: UUID, shooterTeam: Int, outcome: ShotOutcome, postState: TableState?, preState: TableState? = nil,
-         decisionRating: DecisionRating? = nil, isGuess: Bool = false) {
+         decisionRating: DecisionRating? = nil, isGuess: Bool = false, strokeHostTime: Int64? = nil,
+         needsTap: Bool = false) {
         self.shotID = shotID; self.shooterTeam = shooterTeam; self.outcome = outcome; self.postState = postState
         self.preState = preState; self.decisionRating = decisionRating; self.isGuess = isGuess
+        self.strokeHostTime = strokeHostTime; self.needsTap = needsTap
     }
 
     init(from decoder: Decoder) throws {
@@ -116,6 +127,8 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
         preState = try c.decodeIfPresent(TableState.self, forKey: .preState)
         decisionRating = try c.decodeIfPresent(DecisionRating.self, forKey: .decisionRating)
         isGuess = try c.decodeIfPresent(Bool.self, forKey: .isGuess) ?? false
+        strokeHostTime = try c.decodeIfPresent(Int64.self, forKey: .strokeHostTime)
+        needsTap = try c.decodeIfPresent(Bool.self, forKey: .needsTap) ?? false
     }
 }
 
@@ -168,6 +181,21 @@ struct ClipComplete: Hashable, Codable, Sendable {
     var sha256: Data
 }
 
+/// Plan 013a: one of this phone's own settles that no log holds yet (`.shot` or `.shotLost`), on the game clock.
+struct IslandSettle: Hashable, Codable, Sendable {
+    var event: GameEvent
+    var strokeHostTime: Int64?
+}
+
+/// Plan 013a, any → host after a heal or a host change: the sender's island tail (its log after its commit point)
+/// and its own unlogged settles, in batches; the host merges once the `last` batch arrives (§2.5 "Heal").
+struct IslandLog: Hashable, Codable, Sendable {
+    var commitSeq: UInt64
+    var entries: [LogEntry]
+    var settles: [IslandSettle] = []
+    var last: Bool
+}
+
 /// Session-only profile summary (SPEC §5.7), sent only to roster members and never persisted by the mesh.
 /// Opaque here: the identity module decides the contents (an embedding only per its auth/consent rules).
 struct ProfileShare: Hashable, Codable, Sendable { var summary: Data }
@@ -205,13 +233,15 @@ enum MeshMessage: Hashable, Sendable {
     case clipComplete(ClipComplete)
     /// Peer → roster members: profile summary for this session only (minor-version addition).
     case profile(ProfileShare)
+    /// Plan 013a: island tail + own settles for the host to merge (minor-version addition).
+    case islandLog(IslandLog)
     /// A type from a newer minor version. Ignored (and counted in the debug HUD).
     case unknown(type: String)
 
     enum Kind: String, CaseIterable, Sendable {
         case hello, welcome, reject, leave, heartbeat, peerStatus, roster, hostClaim, timePing, timePong
         case ruleVoteOpen, ruleBallot, ruleVoteResult, tableState, proposal, logEntries, logAck, logTailRequest
-        case calibration, phaseChange, clipOffer, clipRequest, clipChunk, clipChunkAck, clipComplete, profile, unknown
+        case calibration, phaseChange, clipOffer, clipRequest, clipChunk, clipChunkAck, clipComplete, profile, islandLog, unknown
     }
 
     var kind: Kind {
@@ -242,6 +272,7 @@ enum MeshMessage: Hashable, Sendable {
         case .clipChunkAck: .clipChunkAck
         case .clipComplete: .clipComplete
         case .profile: .profile
+        case .islandLog: .islandLog
         case .unknown: .unknown
         }
     }
@@ -293,6 +324,7 @@ extension MeshMessage: Codable {
         case .clipChunkAck: self = .clipChunkAck(try body(ClipChunkAck.self))
         case .clipComplete: self = .clipComplete(try body(ClipComplete.self))
         case .profile: self = .profile(try body(ProfileShare.self))
+        case .islandLog: self = .islandLog(try body(IslandLog.self))
         case .unknown: self = .unknown(type: type)
         }
     }
@@ -331,6 +363,7 @@ extension MeshMessage: Codable {
         case .clipChunkAck(let v): try c.encode(v, forKey: .body)
         case .clipComplete(let v): try c.encode(v, forKey: .body)
         case .profile(let v): try c.encode(v, forKey: .body)
+        case .islandLog(let v): try c.encode(v, forKey: .body)
         }
     }
 }
