@@ -76,7 +76,9 @@ import Rules
         let e = Self.shot()
         host.0.append(e)
         #expect(await poll(2) { await host.2.snapshot().log.contains { $0.event == e } })
-        try? await Task.sleep(for: .milliseconds(400))
+        let seq = await host.2.snapshot().log.last?.seq ?? 0
+        #expect(seq > 0)
+        #expect(await poll(2) { host.0.handledLastSeq >= seq })   // barrier: the link handled that logChanged
         #expect(await host.2.snapshot().commitSeq == 0)
         #expect(!host.1.calls.dropFirst(before).contains { $0.log.contains { $0.event == e } })
         #expect(host.0.commitSeq == 0)
@@ -138,6 +140,68 @@ import Rules
         #expect(joiner.1.calls.count == count)
         #expect(joiner.0.commitSeq == kept)          // plan 011 reads it after stop
         host.0.stop()
+    }
+
+    static let a = ShellPlayer(id: UUID(), name: "A", symbol: "hare.fill", colorName: "teal")
+    static let b = ShellPlayer(id: UUID(), name: "B", symbol: "bolt.fill", colorName: "orange")
+    static let config = GameConfig(ruleSet: .barEight, tableSize: .eightFoot, teams: [[a], [b]])
+    static let pot = ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft])
+
+    /// Two games whose links start now: roles are still being elected (discovery window 0.3 s).
+    static func unresolvedGames(_ hub: MemoryHub)
+        -> (host: (GameSessionModel, MeshGameLink, MultipeerMeshSession), joiner: (GameSessionModel, MeshGameLink, MultipeerMeshSession)) {
+        let hs = session(hub, device: 18), js = session(hub, device: 16)
+        let (hl, jl) = (MeshGameLink(session: hs), MeshGameLink(session: js))
+        let (hg, jg) = (GameSessionModel(config: config), GameSessionModel(config: config))
+        hg.mesh = hl; jg.mesh = jl
+        hl.start(); jl.start()
+        return ((hg, hl, hs), (jg, jl, js))
+    }
+
+    /// Codex 010 #2 (D41): a disc tap on the joiner while the election runs still reaches the log.
+    @Test func discTapBeforeTheRoleResolvesSurvives() async {
+        let hub = MemoryHub()
+        let (host, joiner) = Self.unresolvedGames(hub)
+        #expect(await joiner.2.snapshot().role == .discovering)
+        joiner.0.handTurn(toTeam: 1)
+        #expect(await poll(3) { host.0.shootingTeam == 1 && joiner.0.shootingTeam == 1 })
+        host.1.stop(); joiner.1.stop()
+    }
+
+    /// Codex 010 #2 (D39): the eventual host's early settle is kept; the joiner's own early settle never shows.
+    @Test func settleBeforeTheRoleResolvesSurvivesOnTheHost() async {
+        let hub = MemoryHub()
+        let (host, joiner) = Self.unresolvedGames(hub)
+        #expect(await host.2.snapshot().role == .discovering)
+        host.0.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
+        joiner.0.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: ShotOutcome()))
+        #expect(await poll(3) { host.0.shots.count == 1 && joiner.0.shots.count == 1 && !joiner.1.isHost })
+        let handled = await host.2.snapshot().log.last?.seq ?? 0
+        #expect(await poll(2) { host.1.handledLastSeq >= handled && joiner.1.handledLastSeq >= handled })
+        #expect(host.0.shots.map(\.rating) == [.best])
+        #expect(joiner.0.shots.map(\.rating) == [.best])
+        #expect(await host.2.snapshot().log.count == 1)
+        host.1.stop(); joiner.1.stop()
+    }
+
+    /// Codex 010 #1 (D37, D42): ending right after a settle, on a slow radio, still reviews that shot.
+    @Test func endingRightAfterASettleKeepsTheShotInReview() async {
+        let hub = MemoryHub()
+        let (host, joiner) = await Self.pair(hub)
+        let r = AppRouter()
+        r.meshFactory = { _ in host.0 }
+        var c = Self.config
+        c.sessionTag = 7
+        r.startGame(c)
+        hub.delay = 0.3
+        guard case .live(let live)? = r.stage else { Issue.record("no live"); return }
+        live.settled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
+        r.endGame()
+        #expect(await poll(3) { if case .review = r.stage { true } else { false } })
+        guard case .review(let data)? = r.stage else { Issue.record("no review"); return }
+        #expect(data.shots.map(\.rating) == [.best])
+        #expect(await poll(2) { host.0.isStopped })
+        joiner.0.stop()
     }
 
     @Test func twoGameSessionsAgreeOnShotsAndTurn() async {

@@ -18,6 +18,12 @@ import UIKit
     func stop()
     /// Host: append to the log. Client: send it to the host as a `.proposal`.
     func append(_ event: GameEvent)
+    /// Teardown: wait (at most `seconds`) until this phone's appends are committed, then call `done`.
+    func drainAppends(within seconds: Double, then done: @escaping @MainActor () -> Void)
+}
+
+extension GameMeshLink {
+    func drainAppends(within seconds: Double, then done: @escaping @MainActor () -> Void) { done() }
 }
 
 @MainActor @Observable final class MeshGameLink: GameMeshLink {
@@ -27,6 +33,8 @@ import UIKit
     @ObservationIgnored private var task: Task<Void, Never>?
     /// `.host` only: false while discovering and as a client. Last values stay readable after `stop()`.
     private(set) var isHost = false
+    /// Last log seq this link has seen in a snapshot (a processing barrier for tests).
+    private(set) var handledLastSeq: UInt64 = 0
     /// The last commit point forwarded to `onCommittedLog`.
     private(set) var commitSeq: UInt64 = 0
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?

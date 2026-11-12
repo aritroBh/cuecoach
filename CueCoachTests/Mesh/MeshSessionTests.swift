@@ -23,9 +23,19 @@ final class MemoryHub: @unchecked Sendable {
     /// Abrupt death: no goodbye, others just stop hearing it (like a force-quit host).
     func kill(_ p: PeerID) { lock.withLock { members[p]?.dead = true; members[p] = nil } }
 
+    /// Slow radio: every message lands this much later, in send order (acknowledgements included).
+    var delay: Double {
+        get { lock.withLock { _delay } }
+        set { lock.withLock { _delay = newValue } }
+    }
+    private var _delay = 0.0
+    private let slow = DispatchQueue(label: "MemoryHub.delay")
+
     func deliver(_ data: Data, from: PeerID, to: [PeerID]) {
         let targets = lock.withLock { to.compactMap { members[$0] } }
-        for t in targets where !t.dead { t.emit(.received(data, from: from)) }
+        let emit = { for t in targets where !t.dead { t.emit(.received(data, from: from)) } }
+        let d = delay
+        if d > 0 { slow.asyncAfter(deadline: .now() + d, execute: emit) } else { emit() }
     }
 }
 
