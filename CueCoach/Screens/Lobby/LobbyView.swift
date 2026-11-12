@@ -235,14 +235,21 @@ public struct LobbyView: View {
     private var tableBlock: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Table").axFont(.title).foregroundStyle(AX.ink)
-            // Five sizes (D46): three per row, one per row at accessibility type sizes.
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0),
-                                     count: typeSize.isAccessibilitySize ? 1 : 3), alignment: .center, spacing: 12) {
-                ForEach(TableSize.allCases, id: \.self) { s in
-                    TableTile(size: s, selected: model.tableSize == s, measured: model.measuredTableSize == s) {
-                        model.selectTable(s)
+            // Five sizes (D46): three per row, one per row at accessibility type sizes. An eager Grid, not a lazy
+            // one: in the scroll view a lazy grid never builds the second row until it scrolls into view, so
+            // VoiceOver and UI tests can't reach 8 ft / 9 ft.
+            let perRow = typeSize.isAccessibilitySize ? 1 : 3
+            let sizes = TableSize.allCases
+            Grid(horizontalSpacing: 0, verticalSpacing: 12) {
+                ForEach(Array(stride(from: 0, to: sizes.count, by: perRow)), id: \.self) { i in
+                    GridRow {
+                        ForEach(sizes[i..<min(i + perRow, sizes.count)], id: \.self) { s in
+                            TableTile(size: s, selected: model.tableSize == s, measured: model.measuredTableSize == s) {
+                                model.selectTable(s)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
                     }
-                    .frame(maxWidth: .infinity)
                 }
             }
         }
