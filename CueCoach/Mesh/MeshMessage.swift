@@ -124,10 +124,12 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
 enum GameEvent: Hashable, Codable, Sendable {
     case ruleSetChosen(RuleSetID)
     case shot(MeshShotRecord)
-    /// Fix a recorded shot's team (attribution `.tap`).
-    case shooterCorrection(shotID: UUID, team: Int)
-    /// D41: a turn-disc tap. Changes only who shoots next.
-    case nextShooter(team: Int)
+    /// Fix a recorded shot's team (attribution `.tap`). `id` tells two identical corrections apart (as for
+    /// `.nextShooter`); decodeIfPresent, nil = absent. The fold ignores it.
+    case shooterCorrection(shotID: UUID, team: Int, id: UUID? = UUID())
+    /// D41: a turn-disc tap. Changes only who shoots next. `id` tells two identical taps apart (a joiner's drain
+    /// waits for its own); decoded with decodeIfPresent, so nil = a payload without one.
+    case nextShooter(team: Int, id: UUID? = UUID())
     /// D38: a lost shot with no guess. A gap (no rating, no rules change) that asks who shoots next.
     case shotLost(shotID: UUID, shooterTeam: Int)
 }

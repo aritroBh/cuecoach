@@ -376,7 +376,7 @@ import Engine
         var pushed: [Set<BallID>] = []
         s.legalChanged = { pushed.append($0) }
         s.handTurn(toTeam: 0)
-        #expect(link.log.last?.event == .nextShooter(team: 0))
+        #expect(link.log.last?.event.nextShooterTeam == 0)
         #expect(s.shooter == b1, "nothing changes before the commit")
         #expect(pushed.isEmpty)
         link.commit()
@@ -388,7 +388,7 @@ import Engine
         // A client's tap is a proposal to the host.
         let (c, cl) = meshGame(host: false)
         c.handTurn(toTeam: 1)
-        #expect(cl.proposals == [.nextShooter(team: 1)])
+        #expect(cl.proposals.map(\.nextShooterTeam) == [1])
         #expect(c.shooter == a1)
     }
 
@@ -399,7 +399,7 @@ import Engine
         #expect(solo.shots.isEmpty)
         let (s, link) = meshGame(host: true)
         s.handTurn(toTeam: 1)
-        #expect(link.log.map(\.event) == [.nextShooter(team: 1)])
+        #expect(link.log.map(\.event.nextShooterTeam) == [1])
         link.commit()
         #expect(s.shooter == b1)
         #expect(s.rules.1.shooter == 1)
@@ -440,7 +440,7 @@ import Engine
         s.shotLost()
         link.commit()
         s.handTurn(toTeam: 1)
-        #expect(link.log.last?.event == .nextShooter(team: 1))
+        #expect(link.log.last?.event.nextShooterTeam == 1)
         link.commit()
         #expect(!s.needsShooter)
         #expect(s.shooter == b1)
@@ -450,7 +450,7 @@ import Engine
         t.shotLost(); tl.commit()
         t.handTurn(toTeam: 0)
         tl.commit()
-        #expect(tl.log.last?.event == .nextShooter(team: 0))
+        #expect(tl.log.last?.event.nextShooterTeam == 0)
         #expect(!t.needsShooter && t.shooter == a1)
     }
 
@@ -584,4 +584,9 @@ import Engine
         self.commitSeq = commitSeq
         onCommittedLog?(entries, commitSeq)
     }
+}
+
+extension GameEvent {
+    /// The team of a `.nextShooter` tap (its id is fresh per tap), else nil.
+    var nextShooterTeam: Int? { if case .nextShooter(let team, _) = self { team } else { nil } }
 }

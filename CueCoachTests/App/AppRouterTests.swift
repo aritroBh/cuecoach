@@ -103,7 +103,7 @@ import Training
         guard case .live(let s)? = r.stage, let game = s.game else { Issue.record("no game"); return }
         game.shotSettled(SettledShot(rating: .great, turnPasses: true, outcome: ShotOutcome()))
         r.endGame()
-        guard case .review(let data)? = r.stage else { Issue.record("no review"); return }
+        guard case .review(let review)? = r.stage, let data = review.data else { Issue.record("no review"); return }
         #expect(data.shots.count == 1)
         #expect(data.shots.first?.rating == .great)
         #expect(!data.isFinished)                 // ended mid-rack: no winner yet
@@ -116,12 +116,64 @@ import Training
         var commitSeq: UInt64 = 0
         var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
         func append(_ event: GameEvent) {}
-        var started = 0, stopped = 0
+        var started = 0, stopped = 0, drains = 0
+        /// How long `drain` takes (a slow radio); the router caps it.
+        var drainTime: Duration = .zero
         func start() { started += 1 }
         func stop() { stopped += 1 }
+        func drain(until deadline: Date) async { drains += 1; try? await Task.sleep(for: drainTime) }
     }
 
-    @Test func meshGameStartsTheSessionWithTheLobbyTagAndStopsItAtTheEnd() {
+    func meshGame(_ link: FakeLink) -> AppRouter {
+        let r = AppRouter()
+        r.meshFactory = { _ in link }
+        var c = config
+        c.sessionTag = 9
+        r.startGame(c)
+        return r
+    }
+
+    /// Codex 010 review 2 (B): End leaves Live at once; only the review data waits for the drain.
+    @Test func endingAMeshGameLeavesLiveAtOnceAndReviewLoadsAfterTheDrain() async {
+        let link = FakeLink()
+        link.drainTime = .milliseconds(300)
+        let r = meshGame(link)
+        r.endGame()
+        guard case .review(let m)? = r.stage else { Issue.record("Live still up"); return }
+        #expect(m.phase == .loading)
+        #expect(link.stopped == 0)
+        #expect(await poll(2) { m.phase == .loaded })
+        #expect(link.stopped == 1)
+    }
+
+    @Test func aSecondEndGameIsANoOp() async {
+        let link = FakeLink()
+        link.drainTime = .milliseconds(200)
+        let r = meshGame(link)
+        r.endGame()
+        guard case .review(let first)? = r.stage else { Issue.record("no review"); return }
+        r.endGame()
+        r.liveClosed()
+        guard case .review(let again)? = r.stage else { Issue.record("no review"); return }
+        #expect(again === first)
+        #expect(await poll(2) { first.phase == .loaded })
+        #expect(link.drains == 1 && link.stopped == 1)
+    }
+
+    /// D42: never stuck. A link that never drains still yields a review 2 s after End.
+    @Test func theTwoSecondCapHoldsWhenTheDrainHangs() async {
+        let link = FakeLink()
+        link.drainTime = .seconds(30)
+        let r = meshGame(link)
+        let start = Date()
+        r.endGame()
+        guard case .review(let m)? = r.stage else { Issue.record("no review"); return }
+        #expect(await poll(4) { m.phase == .loaded })
+        #expect(Date().timeIntervalSince(start) < 2.8)
+        #expect(link.stopped == 1)
+    }
+
+    @Test func meshGameStartsTheSessionWithTheLobbyTagAndStopsItAtTheEnd() async {
         let r = AppRouter()
         var tags: [UInt16] = []
         let link = FakeLink()
@@ -132,7 +184,7 @@ import Training
         #expect(tags == [42])
         #expect(link.started == 1)
         r.endGame()
-        #expect(link.stopped == 1)
+        #expect(await poll(2) { link.stopped == 1 })
         r.finishReview()
         #expect(link.stopped == 1)
     }

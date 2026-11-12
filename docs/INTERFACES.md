@@ -417,8 +417,11 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
 enum GameEvent: Hashable, Codable, Sendable {
     case ruleSetChosen(RuleSetID)
     case shot(MeshShotRecord)
-    case shooterCorrection(shotID: UUID, team: Int)  // fix a recorded shot (no UI yet): attribution .tap, D17 replayed
-    case nextShooter(team: Int)                      // D41 disc tap: only who shoots next; works before the first shot
+    case shooterCorrection(shotID: UUID, team: Int, id: UUID? = UUID())
+                                                     // fix a recorded shot (no UI yet): attribution .tap, D17 replayed;
+                                                     // id as for nextShooter
+    case nextShooter(team: Int, id: UUID? = UUID())  // D41 disc tap: only who shoots next; works before the first shot.
+                                                     // id tells identical taps apart (decodeIfPresent: nil = absent)
     case shotLost(shotID: UUID, shooterTeam: Int)    // D38 gap: rating nil, no rules change, asks for the shooter
 }
 
@@ -432,8 +435,7 @@ enum GameEvent: Hashable, Codable, Sendable {
     func stop()
     func append(_ event: GameEvent)             // host writes; a client sends .proposal
 }
-// MeshGameLink (until plan 010 wires the session): isHost = true, commitSeq = 0, append is a no-op,
-// onCommittedLog never fires.
+// MeshGameLink (plan 010) wraps any MeshSession; init(session:) is the test seam, init(sessionTag:) production.
 
 struct SettledShot { … var outcome: ShotOutcome }   // what Live rated: RuleRating.outcome(record, ids:, pocketTimes:)
 static func RuleRating.classify(_ result: RuleResult, shooter: Int, pocketedObjectBall: Bool) -> DecisionRating
@@ -449,6 +451,20 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 - `shotLost()`: host or solo appends `.shotLost(shotID:shooterTeam:)`. A client drops it.
 - `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
   `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
+- `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
+  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped).
+  The role comes from `roleChanged` and from each forwarded snapshot. `isHost` only as `.host` (never while
+  discovering: plan 011 saves on `isHost`); `isJoiner` only as a client; the model writes unless `isJoiner`.
+  Inputs made while discovering are buffered and flushed in order when the role resolves: a host appends all; a
+  joiner drops its own `.shot`/`.shotLost` (D39) and proposes the rest (D41 disc taps survive). Otherwise `append`
+  forwards to `MeshSession.append`, in call order. `commitSeq` is the last forwarded value and stays readable after `stop()`.
+- `isJoiner` (default `!isHost`) and `drain(until:) async` (default: returns at once) on `GameMeshLink`. Drain:
+  host, every local input seen committed; joiner, every proposal seen committed (matched by event identity: shots and lost shots by shotID, taps and corrections by id;
+  `.ruleSetChosen` is appended only by the host node at a vote close, never proposed), then no
+  uncommitted tail and no `commitSeq` advance for 300 ms. Always ends at the deadline.
+- `AppRouter.endGame()` leaves Live at once: the review stage gets a loading `GameReviewModel` whose
+  `MeshReviewSource` awaits the drain (cancelled at End + 2 s, D42), snapshots `reviewData()`, then stops the link.
+  It loads once; a repeat `endGame()` / `liveClosed()` is a no-op. Solo games review at once.
 - `ingest(log:commitSeq:)`: folds the entries with `seq ≤ commitSeq`, in `seq` order. The uncommitted tail never shows.
   The model sets `mesh.onCommittedLog` to it when `mesh` is set.
 - Fold (pure, from scratch on every change, from the `GameConfig` lineup and `TargetLegality.startingGame`):
@@ -525,4 +541,4 @@ struct RecordedShot: Sendable {
 //                this is unreachable from LiveSession.mode == .training.
 ```
 
-`MeshGameLink` stubs the plan 009 log members until plan 010 forwards the session's log. `GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
+`GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.

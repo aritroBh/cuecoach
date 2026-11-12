@@ -175,8 +175,8 @@ final class GameSessionModel {
 
     // MARK: The log
 
-    /// Solo, or this phone hosts the mesh.
-    private var writesLog: Bool { mesh?.isHost ?? true }
+    /// Solo, the host, or a phone whose role is unresolved (the link buffers it; a joiner then drops its shots).
+    private var writesLog: Bool { !(mesh?.isJoiner ?? false) }
 
     /// Solo: commits at once. Mesh: the host appends (a client proposes); the commit comes back through `ingest`.
     private func append(_ event: GameEvent) {
@@ -220,7 +220,7 @@ final class GameSessionModel {
         needsShooter = false
         rulesState = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count).1
         var corrected: [UUID: Int] = [:]
-        for case .shooterCorrection(let id, let team) in events { corrected[id] = team }
+        for case .shooterCorrection(let id, let team, _) in events { corrected[id] = team }
         var lostAt = -1
         for i in 0...events.count {
             for w in swaps where w.afterEvent == i { applySwap(w.team, w.a, w.b) }
@@ -250,7 +250,7 @@ final class GameSessionModel {
                 shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
                 needsShooter = true
                 lostAt = i
-            case .nextShooter(let team):
+            case .nextShooter(let team, _):
                 guard hasLineup, teams.indices.contains(team), !teams[team].isEmpty else { break }
                 needsShooter = false
                 if team != currentTeam { hand(to: team) }

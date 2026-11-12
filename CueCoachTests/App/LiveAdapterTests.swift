@@ -51,7 +51,8 @@ import Training
         #expect(s.game?.badge.current == nil)
         h.aimEnded()
         #expect(!s.menuAvailable)
-        h.settled(.mistake, true)
+        h.settledShot(SettledShot(rating: .mistake, turnPasses: true,
+                                  outcome: ShotOutcome(firstContact: BallID(2)!)))   // a legal miss on the 2
         #expect(s.menuAvailable)
         #expect(s.game?.shots.count == 2)
         #expect(s.game?.shootingTeam == 1)       // the turn passed
@@ -290,9 +291,9 @@ import Training
         let m = LiveModel(mode: .game)
         let c = Count()
         var h = LiveScreenAdapter.hooks(for: session)
-        let (s0, e0, x0, d0) = (h.aimStarted, h.aimEnded, h.aimCancelled, h.settled)
+        let (s0, e0, x0, d0) = (h.aimStarted, h.aimEnded, h.aimCancelled, h.settledShot)
         h.aimStarted = { c.start += 1; s0() }; h.aimEnded = { c.end += 1; e0() }
-        h.aimCancelled = { c.cancel += 1; x0() }; h.settled = { r, p in c.settled += 1; d0(r, p) }
+        h.aimCancelled = { c.cancel += 1; x0() }; h.settledShot = { c.settled += 1; d0($0) }
         m.hooks = h
         var t = 0.0
         func tick(_ r: PerceptionResult) { m.drive(r); t = r.timestamp }
