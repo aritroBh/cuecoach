@@ -147,6 +147,49 @@ import Rules
         #expect(data.count < MeshCodec.maxMessageBytes)
     }
 
+    // MARK: Plan 009: the shot log (widened record, D38/D41 events, major 2)
+
+    /// A record from before plan 009 (only the four original keys) decodes with the new fields' defaults.
+    @Test func shotRecordWithoutNewKeysDecodesWithDefaults() throws {
+        let outcome = String(decoding: try JSONEncoder().encode(Self.sampleOutcome), as: UTF8.self)
+        let json = #"{"shotID":"99999999-0000-0000-0000-000000000001","shooterTeam":1,"outcome":"# + outcome + #","postState":null}"#
+        let r = try JSONDecoder().decode(MeshShotRecord.self, from: Data(json.utf8))
+        #expect(r.shotID == Self.shot && r.shooterTeam == 1 && r.outcome == Self.sampleOutcome && r.postState == nil)
+        #expect(r.preState == nil)
+        #expect(r.decisionRating == nil)
+        #expect(!r.isGuess)
+    }
+
+    @Test func widenedShotRecordRoundTrips() throws {
+        let spec = TableSpec(size: .eightFoot)
+        let pre = TableState(spec: spec, balls: [.cue: BallState(position: Vec2(0.5, 0.5)), BallID(3)!: BallState(position: Vec2(1, 0.5))])
+        let post = TableState(spec: spec, balls: [.cue: BallState(position: Vec2(0.9, 0.6))])
+        let r = MeshShotRecord(shotID: Self.shot, shooterTeam: 0, outcome: Self.sampleOutcome, postState: post,
+                               preState: pre, decisionRating: .great, isGuess: true)
+        let back = try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r))
+        #expect(back == r)
+        let env = Self.envelope(.logEntries([LogEntry(seq: 1, term: 1, event: .shot(r))]))
+        #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+    }
+
+    @Test func nextShooterAndShotLostRoundTrip() throws {
+        let entries = [LogEntry(seq: 1, term: 1, event: .nextShooter(team: 1)),
+                       LogEntry(seq: 2, term: 1, event: .shotLost(shotID: Self.shot, shooterTeam: 0))]
+        for m in [MeshMessage.logEntries(entries), .proposal(.nextShooter(team: 0)),
+                  .proposal(.shotLost(shotID: Self.shot, shooterTeam: 1))] {
+            let env = Self.envelope(m)
+            #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+        }
+    }
+
+    /// New GameEvent cases are a wire break: the frame header and the Hello both speak major 2 only.
+    @Test func frameHeaderIsMajorTwo() throws {
+        #expect(ProtocolVersion.current == ProtocolVersion(major: 2, minor: 0))
+        #expect(ProtocolVersion.supportedMajors == [2])
+        let data = try MeshCodec.encode(Self.envelope(.leave))
+        #expect(data[3] == 2)
+    }
+
     @Test func compatibilityPicksHighestCommonMajor() {
         #expect(ProtocolVersion.negotiate(local: [1, 2, 3], remote: [2, 3, 4]) == 3)
         #expect(ProtocolVersion.negotiate(local: [1], remote: [2]) == nil)
