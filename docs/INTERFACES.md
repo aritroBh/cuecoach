@@ -563,6 +563,98 @@ Rules:
   and, like live review, draws no replay for it (no pre/post states, no paths). The `Shot → CompetitiveShot` stats
   projection (not built yet) must skip `isGuess` rows for pot %, cut, distance and pocket buckets.
 
+## Host loss and islands (plan 013a; D44, D47, D48; mesh-identity.md §2.5)
+
+Losing the host or the link keeps the game: every phone keeps its own settles, a phone cut off from a majority keeps
+playing as an island, and on heal the islands' shots merge into one log. 013a builds the engine only: `needsTap` is a
+flag (D47's side-by-side pick and D51's unconfirmed save are plan 013b). No new screen, no SwiftData change.
+
+```swift
+// Packages/CueCore/Sources/Sync (new target, depends on Geometry + Rules). Pure and deterministic.
+public struct IslandShot: Hashable, Sendable {
+    public var id: UUID
+    public var strokeTime: Double              // seconds on the game clock (below)
+    public var preState: [BallID: Vec2]        // empty = unknown: time alone aligns
+    public var outcome: ShotOutcome
+    public var confidence: Double              // higher wins a disagreement; ties go to the smaller id
+}
+public struct MergedShot: Hashable, Sendable {
+    public var shot: IslandShot                // the kept view
+    public var needsTap: Bool                  // the views disagreed on the outcome (D47 asks one tap, 013b)
+    public var members: [UUID]                 // every view folded into it, sorted
+}
+public enum IslandMerge {
+    public static let timeTolerance = 0.5      // s
+    // Same physical shot: same id, or |Δt| ≤ 0.5 s and every ball seen by both within one ball radius
+    // (an empty pre-state on either side matches on time alone; two non-empty states with no common ball never match).
+    public static func aligned(_ a: IslandShot, _ b: IslandShot, ballRadius: Double = TableSpec.ballRadius) -> Bool
+    // One entry per physical shot that any island saw, sorted by (earliest stroke time, kept id). At most one view
+    // per island per shot. Same outcome → one shot; different → the higher-confidence view, needsTap. Unmatched → kept.
+    // Independent of island order and of the order inside an island.
+    public static func merge(_ islands: [[IslandShot]], ballRadius: Double = TableSpec.ballRadius) -> [MergedShot]
+}
+
+// Wire (minor, additive; protocol major unchanged). Missing keys decode as nil / false.
+struct MeshShotRecord { …
+    var strokeHostTime: Int64? = nil           // stroke start on the game clock, ns; nil = unknown (legacy / no fit)
+    var needsTap: Bool = false                 // a merge kept one of two disagreeing views (flag only in 013a)
+}
+struct Heartbeat { …
+    var gameOffset: Int64? = nil               // game clock − this host's clock, ns, at send time; nil = 0
+}
+struct IslandSettle: Hashable, Codable, Sendable { var event: GameEvent; var strokeHostTime: Int64? }
+struct IslandLog: Hashable, Codable, Sendable {   // MeshMessage.islandLog, any → host, reliable
+    var commitSeq: UInt64                      // sender's commit point: its entries up to here are shared
+    var entries: [LogEntry]                    // sender's log after commitSeq, one batch (≤ logBatch entries)
+    var settles: [IslandSettle] = []           // sender's own unlogged settles (last batch only)
+    var last: Bool                             // the host merges once the last batch arrives
+}
+
+// MeshNode
+enum MeshUpdate { … case island(Bool) }       // on every change
+var isIsland: Bool { get }                     // after first joining: discovering, or hosting without a majority
+                                               // (roster × 2 ≤ commit quorum). A client is never an island.
+mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep
+                                               // e = .shot / .shotLost; strokeAt = this phone's clock (s).
+                                               // Host: stamps record.strokeHostTime on the game clock, appends.
+                                               // Otherwise: kept as an unlogged settle (see "Every phone keeps…").
+// MeshSession: func settled(_ event: GameEvent, strokeAt: Double) async
+// GameMeshLink: var isIsland: Bool { get }                    (default false)
+//               func settled(_ event: GameEvent, strokeAt: Double)  (default: append unless isJoiner)
+// PostShotRating: var isProvisional = false   (D48: an island's own badge; the merged commit replaces it)
+// GameSessionModel: var now: () -> Double     (stroke clock, default MultipeerMeshSession.hostNow)
+// SessionShot: var needsTap = false            (from the record; no UI in 013a)
+```
+
+Rules:
+- **Game clock.** Stroke times live on one clock: the first host's. A host that took over keeps its last clock fit to
+  the old host (frozen, plus that host's `gameOffset`) and maps its own times through it; it sends the difference as
+  `Heartbeat.gameOffset`, and a client's game time is `clock.hostTime(fromLocal:) + gameOffset`. A client without a
+  fit has no game time: its settle keeps `strokeHostTime == nil` and aligns by shot id only. Fits drift ≈ 3 ms/min (§2.5).
+- **Every phone keeps its own settles.** `GameSessionModel.shotSettled` / `shotLost` hand the record to
+  `mesh.settled(_:strokeAt:)` with the time of the last `aimEnded()` (else now). A non-host node keeps it (local time)
+  until a shot result commits after it was kept (the host answered that stroke); then it is dropped. On becoming host
+  (after collecting) the node re-runs its kept settles, and a phone that adopts a host sends its kept settles in an
+  `IslandLog`; the host merges them (below): a settle matching a logged shot is dropped, the rest are appended
+  (§2.5 "re-run"). A kept `.shotLost` (no confident record) becomes a D38 gap only if no view of any island has a
+  timed shot within 0.5 s of it.
+- **Island.** While `isIsland`: tracking, overlay and appends go on as before (an island host's appends never commit:
+  the commit quorum keeps the old roster). `GameSessionModel` fires its own settle's badge with `isProvisional`
+  (D48), never saves (`saveIfWon` refuses while `mesh.isIsland`, besides `isHost && hasGameQuorum`).
+- **Heal.** Higher term hosts (unchanged). A host stepping down sends, after its full log and before its `Hello`,
+  `IslandLog` batches of its log after its `commitSeq`, plus its kept settles. The host merges each `IslandLog`
+  when its last batch arrives (while collecting: after collecting, together with its own re-run):
+  - `keep = max(sender commitSeq, own commitSeq)`. Own entries up to `keep` never change. Own entries after the
+    sender's commit point and the sender's tail(s) are the islands. Timed shots go through `IslandMerge`; a cluster
+    holding an entry at or before `keep` is already logged. Untimed entries and non-shot events (taps, corrections,
+    gaps, rule set) follow the timed shot before them in their own island; the sender's are dropped if equal to an
+    own event (a shot: same shotID). Merged records keep `needsTap` if either flag is set.
+  - The host rewrites its log after the longest unchanged prefix, clamps acks to it, re-sends the new tail to
+    clients, and recommits. Everyone re-folds the committed prefix.
+- Out of 013a: D47's pick UI (013b, reuses plan 015's replay), D51's unconfirmed save (013b, schema change),
+  resume after a kill. Known limits: a ≥3-phone minority island that wins the term on heal only receives the other
+  side's tail after that side's commit point; a host's own `.tableState` captureTime stays on its own clock.
+
 ## Proposed (plan 006 — not approved)
 
 Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. (`Shot.isGuess` shipped separately as the Competitive V3 migration, plan 012.)
