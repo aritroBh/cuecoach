@@ -60,7 +60,8 @@ public final class GameReviewModel {
 
     var shots: [ReviewShot] { data?.shots ?? [] }
     var isLocked: Bool { !(data?.isFinished ?? true) }
-    var isEmpty: Bool { phase == .loaded && !shots.contains { $0.rating != nil } }
+    /// D38: a lost-shot gap (rating nil) is still a shot; only a game with no shots at all is empty.
+    var isEmpty: Bool { phase == .loaded && shots.isEmpty }
     var selectedShot: ReviewShot? { shots.first { $0.id == selectedShotID } }
 
     var showsChart: Bool { (data?.winProb.count ?? 0) >= 4 }

@@ -175,8 +175,9 @@ struct TurnDiscs: View {
         }
         .buttonStyle(ShellPressStyle())
         .accessibilityLabel("Team \(GameSetupModel.teamLetter(team)), \(p?.name ?? "")")
-        .accessibilityValue(active ? "shooting" : "waiting")
-        .accessibilityHint(active ? "" : "Double tap to give them the turn")
+        // D38 (Codex review): the pulse has a VoiceOver equivalent.
+        .accessibilityValue(game.needsShooter ? "who shot next?" : (active ? "shooting" : "waiting"))
+        .accessibilityHint(game.needsShooter ? "Double tap if they shoot next" : (active ? "" : "Double tap to give them the turn"))
         .accessibilityIdentifier("chrome.team.\(team)")
     }
 }
