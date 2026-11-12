@@ -80,6 +80,16 @@ import Rules
         }
     }
 
+    /// D46: a lobby set to Pro 8 or 86″ carries that size to joiners on this build.
+    @Test(arguments: [TableSize.proEight, .eightySixInch])
+    func newTablePresetsRoundTrip(size: TableSize) throws {
+        let cfg = GameConfig(ruleSet: .wpaEight, tableSize: size, teams: [[sam], [sam]])
+        let lineup = LobbyLineup(ruleSet: .wpaNine, tableSize: size, seats: [[sam, nil], [nil, sam]])
+        for msg: LobbyWire.Message in [.lineup(lineup), .start(cfg, sessionTag: 77)] {
+            #expect(try LobbyWire.decode(LobbyWire.encode(msg)) == msg)
+        }
+    }
+
     @Test func garbageDoesNotDecode() {
         #expect((try? LobbyWire.decode(Data("nope".utf8))) == nil)
     }
