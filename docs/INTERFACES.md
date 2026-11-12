@@ -4,7 +4,8 @@ All `CueCore` types are value types, `Sendable`, `Codable` where they cross the 
 Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = head-left cushion nose, +x toward the foot (head spot at 0.25 L, foot spot at 0.75 L).
 
 ## Geometry (merged)
-`Vec2`, `TableSize` (7/8/9 ft), `TableSpec` (dims, pocket centres + mouths, spots, head string),
+`Vec2`, `TableSize` (7 ft, 86″, Pro 8 = 88″, 8 ft, 9 ft; `allCases` in length order, raw values persisted and on the
+mesh inside major 2, D46), `TableSpec` (dims, pocket centres + mouths, spots, head string),
 `Pocket` (6), `BallID` (0 = cue, 1–15; `.group`), `BallGroup`, `BallState` (pos, vel, ω, `MotionState`),
 `TableState` (spec + balls).
 
