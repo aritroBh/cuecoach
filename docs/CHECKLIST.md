@@ -170,7 +170,7 @@ Also running: Camera + 3D AR (Claude; UX round: visual coaching, auto corners) �
 - [x] Full CueCoachTests on merged head: 1218/1218, pushed
 - [x] Plan 007 ✕ asks "End game?" + D42 give-up: Grok REJECT → fixed; Codex REJECT ×2 (in-flight shot, late record) → fixed → APPROVE; unit 1230/1230 + AppShell UI 12/12 before the last fix; merged
 - [x] Plan 005 table-size prior + size hint (D36 C; A dropped, D46): Grok REJECT (8/9 ft overlap) → fixed → Codex APPROVE; merged. Follow-up MINOR: a steady 2.21 m fit that settles 8 ft but fails sizeIsTrusted shows partialTable, not the size hint (AutoLocatorAdapter.swift:180)
-- [ ] Plan 008 lost shot pulses turn discs + review gap (D38/D41): worker running on 1-core + 007
+- [x] Plan 008 lost shot pulses turn discs + review gap (D38/D41): Codex REJECT → fixed → APPROVE; merged
 - [ ] Merge 007, 005, 008 → combined full unit suite → push
 - [ ] Final QA pass: full XCUITest suite on simulators (workflow, after merges)
 - [ ] Next: plan 009 (fold the shot log) → 010/011/013 in parallel → 012 (D43) → 014 (D46)
