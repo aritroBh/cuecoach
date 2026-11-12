@@ -314,6 +314,35 @@ import Engine
         #expect(d.isFinished)
     }
 
+    /// D43: a saved D31 guess reads back flagged (drawn dashed) and, like live review, without a made-up replay.
+    @Test func savedReviewShowsAGuessDashed() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let ctx = stack.competitiveContext
+        let id = UUID()
+        ctx.insert(PlayerProfile(id: id, name: "Sam", avatarSymbol: "hare.fill", avatarColor: "orange"))
+        let teams = [StoredTeam(memberIDs: [id], shootingOrder: [id]), StoredTeam(memberIDs: [], shootingOrder: [])]
+        let g = Game(index: 0, ruleSet: .barEight, teams: teams, winnerTeam: 0, startedAt: .now, endedAt: .now)
+        ctx.insert(g)
+        for (i, guess) in [false, true].enumerated() {
+            let s = Shot(index: i, shooterID: id, attributionSource: .turnOrder, preState: table(),
+                         postState: table(cue: Vec2(1, 0.2)), calledPocket: nil, firstContact: .eight,
+                         railsAfterContact: 0, pocketed: [.eight: .footLeft], fouls: [],
+                         features: StoredShotFeatures(cutBucket: .c0to15, distanceBucket: .short, pocketType: .corner, kind: .plain),
+                         made: true, onTarget: true, cueResult: .notApplicable, decisionRating: .good,
+                         executionRating: ExecutionRating(result: .made, position: .notApplicable), wpaDelta: 0,
+                         isClutch: false, timeOnShot: -1, clipRef: nil, isGuess: guess)
+            s.game = g
+            ctx.insert(s)
+        }
+        try ctx.save()
+        let d = GameReviewData(game: g, profiles: try ctx.fetch(FetchDescriptor<PlayerProfile>()))
+        #expect(d.shots.map(\.isGuess) == [false, true])
+        #expect(d.shots[1].pocketed == [.eight: .footLeft])
+        #expect(d.shots[1].pre == nil && d.shots[1].post == nil && d.shots[1].paths.isEmpty)
+        #expect(d.shots[0].pre != nil)
+        #expect(GameReviewModel.showsResult(d.shots[1]))
+    }
+
     // MARK: Replay layout
 
     @Test(arguments: [CGSize(width: 218, height: 100), CGSize(width: 361, height: 166), CGSize(width: 300, height: 120),

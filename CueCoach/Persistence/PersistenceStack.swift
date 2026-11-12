@@ -8,7 +8,7 @@ import SwiftData
 /// Local-only: no CloudKit (free Personal Team).
 @MainActor
 final class PersistenceStack {
-    static let competitiveModels: [any PersistentModel.Type] = CompetitiveSchemaV2.models
+    static let competitiveModels: [any PersistentModel.Type] = CompetitiveSchemaV3.models
     static let trainingModels: [any PersistentModel.Type] = TrainingSchemaV1.models
     static let recognitionModels: [any PersistentModel.Type] = RecognitionSchemaV1.models
 
@@ -51,7 +51,7 @@ final class PersistenceStack {
             // migration opens it until we know no template bytes remain (Codex privacy-r3).
             let existed = FileManager.default.fileExists(atPath: url.path)
             if existed { try RecognitionMigration.setCompetitiveExcluded(true, storeURL: url) }
-            do { _ = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,
+            do { _ = try Self.container(name: "Competitive", schema: CompetitiveSchemaV3.self,
                                         plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: false) }
             // Retried on every open until it succeeds; a failure (e.g. a blocked checkpoint) keeps the marker and
             // the app usable rather than locking the user out of their stats.
@@ -66,7 +66,7 @@ final class PersistenceStack {
                 try RecognitionMigration.setCompetitiveExcluded(false, storeURL: url)
             }
         }
-        competitiveContainer = try Self.container(name: "Competitive", schema: CompetitiveSchemaV2.self,
+        competitiveContainer = try Self.container(name: "Competitive", schema: CompetitiveSchemaV3.self,
                                                   plan: CompetitiveMigrationPlan.self, dir: dir, inMemory: inMemory)
         trainingContainer = try Self.container(name: "Training", schema: TrainingSchemaV1.self,
                                                plan: TrainingMigrationPlan.self, dir: dir, inMemory: inMemory)

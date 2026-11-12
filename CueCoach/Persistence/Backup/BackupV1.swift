@@ -95,6 +95,8 @@ struct BackupV1: Codable, Equatable, Sendable {
         var timeOnShot: Double
         var clipRef: String?
         var updatedAt: Date
+        /// D43. Optional so a file written before Competitive V3 (no key) still decodes; missing means false.
+        var isGuess: Bool? = nil
     }
 
     struct Archetype: Codable, Equatable, Sendable {

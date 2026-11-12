@@ -46,7 +46,7 @@ extension PersistenceStack {
                   fouls: $0.fouls, features: $0.features, made: $0.made, onTarget: $0.onTarget,
                   cueResult: $0.cueResult, decisionRating: $0.decisionRating, executionRating: $0.executionRating,
                   wpaDelta: $0.wpaDelta, isClutch: $0.isClutch, timeOnShot: $0.timeOnShot, clipRef: $0.clipRef,
-                  updatedAt: $0.updatedAt)
+                  updatedAt: $0.updatedAt, isGuess: $0.isGuess)
         }, \.id)
         comp.archetypes = sorted(try all(ArchetypeSnapshot.self, c).map {
             .init(id: $0.id, playerID: $0.playerID, computedAt: $0.computedAt, gamesCount: $0.gamesCount,
@@ -259,7 +259,7 @@ extension PersistenceStack {
                      fouls: d.fouls, features: d.features, made: d.made, onTarget: d.onTarget,
                      cueResult: d.cueResult, decisionRating: d.decisionRating, executionRating: d.executionRating,
                      wpaDelta: d.wpaDelta, isClutch: d.isClutch, timeOnShot: d.timeOnShot, clipRef: d.clipRef,
-                     updatedAt: d.updatedAt)
+                     isGuess: d.isGuess ?? false, updatedAt: d.updatedAt)
             },
             apply: { d, m in
                 m.game = d.gameID.flatMap { games[$0] }
@@ -272,7 +272,8 @@ extension PersistenceStack {
                 m.fouls = d.fouls; m.features = d.features; m.made = d.made; m.onTarget = d.onTarget
                 m.cueResult = d.cueResult; m.decisionRating = d.decisionRating
                 m.executionRating = d.executionRating; m.wpaDelta = d.wpaDelta; m.isClutch = d.isClutch
-                m.timeOnShot = d.timeOnShot; m.clipRef = d.clipRef; m.updatedAt = d.updatedAt
+                m.timeOnShot = d.timeOnShot; m.clipRef = d.clipRef; m.isGuess = d.isGuess ?? false
+                m.updatedAt = d.updatedAt
             })
 
         _ = try upsert(b.archetypes, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },

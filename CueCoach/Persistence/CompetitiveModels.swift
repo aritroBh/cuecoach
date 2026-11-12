@@ -189,6 +189,9 @@ final class Shot {
     var timeOnShot: Double { get { timeOnShotValue } set { timeOnShotValue = newValue; updatedAt = .now } }
     private var clipRefValue: String?
     var clipRef: String? { get { clipRefValue } set { clipRefValue = newValue; updatedAt = .now } }
+    /// V3 (D43): `pocketed` is a D31 best guess. Never counted in pot %, cut, distance or pocket stats.
+    private var isGuessValue: Bool = false
+    var isGuess: Bool { get { isGuessValue } set { isGuessValue = newValue; updatedAt = .now } }
     var updatedAt: Date
 
     var attributionSource: AttributionSource {
@@ -243,7 +246,7 @@ final class Shot {
          railsAfterContact: Int, pocketed: [BallID: Pocket], fouls: [Foul], features: StoredShotFeatures,
          made: Bool, onTarget: Bool, cueResult: CueResult, decisionRating: DecisionRating,
          executionRating: ExecutionRating, wpaDelta: Double, isClutch: Bool, timeOnShot: Double,
-         clipRef: String?, updatedAt: Date = .now) {
+         clipRef: String?, isGuess: Bool = false, updatedAt: Date = .now) {
         self.id = id
         self.indexValue = index
         self.shooterIDValue = shooterID
@@ -265,6 +268,7 @@ final class Shot {
         self.isClutchValue = isClutch
         self.timeOnShotValue = timeOnShot
         self.clipRefValue = clipRef
+        self.isGuessValue = isGuess
         self.updatedAt = updatedAt
     }
 

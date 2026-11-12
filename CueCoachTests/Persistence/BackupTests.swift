@@ -135,6 +135,39 @@ import Testing
         #expect(p.attempts.count == 4)
     }
 
+    /// D43: `isGuess` survives export → import, in a version 1 file.
+    @Test func backupRoundTripKeepsIsGuess() throws {
+        let stack = try populated()
+        let rows = try stack.competitiveContext.fetch(FetchDescriptor<Shot>())
+        let guessed = try #require(rows.first)
+        guessed.isGuess = true
+        try stack.competitiveContext.save()
+        let data = try stack.exportBackup(exportedAt: Fixture.t0)
+        #expect(try decode(data).version == 1)
+        let fresh = try PersistenceStack(inMemory: true)
+        try fresh.importBackup(data)
+        let back = try fresh.competitiveContext.fetch(FetchDescriptor<Shot>())
+        #expect(Set(back.filter(\.isGuess).map(\.id)) == [guessed.id])
+        #expect(back.count == 2)
+    }
+
+    /// A backup written before V3 has no `isGuess` key: it still imports, every shot as not a guess.
+    @Test func oldBackupWithoutIsGuessStillImports() throws {
+        let data = try populated().exportBackup(exportedAt: Fixture.t0)
+        var json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var comp = try #require(json["competitive"] as? [String: Any])
+        let shots = try #require(comp["shots"] as? [[String: Any]])
+        comp["shots"] = shots.map { var s = $0; s.removeValue(forKey: "isGuess"); return s }
+        json["competitive"] = comp
+        let old = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        #expect(!(String(data: old, encoding: .utf8) ?? "").contains("isGuess"))
+        let fresh = try PersistenceStack(inMemory: true)
+        try fresh.importBackup(old)
+        let back = try fresh.competitiveContext.fetch(FetchDescriptor<Shot>())
+        #expect(back.count == 2)
+        #expect(back.allSatisfy { !$0.isGuess })
+    }
+
     @Test func unsupportedVersionIsRejectedWithoutChanges() throws {
         let stack = try populated()
         var b = try decode(stack.exportBackup())

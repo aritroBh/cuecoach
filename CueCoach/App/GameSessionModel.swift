@@ -302,8 +302,8 @@ final class GameSessionModel {
     private static func positions(_ t: TableState?) -> [BallID: Vec2] { t?.balls.mapValues(\.position) ?? [:] }
 
     /// The finished rack to save, or nil while the folded rules state has no winner (D40).
-    /// Shots up to the winning one keep their folded index; D38 gaps and D31 guesses are left out (plan 012 saves
-    /// guesses). Shots committed after the win are not part of the rack.
+    /// Shots up to the winning one keep their folded index; D38 gaps are left out, D31 guesses are saved flagged
+    /// (D43). Shots committed after the win are not part of the rack.
     /// nil too when the teams fit no `GameFormat` (setup forbids uneven or over-four teams).
     func finishedGame() -> FinishedGame? {
         guard let winner, let first = shots.first,

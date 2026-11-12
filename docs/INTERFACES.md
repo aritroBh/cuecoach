@@ -503,12 +503,12 @@ struct FinishedGame: Hashable, Sendable {
     var winProbSeries: [Double]         // [] until the engine runs; profile WPA skips an empty series
     var startedAt: Date                 // the GameSessionModel's creation
     var endedAt: Date                   // when the winning commit folded
-    var shots: [RecordedShot]           // isGuess (until plan 012) and D38 gap shots omitted; others keep their index
+    var shots: [RecordedShot]           // D38 gap shots omitted; others (D31 guesses too) keep their index
 }
 
 struct RecordedShot: Hashable, Sendable {
     var id: UUID
-    var index: Int                      // the folded shot index (gaps and guesses leave holes)
+    var index: Int                      // the folded shot index (gaps leave holes)
     var shooterID: UUID                 // ShellPlayer.id (guests as plain ids, design §6)
     var team: Int                       // not a Shot column: saved review derives it from StoredTeam.memberIDs
     var attributionSource: AttributionSource   // .turnOrder, or .tap after shooterCorrection
@@ -530,6 +530,7 @@ struct RecordedShot: Hashable, Sendable {
     var isClutch: Bool                  // false until win probability exists
     var timeOnShot: Double              // -1 = not measured (Aggregates ignores negatives)
     var clipRef: String?                // nil
+    var isGuess: Bool                   // D31/D43: pocketed is a best guess; stored as Shot.isGuess (Competitive V3)
 }
 
 // GameSessionModel
@@ -552,10 +553,13 @@ Rules:
 - `StackGameRecorder` inserts `Session` + `Game` (index 0) + `Shot`s into `competitiveContext` only, upserting by id
   (an existing row is updated in place, never duplicated), and saves once. It never takes a training context.
 - Training has no `GameSessionModel` (`LiveSession.game == nil`), so it can't reach the recorder.
+- D43: a guessed shot is saved with `isGuess = true`. Saved review (`GameReviewData(game:)`) sets `ReviewShot.isGuess`
+  and, like live review, draws no replay for it (no pre/post states, no paths). The `Shot → CompetitiveShot` stats
+  projection (not built yet) must skip `isGuess` rows for pot %, cut, distance and pocket buckets.
 
 ## Proposed (plan 006 — not approved)
 
-Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. `Shot.isGuess` is a Competitive V3 migration and is not part of this contract.
+Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. (`Shot.isGuess` shipped separately as the Competitive V3 migration, plan 012.)
 
 Plan 002 adds `before` and `after` on `SettledShot` and `SessionShot`. This section uses that shape.
 
