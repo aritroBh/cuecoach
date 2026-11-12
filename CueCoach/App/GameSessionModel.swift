@@ -22,6 +22,8 @@ struct SessionShot: Hashable, Sendable {
     var attribution: AttributionSource = .turnOrder
     /// `ShotOutcome.firstContact` (nil for a gap).
     var firstContact: BallID? = nil
+    /// Plan 013a: an island merge kept one of two disagreeing views (D47's pick is plan 013b; a flag only).
+    var needsTap = false
 }
 
 /// In-game state the chrome shows: whose turn (D17 rotation), the post-shot badge, rated shots for review.
@@ -69,6 +71,8 @@ final class GameSessionModel {
     @ObservationIgnored private var badged: Set<UUID> = []
     /// D38: an aim answered the ask once this many events were folded (the current shooter keeps the turn).
     @ObservationIgnored private var askAnsweredAt = -1
+    /// Plan 013a: the stroke clock (`MultipeerMeshSession.hostNow()`, seconds); a settle's stroke is the last aim end.
+    @ObservationIgnored var now: () -> Double = { MultipeerMeshSession.hostNow() }
     /// Saves the finished rack (plan 011). nil = nothing is saved.
     @ObservationIgnored var recorder: (any GameRecorder)?
     @ObservationIgnored private let startedAt = Date()

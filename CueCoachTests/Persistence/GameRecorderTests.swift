@@ -238,6 +238,30 @@ import Training
         #expect(try games(stack).isEmpty)
     }
 
+    /// Plan 013a: an island never writes, even if its fold has a winner; its own settles show provisional badges (D48).
+    /// Once healed (merged, not an island, quorum back) the next commit saves the rack once.
+    @Test func islandShowsAProvisionalBadgeAndWritesNothing() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = solo(stack)
+        let link = FakeGameMeshLink(isHost: true)
+        link.isIsland = true
+        g.mesh = link
+        g.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot(1)))
+        #expect(g.badge.current?.rating == .best)
+        #expect(g.badge.current?.isProvisional == true)
+        g.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))
+        link.commit()
+        #expect(g.reviewData().winnerTeam == 1)
+        #expect(try games(stack).isEmpty)
+        #expect(try shots(stack).isEmpty)
+        #expect(try sessions(stack).isEmpty)
+        link.isIsland = false
+        link.commit()
+        #expect(try games(stack).count == 1, "healed: saved once")
+        link.commit()
+        #expect(try games(stack).count == 1)
+    }
+
     /// Codex plan 011 review 2: a failed save retries the rack as it stood at its winning commit.
     @Test func aRetryAfterAFailedSaveKeepsTheWinningBoundary() throws {
         let stack = try PersistenceStack(inMemory: true)

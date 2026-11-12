@@ -35,8 +35,15 @@ final class MemoryHub: @unchecked Sendable {
     /// Asymmetric radio: messages from `peer` land `seconds` later (overrides `delay` for that sender).
     func delay(from peer: PeerID, _ seconds: Double) { lock.withLock { outbound[peer] = seconds } }
 
+    /// Plan 013a: cut every link between two groups (silence, no callbacks) until `heal()`.
+    func partition(_ a: [PeerID], _ b: [PeerID]) {
+        lock.withLock { for x in a { for y in b { cut.insert([x, y]); cut.insert([y, x]) } } }
+    }
+    func heal() { lock.withLock { cut.removeAll() } }
+    private var cut: Set<[PeerID]> = []
+
     func deliver(_ data: Data, from: PeerID, to: [PeerID]) {
-        let targets = lock.withLock { to.compactMap { members[$0] } }
+        let targets = lock.withLock { to.filter { !cut.contains([from, $0]) }.compactMap { members[$0] } }
         let emit = { for t in targets where !t.dead { t.emit(.received(data, from: from)) } }
         let d = lock.withLock { outbound[from] ?? _delay }
         if d > 0 { slow.asyncAfter(deadline: .now() + d, execute: emit) } else { emit() }

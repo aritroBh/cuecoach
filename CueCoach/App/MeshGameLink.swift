@@ -23,6 +23,11 @@ import UIKit
     /// This phone's current members are a strict majority of the game's members (every phone seen in this game's
     /// roster), not of the shrunken commit quorum: an island (a lone survivor of two) has none. Plan 011 saves only with it.
     var hasGameQuorum: Bool { get }
+    /// Plan 013a: this phone is cut off from a majority of the game's members (INTERFACES "Host loss and islands").
+    var isIsland: Bool { get }
+    /// Plan 013a: this phone's own settle (`.shot` / `.shotLost`) with its stroke time (`hostNow()` clock). The host
+    /// logs it; any other phone keeps it for a re-run after a host loss. Never a proposal (D39).
+    func settled(_ event: GameEvent, strokeAt: Double)
     /// Teardown: returns once this phone's inputs are committed (a joiner also lets the host's commits go quiet),
     /// or at `deadline`.
     func drain(until deadline: Date) async
@@ -30,6 +35,8 @@ import UIKit
 
 extension GameMeshLink {
     var isJoiner: Bool { !isHost }
+    var isIsland: Bool { false }
+    func settled(_ event: GameEvent, strokeAt: Double) { if !isJoiner { append(event) } }
     func drain(until deadline: Date) async {}
 }
 
