@@ -37,6 +37,19 @@ struct TableSpecTests {
         #expect(abs(spec.width - width) < 0.002)
     }
 
+    // D46: Pro 8 = 88" x 44", 86" = 86" x 43" (2:1). allCases runs in length order (pickers iterate it).
+    @Test func proEightAndEightySixInchPresetsHaveTheirPlayingSurface() {
+        #expect(TableSize.proEight.playingLength == 88 * 0.0254)
+        #expect(TableSize.eightySixInch.playingLength == 86 * 0.0254)
+        for size in [TableSize.proEight, .eightySixInch] {
+            let spec = TableSpec(size: size)
+            #expect(spec.width == spec.length / 2)
+        }
+        #expect(TableSize.allCases == [.sevenFoot, .eightySixInch, .proEight, .eightFoot, .nineFoot])
+        #expect(TableSize(rawValue: "proEight") == .proEight)
+        #expect(TableSize(rawValue: "eightySixInch") == .eightySixInch)
+    }
+
     @Test func standardBallRadius() {
         #expect(abs(TableSpec.ballRadius - 0.028575) < 1e-9)
     }
