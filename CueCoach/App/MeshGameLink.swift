@@ -18,12 +18,16 @@ import UIKit
     func stop()
     /// Host: append to the log. Client: send it to the host as a `.proposal`.
     func append(_ event: GameEvent)
-    /// Teardown: wait (at most `seconds`) until this phone's appends are committed, then call `done`.
-    func drainAppends(within seconds: Double, then done: @escaping @MainActor () -> Void)
+    /// This phone is a joiner: it never records its own shot results (D39). False while the role is unresolved.
+    var isJoiner: Bool { get }
+    /// Teardown: returns once this phone's inputs are committed (a joiner also lets the host's commits go quiet),
+    /// or at `deadline`.
+    func drain(until deadline: Date) async
 }
 
 extension GameMeshLink {
-    func drainAppends(within seconds: Double, then done: @escaping @MainActor () -> Void) { done() }
+    var isJoiner: Bool { !isHost }
+    func drain(until deadline: Date) async {}
 }
 
 @MainActor @Observable final class MeshGameLink: GameMeshLink {
@@ -82,14 +86,8 @@ extension GameMeshLink {
         }
     }
 
-    /// Bounded (D42: never stuck): after `seconds` it proceeds with what is committed.
-    func drainAppends(within seconds: Double, then done: @escaping @MainActor () -> Void) {
-        guard hasUnconfirmed else { done(); return }
-        let end = Date().addingTimeInterval(seconds)
-        Task { [weak self] in
-            while let self, self.hasUnconfirmed, Date() < end { try? await Task.sleep(for: .milliseconds(20)) }
-            done()
-        }
+    func drain(until deadline: Date) async {
+        while hasUnconfirmed, Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
     }
 
     convenience init(sessionTag: UInt16) {

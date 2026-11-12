@@ -108,7 +108,8 @@ final class AppRouter {
         guard case .live(let s)? = stage, let game = s.game, ending !== s else { return }
         guard let link = game.mesh else { stage = .review(review(game.reviewData())); return }
         ending = s
-        link.drainAppends(within: 2) { [weak self] in
+        Task { [weak self] in
+            await link.drain(until: Date().addingTimeInterval(2))
             link.stop()
             if game.mesh === link { game.mesh = nil }
             guard let self, self.ending === s else { return }

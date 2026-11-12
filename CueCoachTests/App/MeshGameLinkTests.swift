@@ -197,10 +197,92 @@ import Rules
         guard case .live(let live)? = r.stage else { Issue.record("no live"); return }
         live.settled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
         r.endGame()
-        #expect(await poll(3) { if case .review = r.stage { true } else { false } })
-        guard case .review(let review)? = r.stage, let data = review.data else { Issue.record("no review"); return }
-        #expect(data.shots.map(\.rating) == [.best])
+        guard case .review(let review)? = r.stage else { Issue.record("Live still up"); return }
+        #expect(await poll(3) { review.phase == .loaded })
+        #expect(review.data?.shots.map(\.rating) == [.best])
         #expect(await poll(2) { host.0.isStopped })
+        joiner.0.stop()
+    }
+
+    /// Codex 010 review 2 (A): plan 011 saves when `isHost`, so nobody is host while the election runs, and the
+    /// buffered inputs don't reach the session yet.
+    @Test func whileDiscoveringNobodyIsHostAndNothingWrites() async {
+        let hub = MemoryHub()
+        let (host, joiner) = Self.unresolvedGames(hub)
+        #expect(await host.2.snapshot().role == .discovering)
+        #expect(!host.1.isHost && !joiner.1.isHost)
+        #expect(!host.1.isJoiner && !joiner.1.isJoiner)
+        host.0.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
+        #expect(await host.2.snapshot().log.isEmpty)
+        #expect(await poll(3) { host.1.isHost && joiner.1.isJoiner && joiner.0.shots.count == 1 })
+        host.1.stop(); joiner.1.stop()
+    }
+
+    /// A joiner router on a slow radio: `hub.delay` applies after the pair formed.
+    static func joinerRouter(_ joiner: MeshGameLink) -> AppRouter {
+        let r = AppRouter()
+        r.meshFactory = { _ in joiner }
+        var c = config
+        c.sessionTag = 7
+        r.startGame(c)
+        return r
+    }
+
+    /// Codex 010 review 2 (C): the joiner's review waits for the host's final rating when it lands within the cap.
+    @Test func joinerReviewIncludesTheHostsLastRating() async {
+        let hub = MemoryHub()
+        let (host, joiner) = await Self.pair(hub)
+        let hostGame = GameSessionModel(config: Self.config)
+        hostGame.mesh = host.0
+        let r = Self.joinerRouter(joiner.0)
+        hub.delay = 0.15
+        hostGame.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
+        r.endGame()
+        guard case .review(let review)? = r.stage else { Issue.record("Live still up"); return }
+        #expect(await poll(3) { review.phase == .loaded })
+        #expect(review.data?.shots.map(\.rating) == [.best])
+        host.0.stop(); joiner.0.stop()
+    }
+
+    /// Codex 010 review 2 (C): a joiner's disc tap still on its way to the host is waited for.
+    @Test func joinerProposalInFlightIsWaitedFor() async {
+        let hub = MemoryHub()
+        let (host, joiner) = await Self.pair(hub)
+        let hostGame = GameSessionModel(config: Self.config)
+        hostGame.mesh = host.0
+        let r = Self.joinerRouter(joiner.0)
+        guard case .live(let live)? = r.stage, let game = live.game else { Issue.record("no live"); return }
+        hub.delay = 0.3
+        game.handTurn(toTeam: 1)
+        r.endGame()
+        guard case .review(let review)? = r.stage else { Issue.record("Live still up"); return }
+        #expect(await poll(3) { review.phase == .loaded })
+        #expect(game.shootingTeam == 1)
+        #expect(hostGame.shootingTeam == 1)
+        host.0.stop(); joiner.0.stop()
+    }
+
+    /// D42: a host whose shot can't commit (joiner cut off) still reviews 2 s after End, without that shot.
+    @Test func hostReviewLoadsAtTheCapWhenNothingCommits() async {
+        var slow = MeshSessionTests.fast
+        slow.failTimeout = 30
+        let hub = MemoryHub()
+        let (host, joiner) = await Self.pair(hub, config: slow)
+        let r = AppRouter()
+        r.meshFactory = { _ in host.0 }
+        var c = Self.config
+        c.sessionTag = 7
+        r.startGame(c)
+        guard case .live(let live)? = r.stage else { Issue.record("no live"); return }
+        hub.kill(joiner.2.localPeer)
+        live.settled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot))
+        let start = Date()
+        r.endGame()
+        guard case .review(let review)? = r.stage else { Issue.record("Live still up"); return }
+        #expect(await poll(4) { review.phase == .loaded })
+        let took = Date().timeIntervalSince(start)
+        #expect(took > 1.5 && took < 2.8)
+        #expect(review.data?.shots.isEmpty == true)
         joiner.0.stop()
     }
 
