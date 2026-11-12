@@ -101,3 +101,4 @@ plan assumes "island + merge" and leaves the "needs tap" UI out (it only sets a 
 ## Maintenance notes
 - Resume after a kill (design question 2's third option) builds on this; it is not planned.
 - `preStateDigest` in §2.5 is replaced by the full `preState`, because alignment needs positions within one ball radius.
+- **2026-11-11 user answers:** D47 — a disagreement shows both versions side by side (ball glyphs), one tap picks, the game replays from that shot. D48 — while cut off the joiner shows its own badge as provisional; the merged result replaces it. Share the replay-from-a-shot path with plan 015 (D49).
