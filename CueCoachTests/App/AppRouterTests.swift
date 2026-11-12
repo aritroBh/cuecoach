@@ -123,6 +123,7 @@ import Training
         var peerCount = 1
         var isStopped = false
         var isHost = true
+        var hasGameQuorum = true
         var commitSeq: UInt64 = 0
         var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
         func append(_ event: GameEvent) {}

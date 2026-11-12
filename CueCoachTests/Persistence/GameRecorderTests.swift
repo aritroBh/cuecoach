@@ -198,6 +198,34 @@ import Training
         #expect(try games(stack).isEmpty)
     }
 
+    /// Codex plan 011 review 1: the commit quorum can shrink (a lone survivor commits alone); the game quorum can't.
+    @Test func hostWithoutGameQuorumNeverWrites() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = solo(stack)
+        let link = FakeGameMeshLink(isHost: true)
+        link.hasGameQuorum = false
+        g.mesh = link
+        playARack(g)
+        link.commit()
+        #expect(g.reviewData().winnerTeam == 0)
+        #expect(try games(stack).isEmpty)
+    }
+
+    /// Codex plan 011 review 2: a failed save retries the rack as it stood at its winning commit.
+    @Test func aRetryAfterAFailedSaveKeepsTheWinningBoundary() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = GameSessionModel(config: config)
+        let flaky = FlakyRecorder(StackGameRecorder(stack: stack))
+        g.recorder = flaky
+        playARack(g)
+        #expect(try games(stack).isEmpty, "the first save threw")
+        g.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))   // a post-win commit retries
+        #expect(g.shots.count == 4)
+        #expect(try games(stack).count == 1)
+        #expect(try shots(stack).map(\.id) == g.shots.prefix(3).map(\.id))
+        #expect(flaky.recorded.count == 1)
+    }
+
     func winningLog() -> [LogEntry] {
         [GameEvent.shot(MeshShotRecord(shotID: UUID(), shooterTeam: 0, outcome: Self.pot(1), postState: nil)),
          .shot(MeshShotRecord(shotID: UUID(), shooterTeam: 0, outcome: Self.eightEarly, postState: nil))]
@@ -287,12 +315,86 @@ import Training
     }
 }
 
+/// Throws on its first `fails` calls, then forwards.
+@MainActor final class FlakyRecorder: GameRecorder {
+    struct Failed: Error {}
+    var fails = 1
+    private(set) var recorded: [FinishedGame] = []
+    let inner: any GameRecorder
+    init(_ inner: any GameRecorder) { self.inner = inner }
+    func record(_ game: FinishedGame) throws {
+        if fails > 0 { fails -= 1; throw Failed() }
+        recorded.append(game)
+        try inner.record(game)
+    }
+}
+
+/// Codex plan 011 review 1, over real sessions on one `MemoryHub`: only a majority of the game's members saves.
+@MainActor
+@Suite(.serialized) struct GameQuorumSaveTests {
+    let a = ShellPlayer(id: UUID(), name: "A1", symbol: "hare.fill", colorName: "teal")
+    let b = ShellPlayer(id: UUID(), name: "B1", symbol: "bolt.fill", colorName: "orange")
+
+    func game(_ stack: PersistenceStack, on link: MeshGameLink) -> GameSessionModel {
+        let g = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
+        g.recorder = StackGameRecorder(stack: stack)
+        g.mesh = link
+        return g
+    }
+
+    /// A1 pots the 1, then sinks the 8 early: team 1 wins.
+    func playARack(_ g: GameSessionModel) {
+        g.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: GameRecorderTests.pot(1)))
+        g.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: GameRecorderTests.eightEarly))
+    }
+
+    func gameCount(_ stack: PersistenceStack) throws -> Int { try stack.competitiveContext.fetchCount(FetchDescriptor<Game>()) }
+
+    @Test func loneSurvivorOfATwoPhoneGameCommitsTheWinButNeverSaves() async throws {
+        let hub = MemoryHub()
+        let sessions = [MeshGameLinkTests.session(hub, device: 18), MeshGameLinkTests.session(hub, device: 16)]
+        let links = sessions.map { MeshGameLink(session: $0) }
+        links.forEach { $0.start() }
+        #expect(await poll { links[0].isHost && links[1].isJoiner && links[1].gameMembers.count == 2 })
+        #expect(links[0].hasGameQuorum, "both phones present")
+        let stack = try PersistenceStack(inMemory: true)
+        let g = game(stack, on: links[1])
+        links[0].stop()
+        hub.kill(sessions[0].localPeer)
+        #expect(await poll(4) { links[1].isHost })
+        playARack(g)
+        #expect(await poll(3) { g.reviewData().winnerTeam == 1 }, "the lone survivor commits alone")
+        #expect(!links[1].hasGameQuorum)
+        #expect(try gameCount(stack) == 0)
+        links[1].stop()
+    }
+
+    @Test func threePhoneGameWithTwoLeftStillSaves() async throws {
+        let hub = MemoryHub()
+        let sessions = (0..<3).map { MeshGameLinkTests.session(hub, device: 15 + $0) }
+        let links = sessions.map { MeshGameLink(session: $0) }
+        links.forEach { $0.start() }
+        #expect(await poll { links[2].isHost && links[1].isJoiner && links[1].gameMembers.count == 3 })
+        let stack = try PersistenceStack(inMemory: true)
+        let g = game(stack, on: links[1])
+        links[2].stop()
+        hub.kill(sessions[2].localPeer)
+        #expect(await poll(4) { links[1].isHost })
+        playARack(g)
+        #expect(await poll(3) { g.reviewData().winnerTeam == 1 })
+        #expect(links[1].hasGameQuorum, "2 of 3")
+        #expect(await poll(2) { (try? gameCount(stack)) == 1 })
+        links[0].stop(); links[1].stop()
+    }
+}
+
 /// Role unresolved: neither host nor joiner.
 @MainActor final class DiscoveringLink: GameMeshLink {
     var peerCount = 2
     var isStopped = false
     var isHost: Bool { false }
     var isJoiner: Bool { false }
+    var hasGameQuorum: Bool { false }
     var commitSeq: UInt64 = 0
     var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
     func start() {}
