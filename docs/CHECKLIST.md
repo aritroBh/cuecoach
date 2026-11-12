@@ -9,8 +9,8 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 2. [x] Plan 009 merged (38ac5c3): Codex REJECT → fixed → APPROVE; unit 1279/1279, AppShell UI 12/12. Cleanup MINOR: remove test-only `LiveHooks.settled` bridge (with 010). (014 steps 1–2 stay serial: new enum cases break app switches, which only an app build can check.)
 3. [x] Excerpt refresh folded into each worker brief (re-locate symbols against the current head)
 3a. [x] Plan 010 merged (eaa717d; Codex REJECT ×4 → APPROVE; unit 1299/1299, AppShell UI 12/12) mesh forwards the committed log → merge
-4. [~] Plan 011 (Claude worker in wt/plan-011, sole build owner) save the finished rack on the winning commit (D45) → merge
-5. [ ] Plan 012 `Shot.isGuess` V3 migration (D43) → merge
+4. [x] Plan 011 merged (acd3ebd; Codex REJECT → APPROVE; unit 1320/1320, AppShell UI 12/12) save the finished rack on the winning commit (D45)
+5. [~] Plan 012 (Claude worker in wt/plan-012, sole build owner) `Shot.isGuess` V3 migration (D43) → merge
 6. [ ] Plan 014 steps 3–6 (auto-fit precedence, lock matrix alone on the sim, mesh under major 2)
 7. [ ] Plan 013 host loss + island merge (D44, D47, D48); UI mock of the side-by-side pick first
 7a. [ ] Plan 015 (to write): fix a recorded shot from Game Review by long-press (D49)
