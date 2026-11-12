@@ -8,8 +8,8 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 1. [x] Combined gate: unit 1253/1253; UI 41 + 1 skip, 3 ScreensB failures = the "empty review" sample still held one unrated shot, which D38/plan 008 now shows as a gap → sample emptied, ScreensB 11/11; pushed
 2. [x] Plan 009 merged (38ac5c3): Codex REJECT → fixed → APPROVE; unit 1279/1279, AppShell UI 12/12. Cleanup MINOR: remove test-only `LiveHooks.settled` bridge (with 010). (014 steps 1–2 stay serial: new enum cases break app switches, which only an app build can check.)
 3. [x] Excerpt refresh folded into each worker brief (re-locate symbols against the current head)
-3a. [~] Plan 010 (Claude worker in wt/plan-010, sole build owner; + 009 cleanup MINOR) mesh forwards the committed log → merge
-4. [ ] Plan 011 save the finished rack on the winning commit (D45) → merge
+3a. [x] Plan 010 merged (eaa717d; Codex REJECT ×4 → APPROVE; unit 1299/1299, AppShell UI 12/12) mesh forwards the committed log → merge
+4. [~] Plan 011 (Claude worker in wt/plan-011, sole build owner) save the finished rack on the winning commit (D45) → merge
 5. [ ] Plan 012 `Shot.isGuess` V3 migration (D43) → merge
 6. [ ] Plan 014 steps 3–6 (auto-fit precedence, lock matrix alone on the sim, mesh under major 2)
 7. [ ] Plan 013 host loss + island merge (D44, D47, D48); UI mock of the side-by-side pick first
