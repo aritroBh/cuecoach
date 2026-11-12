@@ -19,7 +19,7 @@ The dev Mac's disk has hit 0 GB free during parallel builds. These rules are man
 - Close the plan's row in `docs/CHECKLIST.md` › NOW the day it merges; refresh the next plan's code excerpts against the new head before dispatch.
 - Create worktrees with `tools/new-worktree.sh <name>` (it copies the local build guard hook into the worktree).
 - One `xcodebuild` build/test at a time across all agents. Don't start one while another runs (`pgrep -x xcodebuild`).
-- Every `xcodebuild test` passes `-parallel-testing-enabled NO` (parallel testing clones the simulator, ~5 GB each).
+- Every `xcodebuild test` passes `-parallel-testing-enabled NO` (parallel testing clones the simulator, ~5 GB each) and `-collect-test-diagnostics never` (otherwise a failing run spends ~10 min in `simctl diagnose`).
 - Check `df -h /` first; under 40 GB free, stop and report instead of building.
 - Use the shared `-derivedDataPath` the head gives you; never the default DerivedData, never one per worktree.
 - Don't create simulators. Use `CueCoach iPhone 15 Pro`.
@@ -63,6 +63,7 @@ The dev Mac's disk has hit 0 GB free during parallel builds. These rules are man
 | 2026-11-11 | Plan 009: every phone folds one shot log (D39 host rates, D41 `.nextShooter`, D38 `.shotLost`); widened `MeshShotRecord`; protocol major 2; committed folds drive legality | Claude worker | Codex REJECT (MAJOR legality not refreshed; MINOR 2-value helpers) → fixed → Codex APPROVE (MINOR: test-only `LiveHooks.settled` bridge left) | merged to phase/1-core (38ac5c3) |
 | 2026-11-12 | Plan 010: real `MeshGameLink` forwards the committed log; role tri-state (`isHost` only as host); startup inputs buffered; End leaves Live at once, review loads after a ≤ 2 s drain; disc taps/corrections carry ids; 009 cleanup (`LiveHooks.settled` bridge removed) | Claude worker | Codex REJECT ×4 (final-shot drain, startup inputs, host while discovering, D42 second ✕, joiner drain target, proposal identity ×2) → fixed → Codex APPROVE | merged to phase/1-core (eaa717d) |
 | 2026-11-12 | Plan 011: `GameRecorder` saves the finished rack on its winning commit (D45) — solo, or mesh host with game quorum (`hasGameQuorum`: > half of every phone seen this game); endGame doesn't write; retry keeps the winning boundary | Claude worker | Codex REJECT (lone survivor of a 2-phone partition could save; retry added post-win shots) → fixed → Codex APPROVE | merged to phase/1-core (acd3ebd) |
+| 2026-11-12 | Plan 012: Competitive V3 `Shot.isGuess` (D43); Session/Game/Shot/Highlight frozen as nested V2 copies (guard test pins shipped V1/V2 hashes); lightweight V2→V3; recorder saves guesses flagged; backup field optional | Claude worker | Codex APPROVE (first pass) | merged to phase/1-core (e50bac2) |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
 
