@@ -450,8 +450,14 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
   `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
 - `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
   a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped);
-  `roleChanged` sets `isHost` (`.host` only; false while discovering). `append` forwards to `MeshSession.append`.
-  `commitSeq` is the last forwarded value and stays readable after `stop()`.
+  `roleChanged` sets the role; `isHost` is false only as a client (true while discovering, so early settles reach the
+  link). Appends made while discovering are queued and flushed in order when the role resolves: a host appends all;
+  a joiner drops its own `.shot`/`.shotLost` (D39) and proposes the rest (D41 disc taps survive). Otherwise `append`
+  forwards to `MeshSession.append`, in call order. `commitSeq` is the last forwarded value and stays readable after `stop()`.
+- `drainAppends(within:then:)` (default: `then` at once): waits until the queue is empty and the host's own appends
+  are committed and forwarded, at most `within` seconds (D42), then calls `then`. `AppRouter.endGame()` drains for
+  ≤ 2 s before it stops the link and builds review, so the last settled shot is reviewed. A joiner's in-flight
+  proposal is not tracked.
 - `ingest(log:commitSeq:)`: folds the entries with `seq ≤ commitSeq`, in `seq` order. The uncommitted tail never shows.
   The model sets `mesh.onCommittedLog` to it when `mesh` is set.
 - Fold (pure, from scratch on every change, from the `GameConfig` lineup and `TargetLegality.startingGame`):

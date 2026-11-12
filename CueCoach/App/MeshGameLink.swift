@@ -31,20 +31,65 @@ extension GameMeshLink {
     private(set) var isStopped = false
     @ObservationIgnored private let session: any MeshSession
     @ObservationIgnored private var task: Task<Void, Never>?
-    /// `.host` only: false while discovering and as a client. Last values stay readable after `stop()`.
-    private(set) var isHost = false
+    /// The session's role as this link last heard it.
+    private(set) var role: MeshRole = .discovering
+    /// Writes the log: the host, or any phone while the role is unresolved (its appends wait in `queued`; a joiner
+    /// then drops its own shots, D39). Last values stay readable after `stop()`.
+    var isHost: Bool { if case .client = role { false } else { true } }
     /// Last log seq this link has seen in a snapshot (a processing barrier for tests).
     private(set) var handledLastSeq: UInt64 = 0
     /// The last commit point forwarded to `onCommittedLog`.
     private(set) var commitSeq: UInt64 = 0
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?
 
+    /// Appends made before the role resolved, flushed in order once it does.
+    @ObservationIgnored private var queued: [GameEvent] = []
     @ObservationIgnored private var lastAppend: Task<Void, Never>?
+    @ObservationIgnored private var inFlight = 0
+    /// Host: the newest seq its own appends reached. Committed once `commitSeq` covers it.
+    @ObservationIgnored private var writtenSeq: UInt64 = 0
+    private var hasUnconfirmed: Bool { !queued.isEmpty || inFlight > 0 || commitSeq < writtenSeq }
 
     /// The session turns a client's append into a `.proposal` to the host. Appends reach it in call order.
     func append(_ event: GameEvent) {
+        if role == .discovering { queued.append(event) } else { send(event) }
+    }
+
+    private func send(_ event: GameEvent) {
+        inFlight += 1
         let s = session, prev = lastAppend
-        lastAppend = Task { await prev?.value; await s.append(event) }
+        lastAppend = Task { [weak self] in
+            await prev?.value
+            await s.append(event)
+            let snap = await s.snapshot()
+            self?.sent(snap)
+        }
+    }
+
+    private func sent(_ snap: MeshSnapshot) {
+        inFlight -= 1
+        if snap.role == .host, let last = snap.log.last?.seq { writtenSeq = max(writtenSeq, last) }
+    }
+
+    private func roleChanged(_ r: MeshRole) {
+        role = r
+        guard r != .discovering else { return }
+        let early = queued
+        queued = []
+        for e in early {
+            if case .client = r, e.isShotResult { continue }   // D39: the host rates every shot
+            send(e)
+        }
+    }
+
+    /// Bounded (D42: never stuck): after `seconds` it proceeds with what is committed.
+    func drainAppends(within seconds: Double, then done: @escaping @MainActor () -> Void) {
+        guard hasUnconfirmed else { done(); return }
+        let end = Date().addingTimeInterval(seconds)
+        Task { [weak self] in
+            while let self, self.hasUnconfirmed, Date() < end { try? await Task.sleep(for: .milliseconds(20)) }
+            done()
+        }
     }
 
     convenience init(sessionTag: UInt16) {
@@ -67,7 +112,7 @@ extension GameMeshLink {
             for await u in s.updates {
                 switch u {
                 case .rosterChanged(let roster): self?.peerCount = max(1, roster.count)
-                case .roleChanged(let role, _): self?.isHost = role == .host
+                case .roleChanged(let role, _): self?.roleChanged(role)
                 case .logChanged: await self?.forwardCommitted(from: s)
                 default: break
                 }
@@ -78,7 +123,9 @@ extension GameMeshLink {
     /// One fresh snapshot per `logChanged`, forwarded in order; a commit point not newer than the last is dropped.
     private func forwardCommitted(from s: any MeshSession) async {
         let snap = await s.snapshot()
-        guard !Task.isCancelled, snap.commitSeq > commitSeq else { return }
+        guard !Task.isCancelled else { return }
+        handledLastSeq = max(handledLastSeq, snap.log.last?.seq ?? 0)
+        guard snap.commitSeq > commitSeq else { return }
         commitSeq = snap.commitSeq
         onCommittedLog?(snap.log.filter { $0.seq <= snap.commitSeq }, snap.commitSeq)
     }
@@ -89,6 +136,16 @@ extension GameMeshLink {
         Task { [weak self] in
             await s.stop()
             self?.isStopped = true
+        }
+    }
+}
+
+private extension GameEvent {
+    /// A shot's result, which only the host records (D39).
+    var isShotResult: Bool {
+        switch self {
+        case .shot, .shotLost: true
+        default: false
         }
     }
 }

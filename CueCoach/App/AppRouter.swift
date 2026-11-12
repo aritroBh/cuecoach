@@ -102,12 +102,21 @@ final class AppRouter {
     }
 
     /// End game (menu) → review. Ignored in Training or when nothing is live.
+    /// A mesh game first lets this phone's last appends commit (D37 waits for the settle; the shot then needs its
+    /// commit), at most 2 s (D42: never stuck), then reviews what is committed.
     func endGame() {
-        guard case .live(let s)? = stage, let game = s.game else { return }
-        game.mesh?.stop()
-        game.mesh = nil
-        stage = .review(game.reviewData())
+        guard case .live(let s)? = stage, let game = s.game, ending !== s else { return }
+        guard let link = game.mesh else { stage = .review(game.reviewData()); return }
+        ending = s
+        link.drainAppends(within: 2) { [weak self] in
+            link.stop()
+            if game.mesh === link { game.mesh = nil }
+            guard let self, self.ending === s else { return }
+            self.ending = nil
+            if case .live(let now)? = self.stage, now === s { self.stage = .review(game.reviewData()) }
+        }
     }
+    @ObservationIgnored private var ending: LiveSession?
 
     /// LiveScreen dismissed itself (its own ✕). Game → review; Training → back to the drill picker.
     func liveClosed() {
