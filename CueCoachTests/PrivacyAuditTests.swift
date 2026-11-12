@@ -166,7 +166,7 @@ struct PrivacyAuditTests {
         // Swift standard library (Mutex)
         "Synchronization",
         // CueCore modules
-        "Geometry", "Physics", "Rules", "Engine", "Stats", "Training",
+        "Geometry", "Physics", "Rules", "Engine", "Stats", "Training", "Sync",
         // D34: the vendored Astryx design system (Packages/Astryx, audited above as shipped code)
         "Astryx", "AstryxNative",
     ]
