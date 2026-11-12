@@ -107,8 +107,9 @@ final class LiveModel {
         }
     }
     private var shots: [ShotEntry] = []
-    /// A shot has ended but not closed yet (asking, looking, lost, or waiting for a quiet table).
-    var hasOpenShot: Bool { !shots.isEmpty }
+    /// A shot is still rolling (no record yet), or has ended but not closed (asking, looking, lost, or waiting
+    /// for a quiet table).
+    var hasOpenShot: Bool { !shots.isEmpty || aimEvents.phase == .moving }
     /// D37: the player confirmed "End game"; Live stays up until the open shot closes.
     private(set) var isFinishing = false
     private var onFinished: (@MainActor () -> Void)?
@@ -132,6 +133,8 @@ final class LiveModel {
         guard isFinishing, let done = onFinished else { return }
         onFinished = nil
         pocketConfirm = nil
+        // Codex review: a shot still rolling closes like one lost to a relock (D31 guess, else unrated).
+        if aimEvents.phase == .moving { shots.append(lostEntry()); aimEvents = AimEvents() }
         while !shots.isEmpty {
             var head = shots.removeFirst()
             switch head.state {
@@ -271,7 +274,7 @@ final class LiveModel {
                 close(head)
             }
         }
-        if let done = onFinished { onFinished = nil; done() }
+        if !hasOpenShot, let done = onFinished { onFinished = nil; done() }
     }
 
     /// The one-tap answer: ✓ the ball dropped, ✗ it didn't. Only ever applies to the front shot; while something
