@@ -394,6 +394,77 @@ struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backu
 - No text in Live/Perception/Calibration: standalone Live shows `PostShotRatingBadge` (Screens/PostShot); `BadgeStyle` is
   `RatingBadgeStyle`.
 
+## Shot log (plan 009; D38, D39, D41)
+
+One replicated log is the game's source of truth. The host (or the solo phone) appends; every phone builds `shots`,
+the badge, the turn and the rules state by folding the committed prefix. In memory only (no SwiftData).
+
+```swift
+// Wire: protocol major 2. ProtocolVersion.current = (2, 0), supportedMajors = [2].
+// Adding GameEvent cases is a wire break (an older build fails to decode a whole logEntries batch), so the major is
+// bumped: an old build now gets a clean Reject at Hello instead of silently undecodable logs.
+struct MeshShotRecord: Hashable, Codable, Sendable {
+    var shotID: UUID
+    var shooterTeam: Int
+    var outcome: ShotOutcome
+    var postState: TableState?                  // SettledShot.after on config.tableSize; nil = empty after
+    var preState: TableState? = nil             // SettledShot.before; nil = empty before (review stays without states)
+    var decisionRating: DecisionRating? = nil   // the host's rating; nil = the fold classifies the RuleResult
+    var isGuess: Bool = false                   // D31; in memory and on the wire only
+    // init(from:) reads the three new keys with decodeIfPresent: a missing key decodes as nil / nil / false.
+}
+
+enum GameEvent: Hashable, Codable, Sendable {
+    case ruleSetChosen(RuleSetID)
+    case shot(MeshShotRecord)
+    case shooterCorrection(shotID: UUID, team: Int)  // fix a recorded shot (no UI yet): attribution .tap, D17 replayed
+    case nextShooter(team: Int)                      // D41 disc tap: only who shoots next; works before the first shot
+    case shotLost(shotID: UUID, shooterTeam: Int)    // D38 gap: rating nil, no rules change, asks for the shooter
+}
+
+@MainActor protocol GameMeshLink: AnyObject {
+    var peerCount: Int { get }
+    var isStopped: Bool { get }
+    var isHost: Bool { get }
+    var commitSeq: UInt64 { get }
+    var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)? { get set }
+    func start()
+    func stop()
+    func append(_ event: GameEvent)             // host writes; a client sends .proposal
+}
+// MeshGameLink (until plan 010 wires the session): isHost = true, commitSeq = 0, append is a no-op,
+// onCommittedLog never fires.
+
+struct SettledShot { … var outcome: ShotOutcome }   // what Live rated: RuleRating.outcome(record, ids:, pocketTimes:)
+static func RuleRating.classify(_ result: RuleResult, shooter: Int, pocketedObjectBall: Bool) -> DecisionRating
+                                                    // the classification RuleRating.rate uses
+struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, or .tap after a shooterCorrection
+```
+
+`GameSessionModel` rules:
+- `shotSettled(_:)`: host or solo appends `.shot(MeshShotRecord)` built from the `SettledShot` (fresh `shotID`,
+  `shooterTeam` = shooting team, `outcome`, `before`/`after` as `preState`/`postState`, `decisionRating` = its
+  rating, `isGuess`). A client drops its own settle (D39). Badge, shot and turn come from the fold, never from this
+  call. Returns the badge signal when the shot folded at once (solo), else nil.
+- `shotLost()`: host or solo appends `.shotLost(shotID:shooterTeam:)`. A client drops it.
+- `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
+  `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
+- `ingest(log:commitSeq:)`: folds the entries with `seq ≤ commitSeq`, in `seq` order. The uncommitted tail never shows.
+  The model sets `mesh.onCommittedLog` to it when `mesh` is set.
+- Fold (pure, from scratch on every change, from the `GameConfig` lineup and `TargetLegality.startingGame`):
+  - `.shot`: the shooter is the folded D17 shooter; a later `.shooterCorrection` for that `shotID` hands the turn to
+    its team first (a hand-over, like a disc tap) and marks the shot `.tap`. `rulesState = engine.apply(outcome, to:
+    state with shooter = folded team).nextState` (equals Live's own `result.nextState`). Rating = `decisionRating`, else
+    `RuleRating.classify`. The turn passes (D17) when the result says so. The ask is cleared.
+  - `.shotLost`: a gap `SessionShot` (rating nil) for the folded shooter; no rules change; `needsShooter = true`.
+  - `.nextShooter`: hands the turn to that team if it is not already theirs and clears the ask. A newly folded one
+    pushes the new shooter's legal targets (`legalChanged`).
+  - `.ruleSetChosen`: ignored (the rule set comes from `GameConfig`).
+  - Local mid-game swaps are not logged: kept as `(afterEvent, team, a, b)` and replayed at their place in the fold.
+  - The badge fires once per `shotID`: for the newest newly committed rated shot only.
+- Solo (`mesh == nil`): the same fold over an in-memory log that commits at once.
+- `rulesAdvanced(_:)` is gone: the shell no longer binds `LiveHooks.gameAdvanced`; the fold owns the rules state.
+
 ## Proposed (plan 006 — not approved)
 
 Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. `Shot.isGuess` is a Competitive V3 migration and is not part of this contract.
@@ -401,18 +472,9 @@ Do not implement until the product questions in `docs/research/game-log-and-savi
 Plan 002 adds `before` and `after` on `SettledShot` and `SessionShot`. This section uses that shape.
 
 ```swift
-// Widened wire record. New fields are optional on the wire: a missing key decodes as nil / false.
-// Synthesized Codable is not enough; the implementation must use decodeIfPresent.
-// Old peers ignore unknown JSON keys. No new GameEvent case (that would break logEntries on an older build).
-struct MeshShotRecord: Hashable, Codable, Sendable {
-    var shotID: UUID
-    var shooterTeam: Int
-    var outcome: ShotOutcome
-    var postState: TableState?          // existing; plan 002 `after` as a TableState
-    var preState: TableState? = nil     // plan 002 `before`; nil = empty before, review stays without states
-    var decisionRating: DecisionRating? = nil   // nil = every phone runs RuleRating while folding
-    var isGuess: Bool = false           // D31; in memory and on the wire. Not a SwiftData column until V3
-}
+// The widened MeshShotRecord, the new GameEvent cases (a protocol major-2 bump, since adding a case breaks
+// logEntries on an older build), the GameMeshLink log members and the GameSessionModel fold moved to
+// "Shot log (plan 009)" above. What remains here is the save follow-up (plan 011).
 
 // Host or solo phone → competitive store only. Joiners never call it. Training never builds one.
 protocol GameRecorder: Sendable {
@@ -456,28 +518,9 @@ struct RecordedShot: Sendable {
     var clipRef: String?                // nil
 }
 
-@MainActor protocol GameMeshLink: AnyObject {
-    var peerCount: Int { get }
-    var isStopped: Bool { get }
-    var isHost: Bool { get }            // true when mesh == nil (solo) as well, at the call site
-    var commitSeq: UInt64 { get }
-    var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)? { get set }
-    func start()
-    func stop()
-    func append(_ event: GameEvent)     // host writes; client sends .proposal
-}
-
-// GameSessionModel ↔ MeshGameLink
-// shotSettled(_:)  — host or solo appends .shot(MeshShotRecord built from SettledShot, including before/after).
-//                    A client drops the local settle. Badge and turn come from ingest, not from this call.
-// ingest(log:commitSeq:) — fold the committed prefix. .shot appends a SessionShot (RuleRating when
-//                    decisionRating is nil). .shooterCorrection(shotID:team:) sets that shot's team to the
-//                    tapped team, sets attribution .tap, and replays D17 from that index.
-// handTurn(toTeam:) — proposes .shooterCorrection for the latest shot. Does not call passTurn().
-//                    No-op while aiming (LiveSession already returns). No-op when shots is empty.
-// finishRack()     — if isHost (or mesh == nil) and commitSeq covers the rack and the roster still has a
-//                    majority, GameRecorder.record. Skips isGuess shots. Training has no GameSessionModel, so
-//                    this is unreachable from LiveSession.mode == .training.
+// finishRack() — if isHost (or mesh == nil) and commitSeq covers the rack and the roster still has a
+//                majority, GameRecorder.record. Skips isGuess shots. Training has no GameSessionModel, so
+//                this is unreachable from LiveSession.mode == .training.
 ```
 
-`MeshGameLink` today implements only `start` / `stop` and roster `peerCount` (`CueCoach/App/MeshGameLink.swift:29-36`). The proposed callbacks are the contract for the follow-up. `GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
+`MeshGameLink` stubs the plan 009 log members until plan 010 forwards the session's log. `GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
