@@ -12,13 +12,12 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 4. [ ] Plan 011 save the finished rack on the winning commit (D45) → merge
 5. [ ] Plan 012 `Shot.isGuess` V3 migration (D43) → merge
 6. [ ] Plan 014 steps 3–6 (auto-fit precedence, lock matrix alone on the sim, mesh under major 2)
-7. [ ] Plan 013 host loss + island merge (D44); needs the two answers below and a UI mock first
+7. [ ] Plan 013 host loss + island merge (D44, D47, D48); UI mock of the side-by-side pick first
+7a. [ ] Plan 015 (to write): fix a recorded shot from Game Review by long-press (D49)
 8. [ ] Plan 005 follow-up MINOR: size hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift:180`)
 9. [ ] Final simulator QA pass (XCUITest), then erase QA sims
 
 Blocked on the user / phones:
-- [!] D41 detail: how a recorded shot (e.g. a D38 gap's shooter) gets corrected — no correction action exists yet
-- [!] D44 detail: what the "one tap" picks on a disagreement, and whether a joiner's own badges during an island are provisional (D39 exception)
 - [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max
 - [!] Real-table footage (The Rive) → detector validation, default detector choice
 - [!] Recognition: face model yes/no, clothing templates on disk vs session, expiry, pro profiles split; D29 stick-visible veto scope

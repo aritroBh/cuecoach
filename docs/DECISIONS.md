@@ -50,3 +50,6 @@
 | D44 | 2026-11-10 | Q12, phones lose each other mid-game: island + merge. Each phone keeps scoring on its own; on reconnect the logs merge, and any shot the phones disagree on asks one tap. | User |
 | D45 | 2026-11-10 | Save a rack as soon as its winning shot is committed, not on ✕; a kill after the win keeps the game (refines D40: only an unfinished rack is discarded). | User |
 | D46 | 2026-11-10 | D36 A (2 % snap) dropped: on standard tables the multi-frame size is 2–6 % off, so 2 % mis-locked five standard scenes (in-scope 92 % → 84 %). Keep the 6 % snap; add Pro 8 (88″) and 86″ as presets the player can pick (picked size = lock prior, D36 C). | User ("Both") |
+| D47 | 2026-11-11 | D44 detail: on reconnect, a shot the phones disagree on shows both versions side by side (ball glyphs); one tap picks the right one and the game replays from that shot. | User |
+| D48 | 2026-11-11 | D39 exception while cut off (D44 island): the joiner shows its own post-shot badge as provisional; after reconnect the merged result replaces it. Outside an island D39 holds. | User |
+| D49 | 2026-11-11 | D41 correction action: long-press a shot on the Game Review timeline → pick its shooter (never during aiming). The game replays from that shot (`.shooterCorrection`). | User |
