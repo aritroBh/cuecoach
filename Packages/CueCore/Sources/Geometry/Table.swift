@@ -3,13 +3,17 @@
 /// https://wpapool.com/wp-content/uploads/2024/01/RECOMMENDED-EQUIPMENT-SPECIFICATIONS.pdf
 /// 7 ft is not WPA-defined; Diamond Billiards 7 ft = 80" x 40" (https://diamondbilliards.com/pages/smart).
 /// Coin-op "7 ft" bar boxes vary — LiDAR measurement (Calibration) can override the preset.
+/// D46: Pro 8 (oversized 8 ft) = 88" x 44"; 86" = 86" x 43". Declared in length order (pickers iterate `allCases`).
+/// Raw values are persisted and sent over the mesh; never rename them.
 public enum TableSize: String, CaseIterable, Codable, Sendable {
-    case sevenFoot, eightFoot, nineFoot
+    case sevenFoot, eightySixInch, proEight, eightFoot, nineFoot
 
     /// Playing-surface length in metres.
     public var playingLength: Double {
         switch self {
         case .sevenFoot: 80 * 0.0254
+        case .eightySixInch: 86 * 0.0254
+        case .proEight: 88 * 0.0254
         case .eightFoot: 92 * 0.0254
         case .nineFoot: 100 * 0.0254
         }
