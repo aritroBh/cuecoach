@@ -19,6 +19,17 @@ both phones have it. Today, after a host loss or a link blip: the shot in flight
 and the turn stays with the previous shooter; and in a two-phone split both sides keep playing, but every shot
 appended during the split is thrown away when they heal. Players lose real shots in every Wi-Fi blip.
 
+## Split (head, 2026-11-12)
+This plan runs as **013a** = steps 1–4 below, unchanged: island state, per-phone settle buffer, `IslandMerge`, heal,
+and the recorder refusing while `isIsland`. `needsTap` stays a flag only; no new screens; no schema change.
+**013b** (after plan 015, which builds replay-from-a-shot) adds the D47 side-by-side pick (reusing 015's replay) and
+the D51 unconfirmed island save (schema change). 013b gets its own plan file. Q12 and the "needs tap" display are
+answered (D44, D47), so the STOP condition on them is cleared for 013a.
+
+**Drift since `5cd3fcf` is expected:** plans 009–012 and 014 merged (fold, mesh link forwarding, save on finished
+rack with `hasGameQuorum`, `Shot.isGuess` V3, five table sizes). Re-read the current code; STOP only if a shape this
+plan needs is missing (`MeshShotRecord.preState`, committed-prefix fold in `GameSessionModel`, the recorder's quorum gate).
+
 ## Decision gate (before step 2)
 **Update 2026-11-10: the user answered Q12 = island + merge (D44).** The "needs tap" display below is still open: mock it (Astryx, icon-only, never while aiming) and get the head's OK before step 2.
 
@@ -102,4 +113,4 @@ plan assumes "island + merge" and leaves the "needs tap" UI out (it only sets a 
 - Resume after a kill (design question 2's third option) builds on this; it is not planned.
 - `preStateDigest` in §2.5 is replaced by the full `preState`, because alignment needs positions within one ball radius.
 - **2026-11-11 user answers:** D47 — a disagreement shows both versions side by side (ball glyphs), one tap picks, the game replays from that shot. D48 — while cut off the joiner shows its own badge as provisional; the merged result replaces it. Share the replay-from-a-shot path with plan 015 (D49).
-- **From the plan 011 review (2026-11-12):** saving needs `hasGameQuorum` (a strict majority of the game's original members), so an island never saves on its own. This plan owns saving island games: merge on reconnect (D47), then save once. If the phones never reconnect, whether an island's won rack is saved is a product question to ask the user.
+- **From the plan 011 review (2026-11-12):** saving needs `hasGameQuorum` (a strict majority of the game's original members), so an island never saves on its own. This plan owns saving island games: merge on reconnect (D47), then save once. If the phones never reconnect: **D51** — the island saves its finished rack flagged unconfirmed; shown in history with a small marker, excluded from competitive stats until confirmed (how: undecided — ask the user in 013b).

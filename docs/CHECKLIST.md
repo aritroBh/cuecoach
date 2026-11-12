@@ -12,7 +12,7 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 4. [x] Plan 011 merged (acd3ebd; Codex REJECT → APPROVE; unit 1320/1320, AppShell UI 12/12) save the finished rack on the winning commit (D45)
 5. [x] Plan 012 merged (e50bac2; Codex APPROVE; unit 1329/1329, AppShell UI 12/12) `Shot.isGuess` V3 migration (D43)
 6. [x] Plan 014 (Claude worker in wt/plan-014, sole build owner) steps 3–6 (auto-fit precedence, lock matrix alone on the sim, mesh under major 2)
-7. [~] Plan 013 host loss + island merge (D44, D47, D48); UI mock of the side-by-side pick first
+7. [~] Plan 013a host loss + island merge engine (D44, D48), no new screens. 013b (after 015): D47 side-by-side pick + D51 unconfirmed island save
 7a. [ ] Plan 015 (to write): fix a recorded shot from Game Review by long-press (D49)
 8. [ ] Plan 005 follow-up MINOR: size hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift:180`)
 9. [ ] Final simulator QA pass (XCUITest), then erase QA sims
