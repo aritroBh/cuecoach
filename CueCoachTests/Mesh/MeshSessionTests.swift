@@ -29,12 +29,16 @@ final class MemoryHub: @unchecked Sendable {
         set { lock.withLock { _delay = newValue } }
     }
     private var _delay = 0.0
+    private var outbound: [PeerID: Double] = [:]
     private let slow = DispatchQueue(label: "MemoryHub.delay")
+
+    /// Asymmetric radio: messages from `peer` land `seconds` later (overrides `delay` for that sender).
+    func delay(from peer: PeerID, _ seconds: Double) { lock.withLock { outbound[peer] = seconds } }
 
     func deliver(_ data: Data, from: PeerID, to: [PeerID]) {
         let targets = lock.withLock { to.compactMap { members[$0] } }
         let emit = { for t in targets where !t.dead { t.emit(.received(data, from: from)) } }
-        let d = delay
+        let d = lock.withLock { outbound[from] ?? _delay }
         if d > 0 { slow.asyncAfter(deadline: .now() + d, execute: emit) } else { emit() }
     }
 }
