@@ -16,8 +16,9 @@ to Recognition.store, writes `.Competitive.scrub-pending`, deletes the rows here
 scrub (remove the old external-blob folder, VACUUM, WAL checkpoint(TRUNCATE) checked for busy) until it succeeds
 and clears the marker; while it is pending Competitive.store and its sidecars are excluded from backup, so no
 template bytes reach a device backup even after a crash or a failed scrub) → **V3** (D43, lightweight stage: adds
-`Shot.isGuess`, default false, so every V2 row opens as not a guess; V1 and V2 list a frozen
-`CompetitiveSchemaV2.Shot`). Training V1. Recognition V1.
+`Shot.isGuess`, default false, so every V2 row opens as not a guess; V1 and V2 list frozen
+`CompetitiveSchemaV2` copies of the whole Session/Game/Shot/Highlight relationship component, since a relationship
+to a live type would pull the V3 `Shot` into the old schema; their entity hashes are pinned by a test). Training V1. Recognition V1.
 
 ## Competitive store
 
