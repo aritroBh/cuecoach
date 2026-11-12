@@ -10,6 +10,18 @@ Head orchestrator (main Claude session) — plan, checklist, contracts, merges, 
 Vendors: Claude subagents · Codex (`codex exec`) · Cursor (`cursor-agent -p`) · Antigravity (`agy`) · OmniRoute.
 Rule: **a module is never reviewed by the vendor that wrote it.**
 
+## Build hygiene (every worker, every vendor — paste into worker prompts)
+
+The dev Mac's disk has hit 0 GB free during parallel builds. These rules are mandatory:
+
+- Create worktrees with `tools/new-worktree.sh <name>` (it copies the local build guard hook into the worktree).
+- One `xcodebuild` build/test at a time across all agents. Don't start one while another runs (`pgrep -x xcodebuild`).
+- Every `xcodebuild test` passes `-parallel-testing-enabled NO` (parallel testing clones the simulator, ~5 GB each).
+- Check `df -h /` first; under 40 GB free, stop and report instead of building.
+- Use the shared `-derivedDataPath` the head gives you; never the default DerivedData, never one per worktree.
+- Don't create simulators. Use `CueCoach iPhone 15 Pro`.
+- After merge the head removes the worktree, branch, logs and derived data.
+
 ## Phase 1 assignments
 | Module | Worker | Supervisor | Extra review |
 |---|---|---|---|
