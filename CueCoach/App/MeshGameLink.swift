@@ -23,7 +23,7 @@ import UIKit
 @MainActor @Observable final class MeshGameLink: GameMeshLink {
     private(set) var peerCount = 1
     private(set) var isStopped = false
-    @ObservationIgnored private let session: MultipeerMeshSession
+    @ObservationIgnored private let session: any MeshSession
     @ObservationIgnored private var task: Task<Void, Never>?
     // Plan 009 log members, stubbed until plan 010 forwards the session's log: nothing is appended or committed.
     let isHost = true
@@ -31,13 +31,17 @@ import UIKit
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?
     func append(_ event: GameEvent) {}
 
-    init(sessionTag: UInt16) {
+    convenience init(sessionTag: UInt16) {
         UIDevice.current.isBatteryMonitoringEnabled = true
         let level = UIDevice.current.batteryLevel
         let state = UIDevice.current.batteryState
-        session = .multipeer(batteryPercent: level < 0 ? 50 : Int(level * 100),
-                             onPower: state == .charging || state == .full, sessionTag: sessionTag)
+        self.init(session: MultipeerMeshSession.multipeer(batteryPercent: level < 0 ? 50 : Int(level * 100),
+                                                          onPower: state == .charging || state == .full,
+                                                          sessionTag: sessionTag))
     }
+
+    /// Test seam: any session (an in-process `MemoryHub` mesh in tests).
+    init(session: any MeshSession) { self.session = session }
 
     func start() {
         guard task == nil else { return }
