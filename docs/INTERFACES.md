@@ -432,8 +432,7 @@ enum GameEvent: Hashable, Codable, Sendable {
     func stop()
     func append(_ event: GameEvent)             // host writes; a client sends .proposal
 }
-// MeshGameLink (until plan 010 wires the session): isHost = true, commitSeq = 0, append is a no-op,
-// onCommittedLog never fires.
+// MeshGameLink (plan 010) wraps any MeshSession; init(session:) is the test seam, init(sessionTag:) production.
 
 struct SettledShot { … var outcome: ShotOutcome }   // what Live rated: RuleRating.outcome(record, ids:, pocketTimes:)
 static func RuleRating.classify(_ result: RuleResult, shooter: Int, pocketedObjectBall: Bool) -> DecisionRating
@@ -449,6 +448,10 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 - `shotLost()`: host or solo appends `.shotLost(shotID:shooterTeam:)`. A client drops it.
 - `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
   `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
+- `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
+  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped);
+  `roleChanged` sets `isHost` (`.host` only; false while discovering). `append` forwards to `MeshSession.append`.
+  `commitSeq` is the last forwarded value and stays readable after `stop()`.
 - `ingest(log:commitSeq:)`: folds the entries with `seq ≤ commitSeq`, in `seq` order. The uncommitted tail never shows.
   The model sets `mesh.onCommittedLog` to it when `mesh` is set.
 - Fold (pure, from scratch on every change, from the `GameConfig` lineup and `TargetLegality.startingGame`):
@@ -525,4 +528,4 @@ struct RecordedShot: Sendable {
 //                this is unreachable from LiveSession.mode == .training.
 ```
 
-`MeshGameLink` stubs the plan 009 log members until plan 010 forwards the session's log. `GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
+`GameRecorder` writes `Competitive.store` through the existing `Game` and `Shot` models. It does not take a training context.
