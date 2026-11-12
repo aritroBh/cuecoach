@@ -15,7 +15,9 @@ Schema versions: Competitive V1 (RecognitionData inside) → **V2** (custom stag
 to Recognition.store, writes `.Competitive.scrub-pending`, deletes the rows here; every open then retries the
 scrub (remove the old external-blob folder, VACUUM, WAL checkpoint(TRUNCATE) checked for busy) until it succeeds
 and clears the marker; while it is pending Competitive.store and its sidecars are excluded from backup, so no
-template bytes reach a device backup even after a crash or a failed scrub). Training V1. Recognition V1.
+template bytes reach a device backup even after a crash or a failed scrub) → **V3** (D43, lightweight stage: adds
+`Shot.isGuess`, default false, so every V2 row opens as not a guess; V1 and V2 list a frozen
+`CompetitiveSchemaV2.Shot`). Training V1. Recognition V1.
 
 ## Competitive store
 
@@ -24,7 +26,7 @@ template bytes reach a device backup even after a crash or a failed scrub). Trai
 | `PlayerProfile` | `id: UUID` (unique), `name`, `avatarSymbol`, `avatarColor`, `isLocalOwner: Bool`, `createdAt`, `skillModel: SkillModel` (Codable: aim/speed/spin noise σ, n samples), `recognitionRevokedAt: Date?` (V2; revocation tombstone, exported, merged max-wins) | One local owner per phone; peers' profiles cached only for the session (`isSessionGuest`) and purged on session end (with their templates). A backup profile that matches a guest id is promoted to a saved profile; promotion drops the guest's session templates (and tells the galleries) unless the person consents then (`importBackup(_:keepingRecognitionOf:)`, `promoteSessionGuest(_:keepRecognition:)`); without consent it also moves `recognitionRevokedAt` to now, so a late session capture is refused. |
 | `Session` | `id`, `startedAt`, `endedAt?`, `ruleSet: RuleSetID`, `format: GameFormat`, `tableSize: TableSize`, `peerDeviceNames: [String]`, `voteTally: [RuleSetID: Int]` | |
 | `Game` | `id`, `session`, `index`, `ruleSet`, `teams: [Team]` (Codable: member player IDs, shooting order), `winnerTeam: Int?`, `winProbSeries: [Double]`, `startedAt`, `endedAt?` | Shooting order editable mid-game → stored as order-change events inside `teams`. |
-| `Shot` | `id`, `game`, `index`, `shooterID: UUID`, `attributionSource` (auto/turnOrder/tap), `preState: TableState`, `postState: TableState`, `calledPocket: Pocket?`, `firstContact: BallID?`, `railsAfterContact: Int`, `pocketed: [BallID: Pocket]`, `fouls: [Foul]`, `features: ShotFeatures` (cut bucket, distance bucket, pocket type, kind bank/combo/kick/rail/jump/safety), `made`, `onTarget`, `cueResult` (inZone/outOfZone/nA), `decisionRating`, `executionRating`, `wpaDelta: Double`, `isClutch`, `timeOnShot: Double`, `clipRef: String?` | Table states stored as Codable value types from `Geometry`. |
+| `Shot` | `id`, `game`, `index`, `shooterID: UUID`, `attributionSource` (auto/turnOrder/tap), `preState: TableState`, `postState: TableState`, `calledPocket: Pocket?`, `firstContact: BallID?`, `railsAfterContact: Int`, `pocketed: [BallID: Pocket]`, `fouls: [Foul]`, `features: ShotFeatures` (cut bucket, distance bucket, pocket type, kind bank/combo/kick/rail/jump/safety), `made`, `onTarget`, `cueResult` (inZone/outOfZone/nA), `decisionRating`, `executionRating`, `wpaDelta: Double`, `isClutch`, `timeOnShot: Double`, `clipRef: String?`, `isGuess: Bool` (V3, default false; `pocketed` is a D31 best guess; never counted in pot %, cut, distance or pocket stats) | Table states stored as Codable value types from `Geometry`. |
 | `ArchetypeSnapshot` | `playerID`, `computedAt`, `gamesCount`, `shotsCount`, `vector: [String: Double]`, `tags: [ArchetypeTag]`, `proComp: ProComp?` | Append-only → evolution history. |
 | `Highlight` | `game`, `shotID`, `kind` (shotOfGame/mvp), `clipFile: String` (relative path in app container), `label: String` (≤2 words), `score: Double` | Clips stay in-app (no Photos export). |
 
@@ -59,6 +61,7 @@ marker found at launch means the app died in the window: the stack commits the d
 ## Backup JSON
 `BackupV1 { version: 1, exportedAt, competitive: {profiles, sessions, games, shots, archetypes}, training: {...} }`
 Recognition templates are never exported; a legacy file's `includesRecognition` / `recognition` keys are ignored.
+A shot record's `isGuess` is optional: a file without it (written before V3) imports as `false`; the version stays 1.
 Non-finite Doubles are written as the strings `"Infinity"`, `"-Infinity"`, `"NaN"`. Dates must be valid calendar instants (no roll-over). Import refuses while a store has unsaved edits.
 — plain `Codable` DTOs (not the `@Model` classes) so the format is stable. Import merges by UUID; the newer
 `updatedAt` wins. Clips aren't included (size); highlights keep their metadata.
