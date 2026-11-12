@@ -100,7 +100,7 @@ import Engine
 
     static func empty() -> GameReviewData {
         GameReviewData(gameIndex: 0, teams: [[sam], [kim]], score: [0, 0], winnerTeam: nil, isFinished: true,
-                       winProb: [0.5], shots: [shot(0, nil, sam, team: 0, wpa: 0)], shotOfGame: nil, tableSize: .eightFoot)
+                       winProb: [0.5], shots: [], shotOfGame: nil, tableSize: .eightFoot)
     }
 
     /// Fewer than four points: chart hides, eval bars show. No physics trace yet: paths are inferred.

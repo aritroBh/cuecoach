@@ -14,7 +14,7 @@ Rule: **a module is never reviewed by the vendor that wrote it.**
 
 The dev Mac's disk has hit 0 GB free during parallel builds. These rules are mandatory:
 
-- **The head is the only `xcodebuild` owner.** Workers write tests and code and may run `swift test` in `Packages/CueCore`; the head runs every simulator build/test, one at a time.
+- **One `xcodebuild` owner at a time:** the head, or the single active worker the head names (it builds on `CueCoach iPhone 15 Pro` with the shared derived data). Every other worker only writes code and runs `swift test` in `Packages/CueCore`.
 - **One writer, one reviewer from a different vendor** (Claude writes, Codex reviews; Grok 4.7 via Cursor when Codex is out). Re-review only for BLOCKER/MAJOR; the head lands MINORs. No extra multi-model passes on the same diff.
 - Close the plan's row in `docs/CHECKLIST.md` › NOW the day it merges; refresh the next plan's code excerpts against the new head before dispatch.
 - Create worktrees with `tools/new-worktree.sh <name>` (it copies the local build guard hook into the worktree).

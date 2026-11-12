@@ -5,7 +5,7 @@ Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 ## NOW — single source of truth (updated 2026-11-11; everything below is history)
 Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; Antigravity out of quota): integrate serially, one build at a time, head owns all builds; prepare in parallel with `swift test` only.
 
-1. [~] Combined gate at head: unit 1253/1253 ✔, UI suite running → push `phase/1-core`
+1. [x] Combined gate: unit 1253/1253; UI 41 + 1 skip, 3 ScreensB failures = the "empty review" sample still held one unrated shot, which D38/plan 008 now shows as a gap → sample emptied, ScreensB 11/11; pushed
 2. [ ] Plan 009 fold the shot log (Claude writes, Codex reviews) → merge · in parallel: plan 014 steps 1–2 (CueCore presets, `swift test` only)
 3. [ ] Refresh 010–013 excerpts against the post-009 head
 3a. [ ] Plan 010 mesh forwards the committed log → merge
