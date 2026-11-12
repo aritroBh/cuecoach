@@ -102,3 +102,4 @@ plan assumes "island + merge" and leaves the "needs tap" UI out (it only sets a 
 - Resume after a kill (design question 2's third option) builds on this; it is not planned.
 - `preStateDigest` in §2.5 is replaced by the full `preState`, because alignment needs positions within one ball radius.
 - **2026-11-11 user answers:** D47 — a disagreement shows both versions side by side (ball glyphs), one tap picks, the game replays from that shot. D48 — while cut off the joiner shows its own badge as provisional; the merged result replaces it. Share the replay-from-a-shot path with plan 015 (D49).
+- **From the plan 011 review (2026-11-12):** saving needs `hasGameQuorum` (a strict majority of the game's original members), so an island never saves on its own. This plan owns saving island games: merge on reconnect (D47), then save once. If the phones never reconnect, whether an island's won rack is saved is a product question to ask the user.
