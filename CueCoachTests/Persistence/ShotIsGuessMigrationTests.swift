@@ -33,8 +33,11 @@ import Engine
     }
 
     static let gameIDs = [UUID(), UUID()]
+    static let sessionID = UUID()
+    static let highlightID = UUID()
 
-    /// A V2 Competitive.store on disk: two games, two frozen-shape shots each.
+    /// A V2 Competitive.store on disk, written with the frozen V2 types: a session, two games with two shots each,
+    /// and a highlight on the second game.
     private func makeV2Store(at dir: URL) throws -> [UUID: Int] {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let schema = Schema(versionedSchema: CompetitiveSchemaV2.self)
@@ -43,16 +46,25 @@ import Engine
         let container = try ModelContainer(for: schema, configurations: [config])
         let ctx = ModelContext(container)
         ctx.insert(Fixture.owner())
-        let session = Session(startedAt: Fixture.t0, ruleSet: .barEight, format: .oneVsOne, tableSize: .sevenFoot)
+        let session = CompetitiveSchemaV2.Session(id: Self.sessionID, startedAt: Fixture.t0, ruleSet: .barEight,
+                                                  format: .oneVsOne, tableSize: .sevenFoot)
         ctx.insert(session)
         var shots: [UUID: Int] = [:]
         for (gi, gid) in Self.gameIDs.enumerated() {
-            let game = Game(id: gid, index: gi, ruleSet: .barEight,
-                            teams: [StoredTeam(memberIDs: [Fixture.ownerID], shootingOrder: [Fixture.ownerID]),
-                                    StoredTeam(memberIDs: [Fixture.guestID], shootingOrder: [Fixture.guestID])],
-                            winnerTeam: 0, startedAt: Fixture.t0, endedAt: Fixture.t0)
-            game.session = session
+            let game = CompetitiveSchemaV2.Game(
+                id: gid, index: gi, ruleSet: .barEight,
+                teams: [StoredTeam(memberIDs: [Fixture.ownerID], shootingOrder: [Fixture.ownerID]),
+                        StoredTeam(memberIDs: [Fixture.guestID], shootingOrder: [Fixture.guestID])],
+                winnerTeam: gi, startedAt: Fixture.t0, endedAt: Fixture.t0)
+            game.sessionLink = session
             ctx.insert(game)
+            if gi == 1 {
+                let h = CompetitiveSchemaV2.Highlight(id: Self.highlightID, shotID: gid, kind: .shotOfGame,
+                                                      clipFile: "clips/h.mov", label: "Bank Shot", score: 0.9,
+                                                      updatedAt: Fixture.t0)
+                h.gameLink = game
+                ctx.insert(h)
+            }
             for i in 0..<2 {
                 let s = CompetitiveSchemaV2.Shot(
                     index: i, shooterID: Fixture.ownerID, attributionSource: .tap, preState: Fixture.table(),
@@ -95,8 +107,17 @@ import Engine
             #expect(r.wpaDelta == 0.12 && r.isClutch && r.timeOnShot == 8.5 && r.clipRef == "clips/a.mov")
             #expect(r.updatedAt == Fixture.t0)
         }
-        let games = try stack.competitiveContext.fetch(FetchDescriptor<Game>())
-        #expect(games.count == 2 && games.allSatisfy { $0.shots.count == 2 && $0.session != nil })
+        let games = try stack.competitiveContext.fetch(FetchDescriptor<Game>()).sorted { $0.index < $1.index }
+        #expect(games.map(\.id) == Self.gameIDs)
+        #expect(games.map(\.winnerTeam) == [0, 1])
+        #expect(games.allSatisfy { $0.shots.count == 2 && $0.session?.id == Self.sessionID })
+        #expect(games.allSatisfy { $0.teams.map(\.memberIDs) == [[Fixture.ownerID], [Fixture.guestID]] })
+        let session = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Session>()).first)
+        #expect(session.ruleSet == .barEight && session.format == .oneVsOne && session.tableSize == .sevenFoot)
+        #expect(session.startedAt == Fixture.t0 && session.games.count == 2)
+        let h = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Highlight>()).first)
+        #expect(h.id == Self.highlightID && h.game?.id == Self.gameIDs[1] && h.shotID == Self.gameIDs[1])
+        #expect(h.kind == .shotOfGame && h.clipFile == "clips/h.mov" && h.label == "Bank Shot" && h.score == 0.9)
         #expect(try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).count == 1)
     }
 

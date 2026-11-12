@@ -116,7 +116,8 @@ import Testing
             faceEmbedding: Data([9, 9]), appearanceEmbedding: nil, optedInAt: Fixture.t0, version: 1)
         ctx.insert(owner)
         ctx.insert(guest)
-        ctx.insert(Session(startedAt: Fixture.t0, ruleSet: .barEight, format: .oneVsOne, tableSize: .sevenFoot))
+        ctx.insert(CompetitiveSchemaV2.Session(startedAt: Fixture.t0, ruleSet: .barEight, format: .oneVsOne,
+                                               tableSize: .sevenFoot))   // the frozen shape V1 shipped
         try ctx.save()
     }
 
