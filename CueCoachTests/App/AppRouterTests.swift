@@ -112,6 +112,10 @@ import Training
     @MainActor final class FakeLink: GameMeshLink {
         var peerCount = 1
         var isStopped = false
+        var isHost = true
+        var commitSeq: UInt64 = 0
+        var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
+        func append(_ event: GameEvent) {}
         var started = 0, stopped = 0
         func start() { started += 1 }
         func stop() { stopped += 1 }
