@@ -532,9 +532,11 @@ enum CoachingSymbol {
 /// Preset ambiguity (matrix false lock: a 9 ft table locked as 8 ft). A measured length that sits well between two
 /// presets isn't trusted yet — keep looking instead of locking the wrong size.
 enum SizeAmbiguity {
-    static func isAmbiguous(measuredLength m: Double, snapped: TableSize?, fraction: Double = 0.35) -> Bool {
+    /// D50: neighbours are the auto snap candidates (7/8/9 ft, plus a picked Pro 8 / 86″).
+    static func isAmbiguous(measuredLength m: Double, snapped: TableSize?, prior: TableSize? = nil,
+                            fraction: Double = 0.35) -> Bool {
         guard let snapped else { return false }   // measured size used directly (D12): nothing to confuse
-        let presets = TableSize.allCases.map(\.playingLength).sorted()
+        let presets = TableSize.autoSnapCandidates(prior: prior).map(\.playingLength).sorted()
         guard let i = presets.firstIndex(of: snapped.playingLength) else { return false }
         let neighbour = m >= snapped.playingLength ? (i + 1 < presets.count ? presets[i + 1] : nil) : (i > 0 ? presets[i - 1] : nil)
         guard let n = neighbour else { return false }

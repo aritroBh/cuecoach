@@ -134,11 +134,12 @@ enum AutoRectFitter {
     /// Within 6 % of a preset it snaps, unless another preset is also within 6 % and nearly as close
     /// (`ambiguityMargin`): then the size is ambiguous and the frame must not vote (wait for a second look),
     /// unless the chosen size (D36 C `prior`) is one of the two candidates: then it snaps to the prior.
+    /// D50: the presets are `TableSize.autoSnapCandidates(prior:)` (7/8/9 ft, plus a picked Pro 8 / 86″).
     static func sizeVerdict(length L: Double, width W: Double, aspectTolerance: Double = 0.12,
                             ambiguityMargin: Double = 0.02, prior: TableSize? = nil) -> SizeVerdict {
         guard W > 0, abs(L / W - 2) / 2 <= aspectTolerance else { return .notTwoToOne }
         let est = (L + 2 * W) / 2
-        let e = TableSize.allCases.map { (size: $0, err: abs($0.playingLength - est) / $0.playingLength) }
+        let e = TableSize.autoSnapCandidates(prior: prior).map { (size: $0, err: abs($0.playingLength - est) / $0.playingLength) }
             .sorted { $0.err < $1.err }
         guard e[0].err <= 0.06 else { return plausibleLength.contains(est) ? .measured : .implausibleSize }
         if e.count > 1, e[1].err <= 0.06, e[1].err - e[0].err < ambiguityMargin {
@@ -148,15 +149,16 @@ enum AutoRectFitter {
         return .preset(e[0].size)
     }
 
-    /// Whether a size measured on one axis (as a playing length) is within `tolerance` of exactly one preset.
-    static func uniquePreset(length L: Double, tolerance: Double = 0.06) -> Bool {
-        TableSize.allCases.filter { abs($0.playingLength - L) / $0.playingLength <= tolerance }.count == 1
+    /// Whether a size measured on one axis (as a playing length) is within `tolerance` of exactly one preset (D50
+    /// candidates).
+    static func uniquePreset(length L: Double, tolerance: Double = 0.06, prior: TableSize? = nil) -> Bool {
+        TableSize.autoSnapCandidates(prior: prior).filter { abs($0.playingLength - L) / $0.playingLength <= tolerance }.count == 1
     }
 
-    /// D12 sizing: nearest preset by (L + 2W)/2; relative error ≤ 6 % snaps, else the measurement is used.
-    static func snap(length: Double, width: Double) -> (size: TableSize, relativeError: Double) {
+    /// D12 sizing: nearest preset (D50 candidates) by (L + 2W)/2; relative error ≤ 6 % snaps, else the measurement is used.
+    static func snap(length: Double, width: Double, prior: TableSize? = nil) -> (size: TableSize, relativeError: Double) {
         let est = (length + 2 * width) / 2
-        let best = TableSize.allCases.min { abs($0.playingLength - est) < abs($1.playingLength - est) }!
+        let best = TableSize.autoSnapCandidates(prior: prior).min { abs($0.playingLength - est) < abs($1.playingLength - est) }!
         return (best, abs(best.playingLength - est) / best.playingLength)
     }
 }
