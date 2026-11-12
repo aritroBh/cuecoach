@@ -1,6 +1,7 @@
 import Foundation
 import Geometry
 import Rules
+import Engine
 
 // MARK: - Payloads (mesh-identity.md §3.2). All value types; JSON on the wire.
 
@@ -83,18 +84,52 @@ struct TableStateFrame: Hashable, Codable, Sendable {
     var balls: [MeshBallDetection]
 }
 
+/// One rated shot on the log (host-written). The plan 009 fields are optional on the wire: a missing key decodes as
+/// nil / false.
 struct MeshShotRecord: Hashable, Codable, Sendable {
     var shotID: UUID
     var shooterTeam: Int
     var outcome: ShotOutcome
+    /// Ball positions after the shot (`SettledShot.after`); nil = none known.
     var postState: TableState?
+    /// Ball positions before the shot (`SettledShot.before`); nil = none known.
+    var preState: TableState? = nil
+    /// The host's rating; nil = every phone classifies the rules result while folding.
+    var decisionRating: DecisionRating? = nil
+    /// D31 best guess.
+    var isGuess = false
+
+    private enum CodingKeys: String, CodingKey { case shotID, shooterTeam, outcome, postState, preState, decisionRating, isGuess }
+
+    init(shotID: UUID, shooterTeam: Int, outcome: ShotOutcome, postState: TableState?, preState: TableState? = nil,
+         decisionRating: DecisionRating? = nil, isGuess: Bool = false) {
+        self.shotID = shotID; self.shooterTeam = shooterTeam; self.outcome = outcome; self.postState = postState
+        self.preState = preState; self.decisionRating = decisionRating; self.isGuess = isGuess
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        shotID = try c.decode(UUID.self, forKey: .shotID)
+        shooterTeam = try c.decode(Int.self, forKey: .shooterTeam)
+        outcome = try c.decode(ShotOutcome.self, forKey: .outcome)
+        postState = try c.decodeIfPresent(TableState.self, forKey: .postState)
+        preState = try c.decodeIfPresent(TableState.self, forKey: .preState)
+        decisionRating = try c.decodeIfPresent(DecisionRating.self, forKey: .decisionRating)
+        isGuess = try c.decodeIfPresent(Bool.self, forKey: .isGuess) ?? false
+    }
 }
 
-/// Replicated game-log event. `GameState = fold(log)` on any phone (mesh-identity.md §2.5).
+/// Replicated game-log event. `GameState = fold(log)` on any phone (mesh-identity.md §2.5, INTERFACES "Shot log").
+/// A new case is a wire break (an older build can't decode the batch): bump `ProtocolVersion` major.
 enum GameEvent: Hashable, Codable, Sendable {
     case ruleSetChosen(RuleSetID)
     case shot(MeshShotRecord)
+    /// Fix a recorded shot's team (attribution `.tap`).
     case shooterCorrection(shotID: UUID, team: Int)
+    /// D41: a turn-disc tap. Changes only who shoots next.
+    case nextShooter(team: Int)
+    /// D38: a lost shot with no guess. A gap (no rating, no rules change) that asks who shoots next.
+    case shotLost(shotID: UUID, shooterTeam: Int)
 }
 
 struct LogEntry: Hashable, Codable, Sendable {

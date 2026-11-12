@@ -95,7 +95,7 @@ import Rules
     /// Minor versions are additive: a newer minor's unknown message type decodes to `.unknown` and is ignored.
     @Test func unknownTypeFromNewerMinorDecodesAsUnknown() throws {
         let json = #"""
-        {"version":{"major":1,"minor":9},"sessionID":"11111111-2222-3333-4444-555555555555",
+        {"version":{"major":2,"minor":9},"sessionID":"11111111-2222-3333-4444-555555555555",
          "sender":"00000000-0000-0000-0000-00000000000A","seq":1,"sentAt":5,
          "message":{"type":"holoProjection","body":{"x":1}}}
         """#
@@ -106,7 +106,7 @@ import Rules
 
     @Test func unknownKeysAreTolerated() throws {
         let json = #"""
-        {"version":{"major":1,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
+        {"version":{"major":2,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
          "sender":"00000000-0000-0000-0000-00000000000A","seq":1,"sentAt":5,"futureField":true,
          "message":{"type":"timePing","body":{"t0":42,"extra":"x"}}}
         """#
@@ -114,15 +114,27 @@ import Rules
         #expect(env.message == .timePing(TimePing(t0: 42)))
     }
 
-    /// Golden fixture for v1. Frozen: if this breaks, the change needs a new major.
-    @Test func goldenV1HeartbeatStillDecodes() throws {
+    /// Golden fixture for v1. Plan 009 bumped the major (new `GameEvent` cases), so a v1 frame is now refused at the
+    /// header, before parsing, instead of decoding.
+    @Test func goldenV1HeartbeatIsRefusedAfterTheMajorTwoBump() throws {
         let json = #"""
         {"version":{"major":1,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
          "sender":"00000000-0000-0000-0000-00000000000A","seq":77,"sentAt":-3,
          "message":{"type":"heartbeat","body":{"term":4,"host":"00000000-0000-0000-0000-00000000000B",
          "lastSeq":9,"commitSeq":8,"phase":"inMotion"}}}
         """#
-        let env = try MeshCodec.decode(MeshCodec.framed(Data(json.utf8)))
+        #expect(throws: MeshCodecError.incompatibleMajor(1)) { try MeshCodec.decode(MeshCodec.framed(Data(json.utf8), major: 1)) }
+    }
+
+    /// Golden fixture for v2. Frozen: if this breaks, the change needs a new major.
+    @Test func goldenV2HeartbeatStillDecodes() throws {
+        let json = #"""
+        {"version":{"major":2,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
+         "sender":"00000000-0000-0000-0000-00000000000A","seq":77,"sentAt":-3,
+         "message":{"type":"heartbeat","body":{"term":4,"host":"00000000-0000-0000-0000-00000000000B",
+         "lastSeq":9,"commitSeq":8,"phase":"inMotion"}}}
+        """#
+        let env = try MeshCodec.decode(MeshCodec.framed(Data(json.utf8), major: 2))
         #expect(env.seq == 77 && env.sentAt == -3)
         #expect(env.message == .heartbeat(Heartbeat(term: 4, host: Self.b, lastSeq: 9, commitSeq: 8,
                                                      phase: .inMotion)))
@@ -133,7 +145,8 @@ import Rules
         for _ in 0..<3000 {
             var bytes = [UInt8](repeating: 0, count: Int.random(in: 0..<200, using: &rng))
             for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255, using: &rng) }
-            if Bool.random(using: &rng) && bytes.count >= 4 { bytes[0] = 0x43; bytes[1] = 0x55; bytes[2] = 0x45; bytes[3] = 1 }
+            if Bool.random(using: &rng) && bytes.count >= 4 { bytes[0] = 0x43; bytes[1] = 0x55; bytes[2] = 0x45
+                bytes[3] = UInt8(ProtocolVersion.current.major) }
             _ = try? MeshCodec.decode(Data(bytes))
         }
     }
