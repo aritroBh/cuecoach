@@ -30,6 +30,10 @@ import Training
         return LiveSession(mode: .game, game: g, drill: nil)
     }
 
+    /// The 1 pocketed legally: the shooter keeps the table (bar-8: team A takes solids; 9-ball: lowest ball).
+    static let potOne = SettledShot(rating: .good, turnPasses: false,
+                                    outcome: ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft]))
+
     @Test func modesMapOntoLive() {
         #expect(ShellLiveMode.game.liveMode == .game)
         #expect(ShellLiveMode.training(level: 2).liveMode == .training(level: 2))
@@ -39,7 +43,7 @@ import Training
         let s = gameSession()
         let h = LiveScreenAdapter.hooks(for: s)
         #expect(h.shellShowsBadge)
-        s.game?.shotSettled(rating: .good, turnPasses: false)
+        s.game?.shotSettled(Self.potOne)
         #expect(s.game?.badge.current != nil)
         s.isMenuOpen = true
         h.aimStarted()
@@ -78,7 +82,7 @@ import Training
         h.aimEnded()                              // stroke taken, balls moving
         s.handTurn(toTeam: 1)
         #expect(s.game?.shootingTeam == 0)
-        h.settled(.good, false)                   // at rest again
+        h.settledShot(Self.potOne)                // at rest again; A keeps the table
         s.handTurn(toTeam: 1)
         #expect(s.game?.shootingTeam == 1)
     }
@@ -86,10 +90,7 @@ import Training
     @Test func handTurnBetweenShotsPushesTheNewTeamsLegalTargets() throws {
         let s = gameSession(.barEight)
         let h = LiveScreenAdapter.hooks(for: s)
-        var next = try #require(h.currentGame()).1
-        next.groups = [0: .solids, 1: .stripes]
-        next.phase = .inPlay
-        h.gameAdvanced(next)
+        s.settled(Self.potOne)                    // A takes solids, B stripes
         var pushed: [Set<BallID>] = []
         s.game?.legalChanged = { pushed.append($0) }
         s.handTurn(toTeam: 1)
@@ -113,13 +114,12 @@ import Training
         @MainActor final class Sink { var pushed: [Set<BallID>] = [] }
         let sink = Sink()
         m.bindLegal { sink.pushed.append($0) }                   // what ARLiveView.attach / LiveScreen.task do
-        var next = try #require(m.hooks.currentGame()).1
-        next.groups = [0: .solids, 1: .stripes]
-        next.phase = .inPlay
-        m.hooks.gameAdvanced(next)
+        m.hooks.settledShot(Self.potOne)                          // A takes solids, B stripes
+        let afterShot = sink.pushed.count
         s.handTurn(toTeam: 1)                                     // tap B's disc between shots
         let (engine, state) = try #require(m.hooks.currentGame())
-        #expect(sink.pushed == [engine.legalTargets(state)])
+        #expect(sink.pushed.count == afterShot + 1)
+        #expect(sink.pushed.last == engine.legalTargets(state))
         #expect(sink.pushed.last?.isEmpty == false)
         #expect(sink.pushed.last?.allSatisfy { $0.group == .stripes } == true)
         let rebound = Sink()
@@ -143,32 +143,90 @@ import Training
         @MainActor final class Sink { var pushed: [Set<BallID>] = [] }
         let sink = Sink()
         mounted.bindLegal { sink.pushed.append($0) }              // ARLiveView.attach / LiveScreen .task on mount
-        var next = try #require(hooks.currentGame()).1
-        next.groups = [0: .solids, 1: .stripes]
-        next.phase = .inPlay
-        hooks.gameAdvanced(next)
-        s.handTurn(toTeam: 1)
+        hooks.settledShot(Self.potOne)                            // A takes solids, B stripes (pushed by the fold)
         #expect(sink.pushed.count == 1)
+        s.handTurn(toTeam: 1)
+        #expect(sink.pushed.count == 2)
         #expect(sink.pushed.last?.allSatisfy { $0.group == .stripes } == true)
         do {
             let another = LiveModel(mode: .game)
             another.hooks = hooks                                 // yet another rebuild after mount
         }
         s.handTurn(toTeam: 0)
-        #expect(sink.pushed.count == 2)
+        #expect(sink.pushed.count == 3)
         #expect(sink.pushed.last?.allSatisfy { $0.group == .solids } == true)
     }
 
-    @Test func liveAdvancesTheShellsRulesState() throws {
+    /// Plan 009: the fold owns the shell's rules state; Live's own next state never writes it.
+    @Test func liveAdvanceNoLongerWritesTheShellsRulesState() throws {
         let s = gameSession(.barEight)
         let h = LiveScreenAdapter.hooks(for: s)
-        var next = try #require(h.currentGame()).1
+        let start = try #require(h.currentGame()).1
+        var next = start
         next.groups = [0: .solids, 1: .stripes]
         next.phase = .inPlay
         h.gameAdvanced(next)
+        #expect(try #require(h.currentGame()).1 == start)
+        h.settledShot(Self.potOne)
         let now = try #require(h.currentGame()).1
         #expect(now.groups?[0] == .solids)
         #expect(now.phase == .inPlay)
+    }
+
+    /// Codex review of plan 009: a joiner's rings follow the host's committed shot, never its own camera's result.
+    @Test func joinerRingsFollowTheHostsCommittedGroups() throws {
+        let s = gameSession(.barEight)
+        let game = try #require(s.game)
+        let link = FakeGameMeshLink(isHost: false)
+        game.mesh = link
+        let m = LiveModel(mode: .game)
+        m.hooks = LiveScreenAdapter.hooks(for: s)
+        @MainActor final class Sink { var pushed: [Set<BallID>] = [] }
+        let sink = Sink()
+        m.bindLegal { sink.pushed.append($0) }
+        let openTable = game.rulesEngine.legalTargets(game.rules.1)
+        // The joiner's camera misreads the 1 as the 9: locally A would take stripes.
+        let rec = ShotRecord(start: 0, end: 1, preState: [1: Vec2(0.5, 0.5), 2: Vec2(1, 0.5)], finalState: [1: Vec2(0.9, 0.5)],
+                             cueID: 1, firstContact: 2, rails: [], pocketed: [2: .footLeft])
+        m.shotSettled(rec, ids: [1: .cue, 2: BallID(9)!])
+        #expect(game.shots.isEmpty)
+        #expect(sink.pushed.last == openTable, "the dropped local result is overridden by the committed state")
+        // The host's committed shot: A potted the 1 and takes solids.
+        link.receive([LogEntry(seq: 1, term: 1, event: .shot(MeshShotRecord(
+            shotID: UUID(), shooterTeam: 0, outcome: ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft]),
+            postState: nil, decisionRating: .good)))], commitSeq: 1)
+        let rings = try #require(sink.pushed.last)
+        #expect(rings == game.rulesEngine.legalTargets(game.rules.1))
+        #expect(!rings.isEmpty && rings.allSatisfy { $0.group == .solids })
+    }
+
+    /// Plan 009 STOP check: for the same shot, the fold's rules state equals Live's own `result.nextState`.
+    @Test func foldedRulesStateMatchesLivesOwnNextState() throws {
+        for rules in [RuleSetID.barEight, .wpaNine] {
+            let s = gameSession(rules)
+            let m = LiveModel(mode: .game)
+            var h = LiveScreenAdapter.hooks(for: s)
+            @MainActor final class Box { var states: [GameState] = [] }
+            let box = Box()
+            h.gameAdvanced = { box.states.append($0) }
+            m.hooks = h
+            // 1. The cue ball pots the 1 (kept table). 2. It hits the 3 and scratches (foul, turn passes).
+            // 3. It hits nothing seen and stops (turn passes).
+            let shots = [
+                ShotRecord(start: 0, end: 1, preState: [1: Vec2(0.5, 0.5), 2: Vec2(1, 0.5)], finalState: [1: Vec2(1.2, 0.6)],
+                           cueID: 1, firstContact: 2, rails: [], pocketed: [2: .footLeft]),
+                ShotRecord(start: 2, end: 3, preState: [1: Vec2(0.5, 0.5), 3: Vec2(1, 0.5)], finalState: [3: Vec2(1.1, 0.5)],
+                           cueID: 1, firstContact: 3, rails: [], pocketed: [1: .sideRight]),
+                ShotRecord(start: 4, end: 5, preState: [1: Vec2(0.5, 0.5)], finalState: [1: Vec2(0.6, 0.5)],
+                           cueID: 1, firstContact: nil, rails: [], pocketed: [:]),
+            ]
+            for (i, rec) in shots.enumerated() {
+                m.shotSettled(rec, ids: [1: .cue, 2: BallID(1)!, 3: BallID(3)!])
+                let live = try #require(box.states.last)
+                #expect(try #require(h.currentGame()).1 == live, "\(rules) shot \(i + 1): the fold and Live disagree")
+            }
+            #expect(s.game?.shots.count == 3)
+        }
     }
 
     @Test func trainingHasNoGameAndSettlesTheAim() {

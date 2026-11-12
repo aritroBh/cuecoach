@@ -95,7 +95,7 @@ import Rules
     /// Minor versions are additive: a newer minor's unknown message type decodes to `.unknown` and is ignored.
     @Test func unknownTypeFromNewerMinorDecodesAsUnknown() throws {
         let json = #"""
-        {"version":{"major":1,"minor":9},"sessionID":"11111111-2222-3333-4444-555555555555",
+        {"version":{"major":2,"minor":9},"sessionID":"11111111-2222-3333-4444-555555555555",
          "sender":"00000000-0000-0000-0000-00000000000A","seq":1,"sentAt":5,
          "message":{"type":"holoProjection","body":{"x":1}}}
         """#
@@ -106,7 +106,7 @@ import Rules
 
     @Test func unknownKeysAreTolerated() throws {
         let json = #"""
-        {"version":{"major":1,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
+        {"version":{"major":2,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
          "sender":"00000000-0000-0000-0000-00000000000A","seq":1,"sentAt":5,"futureField":true,
          "message":{"type":"timePing","body":{"t0":42,"extra":"x"}}}
         """#
@@ -114,15 +114,27 @@ import Rules
         #expect(env.message == .timePing(TimePing(t0: 42)))
     }
 
-    /// Golden fixture for v1. Frozen: if this breaks, the change needs a new major.
-    @Test func goldenV1HeartbeatStillDecodes() throws {
+    /// Golden fixture for v1. Plan 009 bumped the major (new `GameEvent` cases), so a v1 frame is now refused at the
+    /// header, before parsing, instead of decoding.
+    @Test func goldenV1HeartbeatIsRefusedAfterTheMajorTwoBump() throws {
         let json = #"""
         {"version":{"major":1,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
          "sender":"00000000-0000-0000-0000-00000000000A","seq":77,"sentAt":-3,
          "message":{"type":"heartbeat","body":{"term":4,"host":"00000000-0000-0000-0000-00000000000B",
          "lastSeq":9,"commitSeq":8,"phase":"inMotion"}}}
         """#
-        let env = try MeshCodec.decode(MeshCodec.framed(Data(json.utf8)))
+        #expect(throws: MeshCodecError.incompatibleMajor(1)) { try MeshCodec.decode(MeshCodec.framed(Data(json.utf8), major: 1)) }
+    }
+
+    /// Golden fixture for v2. Frozen: if this breaks, the change needs a new major.
+    @Test func goldenV2HeartbeatStillDecodes() throws {
+        let json = #"""
+        {"version":{"major":2,"minor":0},"sessionID":"11111111-2222-3333-4444-555555555555",
+         "sender":"00000000-0000-0000-0000-00000000000A","seq":77,"sentAt":-3,
+         "message":{"type":"heartbeat","body":{"term":4,"host":"00000000-0000-0000-0000-00000000000B",
+         "lastSeq":9,"commitSeq":8,"phase":"inMotion"}}}
+        """#
+        let env = try MeshCodec.decode(MeshCodec.framed(Data(json.utf8), major: 2))
         #expect(env.seq == 77 && env.sentAt == -3)
         #expect(env.message == .heartbeat(Heartbeat(term: 4, host: Self.b, lastSeq: 9, commitSeq: 8,
                                                      phase: .inMotion)))
@@ -133,7 +145,8 @@ import Rules
         for _ in 0..<3000 {
             var bytes = [UInt8](repeating: 0, count: Int.random(in: 0..<200, using: &rng))
             for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255, using: &rng) }
-            if Bool.random(using: &rng) && bytes.count >= 4 { bytes[0] = 0x43; bytes[1] = 0x55; bytes[2] = 0x45; bytes[3] = 1 }
+            if Bool.random(using: &rng) && bytes.count >= 4 { bytes[0] = 0x43; bytes[1] = 0x55; bytes[2] = 0x45
+                bytes[3] = UInt8(ProtocolVersion.current.major) }
             _ = try? MeshCodec.decode(Data(bytes))
         }
     }
@@ -145,6 +158,49 @@ import Rules
                               sha256: Data(repeating: 1, count: 32))
         let data = try MeshCodec.encode(Self.envelope(.clipChunk(chunk)))
         #expect(data.count < MeshCodec.maxMessageBytes)
+    }
+
+    // MARK: Plan 009: the shot log (widened record, D38/D41 events, major 2)
+
+    /// A record from before plan 009 (only the four original keys) decodes with the new fields' defaults.
+    @Test func shotRecordWithoutNewKeysDecodesWithDefaults() throws {
+        let outcome = String(decoding: try JSONEncoder().encode(Self.sampleOutcome), as: UTF8.self)
+        let json = #"{"shotID":"99999999-0000-0000-0000-000000000001","shooterTeam":1,"outcome":"# + outcome + #","postState":null}"#
+        let r = try JSONDecoder().decode(MeshShotRecord.self, from: Data(json.utf8))
+        #expect(r.shotID == Self.shot && r.shooterTeam == 1 && r.outcome == Self.sampleOutcome && r.postState == nil)
+        #expect(r.preState == nil)
+        #expect(r.decisionRating == nil)
+        #expect(!r.isGuess)
+    }
+
+    @Test func widenedShotRecordRoundTrips() throws {
+        let spec = TableSpec(size: .eightFoot)
+        let pre = TableState(spec: spec, balls: [.cue: BallState(position: Vec2(0.5, 0.5)), BallID(3)!: BallState(position: Vec2(1, 0.5))])
+        let post = TableState(spec: spec, balls: [.cue: BallState(position: Vec2(0.9, 0.6))])
+        let r = MeshShotRecord(shotID: Self.shot, shooterTeam: 0, outcome: Self.sampleOutcome, postState: post,
+                               preState: pre, decisionRating: .great, isGuess: true)
+        let back = try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r))
+        #expect(back == r)
+        let env = Self.envelope(.logEntries([LogEntry(seq: 1, term: 1, event: .shot(r))]))
+        #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+    }
+
+    @Test func nextShooterAndShotLostRoundTrip() throws {
+        let entries = [LogEntry(seq: 1, term: 1, event: .nextShooter(team: 1)),
+                       LogEntry(seq: 2, term: 1, event: .shotLost(shotID: Self.shot, shooterTeam: 0))]
+        for m in [MeshMessage.logEntries(entries), .proposal(.nextShooter(team: 0)),
+                  .proposal(.shotLost(shotID: Self.shot, shooterTeam: 1))] {
+            let env = Self.envelope(m)
+            #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+        }
+    }
+
+    /// New GameEvent cases are a wire break: the frame header and the Hello both speak major 2 only.
+    @Test func frameHeaderIsMajorTwo() throws {
+        #expect(ProtocolVersion.current == ProtocolVersion(major: 2, minor: 0))
+        #expect(ProtocolVersion.supportedMajors == [2])
+        let data = try MeshCodec.encode(Self.envelope(.leave))
+        #expect(data[3] == 2)
     }
 
     @Test func compatibilityPicksHighestCommonMajor() {

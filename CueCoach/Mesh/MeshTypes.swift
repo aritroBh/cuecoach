@@ -26,8 +26,9 @@ struct ProtocolVersion: Hashable, Codable, Sendable {
     var major: Int
     var minor: Int
 
-    static let current = ProtocolVersion(major: 1, minor: 0)
-    static let supportedMajors: [Int] = [1]
+    /// Major 2 (plan 009): `GameEvent` gained `.nextShooter` and `.shotLost`, which a major-1 build can't decode.
+    static let current = ProtocolVersion(major: 2, minor: 0)
+    static let supportedMajors: [Int] = [2]
 
     /// Highest major both sides speak, or `nil` (→ `Reject`).
     static func negotiate(local: [Int], remote: [Int]) -> Int? {

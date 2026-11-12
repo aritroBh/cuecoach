@@ -334,7 +334,8 @@ final class LiveModel {
             hooks.settledShot(SettledShot(rating: rating, turnPasses: result.turnPasses,
                                           pocketed: RuleRating.outcome(record, ids: ids).pocketed,
                                           fouls: result.fouls, isGuess: guessed,
-                                          before: identified(record.preState), after: identified(record.finalState)))
+                                          before: identified(record.preState), after: identified(record.finalState),
+                                          outcome: RuleRating.outcome(record, ids: ids, pocketTimes: pocketTimes)))
             showBadge(BadgeStyle.of(rating))
         } else {
             hooks.ballsSettled()

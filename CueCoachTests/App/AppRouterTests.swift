@@ -101,7 +101,7 @@ import Training
         let r = AppRouter()
         r.startGame(config)
         guard case .live(let s)? = r.stage, let game = s.game else { Issue.record("no game"); return }
-        game.record(rating: .great)
+        game.shotSettled(SettledShot(rating: .great, turnPasses: true, outcome: ShotOutcome()))
         r.endGame()
         guard case .review(let data)? = r.stage else { Issue.record("no review"); return }
         #expect(data.shots.count == 1)
@@ -112,6 +112,10 @@ import Training
     @MainActor final class FakeLink: GameMeshLink {
         var peerCount = 1
         var isStopped = false
+        var isHost = true
+        var commitSeq: UInt64 = 0
+        var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
+        func append(_ event: GameEvent) {}
         var started = 0, stopped = 0
         func start() { started += 1 }
         func stop() { stopped += 1 }
@@ -171,7 +175,7 @@ import Training
         r.startGame(config)
         guard case .live(let s)? = r.stage, let g = s.game else { Issue.record("no live"); return }
         s.aimStarted(); s.aimEnded()
-        s.settled(rating: .best, turnPasses: false)
+        s.settled(SettledShot(rating: .best, turnPasses: false, outcome: ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft])))
         #expect(s.menuAvailable)
         #expect(g.shots.count == 1)
     }
@@ -180,7 +184,7 @@ import Training
         let r = AppRouter()
         r.startGame(config)
         guard case .live(let s)? = r.stage, let g = s.game else { Issue.record("no live"); return }
-        g.shotSettled(rating: .good, turnPasses: false)
+        g.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft])))
         #expect(g.badge.current != nil)
         s.aimStarted()
         #expect(g.badge.current == nil)

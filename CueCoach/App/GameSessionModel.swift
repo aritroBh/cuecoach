@@ -18,9 +18,13 @@ struct SessionShot: Hashable, Sendable {
     /// Ball positions (table metres) before and after the shot, from `SettledShot`.
     var before: [BallID: Vec2] = [:]
     var after: [BallID: Vec2] = [:]
+    /// `.turnOrder` (D17), or `.tap` once a logged `shooterCorrection` fixed this shot's team.
+    var attribution: AttributionSource = .turnOrder
 }
 
 /// In-game state the chrome shows: whose turn (D17 rotation), the post-shot badge, rated shots for review.
+/// One game log is the source of truth (INTERFACES "Shot log", D39/D41/D38): the host (or this phone alone) appends,
+/// and every phone builds `shots`, the badge, the turn and the rules state by folding the committed prefix.
 @MainActor @Observable
 final class GameSessionModel {
     let config: GameConfig
@@ -41,15 +45,28 @@ final class GameSessionModel {
     /// D38: a lost shot left a gap; the turn discs ask who shoots next until a tap or the next aim.
     private(set) var needsShooter = false
     var isMenuOpen = false
-    /// The game's mesh session when other phones joined (nil = this phone only).
-    var mesh: (any GameMeshLink)?
+    /// The game's mesh session when other phones joined (nil = this phone only). Its committed log drives the fold.
+    var mesh: (any GameMeshLink)? {
+        didSet {
+            oldValue?.onCommittedLog = nil
+            mesh?.onCommittedLog = { [weak self] log, seq in self?.ingest(log: log, commitSeq: seq) }
+        }
+    }
     @ObservationIgnored let badge = PostShotBadgeModel()
-    /// The game's rules (D11 rule set from setup) and state, which Live rates shots against and advances.
+    /// The game's rules (D11 rule set from setup) and state, which Live rates shots against. The fold owns the state.
     @ObservationIgnored let rulesEngine: RulesEngine
     @ObservationIgnored private var rulesState: GameState
     /// Ring legality changed outside a settled shot (a between-shots turn hand-over): the new shooter's legal targets.
     /// Same payload as Live's `LiveModel.legalChanged` after a settled shot; `LiveScreenAdapter.hooks` binds it to Live's sink.
     @ObservationIgnored var legalChanged: @MainActor (Set<BallID>) -> Void = { _ in }
+    /// The committed log in order (solo: this phone's own log, committed at once).
+    @ObservationIgnored private var events: [GameEvent] = []
+    /// Mid-game swaps stay local (not logged yet): each is replayed after its first `afterEvent` events.
+    @ObservationIgnored private var swaps: [(afterEvent: Int, team: Int, a: Int, b: Int)] = []
+    /// Shots whose badge already fired: once per shot id, across re-folds.
+    @ObservationIgnored private var badged: Set<UUID> = []
+    /// D38: an aim answered the ask once this many events were folded (the current shooter keeps the turn).
+    @ObservationIgnored private var askAnsweredAt = -1
 
     init(config: GameConfig) {
         self.config = config
@@ -65,9 +82,6 @@ final class GameSessionModel {
         g.shooter = shootingTeam
         return (rulesEngine, g)
     }
-
-    /// Live settled a shot against `rules`: keep its next state.
-    func rulesAdvanced(_ next: GameState) { rulesState = next }
 
     /// Joiner phones may not know the lineup yet (camera angle only).
     var hasLineup: Bool { !rotation.isEmpty }
@@ -87,11 +101,14 @@ final class GameSessionModel {
     }
 
     /// Next player in D17 order (always the other team): this team's next visit moves one slot on.
-    func passTurn() {
+    /// The fold calls it; a direct call outside the fold lasts only until the next re-fold.
+    func passTurn() { hand(to: hasLineup ? team(after: currentTeam) : currentTeam) }
+
+    /// Hand the table to team `t`: this team's next visit moves one slot on, `t` plays its pending visit.
+    private func hand(to t: Int) {
         turnIndex += 1
         guard hasLineup else { return }
         nextSlot[currentTeam] = (currentSlot + 1) % teams[currentTeam].count
-        let t = team(after: currentTeam)
         currentTeam = t
         currentSlot = nextSlot[t] % teams[t].count
     }
@@ -103,66 +120,151 @@ final class GameSessionModel {
     }
 
     /// One-tap correction (SPEC §5.8): hand the turn to a team. No-op if it is already theirs, except while a lost shot
-    /// asks for the shooter (D38): then the active team's tap confirms it. D41: only the next shooter changes.
-    /// Call it through `LiveSession.handTurn`, which refuses while a shot is live. The new shooter's legal targets are
-    /// pushed at once, so their rings aren't the old team's red/green until the next settled shot.
+    /// asks for the shooter (D38): then the active team's tap confirms it. D41: only the next shooter changes, as a
+    /// logged `.nextShooter` (a client proposes it). Call it through `LiveSession.handTurn`, which refuses while a shot
+    /// is live. Once it folds, the new shooter's legal targets are pushed, so their rings aren't the old team's.
     func handTurn(toTeam team: Int) {
-        guard hasLineup, team != shootingTeam || needsShooter else { return }
-        needsShooter = false
-        if team != shootingTeam { passTurn() }
-        let (engine, state) = rules
-        legalChanged(engine.legalTargets(state))
+        guard hasLineup, teams.indices.contains(team), team != shootingTeam || needsShooter else { return }
+        append(.nextShooter(team: team))
     }
 
     /// Swap two players within a team; the player shooting now keeps the turn, and every team's next visit stays
-    /// on its slot (so the other team's pending player still shoots next).
+    /// on its slot (so the other team's pending player still shoots next). Local only: kept and replayed by the fold.
     func swap(team: Int, _ a: Int, _ b: Int) {
         guard teams.indices.contains(team), teams[team].indices.contains(a), teams[team].indices.contains(b), a != b else { return }
+        swaps.append((events.count, team, a, b))
+        applySwap(team, a, b)
+    }
+
+    private func applySwap(_ team: Int, _ a: Int, _ b: Int) {
+        guard teams.indices.contains(team), teams[team].indices.contains(a), teams[team].indices.contains(b) else { return }
         teams[team].swapAt(a, b)
         if team == currentTeam {
             if currentSlot == a { currentSlot = b } else if currentSlot == b { currentSlot = a }
         }
     }
 
-    func record(rating: DecisionRating) { record(SettledShot(rating: rating, turnPasses: false)) }
-
-    private func record(_ r: SettledShot) {
-        shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: r.rating,
-                                 pocketed: r.pocketed, fouls: r.fouls, isGuess: r.isGuess,
-                                 before: r.before, after: r.after))
-    }
-
+    /// The balls settled and Live rated the shot. The host (or this phone alone) logs it; a client drops its own
+    /// settle (D39: the host rates) and re-pushes the committed legality over what Live published locally. Shot, badge
+    /// and turn come from the fold. Returns the badge signal when the shot folded at once (solo), else nil.
     @discardableResult
-    func shotSettled(rating: DecisionRating, turnPasses: Bool) -> PostShotRating {
-        shotSettled(SettledShot(rating: rating, turnPasses: turnPasses))
+    func shotSettled(_ shot: SettledShot) -> PostShotRating? {
+        guard writesLog else { pushLegal(); return nil }
+        let id = UUID()
+        append(.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
+                                    postState: table(shot.after), preState: table(shot.before),
+                                    decisionRating: shot.rating, isGuess: shot.isGuess)))
+        guard let s = shots.last(where: { $0.id == id }), let rating = s.rating else { return nil }
+        return PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)
     }
 
-    /// The balls settled and the engine rated the shot: record it (with its result, for review), show the badge,
-    /// rotate if the turn passes.
-    @discardableResult
-    func shotSettled(_ shot: SettledShot) -> PostShotRating {
-        record(shot)
-        needsShooter = false   // a later shot was played: the ask is moot (D38)
-        let s = shots[shots.count - 1]
-        let signal = PostShotRating(shotID: s.id, rating: shot.rating, shooterName: s.shooter.name, team: s.team)
-        badge.receive(.rated(signal))
-        if shot.turnPasses { passTurn() }
-        return signal
-    }
-
-    /// D38: a game shot was lost with no guess. Record a gap (unknown result) for the current shooter and ask who
-    /// shoots next. The shooter stays until a disc tap or the next aim.
+    /// D38: a game shot was lost with no guess. The host (or this phone alone) logs a gap for the current shooter,
+    /// which asks who shoots next; the shooter stays until a disc tap or the next aim.
     func shotLost() {
-        shots.append(SessionShot(id: UUID(), index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
-        needsShooter = true
+        guard writesLog else { pushLegal(); return }
+        append(.shotLost(shotID: UUID(), shooterTeam: shootingTeam))
     }
 
     /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
     func aimStarted() {
+        askAnsweredAt = events.count
         needsShooter = false
         badge.receive(.aimStarted)
     }
     func aimEnded() { badge.receive(.aimEnded) }
+
+    // MARK: The log
+
+    /// Solo, or this phone hosts the mesh.
+    private var writesLog: Bool { mesh?.isHost ?? true }
+
+    /// Solo: commits at once. Mesh: the host appends (a client proposes); the commit comes back through `ingest`.
+    private func append(_ event: GameEvent) {
+        if let mesh { mesh.append(event) } else { apply(events + [event]) }
+    }
+
+    /// The mesh's log changed: fold its committed prefix. The uncommitted tail never shows.
+    func ingest(log: [LogEntry], commitSeq: UInt64) {
+        apply(log.filter { $0.seq <= commitSeq }.sorted { $0.seq < $1.seq }.map(\.event))
+    }
+
+    private func apply(_ committed: [GameEvent]) {
+        let fresh = committed.dropFirst(events.count)
+        events = committed
+        fold()
+        // The badge fires once per shot, for the newest newly committed rated shot only.
+        let unseen = shots.filter { !badged.contains($0.id) }
+        badged.formUnion(unseen.map(\.id))
+        if let s = unseen.last(where: { $0.rating != nil }), let rating = s.rating {
+            badge.receive(.rated(PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)))
+        }
+        // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
+        if !fresh.isEmpty { pushLegal() }
+    }
+
+    /// The shooter's legal targets in the committed folded state, to Live's rings.
+    private func pushLegal() {
+        let (engine, state) = rules
+        legalChanged(engine.legalTargets(state))
+    }
+
+    /// Rebuild the turn, shots and rules state from scratch: the `GameConfig` lineup, the committed events and the
+    /// local swaps in place.
+    private func fold() {
+        teams = config.teams
+        nextSlot = Array(repeating: 0, count: teams.count)
+        currentTeam = teams.firstIndex { !$0.isEmpty } ?? 0
+        currentSlot = 0
+        turnIndex = 0
+        shots = []
+        needsShooter = false
+        rulesState = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count).1
+        var corrected: [UUID: Int] = [:]
+        for case .shooterCorrection(let id, let team) in events { corrected[id] = team }
+        var lostAt = -1
+        for i in 0...events.count {
+            for w in swaps where w.afterEvent == i { applySwap(w.team, w.a, w.b) }
+            guard i < events.count else { break }
+            switch events[i] {
+            case .ruleSetChosen, .shooterCorrection:
+                break
+            case .shot(let r):
+                needsShooter = false
+                var attribution = AttributionSource.turnOrder
+                if let t = corrected[r.shotID] {
+                    attribution = .tap
+                    if hasLineup, teams.indices.contains(t), !teams[t].isEmpty, t != currentTeam { hand(to: t) }
+                }
+                var state = rulesState
+                state.shooter = shootingTeam
+                let result = rulesEngine.apply(r.outcome, to: state)
+                let rating = r.decisionRating ?? RuleRating.classify(
+                    result, shooter: state.shooter, pocketedObjectBall: r.outcome.pocketed.keys.contains { $0 != .cue })
+                shots.append(SessionShot(id: r.shotID, index: shots.count, shooter: shooter, team: shootingTeam,
+                                         rating: rating, pocketed: r.outcome.pocketed, fouls: result.fouls,
+                                         isGuess: r.isGuess, before: Self.positions(r.preState),
+                                         after: Self.positions(r.postState), attribution: attribution))
+                rulesState = result.nextState
+                if result.turnPasses { passTurn() }
+            case .shotLost(let id, _):
+                shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
+                needsShooter = true
+                lostAt = i
+            case .nextShooter(let team):
+                guard hasLineup, teams.indices.contains(team), !teams[team].isEmpty else { break }
+                needsShooter = false
+                if team != currentTeam { hand(to: team) }
+            }
+        }
+        if needsShooter && askAnsweredAt > lostAt { needsShooter = false }
+    }
+
+    /// Ball positions as a table state on the game's table (nil when none are known).
+    private func table(_ balls: [BallID: Vec2]) -> TableState? {
+        balls.isEmpty ? nil : TableState(spec: TableSpec(size: config.tableSize), balls: balls.mapValues { BallState(position: $0) })
+    }
+
+    private static func positions(_ t: TableState?) -> [BallID: Vec2] { t?.balls.mapValues(\.position) ?? [:] }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one
     /// rack per game session), finished only when the rack is over (a mid-rack quit stays locked).
