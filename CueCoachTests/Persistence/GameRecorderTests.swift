@@ -129,7 +129,7 @@ import Training
         #expect(rows[1].preState.balls.isEmpty, "an empty before stores an empty ball map")
     }
 
-    @Test func guessedAndGapShotsAreNotSaved() throws {
+    @Test func gapShotsAreNotSaved() throws {
         let stack = try PersistenceStack(inMemory: true)
         let g = solo(stack)
         g.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot(1)))          // 0
@@ -140,8 +140,35 @@ import Training
         #expect(game.winnerTeam == 1)
         #expect(game.id == g.shots[0].id)
         let rows = try shots(stack)
-        #expect(rows.map(\.index) == [0, 3], "the others keep their original index")
-        #expect(rows.map(\.id) == [g.shots[0].id, g.shots[3].id])
+        #expect(rows.map(\.index) == [0, 2, 3], "only the gap leaves a hole; the others keep their original index")
+        #expect(rows.map(\.id) == [g.shots[0].id, g.shots[2].id, g.shots[3].id])
+    }
+
+    /// D43 (plan 012): a D31 guess is saved, flagged, so review can show it and stats can skip it.
+    @Test func recorderSavesAGuessedShotFlagged() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = solo(stack)
+        g.shotSettled(SettledShot(rating: .good, turnPasses: false, isGuess: true, outcome: Self.pot(2)))   // 0: guess
+        g.shotSettled(SettledShot(rating: .mistake, turnPasses: true, outcome: Self.miss))                 // 1
+        g.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))           // 2: B1 loses
+        let rows = try shots(stack)
+        #expect(rows.map(\.index) == [0, 1, 2])
+        #expect(rows.map(\.isGuess) == [true, false, false])
+        #expect(rows[0].pocketed == [BallID(2)!: .footLeft], "the best guess is kept as pocketed")
+        #expect(rows[0].decisionRating == .good)
+        #expect(g.finishedGame()?.shots.map(\.isGuess) == [true, false, false])
+    }
+
+    @Test func recordingAgainUpdatesTheGuessFlagInPlace() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = solo(stack)
+        playARack(g)
+        var game = try #require(g.finishedGame())
+        game.shots[1].isGuess = true
+        let recorder = StackGameRecorder(stack: stack)
+        try recorder.record(game)
+        #expect(try shots(stack).map(\.isGuess) == [false, true, false])
+        #expect(try shots(stack).count == 3)
     }
 
     @Test func midRackEndSavesNothing() throws {
