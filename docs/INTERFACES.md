@@ -457,13 +457,15 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
     state with shooter = folded team).nextState` (equals Live's own `result.nextState`). Rating = `decisionRating`, else
     `RuleRating.classify`. The turn passes (D17) when the result says so. The ask is cleared.
   - `.shotLost`: a gap `SessionShot` (rating nil) for the folded shooter; no rules change; `needsShooter = true`.
-  - `.nextShooter`: hands the turn to that team if it is not already theirs and clears the ask. A newly folded one
-    pushes the new shooter's legal targets (`legalChanged`).
+  - `.nextShooter`: hands the turn to that team if it is not already theirs and clears the ask.
+  - Every fold with newly committed events pushes the folded shooter's legal targets (`legalChanged`). A client's
+    dropped settle or lost shot re-pushes them too, so the committed state overrides Live's local result.
   - `.ruleSetChosen`: ignored (the rule set comes from `GameConfig`).
   - Local mid-game swaps are not logged: kept as `(afterEvent, team, a, b)` and replayed at their place in the fold.
   - The badge fires once per `shotID`: for the newest newly committed rated shot only.
 - Solo (`mesh == nil`): the same fold over an in-memory log that commits at once.
-- `rulesAdvanced(_:)` is gone: the shell no longer binds `LiveHooks.gameAdvanced`; the fold owns the rules state.
+- `rulesAdvanced(_:)`, `record(rating:)` and the two-value `shotSettled(rating:turnPasses:)` /
+  `LiveSession.settled(rating:turnPasses:)` are gone (callers pass a `SettledShot` with its outcome): the shell no longer binds `LiveHooks.gameAdvanced`; the fold owns the rules state.
 
 ## Proposed (plan 006 — not approved)
 

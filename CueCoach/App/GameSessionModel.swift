@@ -144,19 +144,12 @@ final class GameSessionModel {
         }
     }
 
-    func record(rating: DecisionRating) { shotSettled(SettledShot(rating: rating, turnPasses: false)) }
-
-    @discardableResult
-    func shotSettled(rating: DecisionRating, turnPasses: Bool) -> PostShotRating? {
-        shotSettled(SettledShot(rating: rating, turnPasses: turnPasses))
-    }
-
     /// The balls settled and Live rated the shot. The host (or this phone alone) logs it; a client drops its own
-    /// settle (D39: the host rates). Shot, badge and turn come from the fold. Returns the badge signal when the shot
-    /// folded at once (solo), else nil.
+    /// settle (D39: the host rates) and re-pushes the committed legality over what Live published locally. Shot, badge
+    /// and turn come from the fold. Returns the badge signal when the shot folded at once (solo), else nil.
     @discardableResult
     func shotSettled(_ shot: SettledShot) -> PostShotRating? {
-        guard writesLog else { return nil }
+        guard writesLog else { pushLegal(); return nil }
         let id = UUID()
         append(.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
                                     postState: table(shot.after), preState: table(shot.before),
@@ -168,7 +161,7 @@ final class GameSessionModel {
     /// D38: a game shot was lost with no guess. The host (or this phone alone) logs a gap for the current shooter,
     /// which asks who shoots next; the shooter stays until a disc tap or the next aim.
     func shotLost() {
-        guard writesLog else { return }
+        guard writesLog else { pushLegal(); return }
         append(.shotLost(shotID: UUID(), shooterTeam: shootingTeam))
     }
 
@@ -205,10 +198,14 @@ final class GameSessionModel {
         if let s = unseen.last(where: { $0.rating != nil }), let rating = s.rating {
             badge.receive(.rated(PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)))
         }
-        if fresh.contains(where: { if case .nextShooter = $0 { true } else { false } }) {
-            let (engine, state) = rules
-            legalChanged(engine.legalTargets(state))
-        }
+        // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
+        if !fresh.isEmpty { pushLegal() }
+    }
+
+    /// The shooter's legal targets in the committed folded state, to Live's rings.
+    private func pushLegal() {
+        let (engine, state) = rules
+        legalChanged(engine.legalTargets(state))
     }
 
     /// Rebuild the turn, shots and rules state from scratch: the `GameConfig` lineup, the committed events and the

@@ -79,7 +79,7 @@ enum ShellLaunch {
     @MainActor static func demoShotIfRequested(_ game: GameSessionModel?) async {
         guard let game, ProcessInfo.processInfo.arguments.contains("-appshell.demoShot") else { return }
         try? await Task.sleep(for: .seconds(2))
-        game.shotSettled(rating: .great, turnPasses: true)
+        game.shotSettled(SettledShot(rating: .great, turnPasses: true, outcome: ShotOutcome()))   // nothing seen: the turn passes
     }
 }
 #endif
