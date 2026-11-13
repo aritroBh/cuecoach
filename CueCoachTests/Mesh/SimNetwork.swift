@@ -72,7 +72,7 @@ final class SimNetwork {
                             clockOffset: clockOffset, skew: skew)
         joinOrder.append(id)
         apply(id, boxes[id]!.node.start(now: localTime(id)))
-        for other in boxes.keys where other != id && boxes[other]!.alive {
+        for other in joinOrder where other != id && boxes[other]!.alive {   // join order, not hash order (deterministic)
             schedule(from: id, to: other, kind: .connected, delay: 0.01)
             schedule(from: other, to: id, kind: .connected, delay: 0.01)
         }

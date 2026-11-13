@@ -170,9 +170,8 @@ extension MeshNodeTests {
     // MARK: island merge on heal (D44)
 
     /// Replaces plan 009's `partitionedOldHostStepsDownOnHeal` two-phone expectation: shots appended on either side
-    /// of a split are kept, matched ones once. The claimant is a lone survivor of two, so it commits its own island
-    /// shots alone (pre-existing rule, `loneSurvivorOfTwoPhoneGameCommits`); committed entries never change, so the
-    /// other island's unmatched shots follow them and a disagreement with a committed shot is flagged, not replaced.
+    /// of a split are kept, matched ones once, in stroke order. Neither side of a two-phone split has a majority of
+    /// the game's members, so neither commits; the merge keeps the confident view of a disagreement, flagged.
     @Test func twoPhoneSplitKeepsBothIslandsShotsOnHeal() throws {
         let (net, a, b) = Self.pair()
         Self.see(net, [(a, Self.view(0)), (b, Self.view(0))])
@@ -192,9 +191,9 @@ extension MeshNodeTests {
         let a4 = Self.view(4, outcome: Self.pot1), b4 = Self.view(4, outcome: Self.miss1, isGuess: true)
         Self.see(net, [(a, a4), (b, b4)])                               // they disagree on shot 4
         net.run(for: 1)
-        #expect(net.node(a).commitSeq == 1, "the old host has no majority (quorum 2 of 2): it commits nothing")
-        #expect(net.node(b).commitSeq == net.node(b).lastSeq && net.node(b).lastSeq == 4,
-                "the lone survivor of two commits alone (loneSurvivorOfTwoPhoneGameCommits)")
+        #expect(net.node(a).commitSeq == 1 && net.node(b).commitSeq == 1,
+                "no side has a strict majority of the game's two members: neither commits")
+        #expect(net.node(a).lastSeq == 4 && net.node(b).lastSeq == 4)
         net.heal()
         net.run(for: 3)
         Self.expectConverged(net)
@@ -203,9 +202,9 @@ extension MeshNodeTests {
         let log = net.node(host).log
         #expect(net.node(host).commitSeq == UInt64(log.count), "the merged log commits")
         let shots = Self.folded(log).dropFirst()
-        #expect(shots.map(\.preState) == [1, 3, 4, 2].map { Self.layout($0) }, "each physical shot once")
-        #expect(shots.map(\.shotID) == [b1, b3, b4, a2].compactMap(Self.ids), "committed shots keep their place")
-        #expect(shots.map(\.needsTap) == [false, false, true, false], "shot 4 disagrees with a committed shot")
+        #expect(shots.map(\.preState) == [1, 2, 3, 4].map { Self.layout($0) }, "each physical shot once, in order")
+        #expect(shots.map(\.shotID) == [b1, a2, b3, a4].compactMap(Self.ids), "agreeing: the winner's record; disagreeing: the confident view")
+        #expect(shots.map(\.needsTap) == [false, false, false, true])
     }
 
     /// Records folded by shotID: a repeated id is a flag amendment of the first (needsTap OR-ed), never a new shot.
@@ -288,7 +287,7 @@ extension MeshNodeTests {
         net.run(for: 1)
         net.slowLink(from: b, to: a, extra: 0.4)               // B's welcome reaches A late
         let pre = net.node(b).lastSeq
-        #expect(net.node(b).commitSeq == pre, "the lone survivor committed its own island shot")
+        #expect(net.node(b).commitSeq == 0, "an island commits nothing")
         net.heal()
         var sawMerge = false
         for _ in 0..<600 {
@@ -296,7 +295,7 @@ extension MeshNodeTests {
             let nb = net.node(b), na = net.node(a)
             if nb.lastSeq > pre { sawMerge = true }
             let committed = Array(nb.log.prefix(Int(nb.commitSeq)))
-            if nb.commitSeq > pre {
+            if nb.commitSeq > 0 {
                 #expect(Array(na.log.prefix(committed.count)) == committed, "committed before A holds it")
             }
         }

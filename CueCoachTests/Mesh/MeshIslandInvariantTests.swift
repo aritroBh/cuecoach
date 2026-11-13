@@ -92,16 +92,12 @@ extension MeshNodeTests {
     /// Seeded, bounded (≤ 4 phones, ≤ 14 strokes). Phones settle every stroke late (a view, or a gap), hosts die,
     /// the table splits and heals, links slow down, pings get lost, one phone may never get a clock.
     /// After quiescence: every stroke appears exactly once; no phone's committed prefix ever shrank or changed; all
-    /// phones agree; any stroke the surviving phones' logs ever recorded two ways keeps `needsTap`; every settle a host took is in its
+    /// phones agree; no two phones ever hold different committed entries; any stroke the surviving phones' logs ever
+    /// recorded two ways keeps `needsTap`; every settle a host took is in its
     /// log or reported absorbed (so no drain waits for its deadline).
     @Test(arguments: 0..<300)
     func randomLossSplitsAndLateSettlesKeepEveryStrokeOnce(seed: Int) {
-        var failures: [String] = []
-        func expect(_ ok: Bool, _ message: @autoclosure () -> String) { if !ok { failures.append(message()) } }
-        // Two sides that each committed a different entry at one seq: the pre-existing commit-quorum shrink (a
-        // silent drop shrinks the quorum when "a majority is still here"; a claimant counts only the old roster),
-        // not something a merge can repair. Reported as a known issue, never silently skipped.
-        var splitBrain = false
+        func expect(_ ok: Bool, _ message: @autoclosure () -> String) { if !ok { Issue.record(Comment(rawValue: message())) } }
         var rng = SeededRNG(seed: UInt64(seed) &* 2_654_435_761 &+ 17)
         func uuid() -> UUID {   // seeded ids: the run (elections, tie-breaks) is reproducible
             UUID(uuid: (UInt8.random(in: 0...255, using: &rng), UInt8.random(in: 0...255, using: &rng), UInt8.random(in: 0...255, using: &rng),
@@ -148,8 +144,9 @@ extension MeshNodeTests {
         func check() {
             let committedNow = net.aliveIDs.map { net.node($0).log.prefix(Int(net.node($0).commitSeq)).map(\.event) }
             for x in committedNow {
-                for y in committedNow where Array(x.prefix(min(x.count, y.count))) != Array(y.prefix(min(x.count, y.count))) {
-                    splitBrain = true
+                for y in committedNow {
+                    let m = min(x.count, y.count)
+                    expect(Array(x.prefix(m)) == Array(y.prefix(m)), "seed \(seed): two phones committed different entries")
                 }
             }
             for p in net.aliveIDs {
@@ -228,15 +225,6 @@ extension MeshNodeTests {
         expect(net.hosts.count == 1, "seed \(seed): \(net.hosts.count) hosts")
         if let h = net.hosts.first {
             for p in net.aliveIDs { expect(net.node(p).log == net.node(h).log, "seed \(seed): \(p)'s log differs") }
-        }
-        defer {
-            if splitBrain {
-                withKnownIssue("pre-existing commit-quorum shrink: two sides committed (plan 013 report)") {
-                    Issue.record("seed \(seed): two quorums committed different entries; \(failures.count) invariant failures follow")
-                }
-            } else {
-                for f in failures { Issue.record(Comment(rawValue: f)) }
-            }
         }
         guard let host = net.hosts.first else { return }
         let log = net.node(host).log

@@ -240,15 +240,19 @@ import Rules
         #expect(net.node(newHost).commitSeq == 1)
     }
 
-    /// A lone survivor of a two-phone game keeps committing (one-phone mode).
-    @Test func loneSurvivorOfTwoPhoneGameCommits() {
+    /// Head decision (Codex 013a review 3): a host commits only with a strict majority of the game's members, so the
+    /// lone survivor of a two-phone game (its host gone silent) is an island: it keeps playing provisionally (D48),
+    /// commits nothing, and merges on heal (D44). Was `loneSurvivorOfTwoPhoneGameCommits`.
+    @Test func loneSurvivorOfTwoPhoneGameIsAnIslandAndCommitsNothing() {
         let (net, ids) = MeshNodeTests.mesh(2)
         let old = net.hosts.first!
         let survivor = ids.first { $0 != old }!
         net.kill(old)
         net.run(for: 3)
         net.act(survivor) { m, t in m.append(Self.shot(1), now: t) }
-        #expect(net.node(survivor).commitSeq == 1)
+        #expect(net.node(survivor).isHost && net.node(survivor).isIsland)
+        #expect(net.node(survivor).log.count == 1)
+        #expect(net.node(survivor).commitSeq == 0)
     }
 
     // MARK: MINOR — empty clips and request loops

@@ -152,9 +152,6 @@ struct MeshNode: Sendable {
     private var tails: [PeerID: [LogEntry]] = [:]
     /// Roster size before the last host loss (incl. the lost host), set by `hostLost`.
     private var lostRosterSize = 0
-    /// Commit denominator. Silent drops don't shrink it unless a majority of it is still here, so an
-    /// isolated minority host can't commit (graceful leaves do shrink it).
-    private var quorumBase = 1
     private var clipAttempts: [UUID: Int] = [:]
     private var pendingHellos: [PeerID] = []
     private var pendingAppends: [GameEvent] = []
@@ -175,6 +172,8 @@ struct MeshNode: Sendable {
     /// This phone's own settles that no committed entry answers yet, with the stroke on this phone's clock (ns).
     /// The event is stamped at settle time when the game time was known; `stroke` restamps it later otherwise.
     private var kept: [(event: GameEvent, stroke: Int64)] = []
+    /// Own settles already reported `settleAbsorbed`.
+    private var reportedAbsorbed: Set<UUID> = []
     /// Every phone seen in a roster since joining, minus those that left gracefully: the island denominator.
     private var gameMembers: Set<PeerID> = []
     private var departed: Set<PeerID> = []
@@ -210,12 +209,15 @@ struct MeshNode: Sendable {
     var storedClipCount: Int { localClips.count }
     /// Plan 013a: after first joining, discovering, or hosting a roster that is not a strict majority of the game's
     /// members (every phone seen in a roster, minus graceful leaves). A client is never an island.
+    /// The commit denominator: the game's members (see `isIsland`).
+    private var commitMembers: Int { gameMembers.union(roster).subtracting(departed).count }
+
     var isIsland: Bool {
         guard everJoined, rejected == nil, !left else { return false }
         switch role {
         case .client: return false
         case .discovering: return true
-        case .host: return roster.count * 2 <= gameMembers.union(roster).count
+        case .host: return roster.count * 2 <= commitMembers
         }
     }
 
@@ -255,7 +257,7 @@ struct MeshNode: Sendable {
     mutating func updateStatus(_ s: PeerStatus, now: Double) -> MeshStep {
         status = s
         statuses[id] = s
-        send(.peerStatus(s), to: Array(connected))
+        send(.peerStatus(s), to: connected.sorted())
         return flush()
     }
 
@@ -367,8 +369,8 @@ struct MeshNode: Sendable {
         guard rejected == nil, !left else { return flush() }
         if now - lastLiveness >= config.heartbeatInterval {
             lastLiveness = now
-            if isHost { send(heartbeat(now: now), to: Array(connected)) }
-            send(.peerStatus(status), to: Array(connected))
+            if isHost { send(heartbeat(now: now), to: connected.sorted()) }
+            send(.peerStatus(status), to: connected.sorted())
         }
         switch role {
         case .discovering:
@@ -411,7 +413,9 @@ struct MeshNode: Sendable {
     }
 
     private mutating func absorbed(_ e: GameEvent) {
-        if let id = IslandHeal.id(e) { step.updates.append(.settleAbsorbed(shotID: id)) }
+        guard let id = IslandHeal.id(e) else { return }
+        reportedAbsorbed.insert(id)
+        step.updates.append(.settleAbsorbed(shotID: id))
     }
 
     private var committedEntries: ArraySlice<LogEntry> { log.prefix { $0.seq <= commitSeq } }
@@ -474,7 +478,7 @@ struct MeshNode: Sendable {
 
     mutating func leave(now: Double) -> MeshStep {
         guard !left else { return flush() }
-        send(.leave, to: Array(connected))
+        send(.leave, to: connected.sorted())
         left = true
         return flush()
     }
@@ -555,10 +559,7 @@ struct MeshNode: Sendable {
         clipOffers = [:]
         clipOfferDeadline = [:]
         clipReceivers = [:]
-        let priorMembers = everJoined ? max(roster.count, 1) : 1
         roster = [id] + c.keys.filter { $0 != id && everJoined }.sorted()
-        // A claim by a minority island keeps the old roster as its commit denominator.
-        quorumBase = max(roster.count, priorMembers)
         collectNeed = everJoined ? lostRosterSize / 2 + 1 : 0
         collectReports = 1
         tails = [:]
@@ -567,8 +568,8 @@ struct MeshNode: Sendable {
         let survivors = Set(roster).subtracting([id])
         collecting = survivors.isEmpty ? nil : survivors
         collectDeadline = now + config.collectTimeout
-        send(.hostClaim(HostClaim(term: term, lastSeq: lastSeq)), to: Array(connected))
-        send(heartbeat(now: now), to: Array(connected))
+        send(.hostClaim(HostClaim(term: term, lastSeq: lastSeq)), to: connected.sorted())
+        send(heartbeat(now: now), to: connected.sorted())
         step.updates.append(.roleChanged(.host, term: term))
         broadcastRoster()
         if collecting == nil { finishCollecting(now: now) }
@@ -713,7 +714,6 @@ struct MeshNode: Sendable {
         if !roster.contains(from) {
             guard roster.count < config.maxPeers else { send(.reject(.sessionFull), to: [from]); return }
             roster.append(from)
-            quorumBase = max(quorumBase, roster.count)
         }
         statuses[from] = PeerStatus(deviceClass: h.deviceClass, batteryPercent: h.batteryPercent, onPower: h.onPower)
         if collecting == nil, let island = pendingIslands.removeValue(forKey: from) {
@@ -751,7 +751,7 @@ struct MeshNode: Sendable {
         collecting = nil
         // Most up-to-date log (last term, then length) among me and the survivors' complete tails.
         func rank(_ l: [LogEntry]) -> (UInt64, UInt64) { (l.last?.term ?? 0, l.last?.seq ?? 0) }
-        for t in tails.values {
+        for (_, t) in tails.sorted(by: { $0.key < $1.key }) {   // deterministic tie-break
             let sorted = t.sorted { $0.seq < $1.seq }
             guard sorted.enumerated().allSatisfy({ $0.element.seq == UInt64($0.offset + 1) }),
                   sorted.allSatisfy({ $0.term < term }) else { continue }
@@ -840,7 +840,9 @@ struct MeshNode: Sendable {
 
     private mutating func advanceCommit() {
         guard isHost, !roster.isEmpty else { return }
-        let base = max(quorumBase, roster.count)
+        // A strict majority of the game's members (every phone seen in a roster, minus graceful leavers): the
+        // quorum never shrinks because phones went silent, so two sides of a split can never both commit.
+        let base = max(commitMembers, roster.count)
         var acked = roster.map { $0 == id ? lastSeq : (acks[$0] ?? 0) }
         acked += Array(repeating: 0, count: base - acked.count)   // missing members count as "not acked"
         acked.sort(by: >)
@@ -853,12 +855,6 @@ struct MeshNode: Sendable {
         roster.removeAll { gone.contains($0) && $0 != me }
         for p in gone { acks[p] = nil; ballots[p] = nil }
         guard roster != before else { return }
-        let left = before.count - roster.count
-        if graceful {
-            quorumBase = max(roster.count, quorumBase - left)
-        } else if roster.count >= quorumBase / 2 + 1 {
-            quorumBase = roster.count   // a majority is still here: the silent ones are really gone
-        }
         if var c = collecting {
             c.subtract(gone)
             collecting = c
@@ -1090,6 +1086,14 @@ struct MeshNode: Sendable {
                     let e = restamped(k)
                     if committed.contains(where: { IslandHeal.id($0.event) == IslandHeal.id(e) }) { continue }
                     if committed.contains(where: { IslandHeal.matches(e, $0.event) }) { absorbed(e); continue }
+                    // Not committed yet, but another entry of my log answers it (a merge kept another view): the link
+                    // counts it confirmed now; it stays kept until a commit answers it (that host may die first).
+                    if let id = IslandHeal.id(e), !reportedAbsorbed.contains(id),
+                       !log.contains(where: { IslandHeal.id($0.event) == id }),
+                       log.contains(where: { IslandHeal.matches(e, $0.event) }) {
+                        reportedAbsorbed.insert(id)
+                        absorbed(e)
+                    }
                     still.append(k)
                 }
                 kept = still

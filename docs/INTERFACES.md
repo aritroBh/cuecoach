@@ -549,8 +549,8 @@ func finishedGame() -> FinishedGame?                    // nil while the folded 
 
 Rules:
 - One writer: solo (`mesh == nil`), or `mesh.isHost && mesh.hasGameQuorum`. `isHost` is role `.host` only; never
-  `!isJoiner`: a discovering phone never saves. A commit alone is not enough: after a host loss `MeshNode` shrinks its
-  commit quorum, so a lone survivor of two phones commits alone. `GameMeshLink.hasGameQuorum` is true only when the
+  `!isJoiner`: a discovering phone never saves. Plan 013a: `MeshNode` now commits only with a strict majority of
+  the game's members, so a lone survivor of two phones commits nothing; the guard stays. `GameMeshLink.hasGameQuorum` is true only when the
   current roster is a strict majority of the game's members (every phone seen in this game's roster; a late joiner
   only raises the bar). An island never saves; plan 013 saves island games after the merge.
 - The saved rack is the folded shots up to and including the one that gave it its winner. A retry after a failed
@@ -658,9 +658,12 @@ Rules:
   exists. Real strokes are seconds apart: two settles of one stroke time and position are one stroke.
 - **Island.** While `isIsland`: tracking, overlay and appends go on as before. `GameSessionModel` fires its own settle's badge with `isProvisional`
   (D48), never saves (`saveIfWon` refuses while `mesh.isIsland`, besides `isHost && hasGameQuorum`).
-- **Commits.** Unchanged rule: committed = acked by a majority of the commit quorum. The two-phone lone survivor
-  (its host lost silently) commits alone (pre-existing, `loneSurvivorOfTwoPhoneGameCommits`); it is still an island
-  (no majority of the game's members), so it never saves. Committed entries never change, on either side of a split.
+- **Commits** (head decision, Codex 013a review 3). A host commits only with a strict majority of the game's
+  members: every phone seen in a roster since joining, minus graceful leavers (the same membership as
+  `hasGameQuorum`). Phones going silent never shrink it, so two sides of a split can never both commit. Any side
+  without that majority is an island, the lone survivor of a two-phone game included: it keeps playing provisionally
+  (D48), commits nothing, and merges on heal (D44); D51 covers a rack that never reconnects (plan 013b). Committed
+  entries never change.
 - **Heal.** Higher term hosts (unchanged). Every phone that adopts a host sends, after its full log and before its
   `Hello`, `IslandLog` batches of its whole log with its `commitSeq`, plus its kept settles. The host merges a
   sender's `IslandLog` when its `Hello` admits it (while collecting: after collecting, after its own re-run), so the
@@ -686,10 +689,7 @@ Rules:
   entries keep their place); a committed gap beats a later-arriving confident view of its stroke (D38's ask stands);
   a phone without a clock fit settles untimed (it matches by id, or a shot by its pre-state; an untimed gap cannot
   be reconciled with another phone's result of its stroke); a host's own `.tableState` captureTime stays on its own
-  clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time. Pre-existing and outside 013a: the commit quorum can shrink on both sides of a split (a silent drop shrinks it while
-  "a majority is still here"; a claimant counts only the old roster minus the lost host), so two sides can commit
-  different entries at one seq; a merge cannot repair that (the randomized invariant test records it as a known
-  issue).
+  clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time.
 
 ## Proposed (plan 006 — not approved)
 
