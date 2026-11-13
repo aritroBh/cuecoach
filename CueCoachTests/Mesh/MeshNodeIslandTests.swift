@@ -418,7 +418,8 @@ extension MeshNodeTests {
         #expect(events.firstIndex(of: tap).map { $0 > 0 } == true, "a tap follows the shot before it on its island")
     }
 
-    /// The link toggles every 0.5–3 s for two simulated minutes while both phones keep settling shots.
+    /// The link toggles every 0.5–3 s for two simulated minutes while both phones keep settling shots. Committed shots
+    /// keep their place (Codex 013a P1-4), so the other island's shots may follow later ones: no order is asserted.
     @Test(arguments: 0..<6)
     func flappingLinkNeverDuplicatesAShot(seed: Int) {
         var rng = SeededRNG(seed: UInt64(seed) &* 31 &+ 5)
@@ -451,7 +452,6 @@ extension MeshNodeTests {
         Self.expectConverged(net)
         let logged = Self.records(net.node(net.hosts.first!).log).compactMap { physical[$0.shotID] }
         #expect(logged.count == Set(logged).count, "seed \(seed): a shot was logged twice: \(logged)")
-        #expect(logged == logged.sorted(), "seed \(seed): shots out of order")
         #expect(net.node(a).term <= UInt64(toggles + 2))
     }
 }

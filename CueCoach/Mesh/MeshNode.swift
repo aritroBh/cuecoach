@@ -168,20 +168,22 @@ struct MeshNode: Sendable {
     private var gameFit: (clock: ClockSyncEstimator, offset: Int64)?
     /// Client: the host's `Heartbeat.gameOffset`.
     private var hostGameOffset: Int64 = 0
-    /// This phone's own settles that no log holds yet, with the stroke on this phone's clock (ns).
+    /// This phone's own settles that no committed entry answers yet, with the stroke on this phone's clock (ns).
     private var kept: [(event: GameEvent, stroke: Int64)] = []
-    /// Shot results (`.shot` / `.shotLost`) in the committed prefix when last counted.
-    private var committedResults = 0
     /// Every phone seen in a roster since joining, minus those that left gracefully: the island denominator.
     private var gameMembers: Set<PeerID> = []
     private var departed: Set<PeerID> = []
-    /// Highest commit point reached while not an island (entries after it are island entries, merged on heal).
-    private var firmSeq: UInt64 = 0
     /// Host: island logs being received, by sender.
     private var islandIn: [PeerID: (commitSeq: UInt64, entries: [LogEntry])] = [:]
-    /// Host while collecting: complete island logs, merged once collecting ends.
-    private var islandStash: [Island] = []
+    /// Host: complete island logs, merged when their sender's Hello admits it (or after collecting).
+    private var pendingIslands: [PeerID: Island] = [:]
     private var reportedIsland = false
+    /// This phone has been a client: without a clock fit its own clock is not the game clock.
+    private var everClient = false
+    /// Host: bumped on every rewrite of existing entries; new entries carry it, acks name it.
+    private var logEpoch: UInt64 = 0
+    /// Bumped whenever the log's content changes without its counters saying so (rewrites, welcomes).
+    private var logVersion = 0
 
     private var step = MeshStep()
 
@@ -296,8 +298,11 @@ struct MeshNode: Sendable {
             if isHost, roster.contains(from) { _ = append(e, now: now, flushing: false) }
         case .logEntries(let es): onLogEntries(es, from: from, now: now)
         case .logAck(let a):
-            if isHost, a.term == term, roster.contains(from) {
-                acks[from] = max(acks[from] ?? 0, min(a.upTo, lastSeq))
+            // Plan 013a: an ack counts only for the version of the entry I hold now (an island merge may have
+            // replaced it since the client acked).
+            if isHost, a.term == term, roster.contains(from), a.upTo <= lastSeq,
+               a.upTo == 0 || log[Int(a.upTo) - 1].epoch == a.epoch {
+                acks[from] = max(acks[from] ?? 0, a.upTo)
                 advanceCommit()
             }
         case .logTailRequest(let r):
@@ -381,19 +386,22 @@ struct MeshNode: Sendable {
     mutating func append(_ e: GameEvent, now: Double) -> MeshStep { append(e, now: now, flushing: true) }
 
     /// Plan 013a: this phone's own settle (`.shot` / `.shotLost`) with its stroke time on this phone's clock (s).
-    /// The host stamps the stroke on the game clock and appends; any other phone keeps it until a shot result commits
-    /// after it (the host answered that stroke), and re-runs it as a new host or sends it on adopting one.
+    /// The host stamps the stroke on the game clock and appends; any other phone keeps it until a committed entry
+    /// answers the same stroke, and re-runs it as a new host or sends it on adopting one.
     mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep {
         guard rejected == nil, !left else { return flush() }
         let stroke = Self.ns(strokeAt)
+        let stamped = Self.stamped(e, gameNs(fromLocal: stroke))
         if isHost && collecting == nil {
-            _ = append(Self.stamped(e, gameNs(fromLocal: stroke)), now: now, flushing: false)
-        } else {
+            _ = append(stamped, now: now, flushing: false)
+        } else if !committedEntries.contains(where: { IslandHeal.matches(stamped, $0.event) }) {
             kept.append((e, stroke))
             if kept.count > 16 { kept.removeFirst() }
         }
         return flush()
     }
+
+    private var committedEntries: ArraySlice<LogEntry> { log.prefix { $0.seq <= commitSeq } }
 
     mutating func openRuleVote(now: Double) -> MeshStep {
         guard isHost else { return flush() }
@@ -556,12 +564,12 @@ struct MeshNode: Sendable {
     /// Accepting `host` at `newTerm` (from a heartbeat, claim or welcome).
     private mutating func adopt(host h: PeerID, term newTerm: UInt64, now: Double) {
         let wasHost = isHost
-        // Plan 013a: my island tail (a host's entries after its firm commit point) and my own unlogged settles, on the
-        // game clock as I know it now (before the clock resets for the new host).
-        let islandBase = firmSeq
-        let islandTail = wasHost ? log.filter { $0.seq > islandBase } : []
+        // Plan 013a: my whole log with its commit point (the new host keeps what I hold committed and merges my tail)
+        // and my own unlogged settles, on the game clock as I know it now (before the clock resets for the new host).
+        let islandLog = log, islandCommit = commitSeq
         let settles = keptSettles()
         kept = []
+        everClient = true
         term = newTerm
         hostID = h
         role = .client(host: h)
@@ -587,15 +595,15 @@ struct MeshNode: Sendable {
             send(.logEntries(Array(log[i..<min(i + config.logBatch, log.count)])), to: [h])
             i += config.logBatch
         }
-        if !islandTail.isEmpty || !settles.isEmpty {
+        if !islandLog.isEmpty || !settles.isEmpty {
             var j = 0
             repeat {
-                let batch = Array(islandTail[j..<min(j + config.logBatch, islandTail.count)])
+                let batch = Array(islandLog[j..<min(j + config.logBatch, islandLog.count)])
                 j += config.logBatch
-                let last = j >= islandTail.count
-                send(.islandLog(IslandLog(commitSeq: islandBase, entries: batch, settles: last ? settles : [], last: last)),
+                let last = j >= islandLog.count
+                send(.islandLog(IslandLog(commitSeq: islandCommit, entries: batch, settles: last ? settles : [], last: last)),
                      to: [h])
-            } while j < islandTail.count
+            } while j < islandLog.count
         }
         hostGameOffset = 0
         send(.hello(hello), to: [h])
@@ -647,6 +655,7 @@ struct MeshNode: Sendable {
             guard wins(term: w.term, claimant: from) else { return }
             adopt(host: from, term: w.term, now: now)
         }
+        if log != w.log { logVersion += 1 }
         log = w.log
         synced = true
         commitSeq = min(w.commitSeq, lastSeq)
@@ -687,6 +696,9 @@ struct MeshNode: Sendable {
             quorumBase = max(quorumBase, roster.count)
         }
         statuses[from] = PeerStatus(deviceClass: h.deviceClass, batteryPercent: h.batteryPercent, onPower: h.onPower)
+        if collecting == nil, let island = pendingIslands.removeValue(forKey: from) {
+            heal(island)   // after admitting the sender: what the merge adds commits only once it holds it too
+        }
         if var c = collecting {
             if c.remove(from) != nil { collectReports += 1 }
             collecting = c
@@ -727,10 +739,9 @@ struct MeshNode: Sendable {
         }
         tails = [:]
         // Plan 013a: re-run the shot in flight from my own settles, and merge island logs that came in meanwhile.
-        let islands = [Island(commitSeq: commitSeq, entries: [], settles: keptSettles())] + islandStash
+        heal(Island(commitSeq: commitSeq, entries: log, settles: keptSettles()))
         kept = []
-        islandStash = []
-        heal(islands)
+        for p in pendingHellos { if let island = pendingIslands.removeValue(forKey: p) { heal(island) } }
         let hellos = pendingHellos
         pendingHellos = []
         for p in hellos { welcome(p) }
@@ -746,7 +757,7 @@ struct MeshNode: Sendable {
             if collecting != nil {
                 pendingAppends.append(e)
             } else {
-                let entry = LogEntry(seq: lastSeq + 1, term: term, event: e)
+                let entry = LogEntry(seq: lastSeq + 1, term: term, event: e, epoch: logEpoch == 0 ? nil : logEpoch)
                 log.append(entry)
                 send(.logEntries([entry]), to: clients)
                 advanceCommit()
@@ -776,7 +787,12 @@ struct MeshNode: Sendable {
                 let i = Int(e.seq - 1)
                 // Same entry again (duplicate / stale batch): keep what I have. A different one: the host's
                 // log wins from here on.
-                if log[i] != e { log.removeSubrange(i...); log.append(e) }
+                if log[i] != e {
+                    log.removeSubrange(i...)
+                    log.append(e)
+                    commitSeq = min(commitSeq, UInt64(i))   // a replaced entry was never committed (plan 013a)
+                    logVersion += 1
+                }
             } else if e.seq == lastSeq + 1 {
                 log.append(e)
             } else {
@@ -790,7 +806,7 @@ struct MeshNode: Sendable {
 
     private mutating func sendAck() {
         guard let h = hostID, !isHost else { return }
-        send(.logAck(LogAck(term: term, upTo: lastSeq)), to: [h])
+        send(.logAck(LogAck(term: term, upTo: lastSeq, epoch: log.last?.epoch)), to: [h])
     }
 
     private mutating func requestTail(now: Double) {
@@ -897,7 +913,7 @@ struct MeshNode: Sendable {
     /// the frozen fit to the last host, or this phone's own clock if it hosted first. nil = a client without a fit.
     private func gameNs(fromLocal t: Int64) -> Int64? {
         if case .client = role { return clock.hostTime(fromLocal: t).map { $0 + hostGameOffset } }
-        guard let g = gameFit else { return t }
+        guard let g = gameFit else { return everClient ? nil : t }   // never a fabricated game time (Codex P2-8)
         return g.clock.hostTime(fromLocal: t).map { $0 + g.offset }
     }
 
@@ -909,9 +925,15 @@ struct MeshNode: Sendable {
     }
 
     static func stamped(_ e: GameEvent, _ t: Int64?) -> GameEvent {
-        guard case .shot(var r) = e else { return e }
-        r.strokeHostTime = t
-        return .shot(r)
+        switch e {
+        case .shot(var r):
+            r.strokeHostTime = t
+            return .shot(r)
+        case .shotLost(let id, let team, _):
+            return .shotLost(shotID: id, shooterTeam: team, strokeHostTime: t)
+        default:
+            return e
+        }
     }
 
     private mutating func onIslandLog(_ l: IslandLog, from: PeerID, now: Double) {
@@ -920,38 +942,47 @@ struct MeshNode: Sendable {
         got.entries += l.entries
         guard l.last else { islandIn[from] = got; return }
         islandIn[from] = nil
-        let island = Island(commitSeq: got.commitSeq, entries: got.entries, settles: l.settles)
-        if collecting != nil { islandStash.append(island) } else { heal([island]) }
+        pendingIslands[from] = Island(commitSeq: got.commitSeq, entries: got.entries, settles: l.settles)
     }
 
-    /// Merge island tails and settles into my log (INTERFACES "Host loss and islands", Heal). My entries up to
-    /// `keep` never change; the rest is rewritten after its longest unchanged prefix and re-sent to my clients.
-    private mutating func heal(_ islands: [Island]) {
-        let parts = islands.filter { !$0.entries.isEmpty || !$0.settles.isEmpty }
-        guard isHost, let low = parts.map(\.commitSeq).min() else { return }
-        let base = min(low, lastSeq)
-        let keep = min(max(base, firmSeq), lastSeq)
-        let fixed = log.filter { $0.seq > base && $0.seq <= keep }.map(\.event)
-        let mine = log.filter { $0.seq > keep }.map(\.event)
-        let others = parts.map { p in
-            p.entries.filter { $0.seq > p.commitSeq }.sorted { $0.seq < $1.seq }.map(\.event)
-                + p.settles.filter { if case .shot = $0.event { true } else { false } }.map(\.event)
-        }
-        let gaps = parts.flatMap { p in
-            p.settles.compactMap { s -> (event: GameEvent, time: Double)? in
-                guard case .shotLost = s.event, let t = s.strokeHostTime else { return nil }
-                return (s.event, Double(t) / 1e9)
-            }
-        }
-        let merged = IslandHeal.merge(fixed: fixed, mine: mine, others: others, gaps: gaps)
+    /// Merge one phone's log and settles into mine (INTERFACES "Host loss and islands", Heal). Committed entries
+    /// never change: mine up to my commit point, and the sender's up to its commit point (pulled in if I lack them).
+    /// The rest is merged and written after the longest unchanged prefix; a rewrite bumps the epoch so acks for
+    /// replaced entries never count, and nothing it adds is committed before a majority holds it.
+    private mutating func heal(_ island: Island) {
+        guard isHost, !(island.entries.isEmpty && island.settles.isEmpty) else { return }
+        let theirs = island.entries.sorted { $0.seq < $1.seq }
+        var p = 0
+        while p < min(log.count, theirs.count), log[p].event == theirs[p].event { p += 1 }
+        let theirCommit = min(Int(island.commitSeq), theirs.count)
+        let myCommit = min(Int(commitSeq), log.count)
+        let insert = theirCommit > p && myCommit <= p   // they committed entries I lack; mine after p never were
+        let from = insert ? p : max(p, myCommit)
+        let fixed = insert ? theirs[p..<theirCommit].map(\.event) : log[p..<from].map(\.event)
+        let mine = log[from...].map(\.event)
+        let tail = theirs[(insert ? theirCommit : p)...].map(\.event)
+        let committed = log[..<p].map(\.event) + fixed
+        let settles = island.settles.map(\.event).filter { e in !committed.contains { IslandHeal.matches(e, $0) } }
+        guard insert || !tail.isEmpty || !settles.isEmpty else { return }
+        let history = Set(log[..<p].compactMap { IslandHeal.id($0.event) })
+        let flagged = Set(log.compactMap { if case .shot(let r) = $0.event, r.needsTap { r.shotID } else { nil } })
+        let next = (insert ? fixed : []) + IslandHeal.merge(fixed: fixed, mine: mine, others: [tail + settles],
+                                                            history: history, flagged: flagged)
+        let current = log[from...].map(\.event)
         var same = 0
-        while same < min(mine.count, merged.count), mine[same] == merged[same] { same += 1 }
-        guard same < max(mine.count, merged.count) else { return }
-        let cut = keep + UInt64(same)
-        log.removeAll { $0.seq > cut }
-        for e in merged[same...] { log.append(LogEntry(seq: lastSeq + 1, term: term, event: e)) }
-        for (p, a) in acks { acks[p] = min(a, cut) }
-        for p in clients { sendLog(from: cut + 1, to: p) }
+        while same < min(current.count, next.count), current[same] == next[same] { same += 1 }
+        guard same < max(current.count, next.count) else { return }
+        let cut = from + same
+        if cut < log.count {
+            logEpoch += 1
+            logVersion += 1
+            log.removeSubrange(cut...)
+            for (peer, a) in acks { acks[peer] = min(a, UInt64(cut)) }
+        }
+        for e in next[same...] {
+            log.append(LogEntry(seq: lastSeq + 1, term: term, event: e, epoch: logEpoch == 0 ? nil : logEpoch))
+        }
+        for peer in clients { sendLog(from: UInt64(cut) + 1, to: peer) }
         advanceCommit()
     }
 
@@ -1001,21 +1032,25 @@ struct MeshNode: Sendable {
         step.outbound.append(Outbound(to: targets, message: m))
     }
 
-    private var lastReported: (UInt64, UInt64) = (0, 0)
+    private var lastReported: (UInt64, UInt64, Int) = (0, 0, 0)
 
     private mutating func flush() -> MeshStep {
         if everJoined { gameMembers.formUnion(roster.filter { !departed.contains($0) }) }
-        if !isIsland { firmSeq = max(firmSeq, commitSeq) }
         if isIsland != reportedIsland {
             reportedIsland = isIsland
             step.updates.append(.island(reportedIsland))
         }
-        if (lastSeq, commitSeq) != lastReported {
-            // A shot result committed after a kept settle: the host answered that stroke (plan 013a).
-            let results = log.prefix { $0.seq <= commitSeq }.filter { $0.event.isShotResult }.count
-            if results > committedResults, !isHost { kept = [] }
-            committedResults = results
-            lastReported = (lastSeq, commitSeq)
+        if (lastSeq, commitSeq, logVersion) != lastReported {
+            // Plan 013a: a kept settle goes once a committed entry answers its stroke (that one only).
+            if !isHost, !kept.isEmpty {
+                let committed = committedEntries
+                let answered = kept.map { k in
+                    let e = Self.stamped(k.event, gameNs(fromLocal: k.stroke))
+                    return committed.contains { IslandHeal.matches(e, $0.event) }
+                }
+                kept = zip(kept, answered).filter { !$0.1 }.map(\.0)
+            }
+            lastReported = (lastSeq, commitSeq, logVersion)
             step.updates.append(.logChanged(lastSeq: lastSeq, commitSeq: commitSeq))
         }
         defer { step = MeshStep() }
@@ -1025,9 +1060,26 @@ struct MeshNode: Sendable {
     static func ns(_ seconds: Double) -> Int64 { Int64((seconds * 1e9).rounded()) }
 }
 
-/// Plan 013a: the heal merge over log events (pure). Timed shots go through `IslandMerge`; everything else (untimed
-/// shots, taps, corrections, gaps, rule set) follows the timed shot before it on its own island.
+/// Plan 013a: the heal merge over log events (pure). Timed shots go through `IslandMerge`; timed gaps reconcile by
+/// stroke time; everything else (untimed shots, taps, corrections, rule set, amendments) follows the timed result
+/// before it on its own island.
 enum IslandHeal {
+    static func id(_ e: GameEvent) -> UUID? {
+        switch e {
+        case .shot(let r): r.shotID
+        case .shotLost(let id, _, _): id
+        default: nil
+        }
+    }
+
+    static func time(_ e: GameEvent) -> Int64? {
+        switch e {
+        case .shot(let r): r.strokeHostTime
+        case .shotLost(_, _, let t): t
+        default: nil
+        }
+    }
+
     /// The `IslandShot` view of a timed shot record; a D31 guess is less confident.
     static func view(_ e: GameEvent) -> IslandShot? {
         guard case .shot(let r) = e, let t = r.strokeHostTime else { return nil }
@@ -1036,75 +1088,119 @@ enum IslandHeal {
                           confidence: r.isGuess ? 0.5 : 1)
     }
 
-    /// The events to log after `fixed + mine`'s logged part: `fixed` is already logged (and never re-emitted), `mine`
-    /// is my rewritable tail, `others` are the senders' tails and settles, `gaps` kept `.shotLost` settles (game time, s).
-    static func merge(fixed: [GameEvent], mine: [GameEvent], others: [[GameEvent]],
-                      gaps: [(event: GameEvent, time: Double)]) -> [GameEvent] {
-        let islands = [fixed + mine] + others
+    /// Two results for the same stroke: the same id; two shots aligned (`IslandMerge.aligned`); or a gap and any
+    /// result within the time tolerance.
+    static func matches(_ a: GameEvent, _ b: GameEvent) -> Bool {
+        if let x = id(a), x == id(b) { return true }
+        if let va = view(a), let vb = view(b) { return IslandMerge.aligned(va, vb) }
+        guard let ta = time(a), let tb = time(b) else { return false }
+        return abs(Double(ta - tb)) / 1e9 <= IslandMerge.timeTolerance
+    }
+
+    /// The events to write after `fixed` (committed, never re-emitted) in place of `mine` (my uncommitted tail),
+    /// merged with `others` (the sender's uncommitted tail and settles). `history` = shot ids logged before both;
+    /// `flagged` = shot ids already carrying `needsTap`.
+    /// - Agreeing views: the logged record stays. Disagreeing: the merge's pick with `needsTap`; against a committed
+    ///   shot, an amendment (the committed record again, `needsTap`) the fold reads as a flag, not a shot.
+    /// - A gap answered by a view of the same stroke goes; a committed gap stands (views of its stroke go); two
+    ///   gaps of one stroke are one.
+    static func merge(fixed: [GameEvent], mine: [GameEvent], others: [[GameEvent]], history: Set<UUID>,
+                      flagged: Set<UUID>) -> [GameEvent] {
+        let tol = IslandMerge.timeTolerance
+        // The committed part is its own island: after a minority won the term it is the majority's view, not mine.
+        let islands = [fixed, mine] + others
+        let fixedShotIDs = Set(fixed.compactMap(id))
+        // A shot whose id appeared before (history, the committed part, or earlier on its island) is an amendment.
+        var amendment: Set<String> = []
+        for (k, l) in islands.enumerated() {
+            var seen = k == 1 ? history.union(fixedShotIDs) : history
+            for (j, e) in l.enumerated() {
+                guard case .shot(let r) = e else { continue }
+                if !seen.insert(r.shotID).inserted { amendment.insert("\(k):\(j)") }
+            }
+        }
+        func shotView(_ k: Int, _ j: Int) -> IslandShot? { amendment.contains("\(k):\(j)") ? nil : view(islands[k][j]) }
         var records: [UUID: MeshShotRecord] = [:]
-        for l in islands.reversed() { for case .shot(let r) in l { records[r.shotID] = r } }   // mine wins an id
-        let views = islands.map { $0.compactMap(view) }
+        for l in islands.reversed() { for case .shot(let r) in l.reversed() { records[r.shotID] = r } }   // committed, then mine, win
+        let views = islands.enumerated().map { k, l in l.indices.compactMap { shotView(k, $0) } }
         let clusters = IslandMerge.merge(views)
         var clusterOf: [UUID: Int] = [:]
         for (i, c) in clusters.enumerated() { for m in c.members { clusterOf[m] = i } }
-        let logged = Set((fixed + mine).compactMap { if case .shot(let r) = $0 { r.shotID } else { nil } })
+        let time = Dictionary(views.joined().map { ($0.id, $0.strokeTime) }, uniquingKeysWith: min)
+        let starts = clusters.map { c in c.members.compactMap { time[$0] }.min() ?? 0 }
         let fixedIDs = Set(fixed.compactMap { view($0)?.id })
+        let logged = Set((fixed + mine).compactMap { if case .shot(let r) = $0 { r.shotID } else { nil } })
 
-        var knownShots = logged.union(clusterOf.keys)
+        // Timed gaps, committed first, then mine, then the others'.
+        struct Gap { var k: Int; var j: Int; var time: Double; var fixed: Bool }
+        var gaps: [Gap] = []
+        for (k, l) in islands.enumerated() {
+            for (j, e) in l.enumerated() {
+                if case .shotLost = e, let t = Self.time(e) { gaps.append(Gap(k: k, j: j, time: Double(t) / 1e9, fixed: k == 0)) }
+            }
+        }
+        gaps.sort { ($0.fixed ? 0 : 1, $0.k, $0.time) < ($1.fixed ? 0 : 1, $1.k, $1.time) }
+        var items: [(time: Double, emit: GameEvent?)] = clusters.indices.map { (starts[$0], nil) }
+        var itemOf: [String: Int] = [:]
+        var placed: [(time: Double, item: Int)] = []
+        for g in gaps {
+            let key = "\(g.k):\(g.j)"
+            if g.fixed {
+                items.append((g.time, nil))
+                itemOf[key] = items.count - 1
+                placed.append((g.time, items.count - 1))
+            } else if let c = clusters.indices.first(where: { abs(starts[$0] - g.time) <= tol }) {
+                itemOf[key] = c                                  // a view answers this stroke
+            } else if let rep = placed.first(where: { abs($0.time - g.time) <= tol }) {
+                itemOf[key] = rep.item                           // another gap of the same stroke
+            } else {
+                items.append((g.time, islands[g.k][g.j]))
+                itemOf[key] = items.count - 1
+                placed.append((g.time, items.count - 1))
+            }
+        }
+        let fixedGapTimes = gaps.filter(\.fixed).map(\.time)
+        for (i, c) in clusters.enumerated() {
+            if c.members.contains(where: fixedIDs.contains) {
+                let f = c.members.first(where: fixedIDs.contains)!
+                if c.needsTap, !flagged.contains(f), var r = records[f], !r.needsTap {
+                    r.needsTap = true
+                    items[i].emit = .shot(r)                     // amendment: flag the committed shot
+                }
+            } else if !fixedGapTimes.contains(where: { abs($0 - starts[i]) <= tol }) {
+                let pick = c.needsTap ? c.shot.id : (c.members.first(where: logged.contains) ?? c.shot.id)
+                if var r = records[pick] {
+                    r.needsTap = c.needsTap || c.members.contains { records[$0]?.needsTap == true }
+                    items[i].emit = .shot(r)
+                }
+            }
+        }
+
+        // Everything else follows the timed result before it on its own island.
+        var knownShots = logged.union(clusterOf.keys).union(history)
         var knownEvents = Set(fixed + mine)
-        var after: [Int: [GameEvent]] = [:]   // anchor cluster → events; -1 = before every shot
-        func anchor(_ list: [GameEvent], skip: Int, dedupe: Bool) {
-            var a = -1
-            for (i, e) in list.enumerated() {
-                if let v = view(e) { a = clusterOf[v.id] ?? a; continue }
-                guard i >= skip else { continue }
-                if dedupe {
+        var after: [Int: [GameEvent]] = [:]
+        for (k, l) in islands.enumerated() {
+            var anchor = -1
+            for (j, e) in l.enumerated() {
+                if let v = shotView(k, j) { anchor = clusterOf[v.id] ?? anchor; continue }
+                if let it = itemOf["\(k):\(j)"] { anchor = it; continue }
+                if k == 0 { continue }
+                if k > 1 {
                     if case .shot(let r) = e {
                         guard knownShots.insert(r.shotID).inserted else { continue }
                     } else {
                         guard knownEvents.insert(e).inserted else { continue }
                     }
                 }
-                after[a, default: []].append(e)
+                after[anchor, default: []].append(e)
             }
         }
-        anchor(fixed + mine, skip: fixed.count, dedupe: false)
-        for o in others { anchor(o, skip: 0, dedupe: true) }
-
-        let all = views.joined()
-        var gapList: [(event: GameEvent, time: Double)] = []
-        for g in gaps.sorted(by: { $0.time < $1.time })
-        where !all.contains(where: { abs($0.strokeTime - g.time) <= IslandMerge.timeTolerance })
-            && !gapList.contains(where: { abs($0.time - g.time) <= IslandMerge.timeTolerance }) {
-            gapList.append(g)
-        }
-        let time = Dictionary(all.map { ($0.id, $0.strokeTime) }, uniquingKeysWith: min)
-
         var out = after[-1] ?? []
-        var g = 0
-        for (i, c) in clusters.enumerated() {
-            let start = c.members.compactMap { time[$0] }.min() ?? 0
-            while g < gapList.count, gapList[g].time < start { out.append(gapList[g].event); g += 1 }
-            if !c.members.contains(where: fixedIDs.contains) {
-                // Agreeing views: keep the logged record (no churn). Disagreeing: the merge's pick, flagged.
-                let pick = c.needsTap ? c.shot.id : (c.members.first(where: logged.contains) ?? c.shot.id)
-                if var r = records[pick] {
-                    r.needsTap = c.needsTap || c.members.contains { records[$0]?.needsTap == true }
-                    out.append(.shot(r))
-                }
-            }
+        for i in items.indices.sorted(by: { (items[$0].time, $0) < (items[$1].time, $1) }) {
+            if let e = items[i].emit { out.append(e) }
             out += after[i] ?? []
         }
-        out += gapList[g...].map(\.event)
         return out
-    }
-}
-
-private extension GameEvent {
-    var isShotResult: Bool {
-        switch self {
-        case .shot, .shotLost: true
-        default: false
-        }
     }
 }

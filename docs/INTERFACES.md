@@ -605,10 +605,13 @@ struct MeshShotRecord { …
 struct Heartbeat { …
     var gameOffset: Int64? = nil               // game clock − this host's clock, ns, at send time; nil = 0
 }
+enum GameEvent { … case shotLost(shotID: UUID, shooterTeam: Int, strokeHostTime: Int64? = nil) }   // gaps are timed
+struct LogEntry { … var epoch: UInt64? = nil } // host's rewrite count when written; nil = 0
+struct LogAck { … var epoch: UInt64? = nil }   // the acked entry's epoch: an ack for a replaced version never counts
 struct IslandSettle: Hashable, Codable, Sendable { var event: GameEvent; var strokeHostTime: Int64? }
 struct IslandLog: Hashable, Codable, Sendable {   // MeshMessage.islandLog, any → host, reliable
-    var commitSeq: UInt64                      // sender's commit point: its entries up to here are shared
-    var entries: [LogEntry]                    // sender's log after commitSeq, one batch (≤ logBatch entries)
+    var commitSeq: UInt64                      // sender's commit point
+    var entries: [LogEntry]                    // sender's whole log, one batch (≤ logBatch entries) per message
     var settles: [IslandSettle] = []           // sender's own unlogged settles (last batch only)
     var last: Bool                             // the host merges once the last batch arrives
 }
@@ -632,31 +635,43 @@ mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep
 Rules:
 - **Game clock.** Stroke times live on one clock: the first host's. A host that took over keeps its last clock fit to
   the old host (frozen, plus that host's `gameOffset`) and maps its own times through it; it sends the difference as
-  `Heartbeat.gameOffset`, and a client's game time is `clock.hostTime(fromLocal:) + gameOffset`. A client without a
-  fit has no game time: its settle keeps `strokeHostTime == nil` and aligns by shot id only. Fits drift ≈ 3 ms/min (§2.5).
+  `Heartbeat.gameOffset`, and a client's game time is `clock.hostTime(fromLocal:) + gameOffset`. A phone without a
+  fit (a client, or a host that was ever a client) has no game time: its settle keeps `strokeHostTime == nil` and
+  aligns by shot id only. Only a phone that never was a client uses its own clock. Fits drift ≈ 3 ms/min (§2.5).
 - **Every phone keeps its own settles.** `GameSessionModel.shotSettled` / `shotLost` hand the record to
   `mesh.settled(_:strokeAt:)` with the time of the last `aimEnded()` (else now). A non-host node keeps it (local time)
-  until a shot result commits after it was kept (the host answered that stroke); then it is dropped. On becoming host
-  (after collecting) the node re-runs its kept settles, and a phone that adopts a host sends its kept settles in an
-  `IslandLog`; the host merges them (below): a settle matching a logged shot is dropped, the rest are appended
-  (§2.5 "re-run"). A kept `.shotLost` (no confident record) becomes a D38 gap only if no view of any island has a
-  timed shot within 0.5 s of it.
-- **Island.** While `isIsland`: tracking, overlay and appends go on as before (an island host's appends never commit:
-  the commit quorum keeps the old roster). `GameSessionModel` fires its own settle's badge with `isProvisional`
+  unless a committed entry already answers its stroke, and drops it once one does (that settle only). "Answers": the
+  same id, an aligned shot (`IslandMerge.aligned`), or for a gap any result within 0.5 s. On becoming host (after
+  collecting) the node re-runs its kept settles, and a phone that adopts a host sends them in an `IslandLog`; the host
+  merges them (below): a settle a committed entry answers is dropped, the rest are merged and appended (§2.5
+  "re-run"). A kept `.shotLost` (no confident record) is a D38 gap unless a view of the same stroke exists.
+- **Island.** While `isIsland`: tracking, overlay and appends go on as before. `GameSessionModel` fires its own settle's badge with `isProvisional`
   (D48), never saves (`saveIfWon` refuses while `mesh.isIsland`, besides `isHost && hasGameQuorum`).
-- **Heal.** Higher term hosts (unchanged). A host stepping down sends, after its full log and before its `Hello`,
-  `IslandLog` batches of its log after its `commitSeq`, plus its kept settles. The host merges each `IslandLog`
-  when its last batch arrives (while collecting: after collecting, together with its own re-run):
-  - `keep = max(sender commitSeq, own commitSeq)`. Own entries up to `keep` never change. Own entries after the
-    sender's commit point and the sender's tail(s) are the islands. Timed shots go through `IslandMerge`; a cluster
-    holding an entry at or before `keep` is already logged. Untimed entries and non-shot events (taps, corrections,
-    gaps, rule set) follow the timed shot before them in their own island; the sender's are dropped if equal to an
-    own event (a shot: same shotID). Merged records keep `needsTap` if either flag is set.
-  - The host rewrites its log after the longest unchanged prefix, clamps acks to it, re-sends the new tail to
-    clients, and recommits. Everyone re-folds the committed prefix.
+- **Commits.** Unchanged rule: committed = acked by a majority of the commit quorum. The two-phone lone survivor
+  (its host lost silently) commits alone (pre-existing, `loneSurvivorOfTwoPhoneGameCommits`); it is still an island
+  (no majority of the game's members), so it never saves. Committed entries never change, on either side of a split.
+- **Heal.** Higher term hosts (unchanged). Every phone that adopts a host sends, after its full log and before its
+  `Hello`, `IslandLog` batches of its whole log with its `commitSeq`, plus its kept settles. The host merges a
+  sender's `IslandLog` when its `Hello` admits it (while collecting: after collecting, after its own re-run), so the
+  sender counts toward the commit of whatever the merge adds:
+  - `p` = the common prefix (equal events). If the sender committed entries after `p` and I did not, those are
+    pulled in as they are (a minority that won the term never loses the majority's commits); else mine up to my
+    commit point stay. The rest (my uncommitted tail, the sender's uncommitted tail, the settles) is merged:
+    timed shots through `IslandMerge`, timed gaps by stroke time; everything else follows the timed result before it
+    on its own island, the sender's dropped if equal to one of mine (a shot: same shotID).
+  - Agreeing views: the logged record stays. Disagreeing: the merge's pick with `needsTap`; against a committed shot,
+    an amendment (that record again with `needsTap`), which the fold reads as a flag on the first, never a new shot.
+    A gap answered by a view goes; a committed gap stands (views of its stroke go); one gap per stroke.
+  - The host rewrites after the longest unchanged prefix (never at or before its commit point). A rewrite bumps the
+    log epoch (new entries carry it; acks clamp to the cut and only an ack naming the current epoch of its seq
+    counts) and the node reports `logChanged` on any content change. A client that receives a replacement drops its
+    commit point below it. `MeshGameLink` forwards a rewritten prefix at the same `commitSeq`; the fold pushes Live's
+    legality whenever the committed events change by content.
 - Out of 013a: D47's pick UI (013b, reuses plan 015's replay), D51's unconfirmed save (013b, schema change),
-  resume after a kill. Known limits: a ≥3-phone minority island that wins the term on heal only receives the other
-  side's tail after that side's commit point; a host's own `.tableState` captureTime stays on its own clock.
+  resume after a kill. Known limits: the other island's unmatched shots follow the winner's committed ones (committed
+  entries keep their place); a committed gap beats a later-arriving confident view of its stroke (D38's ask stands);
+  a phone without a clock fit settles untimed (aligned by id only); a host's own `.tableState` captureTime stays on
+  its own clock.
 
 ## Proposed (plan 006 — not approved)
 
