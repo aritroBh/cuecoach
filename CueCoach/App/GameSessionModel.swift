@@ -231,7 +231,7 @@ final class GameSessionModel {
     }
 
     private func apply(_ committed: [GameEvent]) {
-        let fresh = committed.dropFirst(events.count)
+        let changed = committed != events   // by content: an island merge can rewrite without growing (Codex P2-9)
         events = committed
         fold()
         // The badge fires once per shot, for the newest newly committed rated shot only.
@@ -242,7 +242,7 @@ final class GameSessionModel {
                                                 isProvisional: mesh?.isIsland == true)))
         }
         // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
-        if !fresh.isEmpty { pushLegal() }
+        if changed { pushLegal() }
         saveIfWon()
     }
 
@@ -293,6 +293,9 @@ final class GameSessionModel {
             switch events[i] {
             case .ruleSetChosen, .shooterCorrection:
                 break
+            case .shot(let r) where shots.contains { $0.id == r.shotID }:
+                // Plan 013a: a repeated shotID is a merge's amendment of a committed shot: a flag, never a new shot.
+                if r.needsTap, let k = shots.firstIndex(where: { $0.id == r.shotID }) { shots[k].needsTap = true }
             case .shot(let r):
                 needsShooter = false
                 var attribution = AttributionSource.turnOrder
