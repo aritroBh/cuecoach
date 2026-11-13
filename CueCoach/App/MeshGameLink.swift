@@ -151,6 +151,7 @@ extension GameMeshLink {
                 case .roleChanged(let role, _): self?.resolve(role)
                 case .logChanged: await self?.forwardCommitted(from: s)
                 case .island(let i): self?.isIsland = i
+                case .settleAbsorbed(let id): self?.confirmAbsorbed(id)
                 default: break
                 }
             }
@@ -174,6 +175,12 @@ extension GameMeshLink {
         commitSeq = snap.commitSeq
         forwarded = committed
         onCommittedLog?(committed, snap.commitSeq)
+    }
+
+    /// Plan 013a: the node answered this settle with another entry for the same stroke; it will never commit under its
+    /// own id, so a drain must not wait for it.
+    private func confirmAbsorbed(_ id: UUID) {
+        if let i = unconfirmed.firstIndex(where: { IslandHeal.id($0) == id }) { unconfirmed.remove(at: i) }
     }
 
     private func see(_ roster: [PeerID]) {

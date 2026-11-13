@@ -54,16 +54,19 @@ public enum IslandMerge {
     /// The same physical shot: the same id, or strokes within `timeTolerance` with every ball both views know within
     /// one ball radius. An empty pre-state (unknown) matches on time alone; two known states with no common ball never do.
     public static func aligned(_ a: IslandShot, _ b: IslandShot, ballRadius: Double = TableSpec.ballRadius) -> Bool {
-        if a.id == b.id { return true }
-        guard abs(a.strokeTime - b.strokeTime) <= timeTolerance else { return false }
-        if a.preState.isEmpty || b.preState.isEmpty { return true }
+        sameStroke(StrokeView(id: a.id, time: a.strokeTime, preState: a.preState, isGap: false),
+                   StrokeView(id: b.id, time: b.strokeTime, preState: b.preState, isGap: false), ballRadius: ballRadius)
+    }
+
+    /// Every ball both pre-states know is within one ball radius, and they share at least `minCommon` balls.
+    private static func preStatesAgree(_ a: [BallID: Vec2], _ b: [BallID: Vec2], ballRadius: Double, minCommon: Int) -> Bool {
         var common = 0
-        for (ball, p) in a.preState {
-            guard let q = b.preState[ball] else { continue }
+        for (ball, p) in a {
+            guard let q = b[ball] else { continue }
             guard p.distance(to: q) <= ballRadius else { return false }
             common += 1
         }
-        return common > 0
+        return common >= minCommon
     }
 
     /// One entry per physical shot any island saw, in stroke order (earliest view, then kept id). A shot takes at most
@@ -97,9 +100,21 @@ public enum IslandMerge {
         .map(\.merged)
     }
 
-    /// The one rule for "same physical stroke" (Codex 013a review 3). Stub.
+    /// The one rule for "same physical stroke", used everywhere the mesh asks it (Codex 013a review 3):
+    /// - the same id;
+    /// - both timed: strokes within `timeTolerance`, and, for two shots, every ball both pre-states know within one
+    ///   ball radius (an unknown pre-state matches on time alone); a gap matches any result in the window;
+    /// - otherwise (a side has no game time): only two shots whose known pre-states share at least two balls, all
+    ///   within one radius. An untimed gap never matches anything but its own id.
     public static func sameStroke(_ a: StrokeView, _ b: StrokeView, ballRadius: Double = TableSpec.ballRadius) -> Bool {
-        false
+        if a.id == b.id { return true }
+        if let ta = a.time, let tb = b.time {
+            guard abs(ta - tb) <= timeTolerance else { return false }
+            if a.isGap || b.isGap || a.preState.isEmpty || b.preState.isEmpty { return true }
+            return preStatesAgree(a.preState, b.preState, ballRadius: ballRadius, minCommon: 1)
+        }
+        guard !a.isGap, !b.isGap, !a.preState.isEmpty, !b.preState.isEmpty else { return false }
+        return preStatesAgree(a.preState, b.preState, ballRadius: ballRadius, minCommon: 2)
     }
 
     /// Canonical view order: stroke time, then id.

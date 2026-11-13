@@ -168,10 +168,12 @@ struct MeshNode: Sendable {
     // islands (plan 013a, §2.5)
     /// The game clock as this phone last knew it while a client (its fit to that host + that host's game offset),
     /// frozen when the host was lost. nil = this phone's own clock is the game clock (it hosted first).
-    private var gameFit: (clock: ClockSyncEstimator, offset: Int64)?
+    /// `clock == nil`: this phone's own clock is the game clock (it hosted first), frozen when it adopted a host.
+    private var gameFit: (clock: ClockSyncEstimator?, offset: Int64)?
     /// Client: the host's `Heartbeat.gameOffset`; nil = unknown (the host has no game clock, or no heartbeat yet).
     private var hostGameOffset: Int64?
     /// This phone's own settles that no committed entry answers yet, with the stroke on this phone's clock (ns).
+    /// The event is stamped at settle time when the game time was known; `stroke` restamps it later otherwise.
     private var kept: [(event: GameEvent, stroke: Int64)] = []
     /// Every phone seen in a roster since joining, minus those that left gracefully: the island denominator.
     private var gameMembers: Set<PeerID> = []
@@ -391,20 +393,25 @@ struct MeshNode: Sendable {
     /// Plan 013a: this phone's own settle (`.shot` / `.shotLost`) with its stroke time on this phone's clock (s).
     /// The host stamps the stroke on the game clock and appends; any other phone keeps it until a committed entry
     /// answers the same stroke, and re-runs it as a new host or sends it on adopting one.
+    /// Every own settle stays in `kept` until a committed entry answers its stroke (`IslandMerge.sameStroke`); one
+    /// answered by another entry is reported `settleAbsorbed`, so the link never waits for it.
     mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep {
         guard rejected == nil, !left else { return flush() }
         let stroke = Self.ns(strokeAt)
         let stamped = Self.stamped(e, gameNs(fromLocal: stroke))
-        if isHost && collecting == nil {
-            // A late view of a stroke an inherited entry (an earlier host's) already answers is not new: e.g. one
-            // settled after this phone was promoted. My own appends this term never block the next one.
-            let answered = log.contains { $0.term < term && IslandHeal.matches(stamped, $0.event) }
-            if !answered { _ = append(stamped, now: now, flushing: false) }
-        } else if !committedEntries.contains(where: { IslandHeal.matches(stamped, $0.event) }) {
-            kept.append((e, stroke))
-            if kept.count > 16 { kept.removeFirst() }
+        let answeredBy = isHost && collecting == nil ? log[...] : committedEntries
+        if answeredBy.contains(where: { IslandHeal.matches(stamped, $0.event) }) {
+            absorbed(stamped)                 // e.g. a late view of a stroke already logged (any term)
+        } else {
+            if isHost && collecting == nil { _ = append(stamped, now: now, flushing: false) }
+            kept.append((stamped, stroke))
+            if kept.count > 32 { kept.removeFirst() }
         }
         return flush()
+    }
+
+    private mutating func absorbed(_ e: GameEvent) {
+        if let id = IslandHeal.id(e) { step.updates.append(.settleAbsorbed(shotID: id)) }
     }
 
     private var committedEntries: ArraySlice<LogEntry> { log.prefix { $0.seq <= commitSeq } }
@@ -527,8 +534,7 @@ struct MeshNode: Sendable {
 
     private mutating func hostLost(now: Double) {
         let gone = hostID
-        // Keep stamping strokes on the game clock: freeze the last fit to the lost host (§2.5, drifts ≈ 3 ms/min).
-        if clock.estimate != nil, let offset = hostGameOffset { gameFit = (clock, offset) }
+        freezeGameClock()
         lostRosterSize = roster.count
         if let gone { roster.removeAll { $0 == gone }; detector.forget(gone) }
         hostID = nil
@@ -575,6 +581,7 @@ struct MeshNode: Sendable {
         // and my own unlogged settles, on the game clock as I know it now (before the clock resets for the new host).
         let islandLog = log, islandCommit = commitSeq
         let settles = keptSettles()   // kept until seen committed: the new host may die before merging them
+        freezeGameClock()             // before the clock resets for the new host (Codex 013a review 3, finding 2)
         everClient = true
         term = newTerm
         hostID = h
@@ -661,10 +668,17 @@ struct MeshNode: Sendable {
             guard wins(term: w.term, claimant: from) else { return }
             adopt(host: from, term: w.term, now: now)
         }
-        if log != w.log { logVersion += 1 }
-        log = w.log
+        // Plan 013a: what I hold committed stays committed. The new host's log holds it (collection and heals keep
+        // committed entries), but its welcome carries only the first batch and its commit point may lag mine.
+        let old = log, oldCommit = Int(min(commitSeq, UInt64(log.count)))
+        let shared = min(oldCommit, w.log.count)
+        let agrees = zip(old.prefix(shared), w.log.prefix(shared)).allSatisfy { $0.event == $1.event }
+        var next = w.log
+        if agrees, oldCommit > w.log.count { next += old[w.log.count..<oldCommit] }
+        if log != next { logVersion += 1 }
+        log = next
         synced = true
-        commitSeq = min(w.commitSeq, lastSeq)
+        commitSeq = max(min(w.commitSeq, lastSeq), agrees ? UInt64(oldCommit) : 0)
         if roster != w.roster { roster = w.roster; step.updates.append(.rosterChanged(w.roster)) }
         sendProfileToNewMembers()
         sendAck()
@@ -747,7 +761,6 @@ struct MeshNode: Sendable {
         // Plan 013a: re-run the shot in flight from my own settles, and merge island logs that came in meanwhile.
         logEpoch = max(logEpoch, log.compactMap(\.epoch).max() ?? 0)   // epochs stay monotonic across host changes
         heal(Island(commitSeq: commitSeq, entries: log, settles: keptSettles()))
-        kept = []
         for p in pendingHellos { if let island = pendingIslands.removeValue(forKey: p) { heal(island) } }
         let hellos = pendingHellos
         pendingHellos = []
@@ -794,7 +807,10 @@ struct MeshNode: Sendable {
                 let i = Int(e.seq - 1)
                 // Same entry again (duplicate / stale batch): keep what I have. A different one: the host's
                 // log wins from here on.
-                if log[i] != e {
+                if log[i] != e, log[i].event == e.event {
+                    log[i] = e                               // same event, new term/epoch (re-appended by a heal)
+                    logVersion += 1
+                } else if log[i] != e {
                     log.removeSubrange(i...)
                     log.append(e)
                     commitSeq = min(commitSeq, UInt64(i))   // a replaced entry was never committed (plan 013a)
@@ -919,19 +935,35 @@ struct MeshNode: Sendable {
     /// Stroke time on the game clock (ns): a client through its host fit + the host's game offset; otherwise through
     /// the frozen fit to the last host, or this phone's own clock if it hosted first. nil = a client without a fit.
     private func gameNs(fromLocal t: Int64) -> Int64? {
-        if case .client = role {
-            guard let offset = hostGameOffset else { return nil }   // the host has no game clock (Codex re-review R5)
-            return clock.hostTime(fromLocal: t).map { $0 + offset }
+        if case .client = role, let offset = hostGameOffset, let h = clock.hostTime(fromLocal: t) { return h + offset }
+        if let g = gameFit {
+            guard let c = g.clock else { return t + g.offset }
+            return c.hostTime(fromLocal: t).map { $0 + g.offset }
         }
-        guard let g = gameFit else { return everClient ? nil : t }   // never a fabricated game time (Codex P2-8)
-        return g.clock.hostTime(fromLocal: t).map { $0 + g.offset }
+        if case .client = role { return nil }
+        return everClient ? nil : t   // never a fabricated game time (Codex P2-8)
+    }
+
+    /// Keep stamping strokes on the game clock after this host goes (lost or replaced): freeze my last fit to it,
+    /// or, if I hosted first, my own clock (§2.5, drifts ≈ 3 ms/min).
+    private mutating func freezeGameClock() {
+        if case .client = role {
+            if clock.estimate != nil, let offset = hostGameOffset { gameFit = (clock, offset) }
+        } else if isHost, gameFit == nil, !everClient {
+            gameFit = (nil, 0)   // only a phone that hosted first owns the game clock
+        }
     }
 
     private func keptSettles() -> [IslandSettle] {
         kept.map { k in
-            let t = gameNs(fromLocal: k.stroke)
-            return IslandSettle(event: Self.stamped(k.event, t), strokeHostTime: t)
+            let e = restamped(k)
+            return IslandSettle(event: e, strokeHostTime: IslandHeal.time(e))
         }
+    }
+
+    /// A kept settle with its game time: the one it got at settle time, else the current one (if any).
+    private func restamped(_ k: (event: GameEvent, stroke: Int64)) -> GameEvent {
+        IslandHeal.time(k.event) == nil ? Self.stamped(k.event, gameNs(fromLocal: k.stroke)) : k.event
     }
 
     static func stamped(_ e: GameEvent, _ t: Int64?) -> GameEvent {
@@ -972,12 +1004,9 @@ struct MeshNode: Sendable {
         let mine = log[from...].map(\.event)
         let tail = theirs[(insert ? theirCommit : p)...].map(\.event)
         let committed = log[..<p].map(\.event) + fixed
-        let settles = island.settles.map(\.event).filter { e in !committed.contains { IslandHeal.matches(e, $0) } }
+        let settles = island.settles.map(\.event)
         guard insert || !tail.isEmpty || !settles.isEmpty else { return }
-        let history = Set(log[..<p].compactMap { IslandHeal.id($0.event) })
-        let flagged = Set(log.compactMap { if case .shot(let r) = $0.event, r.needsTap { r.shotID } else { nil } })
-        let next = (insert ? fixed : []) + IslandHeal.merge(fixed: fixed, mine: mine, others: [tail + settles],
-                                                            history: history, flagged: flagged)
+        let next = (insert ? fixed : []) + IslandHeal.merge(committed: committed, mine: mine, others: [tail, settles])
         let current = log[from...].map(\.event)
         var same = 0
         while same < min(current.count, next.count), current[same] == next[same] { same += 1 }
@@ -1052,14 +1081,18 @@ struct MeshNode: Sendable {
             step.updates.append(.island(reportedIsland))
         }
         if (lastSeq, commitSeq, logVersion) != lastReported {
-            // Plan 013a: a kept settle goes once a committed entry answers its stroke (that one only).
-            if !isHost, !kept.isEmpty {
+            // Plan 013a: a kept settle goes once a committed entry answers its stroke (that one only); answered under
+            // another id, it is reported absorbed.
+            if !kept.isEmpty {
                 let committed = committedEntries
-                let answered = kept.map { k in
-                    let e = Self.stamped(k.event, gameNs(fromLocal: k.stroke))
-                    return committed.contains { IslandHeal.matches(e, $0.event) }
+                var still: [(event: GameEvent, stroke: Int64)] = []
+                for k in kept {
+                    let e = restamped(k)
+                    if committed.contains(where: { IslandHeal.id($0.event) == IslandHeal.id(e) }) { continue }
+                    if committed.contains(where: { IslandHeal.matches(e, $0.event) }) { absorbed(e); continue }
+                    still.append(k)
                 }
-                kept = zip(kept, answered).filter { !$0.1 }.map(\.0)
+                kept = still
             }
             lastReported = (lastSeq, commitSeq, logVersion)
             step.updates.append(.logChanged(lastSeq: lastSeq, commitSeq: commitSeq))
@@ -1071,9 +1104,10 @@ struct MeshNode: Sendable {
     static func ns(_ seconds: Double) -> Int64 { Int64((seconds * 1e9).rounded()) }
 }
 
-/// Plan 013a: the heal merge over log events (pure). Timed shots go through `IslandMerge`; timed gaps reconcile by
-/// stroke time; everything else (untimed shots, taps, corrections, rule set, amendments) follows the timed result
-/// before it on its own island.
+/// Plan 013a: the heal merge over log events (pure). Whether two results are one stroke is always
+/// `IslandMerge.sameStroke`: timed shots cluster through `IslandMerge.merge`; timed gaps and untimed shots join the
+/// result of the same stroke; everything else (taps, corrections, rule set, untimed gaps) follows the result before it
+/// on its own island.
 enum IslandHeal {
     static func id(_ e: GameEvent) -> UUID? {
         switch e {
@@ -1091,6 +1125,24 @@ enum IslandHeal {
         }
     }
 
+    static func stroke(_ e: GameEvent) -> StrokeView? {
+        switch e {
+        case .shot(let r):
+            StrokeView(id: r.shotID, time: r.strokeHostTime.map { Double($0) / 1e9 },
+                       preState: r.preState?.balls.mapValues(\.position) ?? [:], isGap: false)
+        case .shotLost(let id, _, let t):
+            StrokeView(id: id, time: t.map { Double($0) / 1e9 }, preState: [:], isGap: true)
+        default:
+            nil
+        }
+    }
+
+    /// Two results of one physical stroke (`IslandMerge.sameStroke`).
+    static func matches(_ a: GameEvent, _ b: GameEvent) -> Bool {
+        guard let x = stroke(a), let y = stroke(b) else { return false }
+        return IslandMerge.sameStroke(x, y)
+    }
+
     /// The `IslandShot` view of a timed shot record; a D31 guess is less confident.
     static func view(_ e: GameEvent) -> IslandShot? {
         guard case .shot(let r) = e, let t = r.strokeHostTime else { return nil }
@@ -1099,123 +1151,112 @@ enum IslandHeal {
                           confidence: r.isGuess ? 0.5 : 1)
     }
 
-    /// Two results for the same stroke: the same id; two shots aligned (`IslandMerge.aligned`); or a gap and any
-    /// result within the time tolerance.
-    static func matches(_ a: GameEvent, _ b: GameEvent) -> Bool {
-        if let x = id(a), x == id(b) { return true }
-        if let va = view(a), let vb = view(b) { return IslandMerge.aligned(va, vb) }
-        guard let ta = time(a), let tb = time(b) else { return false }
-        return abs(Double(ta - tb)) / 1e9 <= IslandMerge.timeTolerance
-    }
-
-    /// The events to write after `fixed` (committed, never re-emitted) in place of `mine` (my uncommitted tail),
-    /// merged with `others` (the sender's uncommitted tail and settles). `history` = shot ids logged before both;
-    /// `flagged` = shot ids already carrying `needsTap`.
-    /// - Agreeing views: the logged record stays. Disagreeing: the merge's pick with `needsTap`; against a committed
-    ///   shot, an amendment (the committed record again, `needsTap`) the fold reads as a flag, not a shot.
-    /// - A gap answered by a view of the same stroke goes; a committed gap stands (views of its stroke go); two
-    ///   gaps of one stroke are one.
-    static func merge(fixed: [GameEvent], mine: [GameEvent], others: [[GameEvent]], history: Set<UUID>,
-                      flagged: Set<UUID>) -> [GameEvent] {
-        let tol = IslandMerge.timeTolerance
-        // The committed part is its own island: after a minority won the term it is the majority's view, not mine.
-        let islands = [fixed, mine] + others
-        let fixedShotIDs = Set(fixed.compactMap(id))
-        // A shot whose id appeared before (history, the committed part, or earlier on its island) is an amendment.
-        var amendment: Set<String> = []
-        for (k, l) in islands.enumerated() {
-            var seen = k == 1 ? history.union(fixedShotIDs) : history
-            for (j, e) in l.enumerated() {
-                guard case .shot(let r) = e else { continue }
-                if !seen.insert(r.shotID).inserted { amendment.insert("\(k):\(j)") }
-            }
-        }
-        func shotView(_ k: Int, _ j: Int) -> IslandShot? { amendment.contains("\(k):\(j)") ? nil : view(islands[k][j]) }
-        var records: [UUID: MeshShotRecord] = [:]
-        for l in islands.reversed() { for case .shot(let r) in l.reversed() { records[r.shotID] = r } }   // committed, then mine, win
-        let views = islands.enumerated().map { k, l in l.indices.compactMap { shotView(k, $0) } }
-        let clusters = IslandMerge.merge(views)
-        var clusterOf: [UUID: Int] = [:]
-        for (i, c) in clusters.enumerated() { for m in c.members { clusterOf[m] = i } }
-        let time = Dictionary(views.joined().map { ($0.id, $0.strokeTime) }, uniquingKeysWith: min)
-        let starts = clusters.map { c in c.members.compactMap { time[$0] }.min() ?? 0 }
-        let fixedIDs = Set(fixed.compactMap { view($0)?.id })
-        let logged = Set((fixed + mine).compactMap { if case .shot(let r) = $0 { r.shotID } else { nil } })
-
-        // Timed gaps, committed first, then mine, then the others'.
-        struct Gap { var k: Int; var j: Int; var time: Double; var fixed: Bool }
-        var gaps: [Gap] = []
+    /// The events that replace `mine` (my uncommitted tail) after `committed` (everything committed, never re-emitted),
+    /// merged with `others` (a sender's uncommitted tail and settles).
+    /// - Each id's first occurrence (committed, mine, then the others) is a result; a later one is a copy, or a flag
+    ///   amendment. A flag on any occurrence of any result of a stroke reaches that stroke.
+    /// - Results of one stroke form one group. A group with a committed result emits nothing, or an amendment (the
+    ///   committed record again, `needsTap`) when its results disagree or any is flagged and the log lacks that flag.
+    ///   Otherwise: shots beat gaps; agreeing shots keep my logged record; disagreeing ones keep the most confident
+    ///   view (ties: smaller id), flagged. A group of gaps is one gap; a committed gap stands.
+    static func merge(committed: [GameEvent], mine: [GameEvent], others: [[GameEvent]]) -> [GameEvent] {
+        let islands = [committed, mine] + others
+        struct Ref: Hashable { var k: Int; var j: Int }
+        // First occurrences are results; repeats carry flags.
+        var primary: Set<Ref> = []
+        var firstOf: [UUID: Ref] = [:]
+        var flagWanted: Set<UUID> = [], flagHave: Set<UUID> = []
         for (k, l) in islands.enumerated() {
             for (j, e) in l.enumerated() {
-                if case .shotLost = e, let t = Self.time(e) { gaps.append(Gap(k: k, j: j, time: Double(t) / 1e9, fixed: k == 0)) }
+                guard let id = id(e) else { continue }
+                if case .shot(let r) = e, r.needsTap {
+                    flagWanted.insert(id)
+                    if k <= 1 { flagHave.insert(id) }
+                }
+                if firstOf[id] == nil { firstOf[id] = Ref(k: k, j: j); primary.insert(Ref(k: k, j: j)) }
             }
         }
-        gaps.sort { ($0.fixed ? 0 : 1, $0.k, $0.time) < ($1.fixed ? 0 : 1, $1.k, $1.time) }
-        var items: [(time: Double, emit: GameEvent?)] = clusters.indices.map { (starts[$0], nil) }
-        var itemOf: [String: Int] = [:]
-        var placed: [(time: Double, item: Int)] = []
-        for g in gaps {
-            let key = "\(g.k):\(g.j)"
-            if g.fixed {
-                items.append((g.time, nil))
-                itemOf[key] = items.count - 1
-                placed.append((g.time, items.count - 1))
-            } else if let c = clusters.indices.first(where: { abs(starts[$0] - g.time) <= tol }) {
-                itemOf[key] = c                                  // a view answers this stroke
-            } else if let rep = placed.first(where: { abs($0.time - g.time) <= tol }) {
-                itemOf[key] = rep.item                           // another gap of the same stroke
+        func event(_ r: Ref) -> GameEvent { islands[r.k][r.j] }
+
+        // Groups: timed shots via IslandMerge (one view per island), then gaps and untimed shots join by sameStroke.
+        let views = islands.enumerated().map { k, l in l.indices.filter { primary.contains(Ref(k: k, j: $0)) }.compactMap { view(l[$0]) } }
+        var groups: [[Ref]] = IslandMerge.merge(views).map { c in c.members.compactMap { firstOf[$0] } }
+        var groupOf: [Ref: Int] = [:]
+        for (g, members) in groups.enumerated() { for m in members { groupOf[m] = g } }
+        let joiners = primary.filter { groupOf[$0] == nil }.sorted { ($0.k, $0.j) < ($1.k, $1.j) }
+        for r in joiners {
+            let e = event(r)
+            if let g = groups.indices.first(where: { g in groups[g].contains { matches(e, event($0)) } }) {
+                groups[g].append(r)
+                groupOf[r] = g
             } else {
-                items.append((g.time, islands[g.k][g.j]))
-                itemOf[key] = items.count - 1
-                placed.append((g.time, items.count - 1))
+                groups.append([r])
+                groupOf[r] = groups.count - 1
             }
         }
-        let fixedGapTimes = gaps.filter(\.fixed).map(\.time)
-        for (i, c) in clusters.enumerated() {
-            if c.members.contains(where: fixedIDs.contains) {
-                let f = c.members.first(where: fixedIDs.contains)!
-                let disagree = c.needsTap || c.members.contains { $0 != f && records[$0]?.needsTap == true }
-                if disagree, !flagged.contains(f), var r = records[f], !r.needsTap {
-                    r.needsTap = true
-                    items[i].emit = .shot(r)                     // amendment: flag the committed shot
-                }
-            } else if !fixedGapTimes.contains(where: { abs($0 - starts[i]) <= tol }) {
-                let pick = c.needsTap ? c.shot.id : (c.members.first(where: logged.contains) ?? c.shot.id)
-                if var r = records[pick] {
-                    r.needsTap = c.needsTap || c.members.contains { records[$0]?.needsTap == true }
-                    items[i].emit = .shot(r)
-                }
+        func gTime(_ g: Int) -> Double? { groups[g].compactMap { stroke(event($0))?.time }.min() }
+
+        // What each group emits.
+        var emit: [Int: GameEvent] = [:]
+        var amendments: [GameEvent] = []
+        for (g, members) in groups.enumerated() {
+            let shots = members.compactMap { r -> (Ref, MeshShotRecord)? in if case .shot(let x) = event(r) { (r, x) } else { nil } }
+            let disagree = Set(shots.map(\.1.outcome)).count > 1 || shots.contains { flagWanted.contains($0.1.shotID) }
+            if let c = members.first(where: { $0.k == 0 }) {
+                guard disagree, case .shot(var r) = event(c), !flagHave.contains(r.shotID) else { continue }
+                r.needsTap = true
+                if gTime(g) == nil { amendments.append(.shot(r)) } else { emit[g] = .shot(r) }
+                continue
+            }
+            if let best = shots.max(by: { a, b in
+                let ca = a.1.isGuess ? 0.5 : 1.0, cb = b.1.isGuess ? 0.5 : 1.0
+                return ca != cb ? ca < cb : a.1.shotID.uuidString > b.1.shotID.uuidString
+            }) {
+                var r = disagree ? best.1 : (shots.first { $0.0.k == 1 }?.1 ?? best.1)
+                r.needsTap = r.needsTap || disagree
+                emit[g] = .shot(r)
+            } else if let gap = members.first(where: { $0.k == 1 }) ?? members.first {
+                emit[g] = event(gap)
             }
         }
 
-        // Everything else follows the timed result before it on its own island.
-        var knownShots = logged.union(clusterOf.keys).union(history)
-        var knownEvents = Set(fixed + mine)
-        var flags = flagged.union((fixed + mine).compactMap { if case .shot(let r) = $0, r.needsTap { r.shotID } else { nil } })
-        var after: [Int: [GameEvent]] = [:]
+        // Placement: timed groups in stroke order; everything else after the timed group before it on its island.
+        enum Slot { case event(GameEvent), group(Int) }
+        var after: [Int: [Slot]] = [:]
+        var placed: Set<Int> = []
+        var knownEvents = Set(committed + mine)
         for (k, l) in islands.enumerated() {
             var anchor = -1
             for (j, e) in l.enumerated() {
-                if let v = shotView(k, j) { anchor = clusterOf[v.id] ?? anchor; continue }
-                if let it = itemOf["\(k):\(j)"] { anchor = it; continue }
-                if k == 0 { continue }
-                if k > 1 {
-                    if case .shot(let r) = e {
-                        // A known shot again: dropped, unless it carries a flag the log lacks (an amendment travels).
-                        let fresh = knownShots.insert(r.shotID).inserted
-                        guard fresh || (r.needsTap && flags.insert(r.shotID).inserted) else { continue }
-                    } else {
-                        guard knownEvents.insert(e).inserted else { continue }
-                    }
+                let r = Ref(k: k, j: j)
+                if let g = groupOf[r] {
+                    if gTime(g) != nil { anchor = g; continue }
+                    if placed.insert(g).inserted, k > 0 { after[anchor, default: []].append(.group(g)) }
+                    continue
                 }
-                after[anchor, default: []].append(e)
+                if k == 0 { continue }                                   // committed: already logged
+                if id(e) != nil {                                        // a repeat: mine keeps it, theirs is a copy
+                    if k == 1 { after[anchor, default: []].append(.event(e)) }
+                    continue
+                }
+                if k > 1 { guard knownEvents.insert(e).inserted else { continue } }
+                after[anchor, default: []].append(.event(e))
             }
         }
-        var out = after[-1] ?? []
-        for i in items.indices.sorted(by: { (items[$0].time, $0) < (items[$1].time, $1) }) {
-            if let e = items[i].emit { out.append(e) }
-            out += after[i] ?? []
+        func expand(_ slots: [Slot]) -> [GameEvent] {
+            slots.flatMap { s -> [GameEvent] in
+                switch s {
+                case .event(let e): [e]
+                case .group(let g): emit[g].map { [$0] } ?? []
+                }
+            }
         }
-        return out
+        var out = expand(after[-1] ?? [])
+        let timed = groups.indices.filter { gTime($0) != nil }.sorted { (gTime($0)!, $0) < (gTime($1)!, $1) }
+        for g in timed {
+            if let e = emit[g] { out.append(e) }
+            out += expand(after[g] ?? [])
+        }
+        return out + amendments
     }
 }
