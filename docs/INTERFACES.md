@@ -686,7 +686,10 @@ Rules:
   entries keep their place); a committed gap beats a later-arriving confident view of its stroke (D38's ask stands);
   a phone without a clock fit settles untimed (it matches by id, or a shot by its pre-state; an untimed gap cannot
   be reconciled with another phone's result of its stroke); a host's own `.tableState` captureTime stays on its own
-  clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time.
+  clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time. Pre-existing and outside 013a: the commit quorum can shrink on both sides of a split (a silent drop shrinks it while
+  "a majority is still here"; a claimant counts only the old roster minus the lost host), so two sides can commit
+  different entries at one seq; a merge cannot repair that (the randomized invariant test records it as a known
+  issue).
 
 ## Proposed (plan 006 — not approved)
 
