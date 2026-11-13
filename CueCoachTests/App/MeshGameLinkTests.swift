@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import Geometry
 import Rules
+import Engine
 @testable import CueCoach
 
 /// `waitUntil` on the main actor: the conditions read the main-actor links. Bounded poll, 20 ms steps.
@@ -354,6 +355,31 @@ import Rules
         joiner.0.stop()
     }
 
+    /// Codex 013a review 3 (finding 4): the promoted host's late view of a committed shot is absorbed, not logged
+    /// again, and its drain does not wait for the deadline.
+    @Test func aSuppressedLateSettleClearsTheDrain() async {
+        let hub = MemoryHub()
+        let (host, joiner) = await Self.pair(hub)
+        let before = TableState(spec: TableSpec(size: .eightFoot), balls: [.cue: BallState(position: Vec2(0.5, 0.5)),
+                                                                             BallID(1)!: BallState(position: Vec2(1.4, 0.3))])
+        let stroke = MultipeerMeshSession.hostNow() - 1
+        func view() -> GameEvent { .shot(MeshShotRecord(shotID: UUID(), shooterTeam: 0, outcome: Self.pot, postState: nil,
+                                                       preState: before)) }
+        host.0.settled(view(), strokeAt: stroke)
+        #expect(await poll(2) { joiner.0.commitSeq == 1 })
+        try? await Task.sleep(for: .milliseconds(300))        // the joiner's clock fit to the host
+        host.0.stop()
+        hub.kill(host.2.localPeer)
+        #expect(await poll(4) { joiner.0.isHost })
+        joiner.0.settled(view(), strokeAt: stroke)             // the same stroke, settled late on the new host
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(await joiner.2.snapshot().log.count == 1, "not logged again")
+        let start = Date()
+        await joiner.0.drain(until: Date().addingTimeInterval(3))
+        #expect(Date().timeIntervalSince(start) < 1, "the absorbed settle counts as confirmed")
+        joiner.0.stop()
+    }
+
     @Test func twoGameSessionsAgreeOnShotsAndTurn() async {
         let a = ShellPlayer(id: UUID(), name: "A", symbol: "hare.fill", colorName: "teal")
         let b = ShellPlayer(id: UUID(), name: "B", symbol: "bolt.fill", colorName: "orange")
@@ -363,6 +389,11 @@ import Rules
         let hostGame = GameSessionModel(config: config), joinerGame = GameSessionModel(config: config)
         hostGame.mesh = host.0
         joinerGame.mesh = joiner.0
+        // Codex 013a review 3: real strokes are seconds apart. A settle the log already answers (same stroke) is not
+        // logged again, so the two shots get distinct stroke times.
+        var hostClock = 0.0, joinerClock = 0.0
+        hostGame.now = { hostClock += 5; return hostClock }
+        joinerGame.now = { joinerClock += 5; return joinerClock }
         let pot = ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft])
         hostGame.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: pot))
         joinerGame.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: ShotOutcome()))  // D39: dropped

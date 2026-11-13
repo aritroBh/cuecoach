@@ -390,6 +390,8 @@ import Training
         let g = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
         g.recorder = StackGameRecorder(stack: stack)
         g.mesh = link
+        var clock = 0.0
+        g.now = { clock += 5; return clock }   // Codex 013a review 3: distinct strokes (a repeat of one is absorbed)
         return g
     }
 

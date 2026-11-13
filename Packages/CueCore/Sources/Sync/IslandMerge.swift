@@ -33,6 +33,19 @@ public struct MergedShot: Hashable, Sendable {
     }
 }
 
+/// What one phone recorded for one stroke: a shot (with its pre-state) or a gap, with its stroke time on the game
+/// clock (nil = unknown: no clock fit).
+public struct StrokeView: Hashable, Sendable {
+    public var id: UUID
+    public var time: Double?
+    public var preState: [BallID: Vec2]
+    public var isGap: Bool
+
+    public init(id: UUID, time: Double?, preState: [BallID: Vec2], isGap: Bool) {
+        self.id = id; self.time = time; self.preState = preState; self.isGap = isGap
+    }
+}
+
 /// Deterministic merge of island shot tails after a heal (§2.5 item 3).
 public enum IslandMerge {
     /// Stroke times of one shot seen by two phones differ by at most this much on the game clock (s).
@@ -82,6 +95,11 @@ public enum IslandMerge {
         }
         .sorted { $0.start != $1.start ? $0.start < $1.start : $0.merged.shot.id.uuidString < $1.merged.shot.id.uuidString }
         .map(\.merged)
+    }
+
+    /// The one rule for "same physical stroke" (Codex 013a review 3). Stub.
+    public static func sameStroke(_ a: StrokeView, _ b: StrokeView, ballRadius: Double = TableSpec.ballRadius) -> Bool {
+        false
     }
 
     /// Canonical view order: stroke time, then id.

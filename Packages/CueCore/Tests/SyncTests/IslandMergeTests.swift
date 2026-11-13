@@ -240,3 +240,51 @@ struct SeededRNG: RandomNumberGenerator {
         return z ^ (z >> 31)
     }
 }
+
+/// Codex 013a review 3: ONE rule for "is this the same physical stroke?", used at every site.
+@Suite struct SameStrokeTests {
+    static let r = TableSpec.ballRadius
+    static let layout: [BallID: Vec2] = [.cue: Vec2(0.5, 0.6), BallID(1)!: Vec2(1.2, 0.4), .eight: Vec2(1.8, 0.7)]
+
+    static func shot(_ t: Double?, pre: [BallID: Vec2] = layout, id: UUID = UUID()) -> StrokeView {
+        StrokeView(id: id, time: t, preState: pre, isGap: false)
+    }
+    static func gap(_ t: Double?, id: UUID = UUID()) -> StrokeView { StrokeView(id: id, time: t, preState: [:], isGap: true) }
+
+    @Test func sameIDIsAlwaysTheSameStroke() {
+        let id = UUID()
+        #expect(IslandMerge.sameStroke(Self.shot(nil, id: id), Self.gap(99, id: id)))
+    }
+
+    @Test func timedShotsUseTheMergeAlignment() {
+        #expect(IslandMerge.sameStroke(Self.shot(10), Self.shot(10.4)))
+        #expect(!IslandMerge.sameStroke(Self.shot(10), Self.shot(10.6)))
+        var moved = Self.layout
+        moved[.cue] = moved[.cue]! + Vec2(Self.r * 1.5, 0)
+        #expect(!IslandMerge.sameStroke(Self.shot(10), Self.shot(10.1, pre: moved)))
+    }
+
+    @Test func aTimedGapMatchesAnyTimedResultWithinTolerance() {
+        #expect(IslandMerge.sameStroke(Self.gap(10), Self.shot(10.3)))
+        #expect(IslandMerge.sameStroke(Self.gap(10), Self.gap(10.3)))
+        #expect(!IslandMerge.sameStroke(Self.gap(10), Self.shot(11)))
+    }
+
+    /// Untimed: only two shots whose known pre-states agree on at least two balls; an untimed gap never matches.
+    @Test func untimedSidesMatchOnlyByPreState() {
+        #expect(IslandMerge.sameStroke(Self.shot(nil), Self.shot(10)))
+        #expect(IslandMerge.sameStroke(Self.shot(nil), Self.shot(nil)))
+        var moved = Self.layout
+        moved[BallID(1)!] = moved[BallID(1)!]! + Vec2(Self.r * 2, 0)
+        #expect(!IslandMerge.sameStroke(Self.shot(nil), Self.shot(10, pre: moved)))
+        #expect(!IslandMerge.sameStroke(Self.shot(nil, pre: [.cue: Vec2(0.5, 0.6)]), Self.shot(10)), "one common ball is not enough")
+        #expect(!IslandMerge.sameStroke(Self.shot(nil, pre: [:]), Self.shot(10)), "unknown positions, no time")
+        #expect(!IslandMerge.sameStroke(Self.gap(nil), Self.shot(10)))
+        #expect(!IslandMerge.sameStroke(Self.gap(nil), Self.gap(nil)))
+    }
+
+    @Test func isSymmetric() {
+        let views = [Self.shot(10), Self.shot(nil), Self.gap(10.2), Self.gap(nil), Self.shot(10.45)]
+        for a in views { for b in views { #expect(IslandMerge.sameStroke(a, b) == IslandMerge.sameStroke(b, a)) } }
+    }
+}

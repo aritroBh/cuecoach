@@ -60,6 +60,9 @@ enum MeshUpdate: Hashable, Sendable {
     case profile(from: PeerID, Data)
     /// Plan 013a: this phone became, or stopped being, an island (no host, or hosting without a majority).
     case island(Bool)
+    /// Plan 013a: one of this phone's own settles was answered by another entry for the same stroke (never logged
+    /// under its own id): the link counts it as confirmed.
+    case settleAbsorbed(shotID: UUID)
 }
 
 struct Outbound: Hashable, Sendable {
