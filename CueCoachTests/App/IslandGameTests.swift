@@ -52,7 +52,8 @@ import Rules
             gA.shots.count == 4 && gA.shots.map(\.id) == gB.shots.map(\.id) && !host.0.isIsland && !joiner.0.isIsland
         }
         #expect(merged, "A: \(gA.shots.map(\.before)), B: \(gB.shots.map(\.before))")
-        #expect(gA.shots.map(\.before) == (0...3).map { Self.before($0) }, "each physical shot once, in stroke order")
+        // The joiner survived alone and committed shots 1 and 3 itself; shot 2 (the old host's only) follows them.
+        #expect(gA.shots.map(\.before) == [0, 1, 3, 2].map { Self.before($0) }, "each physical shot once")
         #expect(gA.shots.allSatisfy { !$0.needsTap })
         host.0.stop(); joiner.0.stop()
     }

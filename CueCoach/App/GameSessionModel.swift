@@ -313,7 +313,7 @@ final class GameSessionModel {
                 rulesState = result.nextState
                 if winningShotCount == nil, rulesState.winner != nil { winningShotCount = shots.count }
                 if result.turnPasses { passTurn() }
-            case .shotLost(let id, _):
+            case .shotLost(let id, _, _):
                 shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
                 needsShooter = true
                 lostAt = i

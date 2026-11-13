@@ -144,16 +144,25 @@ enum GameEvent: Hashable, Codable, Sendable {
     /// waits for its own); decoded with decodeIfPresent, so nil = a payload without one.
     case nextShooter(team: Int, id: UUID? = UUID())
     /// D38: a lost shot with no guess. A gap (no rating, no rules change) that asks who shoots next.
-    case shotLost(shotID: UUID, shooterTeam: Int)
+    /// Plan 013a: `strokeHostTime` (game clock, ns; decodeIfPresent, nil = unknown) lets an island merge reconcile it.
+    case shotLost(shotID: UUID, shooterTeam: Int, strokeHostTime: Int64? = nil)
 }
 
 struct LogEntry: Hashable, Codable, Sendable {
     var seq: UInt64
     var term: UInt64
     var event: GameEvent
+    /// Plan 013a: the host's rewrite count when it wrote this entry (an island merge replaces uncommitted entries);
+    /// nil = 0. An ack names it, so an ack for a replaced version of a seq never counts.
+    var epoch: UInt64? = nil
 }
 
-struct LogAck: Hashable, Codable, Sendable { var term: UInt64; var upTo: UInt64 }
+struct LogAck: Hashable, Codable, Sendable {
+    var term: UInt64
+    var upTo: UInt64
+    /// Plan 013a: the acked entry's `epoch` (nil = 0).
+    var epoch: UInt64? = nil
+}
 struct LogTailRequest: Hashable, Codable, Sendable { var fromSeq: UInt64 }
 
 struct CalibrationReport: Hashable, Codable, Sendable {
