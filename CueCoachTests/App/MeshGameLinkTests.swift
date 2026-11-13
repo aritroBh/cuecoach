@@ -318,6 +318,18 @@ import Rules
         host.0.stop(); await third.stop()
     }
 
+    /// Codex 013a re-review R6: the host's lost shot is logged with its stroke time; its drain still sees it committed.
+    @Test func aCommittedGapClearsTheHostsDrain() async {
+        let hub = MemoryHub()
+        let (host, joiner) = await Self.pair(hub)
+        host.0.settled(.shotLost(shotID: UUID(), shooterTeam: 0), strokeAt: MultipeerMeshSession.hostNow() - 1)
+        #expect(await poll(2) { host.0.commitSeq == 1 })
+        let start = Date()
+        await host.0.drain(until: Date().addingTimeInterval(3))
+        #expect(Date().timeIntervalSince(start) < 1, "the logged gap (now timed) matches the input")
+        host.0.stop(); joiner.0.stop()
+    }
+
     /// D42: a host whose shot can't commit (joiner cut off) still reviews 2 s after End, without that shot.
     @Test func hostReviewLoadsAtTheCapWhenNothingCommits() async {
         var slow = MeshSessionTests.fast

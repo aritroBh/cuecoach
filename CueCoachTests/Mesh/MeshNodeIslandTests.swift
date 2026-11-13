@@ -384,6 +384,129 @@ extension MeshNodeTests {
         #expect(one.needsTap)
     }
 
+    // MARK: Codex 013a re-review
+
+    /// R1: the host is lost, the survivor is promoted, and only then does its late view of an already committed shot
+    /// settle: the new host must not append it again.
+    @Test func aSettleArrivingAfterPromotionForACommittedShotIsNotAppended() {
+        let (net, a, b) = Self.pair()
+        Self.see(net, [(a, Self.view(1))], ago: 1)
+        net.run(for: 0.5)
+        #expect(net.node(b).commitSeq == 1)
+        net.kill(a)
+        net.run(for: 3)
+        #expect(net.node(b).isHost)
+        Self.see(net, [(b, Self.view(1))], ago: 4.5)            // the same stroke, settled after the promotion
+        net.run(for: 0.2)
+        #expect(Self.records(net.node(b).log).count == 1)
+    }
+
+    /// Envelope helper for hand-driven nodes.
+    static func env(_ node: MeshNode, from: PeerID, _ m: MeshMessage) -> MeshEnvelope {
+        MeshEnvelope(version: .current, sessionID: node.sessionID, sender: from, seq: 1, sentAt: 0, message: m)
+    }
+
+    static func hello(_ device: Int) -> MeshMessage {
+        .hello(Hello(deviceClass: device, batteryPercent: 50, onPower: false, supportedMajors: ProtocolVersion.supportedMajors))
+    }
+
+    /// R2: X inherits [e1, e2 @ epoch 1] from a lost host, then a heal really rewrites seq 2. A client's ack for its
+    /// inherited e2 (epoch 1), sent in the new term, must not commit the replacement nobody else holds.
+    @Test func aRewriteOfAnInheritedEntryNeverReusesItsEpoch() throws {
+        var x = MeshNode(status: PeerStatus(deviceClass: 18, batteryPercent: 50, onPower: false))
+        let h1 = PeerID(), c = PeerID(), d = PeerID()
+        _ = x.start(now: 0)
+        _ = x.peerConnected(h1, now: 0)
+        _ = x.handle(Self.env(x, from: h1, .heartbeat(Heartbeat(term: 1, host: h1, lastSeq: 2, commitSeq: 1,
+                                                                 phase: .aiming))), now: 0.01)
+        let e1 = LogEntry(seq: 1, term: 1, event: Self.view(0))
+        let e2 = LogEntry(seq: 2, term: 1, event: Self.view(1), epoch: 1)          // a rewrite by the lost host
+        _ = x.handle(Self.env(x, from: h1, .welcome(Welcome(term: 1, host: h1, roster: [h1, x.id, c], log: [e1, e2],
+                                                             commitSeq: 1))), now: 0.02)
+        #expect(x.log == [e1, e2])
+        _ = x.peerConnected(c, now: 0.03)
+        _ = x.handle(Self.env(x, from: c, .peerStatus(PeerStatus(deviceClass: 15, batteryPercent: 50, onPower: false))),
+                     now: 0.04)
+        _ = x.peerDisconnected(h1, now: 0.05)                                       // X takes over, collects from C
+        _ = x.handle(Self.env(x, from: c, Self.hello(15)), now: 0.06)
+        try #require(x.isHost)
+        let term = x.term
+        // D returns with seq 2 committed differently: X pulls it in, replacing its uncommitted inherited e2.
+        _ = x.peerConnected(d, now: 0.07)
+        let d2 = LogEntry(seq: 2, term: 1, event: Self.view(2))
+        _ = x.handle(Self.env(x, from: d, .islandLog(IslandLog(commitSeq: 2, entries: [e1, d2], last: true))), now: 0.08)
+        _ = x.handle(Self.env(x, from: d, Self.hello(16)), now: 0.09)
+        try #require(x.log.count >= 2 && x.log[1].event == d2.event, "the heal rewrote seq 2")
+        #expect(x.log[1].epoch != e2.epoch, "a rewrite never reuses an inherited epoch")
+        _ = x.handle(Self.env(x, from: c, .logAck(LogAck(term: term, upTo: 2, epoch: e2.epoch))), now: 0.1)
+        #expect(x.commitSeq == 1, "C's ack is for e2, not its replacement")
+    }
+
+    /// R3: a phone that hands its kept settles to a new host keeps them until it sees them committed: if that host
+    /// dies before processing them, the phone still re-runs them.
+    @Test func keptSettlesSurviveANewHostThatDiesBeforeProcessingThem() {
+        let (net, h, s, o) = Self.trio()
+        let x = Self.view(1)
+        Self.see(net, [(o, x)])                                   // only o saw shot 1; the host never logs it
+        net.run(for: 0.3)
+        net.kill(h)
+        var adopted = false
+        for _ in 0..<2000 where !adopted {
+            net.run(for: 0.001)
+            if net.node(o).role == .client(host: s) { adopted = true }
+        }
+        #expect(adopted)
+        net.kill(s)                                               // its islandLog from o is still in flight
+        net.run(for: 4)
+        #expect(net.node(o).isHost)
+        #expect(Self.records(net.node(o).log).map(\.shotID) == [Self.ids(x)!])
+    }
+
+    /// R4: a later heal carries a needsTap amendment: the winner holds [S, X] committed; the returning phone's log is
+    /// [S, S(needsTap)].
+    @Test func aLaterHealCarriesANeedsTapAmendment() throws {
+        var w = MeshNode(status: PeerStatus(deviceClass: 18, batteryPercent: 50, onPower: false))
+        let r = PeerID()
+        _ = w.start(now: 0)
+        _ = w.tick(now: 1.1)
+        try #require(w.isHost)
+        guard case .shot(let s) = Self.view(1), case .shot(let xr) = Self.view(2) else { return }
+        _ = w.append(.shot(s), now: 1.2)
+        _ = w.append(.shot(xr), now: 1.3)
+        #expect(w.commitSeq == 2)
+        var flagged = s
+        flagged.needsTap = true
+        _ = w.peerConnected(r, now: 1.4)
+        let theirs = [LogEntry(seq: 1, term: 1, event: .shot(s)), LogEntry(seq: 2, term: 1, event: .shot(flagged))]
+        _ = w.handle(Self.env(w, from: r, .islandLog(IslandLog(commitSeq: 1, entries: theirs, last: true))), now: 1.5)
+        _ = w.handle(Self.env(w, from: r, Self.hello(15)), now: 1.6)
+        #expect(Self.folded(w.log).first { $0.shotID == s.shotID }?.needsTap == true, "the flag survives the heal")
+        #expect(Self.folded(w.log).count == 2)
+    }
+
+    /// R5: a successor without a game clock says so; its clients then stamp no time either (their fit is to its
+    /// unrelated clock).
+    @Test func aClientOfAHostWithoutAGameClockStampsNoTime() throws {
+        let net = SimNetwork(seed: 29, unreliableLoss: 1)      // no clock fits while the first host lives
+        let a = net.addNode(device: 18, clockOffset: 1000)
+        let b = net.addNode(device: 17, clockOffset: 50)
+        let c = net.addNode(device: 15, clockOffset: -7)
+        net.run(for: 2.5)
+        net.kill(a)
+        net.run(for: 3)
+        try #require(net.hosts == [b])
+        net.unreliableLoss = 0                                  // C now fits B's clock
+        net.run(for: 6)
+        #expect(net.node(c).clock.estimate != nil)
+        Self.see(net, [(c, Self.view(1))])                      // B never logs it
+        net.run(for: 0.2)
+        net.kill(b)
+        net.run(for: 3)
+        let rs = Self.records(net.node(c).log)
+        #expect(rs.count == 1)
+        #expect(rs.first?.strokeHostTime == nil, "no time on B's unrelated clock: \(String(describing: rs.first?.strokeHostTime))")
+    }
+
     /// P2-8: a phone that never had a clock fit has no game time: its re-run (and later host settles) are untimed.
     @Test func aSuccessorWithoutAClockFitStampsNoTime() throws {
         let net = SimNetwork(seed: 23, unreliableLoss: 1)      // time pings never arrive: no fit
