@@ -24,7 +24,7 @@ STOP conditions, and update your row when done. Project rules apply to every pla
 | 010 | Mesh link forwards the committed log to the game | P1 | M | 009 | DONE (merged eaa717d; Codex REJECT ×4 → APPROVE; unit 1299/1299, AppShell UI 12/12) |
 | 011 | Save a finished rack to the competitive store (D37, D40) | P1 | M | 009, 007 (010 for mesh games) | DONE (merged acd3ebd; Codex REJECT → APPROVE; unit 1320/1320, AppShell UI 12/12) |
 | 012 | `Shot.isGuess` Competitive V3 migration | P2 | M | 011 | DONE (merged e50bac2; Codex APPROVE; unit 1329/1329, AppShell UI 12/12) |
-| 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | 013a DONE (wt/plan-013a; Codex REJECT (9 findings) → fixed, re-review pending; CueCore 710 incl. SyncTests 13, unit 1369/1369); 013b TODO after 015 |
+| 013 | Host loss: mid-shot re-run + island merge (§2.5) | P2 | L | 009 (010, 011 recommended) | 013a DONE (wt/plan-013a; Codex REJECT ×2 (9 + 6 findings) → fixed, re-review pending; CueCore 710 incl. SyncTests 13, unit 1375/1375); 013b TODO after 015 |
 | 014 | Pro 8 (88″) and 86″ table presets (D46) | P2 | M | 005 (009 for the mesh step) | DONE — merged cfe8949 (CueCore 697, app 1340, matrix 0 false / 92.7 %; Codex APPROVE) |
 | 015 | Fix a recorded shot's shooter from Game Review by long-press (D49) | P2 | M | 009, 011 | TODO |
 
