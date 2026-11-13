@@ -33,6 +33,9 @@ struct Heartbeat: Hashable, Codable, Sendable {
     /// Plan 013a: game clock − this host's clock, ns, at send time (a host that took over keeps the first host's
     /// clock). nil = 0. Optional on the wire.
     var gameOffset: Int64? = nil
+    /// Plan 013a: true = this host has no game clock (took over without a fit): clients stamp no stroke time.
+    /// nil (old peers) = known.
+    var gameTimeUnknown: Bool? = nil
 }
 
 /// Election inputs, gossiped by every phone (mesh-identity.md §2.4).

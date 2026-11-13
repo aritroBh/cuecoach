@@ -166,8 +166,8 @@ struct MeshNode: Sendable {
     /// The game clock as this phone last knew it while a client (its fit to that host + that host's game offset),
     /// frozen when the host was lost. nil = this phone's own clock is the game clock (it hosted first).
     private var gameFit: (clock: ClockSyncEstimator, offset: Int64)?
-    /// Client: the host's `Heartbeat.gameOffset`.
-    private var hostGameOffset: Int64 = 0
+    /// Client: the host's `Heartbeat.gameOffset`; nil = unknown (the host has no game clock, or no heartbeat yet).
+    private var hostGameOffset: Int64?
     /// This phone's own settles that no committed entry answers yet, with the stroke on this phone's clock (ns).
     private var kept: [(event: GameEvent, stroke: Int64)] = []
     /// Every phone seen in a roster since joining, minus those that left gracefully: the island denominator.
@@ -393,7 +393,10 @@ struct MeshNode: Sendable {
         let stroke = Self.ns(strokeAt)
         let stamped = Self.stamped(e, gameNs(fromLocal: stroke))
         if isHost && collecting == nil {
-            _ = append(stamped, now: now, flushing: false)
+            // A late view of a stroke an inherited entry (an earlier host's) already answers is not new: e.g. one
+            // settled after this phone was promoted. My own appends this term never block the next one.
+            let answered = log.contains { $0.term < term && IslandHeal.matches(stamped, $0.event) }
+            if !answered { _ = append(stamped, now: now, flushing: false) }
         } else if !committedEntries.contains(where: { IslandHeal.matches(stamped, $0.event) }) {
             kept.append((e, stroke))
             if kept.count > 16 { kept.removeFirst() }
@@ -501,9 +504,10 @@ struct MeshNode: Sendable {
 
     private func heartbeat(now: Double) -> MeshMessage {
         let t = Self.ns(now)
-        let offset = gameFit == nil ? nil : gameNs(fromLocal: t).map { $0 - t }
+        let game = gameNs(fromLocal: t)
         return .heartbeat(Heartbeat(term: term, host: id, lastSeq: lastSeq, commitSeq: commitSeq, phase: phase,
-                                    gameOffset: offset))
+                                    gameOffset: gameFit == nil ? nil : game.map { $0 - t },
+                                    gameTimeUnknown: game == nil ? true : nil))
     }
 
     private var clients: [PeerID] { roster.filter { $0 != id } }
@@ -521,7 +525,7 @@ struct MeshNode: Sendable {
     private mutating func hostLost(now: Double) {
         let gone = hostID
         // Keep stamping strokes on the game clock: freeze the last fit to the lost host (§2.5, drifts ≈ 3 ms/min).
-        if clock.estimate != nil { gameFit = (clock, hostGameOffset) }
+        if clock.estimate != nil, let offset = hostGameOffset { gameFit = (clock, offset) }
         lostRosterSize = roster.count
         if let gone { roster.removeAll { $0 == gone }; detector.forget(gone) }
         hostID = nil
@@ -567,8 +571,7 @@ struct MeshNode: Sendable {
         // Plan 013a: my whole log with its commit point (the new host keeps what I hold committed and merges my tail)
         // and my own unlogged settles, on the game clock as I know it now (before the clock resets for the new host).
         let islandLog = log, islandCommit = commitSeq
-        let settles = keptSettles()
-        kept = []
+        let settles = keptSettles()   // kept until seen committed: the new host may die before merging them
         everClient = true
         term = newTerm
         hostID = h
@@ -605,7 +608,7 @@ struct MeshNode: Sendable {
                      to: [h])
             } while j < islandLog.count
         }
-        hostGameOffset = 0
+        hostGameOffset = nil
         send(.hello(hello), to: [h])
         step.updates.append(.roleChanged(role, term: term))
     }
@@ -625,7 +628,7 @@ struct MeshNode: Sendable {
         guard hb.host == from else { return }
         if from == hostID, hb.term == term {
             guard !isHost else { return }
-            hostGameOffset = hb.gameOffset ?? 0
+            hostGameOffset = hb.gameTimeUnknown == true ? nil : (hb.gameOffset ?? 0)
             if synced {
                 commitSeq = max(commitSeq, min(hb.commitSeq, lastSeq))
                 if hb.lastSeq > lastSeq { requestTail(now: now) }
@@ -635,7 +638,7 @@ struct MeshNode: Sendable {
         }
         if wins(term: hb.term, claimant: from) {
             adopt(host: from, term: hb.term, now: now)
-            hostGameOffset = hb.gameOffset ?? 0
+            hostGameOffset = hb.gameTimeUnknown == true ? nil : (hb.gameOffset ?? 0)
         } else if isHost {
             send(heartbeat(now: now), to: [from])          // the stale side will step down
         }
@@ -739,6 +742,7 @@ struct MeshNode: Sendable {
         }
         tails = [:]
         // Plan 013a: re-run the shot in flight from my own settles, and merge island logs that came in meanwhile.
+        logEpoch = max(logEpoch, log.compactMap(\.epoch).max() ?? 0)   // epochs stay monotonic across host changes
         heal(Island(commitSeq: commitSeq, entries: log, settles: keptSettles()))
         kept = []
         for p in pendingHellos { if let island = pendingIslands.removeValue(forKey: p) { heal(island) } }
@@ -912,7 +916,10 @@ struct MeshNode: Sendable {
     /// Stroke time on the game clock (ns): a client through its host fit + the host's game offset; otherwise through
     /// the frozen fit to the last host, or this phone's own clock if it hosted first. nil = a client without a fit.
     private func gameNs(fromLocal t: Int64) -> Int64? {
-        if case .client = role { return clock.hostTime(fromLocal: t).map { $0 + hostGameOffset } }
+        if case .client = role {
+            guard let offset = hostGameOffset else { return nil }   // the host has no game clock (Codex re-review R5)
+            return clock.hostTime(fromLocal: t).map { $0 + offset }
+        }
         guard let g = gameFit else { return everClient ? nil : t }   // never a fabricated game time (Codex P2-8)
         return g.clock.hostTime(fromLocal: t).map { $0 + g.offset }
     }
@@ -974,7 +981,8 @@ struct MeshNode: Sendable {
         guard same < max(current.count, next.count) else { return }
         let cut = from + same
         if cut < log.count {
-            logEpoch += 1
+            // Above every epoch in the log, inherited ones included, so no ack for a replaced entry ever matches.
+            logEpoch = max(logEpoch, log.compactMap(\.epoch).max() ?? 0) + 1
             logVersion += 1
             log.removeSubrange(cut...)
             for (peer, a) in acks { acks[peer] = min(a, UInt64(cut)) }
@@ -1163,7 +1171,8 @@ enum IslandHeal {
         for (i, c) in clusters.enumerated() {
             if c.members.contains(where: fixedIDs.contains) {
                 let f = c.members.first(where: fixedIDs.contains)!
-                if c.needsTap, !flagged.contains(f), var r = records[f], !r.needsTap {
+                let disagree = c.needsTap || c.members.contains { $0 != f && records[$0]?.needsTap == true }
+                if disagree, !flagged.contains(f), var r = records[f], !r.needsTap {
                     r.needsTap = true
                     items[i].emit = .shot(r)                     // amendment: flag the committed shot
                 }
@@ -1179,6 +1188,7 @@ enum IslandHeal {
         // Everything else follows the timed result before it on its own island.
         var knownShots = logged.union(clusterOf.keys).union(history)
         var knownEvents = Set(fixed + mine)
+        var flags = flagged.union((fixed + mine).compactMap { if case .shot(let r) = $0, r.needsTap { r.shotID } else { nil } })
         var after: [Int: [GameEvent]] = [:]
         for (k, l) in islands.enumerated() {
             var anchor = -1
@@ -1188,7 +1198,9 @@ enum IslandHeal {
                 if k == 0 { continue }
                 if k > 1 {
                     if case .shot(let r) = e {
-                        guard knownShots.insert(r.shotID).inserted else { continue }
+                        // A known shot again: dropped, unless it carries a flag the log lacks (an amendment travels).
+                        let fresh = knownShots.insert(r.shotID).inserted
+                        guard fresh || (r.needsTap && flags.insert(r.shotID).inserted) else { continue }
                     } else {
                         guard knownEvents.insert(e).inserted else { continue }
                     }

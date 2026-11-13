@@ -197,7 +197,7 @@ import Rules
         #expect(try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r)) == r)
         let json = #"{"term":3,"host":"\#(Self.a.raw.uuidString)","lastSeq":1,"commitSeq":1,"phase":"aiming"}"#
         let hb = try JSONDecoder().decode(Heartbeat.self, from: Data(json.utf8))
-        #expect(hb.gameOffset == nil)
+        #expect(hb.gameOffset == nil && hb.gameTimeUnknown == nil, "old peers: a known game clock")
         var withOffset = hb
         withOffset.gameOffset = -5_000
         #expect(try MeshCodec.decode(MeshCodec.encode(Self.envelope(.heartbeat(withOffset)))).message == .heartbeat(withOffset))

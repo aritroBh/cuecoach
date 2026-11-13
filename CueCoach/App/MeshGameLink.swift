@@ -195,6 +195,7 @@ private extension GameEvent {
     /// The same input: shots by shotID (the node stamps the stroke time into the logged record), else equal.
     func isSameInput(as other: GameEvent) -> Bool {
         if case .shot(let a) = self, case .shot(let b) = other { return a.shotID == b.shotID }
+        if case .shotLost(let a, _, _) = self, case .shotLost(let b, _, _) = other { return a == b }   // logged with its time
         return self == other
     }
 

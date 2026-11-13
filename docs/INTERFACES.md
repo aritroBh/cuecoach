@@ -604,6 +604,7 @@ struct MeshShotRecord { …
 }
 struct Heartbeat { …
     var gameOffset: Int64? = nil               // game clock − this host's clock, ns, at send time; nil = 0
+    var gameTimeUnknown: Bool? = nil           // true = this host has no game clock: clients stamp no time; nil = known
 }
 enum GameEvent { … case shotLost(shotID: UUID, shooterTeam: Int, strokeHostTime: Int64? = nil) }   // gaps are timed
 struct LogEntry { … var epoch: UInt64? = nil } // host's rewrite count when written; nil = 0
@@ -637,12 +638,15 @@ Rules:
   the old host (frozen, plus that host's `gameOffset`) and maps its own times through it; it sends the difference as
   `Heartbeat.gameOffset`, and a client's game time is `clock.hostTime(fromLocal:) + gameOffset`. A phone without a
   fit (a client, or a host that was ever a client) has no game time: its settle keeps `strokeHostTime == nil` and
-  aligns by shot id only. Only a phone that never was a client uses its own clock. Fits drift ≈ 3 ms/min (§2.5).
+  aligns by shot id only. Only a phone that never was a client uses its own clock. Such a host sends
+  `gameTimeUnknown`, and its clients stamp no time either (their offset is unknown until a heartbeat says otherwise). Fits drift ≈ 3 ms/min (§2.5).
 - **Every phone keeps its own settles.** `GameSessionModel.shotSettled` / `shotLost` hand the record to
   `mesh.settled(_:strokeAt:)` with the time of the last `aimEnded()` (else now). A non-host node keeps it (local time)
   unless a committed entry already answers its stroke, and drops it once one does (that settle only). "Answers": the
-  same id, an aligned shot (`IslandMerge.aligned`), or for a gap any result within 0.5 s. On becoming host (after
-  collecting) the node re-runs its kept settles, and a phone that adopts a host sends them in an `IslandLog`; the host
+  same id, an aligned shot (`IslandMerge.aligned`), or for a gap any result within 0.5 s. A host appends its own
+  settle unless an entry from an earlier term already answers the stroke (a late view settled after a promotion). On becoming host
+  (after collecting) the node re-runs its kept settles, and a phone that adopts a host sends them in an `IslandLog`
+  (and keeps them until it sees them committed: that host may die first); the host
   merges them (below): a settle a committed entry answers is dropped, the rest are merged and appended (§2.5
   "re-run"). A kept `.shotLost` (no confident record) is a D38 gap unless a view of the same stroke exists.
 - **Island.** While `isIsland`: tracking, overlay and appends go on as before. `GameSessionModel` fires its own settle's badge with `isProvisional`
@@ -661,9 +665,10 @@ Rules:
     on its own island, the sender's dropped if equal to one of mine (a shot: same shotID).
   - Agreeing views: the logged record stays. Disagreeing: the merge's pick with `needsTap`; against a committed shot,
     an amendment (that record again with `needsTap`), which the fold reads as a flag on the first, never a new shot.
-    A gap answered by a view goes; a committed gap stands (views of its stroke go); one gap per stroke.
-  - The host rewrites after the longest unchanged prefix (never at or before its commit point). A rewrite bumps the
-    log epoch (new entries carry it; acks clamp to the cut and only an ack naming the current epoch of its seq
+    A gap answered by a view goes; a committed gap stands (views of its stroke go); one gap per stroke. An amendment
+    (a known shot with `needsTap`) from the sender is kept when my log lacks that flag.
+  - The host rewrites after the longest unchanged prefix (never at or before its commit point). A rewrite sets the
+    log epoch above every epoch in the log, inherited ones included (new entries carry it; acks clamp to the cut and only an ack naming the current epoch of its seq
     counts) and the node reports `logChanged` on any content change. A client that receives a replacement drops its
     commit point below it. `MeshGameLink` forwards a rewritten prefix at the same `commitSeq`; the fold pushes Live's
     legality whenever the committed events change by content.
