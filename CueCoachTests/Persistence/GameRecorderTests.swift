@@ -403,7 +403,10 @@ import Training
 
     func gameCount(_ stack: PersistenceStack) throws -> Int { try stack.competitiveContext.fetchCount(FetchDescriptor<Game>()) }
 
-    @Test func loneSurvivorOfATwoPhoneGameCommitsTheWinButNeverSaves() async throws {
+    /// Plan 013a head decision: the lone survivor of a silent two-phone split is an island. It commits nothing (no
+    /// strict majority of the game's members), so its rack never wins on the log and nothing is saved. Was
+    /// `loneSurvivorOfATwoPhoneGameCommitsTheWinButNeverSaves`.
+    @Test func loneSurvivorOfATwoPhoneGameIsAnIslandAndNeverSaves() async throws {
         let hub = MemoryHub()
         let sessions = [MeshGameLinkTests.session(hub, device: 18), MeshGameLinkTests.session(hub, device: 16)]
         let links = sessions.map { MeshGameLink(session: $0) }
@@ -412,14 +415,13 @@ import Training
         #expect(links[0].hasGameQuorum, "both phones present")
         let stack = try PersistenceStack(inMemory: true)
         let g = game(stack, on: links[1])
-        links[0].stop()
-        hub.kill(sessions[0].localPeer)
-        #expect(await poll(4) { links[1].isHost })
+        hub.kill(sessions[0].localPeer)                 // silent: no goodbye
+        #expect(await poll(4) { links[1].isHost && links[1].isIsland })
         playARack(g)
-        #expect(await poll(3) { g.reviewData().winnerTeam == 1 }, "the lone survivor commits alone")
+        #expect(!(await poll(1.5) { g.reviewData().winnerTeam != nil }), "an island commits nothing")
         #expect(!links[1].hasGameQuorum)
         #expect(try gameCount(stack) == 0)
-        links[1].stop()
+        links[0].stop(); links[1].stop()
     }
 
     @Test func threePhoneGameWithTwoLeftStillSaves() async throws {
