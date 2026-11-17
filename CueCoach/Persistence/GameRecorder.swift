@@ -10,12 +10,13 @@ import Stats
 /// One writer: the solo phone or the mesh host. Upserts by id, so a repeat changes nothing.
 @MainActor protocol GameRecorder: AnyObject {
     func record(_ game: FinishedGame) throws
-    func deleteGame(id: UUID) throws
+    func deleteGame(id: UUID, preservingClips: Set<String>) throws
     func confirmGame(id: UUID) throws
 }
 
 extension GameRecorder {
-    func deleteGame(id: UUID) throws {}
+    func deleteGame(id: UUID, preservingClips: Set<String> = []) throws {}
+    func deleteGame(id: UUID) throws { try deleteGame(id: id, preservingClips: []) }
     func confirmGame(id: UUID) throws {}
 }
 
@@ -192,12 +193,13 @@ extension StoredShotFeatures {
         }
     }
 
-    func deleteGame(id: UUID) throws {
+    func deleteGame(id: UUID, preservingClips: Set<String> = []) throws {
         let ctx = stack.competitiveContext
         let clipBase = stack.directory ?? ShotClipStore.defaultBaseDirectory
         if let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == id })).first {
             let clipRefs = game.highlights.map(\.clipFile) + game.shots.compactMap(\.clipRef)
-            ShotClipStore.deleteClips(relativePaths: clipRefs, baseDirectory: clipBase)
+            let removable = Array(Set(clipRefs).subtracting(preservingClips))
+            ShotClipStore.deleteClips(relativePaths: removable, baseDirectory: clipBase)
             let session = game.session
             for shot in game.shots { ctx.delete(shot) }
             for highlight in game.highlights { ctx.delete(highlight) }

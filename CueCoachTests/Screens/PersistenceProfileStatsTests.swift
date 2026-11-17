@@ -255,4 +255,67 @@ import Testing
         #expect(updated.isFinished)
         #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).count == 1)
     }
+
+    @Test func legacyNoRailFoulAndWinnerFlipUpdateWinProbAndPruneStaleHighlight() throws {
+        let (stack, owner, rival) = try makeStackWithOwner()
+        let mate1 = PlayerProfile(name: "Mate", avatarSymbol: "flame.fill", avatarColor: "red", isLocalOwner: false)
+        let mate0 = PlayerProfile(name: "Partner", avatarSymbol: "leaf.fill", avatarColor: "green", isLocalOwner: false)
+        stack.competitiveContext.insert(mate0)
+        stack.competitiveContext.insert(mate1)
+        try stack.competitiveContext.save()
+
+        let recorder = StackGameRecorder(stack: stack)
+        let gameID = UUID()
+        let teams = [
+            StoredTeam(memberIDs: [owner.id, mate0.id], shootingOrder: [owner.id, mate0.id]),
+            StoredTeam(memberIDs: [rival.id, mate1.id], shootingOrder: [rival.id, mate1.id]),
+        ]
+        // Legacy rows (`fullOutcome == nil`) with `.noRailAfterContact` fouls on Team 1's 3 turns → Team 0 wins by 3-foul!
+        var shots: [RecordedShot] = []
+        for idx in 0..<6 {
+            let isTeam1 = idx % 2 == 1
+            let shooter = isTeam1 ? (idx == 3 ? mate1.id : rival.id) : (idx == 2 ? mate0.id : owner.id)
+            var rs = makeShot(index: idx, shooterID: shooter, team: isTeam1 ? 1 : 0,
+                              made: false, pocketed: [:], firstContact: BallID(1)!)
+            rs.railsAfterContact = isTeam1 ? 0 : 1
+            rs.fouls = isTeam1 ? [.noRailAfterContact] : []
+            rs.fullOutcome = nil   // simulate pre-V4 legacy row
+            shots.append(rs)
+        }
+        try recorder.record(FinishedGame(
+            id: gameID, ruleSet: .wpaNine, tableSize: .nineFoot, format: .twoVsTwo,
+            teams: teams, winnerTeam: 0, winProbSeries: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0],
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            endedAt: Date(timeIntervalSince1970: 1_700_000_240),
+            shots: shots,
+            shotOfGame: RecordedHighlight(shotID: shots[0].id, label: "Great Shot", score: 0.4)))
+
+        let mate1Review = ReviewPlayer(id: mate1.id, name: mate1.name, symbol: mate1.avatarSymbol, colorName: mate1.avatarColor)
+        let kept = try #require(try PersistedGameReviewEditor.correctShooter(
+            gameID: gameID, shotID: shots[1].id, to: mate1Review, stack: stack))
+        #expect(kept.winnerTeam == 0, "Legacy `.noRailAfterContact` foul is reconstructed even when `fullOutcome` is nil")
+        #expect(kept.winProb.last == 1.0)
+
+        // Also verify that flipping a Bar-8 winner updates `winProb` to end at 0.0 (Team 1 win) and drops Team 0's stale SotG!
+        let flipID = UUID()
+        var b0 = makeShot(index: 0, shooterID: owner.id, team: 0, made: true, pocketed: [BallID(1)!: .footRight])
+        var b1 = makeShot(index: 1, shooterID: rival.id, team: 1, made: true, pocketed: [.eight: .footLeft], firstContact: .eight)
+        b0.id = UUID(); b1.id = UUID()
+        try recorder.record(FinishedGame(
+            id: flipID, ruleSet: .barEight, tableSize: .sevenFoot, format: .oneVsOne,
+            teams: [StoredTeam(memberIDs: [owner.id], shootingOrder: [owner.id]),
+                    StoredTeam(memberIDs: [rival.id], shootingOrder: [rival.id])],
+            winnerTeam: 0, winProbSeries: [0.5, 0.7, 1.0],
+            startedAt: Date(timeIntervalSince1970: 1_700_001_000),
+            endedAt: Date(timeIntervalSince1970: 1_700_001_120),
+            shots: [b0, b1],
+            shotOfGame: RecordedHighlight(shotID: b0.id, label: "Brilliant Shot", score: 0.8)))
+
+        let ownerReview = ReviewPlayer(id: owner.id, name: owner.name, symbol: owner.avatarSymbol, colorName: owner.avatarColor)
+        let flipped = try #require(try PersistedGameReviewEditor.correctShooter(
+            gameID: flipID, shotID: b1.id, to: ownerReview, stack: stack))
+        #expect(flipped.winnerTeam == 1)
+        #expect(flipped.winProb.last == 0.0, "Win-prob series updates to match flipped winner")
+        #expect(flipped.shotOfGame?.shotID != b0.id, "Losing team's stale SotG highlight is pruned")
+    }
 }

@@ -81,6 +81,7 @@ final class GameSessionModel {
                 let base = self.clipRecorder?.baseDirectory ?? ShotClipStore.defaultBaseDirectory
                 if let rel = try? ShotClipStore.saveReceivedClip(shotID: shotID, data: data, baseDirectory: base) {
                     self.attachClip(shotID: shotID, relativePath: rel)
+                    self.onReviewRefreshed?(self.reviewData())
                 }
             }
         }
@@ -139,9 +140,15 @@ final class GameSessionModel {
     @ObservationIgnored var shooterIdentifier: (any ShooterIdentifier)?
     @ObservationIgnored var onReviewRefreshed: (@MainActor (GameReviewData) -> Void)?
     @ObservationIgnored private var shotStrokeTimes: [UUID: Double] = [:]
+    @ObservationIgnored private var shotSettledTimes: [UUID: Double] = [:]
+    @ObservationIgnored private var lastLocalStrokeAt: Double?
+    @ObservationIgnored private var sealedClipShots: Set<UUID> = []
     @ObservationIgnored private var recentIdentityFrames: [(timestamp: Double, frame: IdentityFrame)] = []
+    @ObservationIgnored private var latchedStrokeFrames: [IdentityFrame]?
+    @ObservationIgnored private var latchedStrokeTime: Double?
     @ObservationIgnored private var autoAttributions: [UUID: UUID] = [:]
     @ObservationIgnored private var unknownGuestShots: Set<UUID> = []
+    @ObservationIgnored private var hasUncommittedLogEntries = false
 
     init(config: GameConfig) {
         self.config = config
@@ -245,13 +252,18 @@ final class GameSessionModel {
             append(event)
         }
         if identitySession != nil, shooterIdentifier != nil {
-            let frames = recentIdentityFrames
+            let frames = latchedStrokeFrames ?? recentIdentityFrames
                 .filter { abs($0.timestamp - strokeTime) <= 0.75 }
                 .map(\.frame)
+            latchedStrokeFrames = nil
+            latchedStrokeTime = nil
             let window = StrokeWindow(frames: frames)
             Task { @MainActor [weak self] in
                 _ = await self?.attributeStroke(shotID: id, window: window)
             }
+        } else {
+            latchedStrokeFrames = nil
+            latchedStrokeTime = nil
         }
         guard let s = shots.last(where: { $0.id == id }), let rating = s.rating else { return nil }
         return PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)
@@ -280,7 +292,13 @@ final class GameSessionModel {
         mesh?.setPhase(.aiming)
     }
     func aimEnded() {
-        strokeAt = now()
+        let t = now()
+        strokeAt = t
+        lastLocalStrokeAt = t
+        latchedStrokeTime = t
+        latchedStrokeFrames = recentIdentityFrames
+            .filter { abs($0.timestamp - t) <= 0.75 }
+            .map(\.frame)
         badge.receive(.aimEnded)
         mesh?.setPhase(.inMotion)
     }
@@ -293,7 +311,15 @@ final class GameSessionModel {
         if let recorder = clipRecorder {
             Task { await recorder.pushFrame(image, timestamp: timestamp) }
         }
-        recentIdentityFrames.append((timestamp, IdentityFrame(image: image, cueBall: cueBall)))
+        let idFrame = IdentityFrame(image: image, cueBall: cueBall)
+        recentIdentityFrames.append((timestamp, idFrame))
+        if let st = latchedStrokeTime, abs(timestamp - st) <= 0.75 {
+            var latched = latchedStrokeFrames ?? []
+            if latched.count < 16 {
+                latched.append(idFrame)
+                latchedStrokeFrames = latched
+            }
+        }
         let cutoff = timestamp - 2.5
         recentIdentityFrames.removeAll { $0.timestamp < cutoff }
         if recentIdentityFrames.count > 24 {
@@ -320,6 +346,7 @@ final class GameSessionModel {
     /// The mesh's log changed: fold its committed prefix, or while an island host (`mesh.isIsland && mesh.isHost`)
     /// fold the full log (committed prefix + provisional island tail) so play, turn, rings and unconfirmed saves work (D44, D51).
     func ingest(log: [LogEntry], commitSeq: UInt64) {
+        hasUncommittedLogEntries = log.contains { $0.seq > commitSeq }
         let visible = (mesh?.isIsland == true && mesh?.isHost == true) ? log : log.filter { $0.seq <= commitSeq }
         apply(visible.sorted { $0.seq < $1.seq }.map(\.event))
     }
@@ -328,6 +355,16 @@ final class GameSessionModel {
         let changed = committed != events   // by content: an island merge can rewrite without growing (Codex P2-9)
         events = committed
         fold()
+        let settledNow = now()
+        for s in shots where sealedClipShots.insert(s.id).inserted {
+            let st = shotSettledTimes[s.id] ?? settledNow
+            shotSettledTimes[s.id] = st
+            let strokeT = shotStrokeTimes[s.id] ?? lastLocalStrokeAt ?? st
+            shotStrokeTimes[s.id] = strokeT
+            if let recorder = clipRecorder {
+                Task { await recorder.sealShot(shotID: s.id, strokeAt: strokeT, settledAt: st) }
+            }
+        }
         applyCachedEnrichments()
         if mesh?.isIsland == true {
             let unseen = shots.filter { !provisionalBadged.contains($0.id) && !badged.contains($0.id) }
@@ -357,7 +394,31 @@ final class GameSessionModel {
     /// D49/D54 (plan 015): if a correction changes a saved rack's shots or winner, `record` updates it in place; if the
     /// rack is no longer finished (`winner == nil`), `deleteGame` removes it so unfinished racks never stay saved.
     private func saveIfWon() {
-        guard !isJoinerSession, !manuallyDeletedRack, let recorder else { return }
+        guard !manuallyDeletedRack, let recorder else { return }
+        let healInFlight = (mesh?.hasPendingCommits == true) || hasUncommittedLogEntries
+
+        // D53: if this phone was an island host that saved an unconfirmed rack and then lost host election on heal
+        // (becoming a joiner), reconcile that existing local row once quorum commits settle — while still never writing
+        // a brand-new rack as a joiner (D45).
+        if isJoinerSession {
+            guard saved, lastSaved?.isUnconfirmed == true,
+                  let mesh, mesh.hasGameQuorum, !mesh.isIsland, !healInFlight else { return }
+            if winner != nil, let game = finishedGame(isUnconfirmed: false) {
+                if let oldID = savedGameID, oldID != game.id {
+                    pruneAndPreserveClips(replacing: oldID, with: game, recorder: recorder)
+                }
+                try? recorder.record(game)
+                savedGameID = game.id
+                lastSaved = game
+            } else if let id = savedGameID {
+                try? recorder.deleteGame(id: id)
+                saved = false
+                savedGameID = nil
+                lastSaved = nil
+            }
+            return
+        }
+
         let confirmedWriter: Bool
         let islandWriter: Bool
         if let mesh {
@@ -372,10 +433,9 @@ final class GameSessionModel {
         }
         guard confirmedWriter || islandWriter else { return }
         guard winner != nil else {
-            // Heal 1-RTT guard: while a reconnected island peer's `LogAck` hasn't yet advanced `commitSeq` to cover the
-            // provisional tail, keep the already-saved unconfirmed rack intact instead of deleting it prematurely.
-            if saved, lastSaved?.isUnconfirmed == true, let mesh, !mesh.isIsland,
-               events.count < (lastSaved?.shots.count ?? 0) {
+            // Heal 1-RTT guard: while uncommitted log entries or proposals are still in flight after island heal,
+            // keep the already-saved unconfirmed rack intact instead of deleting it prematurely.
+            if saved, lastSaved?.isUnconfirmed == true, let mesh, !mesh.isIsland, healInFlight {
                 return
             }
             wonAt = nil
@@ -396,7 +456,7 @@ final class GameSessionModel {
         guard let game = finishedGame(isUnconfirmed: !confirmedWriter), !saved || lastSaved != game else { return }
         do {
             if saved, let oldID = savedGameID, oldID != game.id {
-                try? recorder.deleteGame(id: oldID)
+                pruneAndPreserveClips(replacing: oldID, with: game, recorder: recorder)
             }
             try recorder.record(game)
             saved = true
@@ -405,6 +465,19 @@ final class GameSessionModel {
         } catch {
             StackGameRecorder.log.error("saving the finished rack failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    private func pruneAndPreserveClips(replacing oldID: UUID, with game: FinishedGame, recorder: any GameRecorder) {
+        let activeIDs = Set(shots.map(\.id))
+        let base = clipRecorder?.baseDirectory ?? ShotClipStore.defaultBaseDirectory
+        for (sid, rel) in Array(shotClipFiles) where !activeIDs.contains(sid) {
+            shotClipFiles.removeValue(forKey: sid)
+            ShotClipStore.deleteClips(relativePaths: [rel], baseDirectory: base)
+        }
+        let keepClips = Set(shotClipFiles.values)
+            .union(game.shots.compactMap(\.clipRef))
+            .union([game.shotOfGame?.clipFile].compactMap { $0 })
+        try? recorder.deleteGame(id: oldID, preservingClips: keepClips)
     }
 
     /// The folded rack's winning team, when it has one.
@@ -561,7 +634,7 @@ final class GameSessionModel {
     }
 
     private func scheduleEngineEvaluation() {
-        guard let evaluator = engineEvaluator, !isJoinerSession,
+        guard let evaluator = engineEvaluator,
               shots.contains(where: { !$0.isGuess && $0.rating != nil && $0.before[.cue] != nil }) else {
             engineTask?.cancel()
             engineTask = nil
@@ -576,6 +649,11 @@ final class GameSessionModel {
         let tableSize = config.tableSize
         let teamsCount = config.teams.count
         engineTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.engineGeneration == gen {
+                    self.engineTask = nil
+                }
+            }
             let summary = await evaluator.evaluateRack(
                 ruleSet: ruleSet, tableSize: tableSize, teamsCount: teamsCount, shots: rackShots)
             guard !Task.isCancelled, let self, self.engineGeneration == gen else { return }
@@ -589,9 +667,13 @@ final class GameSessionModel {
                self.shotClipFiles[sotg.shotID] == nil,
                let recorder = self.clipRecorder,
                let s = self.shots.first(where: { $0.id == sotg.shotID }) {
+                let realFrames = await recorder.capturedFrameCount(for: sotg.shotID)
+                // Joiners without real camera footage skip generating a redundant synthetic fallback over the host's.
+                if self.isJoinerSession && realFrames == 0 { return }
                 let strokeTime = self.shotStrokeTimes[sotg.shotID]
+                let settledTime = self.shotSettledTimes[sotg.shotID]
                 if let (rel, url) = try? await recorder.exportClip(
-                    shotID: sotg.shotID, strokeAt: strokeTime, tableSize: tableSize,
+                    shotID: sotg.shotID, strokeAt: strokeTime, settledAt: settledTime, tableSize: tableSize,
                     before: s.before, after: s.after, pocketed: s.pocketed) {
                     guard !Task.isCancelled, self.engineGeneration == gen, !self.manuallyDeletedRack else {
                         ShotClipStore.deleteClips(relativePaths: [rel], baseDirectory: recorder.baseDirectory)
@@ -600,8 +682,10 @@ final class GameSessionModel {
                     self.attachClip(shotID: sotg.shotID, relativePath: rel)
                     self.onReviewRefreshed?(self.reviewData())
                     // D3: never offer bulk clips while anyone is aiming or balls are moving.
+                    // Real camera footage scores > 1.0 so peer angles beat a synthetic fallback (0.25) in MeshNode's auction.
                     if !self.isAimingOrMoving, let data = try? Data(contentsOf: url) {
-                        self.mesh?.offerClip(shotID: sotg.shotID, data: data, viewScore: sotg.score)
+                        let viewScore = realFrames > 0 ? (1.0 + Double(realFrames) * 0.01) : 0.25
+                        self.mesh?.offerClip(shotID: sotg.shotID, data: data, viewScore: viewScore)
                     }
                 }
             }
@@ -609,7 +693,14 @@ final class GameSessionModel {
     }
 
     func awaitEngineEvaluation() async {
-        await engineTask?.value
+        while !Task.isCancelled, engineTask != nil {
+            try? await Task.sleep(for: .milliseconds(15))
+        }
+        if Task.isCancelled {
+            engineGeneration += 1
+            engineTask?.cancel()
+            engineTask = nil
+        }
     }
 
     func attachClip(shotID: UUID, relativePath: String) {

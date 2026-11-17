@@ -21,6 +21,8 @@ final class IdentityRegistrationModel {
     var clothesConsent = true
     var faceConsent = false
     private(set) var step: Step = .consent
+    @ObservationIgnored private var enrollTask: Task<Bool, Never>?
+    @ObservationIgnored private var enrollGeneration = 0
 
     var canSelectFace: Bool { faceExtractor?.isIdentityTrained == true }
     var canEnroll: Bool { (clothesConsent || (faceConsent && canSelectFace)) && step != .capturing }
@@ -35,8 +37,29 @@ final class IdentityRegistrationModel {
         self.sampleProvider = sampleProvider
     }
 
+    func cancel() {
+        enrollGeneration += 1
+        enrollTask?.cancel()
+        enrollTask = nil
+        if step == .capturing { step = .consent }
+    }
+
     @discardableResult
     func enroll() async -> Bool {
+        enrollTask?.cancel()
+        enrollGeneration += 1
+        let gen = enrollGeneration
+        let task = Task<Bool, Never> { @MainActor [weak self] in
+            guard let self else { return false }
+            return await self.performEnrollment(generation: gen)
+        }
+        enrollTask = task
+        let ok = await task.value
+        if enrollGeneration == gen { enrollTask = nil }
+        return ok
+    }
+
+    private func performEnrollment(generation gen: Int) async -> Bool {
         let effectiveConsent = RecognitionConsent(clothes: clothesConsent, face: faceConsent && canSelectFace)
         guard effectiveConsent.clothes || effectiveConsent.face else {
             step = .failed("Turn on at least one recognition option.")
@@ -47,8 +70,8 @@ final class IdentityRegistrationModel {
             return false
         }
         step = .capturing
-        let capture: RegistrationCapture
         do {
+            let capture: RegistrationCapture
             if let sampleProvider {
                 capture = try await sampleProvider(effectiveConsent)
             } else {
@@ -59,16 +82,30 @@ final class IdentityRegistrationModel {
                     for: effectiveConsent, count: RecognitionRegistrar.minSamples)
                 #endif
             }
+            guard !Task.isCancelled, enrollGeneration == gen else {
+                if step == .capturing { step = .consent }
+                return false
+            }
             let decision = ConsentDecision(consent: effectiveConsent, agreedAt: .now)
-            let registrar = RecognitionRegistrar(stack: stack, face: faceExtractor, body: bodyExtractor)
+            let registrar = RecognitionRegistrar(
+                stack: stack, face: faceExtractor, body: bodyExtractor,
+                save: { [weak self] ctx in
+                    guard let self, !Task.isCancelled, self.enrollGeneration == gen else {
+                        throw CancellationError()
+                    }
+                    try ctx.save()
+                })
             try await registrar.register(owner, decision: decision, capture: capture)
             step = .done
             return true
+        } catch is CancellationError {
+            if step == .capturing { step = .consent }
+            return false
         } catch DeviceRegistrationCamera.CaptureError.permissionDenied {
-            step = .failed("Camera permission is needed to enroll.")
+            if enrollGeneration == gen { step = .failed("Camera permission is needed to enroll.") }
             return false
         } catch {
-            step = .failed("Couldn't enroll right now. Try again.")
+            if enrollGeneration == gen { step = .failed("Couldn't enroll right now. Try again.") }
             return false
         }
     }
@@ -144,8 +181,10 @@ enum DeviceRegistrationCamera {
 
         let deadline = Date().addingTimeInterval(4.0)
         while Date() < deadline && collector.frames.count < count {
+            try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(120))
         }
+        try Task.checkCancellation()
         let captured = collector.frames
         guard captured.count >= count else { throw CaptureError.insufficientFrames }
         return RegistrationCapture(
@@ -260,11 +299,19 @@ struct IdentityRegistrationSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onCompleted(false) }
-                        .accessibilityIdentifier("identity.enroll.cancel")
+                    Button("Cancel") {
+                        model.cancel()
+                        onCompleted(false)
+                    }
+                    .accessibilityIdentifier("identity.enroll.cancel")
                 }
             }
         }
         .tint(AX.accentText)
+        .onDisappear {
+            if model.step != .done {
+                model.cancel()
+            }
+        }
     }
 }

@@ -33,6 +33,7 @@ import UIKit
     func drain(until deadline: Date) async
     /// Post-settle SotG clip offer & receive (D3).
     var onClipReceived: (@MainActor (UUID, Data) -> Void)? { get set }
+    var hasPendingCommits: Bool { get }
     func offerClip(shotID: UUID, data: Data, viewScore: Double)
     func setPhase(_ phase: MeshPhase)
 }
@@ -40,6 +41,7 @@ import UIKit
 extension GameMeshLink {
     var isJoiner: Bool { !isHost }
     var isIsland: Bool { false }
+    var hasPendingCommits: Bool { false }
     var onClipReceived: (@MainActor (UUID, Data) -> Void)? { get { nil } set {} }
     func settled(_ event: GameEvent, strokeAt: Double) { if !isJoiner { append(event) } }
     func drain(until deadline: Date) async {}
@@ -66,8 +68,11 @@ extension GameMeshLink {
     private var members: [PeerID] = []
     /// Last log seq this link has seen in a snapshot (a processing barrier for tests).
     private(set) var handledLastSeq: UInt64 = 0
+    /// Last log seq in the most recent snapshot (`commitSeq < lastLogSeq` means entries await quorum ACK).
+    private(set) var lastLogSeq: UInt64 = 0
     /// The last commit point forwarded to `onCommittedLog`.
     private(set) var commitSeq: UInt64 = 0
+    var hasPendingCommits: Bool { commitSeq < lastLogSeq || !unconfirmed.isEmpty || !queued.isEmpty }
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?
     @ObservationIgnored var onClipReceived: (@MainActor (UUID, Data) -> Void)?
 
@@ -179,6 +184,7 @@ extension GameMeshLink {
         resolve(snap.role)
         see(snap.roster)
         handledLastSeq = max(handledLastSeq, snap.log.last?.seq ?? 0)
+        lastLogSeq = snap.log.last?.seq ?? 0
         let committed = snap.log.filter { $0.seq <= snap.commitSeq }
         let visible = (snap.isIsland && snap.role == .host) ? snap.log : committed
         guard snap.commitSeq > commitSeq || visible != forwarded else { return }

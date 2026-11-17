@@ -172,24 +172,23 @@ final class TrainingSessionController {
         let objEntry = shot.before.first { !$0.key.isCue }
         if let cueBefore = shot.before[.cue], let (objID, objBefore) = objEntry {
             let pocketPos = spec.pocketCenter(shot.targetPocket)
-            let ghost = AimPlanner.ghostBall(object: objBefore, pocket: pocketPos)
-            let idealDir = (ghost - cueBefore).normalized
-            if let cueAfter = shot.after[.cue], cueAfter.distance(to: cueBefore) > 0.01 {
-                let actualDir = (cueAfter - cueBefore).normalized
-                cutErr = atan2(idealDir.cross(actualDir), idealDir.dot(actualDir))
+            // Post-collision cue-ball displacement includes natural tangent deflection, spin throw, and cushion rebound,
+            // so we NEVER compare `cueAfter - cueBefore` against `ghost - cueBefore`. Instead, measure cut error from the
+            // missed object ball's observed departure direction relative to `pocketPos - objBefore`, and measure cue landing
+            // error only in `.positionPlay` against `zone`.
+            if !shot.made, let objAfter = shot.after[objID], objAfter.distance(to: objBefore) > 0.015 {
+                let idealObjDir = (pocketPos - objBefore).normalized
+                let actualObjDir = (objAfter - objBefore).normalized
+                cutErr = atan2(idealObjDir.cross(actualObjDir), idealObjDir.dot(actualObjDir))
                 errors[.cut] = cutErr
-                let travelRatio = cueAfter.distance(to: cueBefore) / max(0.25, cueBefore.distance(to: ghost)) - 1.0
-                speedErr = max(-1.0, min(1.5, travelRatio))
-                errors[.speed] = speedErr
-                if let zone {
-                    landingErr = cueAfter.distance(to: cueBefore) - zone.distance(to: cueBefore)
-                    errors[.cueBallDistance] = landingErr
-                }
-            }
-            if !shot.made, let objAfter = shot.after[objID] {
-                let toPocket = (pocketPos - objBefore).normalized
                 let missVec = objAfter - pocketPos
-                errors[.side] = toPocket.cross(missVec)
+                errors[.side] = idealObjDir.cross(missVec)
+            }
+            if let zone, let cueAfter = shot.after[.cue] {
+                landingErr = cueAfter.distance(to: cueBefore) - zone.distance(to: cueBefore)
+                errors[.cueBallDistance] = landingErr
+                speedErr = max(-1.0, min(1.5, landingErr / max(0.25, zone.distance(to: cueBefore))))
+                errors[.speed] = speedErr
             }
         }
 

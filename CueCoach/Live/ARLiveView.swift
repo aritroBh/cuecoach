@@ -470,7 +470,12 @@ final class ARLiveController: NSObject {
             }
             model.hooks.cameraFrame(cg, r.timestamp, cueNorm)
         }
-        defer { overlay?.vis = model.visibility; overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
+        defer {
+            overlay?.vis = model.visibility
+            overlay?.trainingSetupGhosts = model.trainingSetupGhosts
+            overlay?.trainingPositionZone = model.trainingPositionZone
+            overlay?.update(r)
+        }   // after the live style below is decided (no one-frame lag)
         if let r {
             // Shot events are haptic only (no audio, no text while aiming).
             if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
@@ -753,6 +758,9 @@ final class TableOverlay {
     private let ghost: ModelEntity
     private var dashes: [ModelEntity] = []
     private var objectSegs: [ModelEntity] = []
+    private var setupGhostRings: [ModelEntity] = []
+    private let positionZoneRing: ModelEntity
+    private let positionZoneFill: ModelEntity
     private let liveLine: ModelEntity
     private let liveObject: ModelEntity
     private let liveGhost: ModelEntity
@@ -773,6 +781,8 @@ final class TableOverlay {
 
     /// Set from `LiveModel.visibility` every frame (D1: level 4 reveals the full overlay after the shot).
     var vis: OverlayVisibility
+    var trainingSetupGhosts: [(Vec2, Bool)] = []
+    var trainingPositionZone: Vec2? = nil
 
     init(frame: TableFrame, visibility: OverlayVisibility = .of(.training(level: AssistLevel.full.rawValue))) {
         vis = visibility
@@ -822,6 +832,19 @@ final class TableOverlay {
             d.isEnabled = false
             root.addChild(d); dashes.append(d)
         }
+        for _ in 0..<6 {
+            let g = ModelEntity(mesh: dashedRing, materials: [OverlayMesh.material(AXLive.uiAim, 0.7)])
+            g.isEnabled = false
+            root.addChild(g); setupGhostRings.append(g)
+        }
+        positionZoneRing = ModelEntity(mesh: OverlayMesh.ring(inner: R * 2.9, outer: R * 3.2),
+                                       materials: [OverlayMesh.material(Self.green, 0.75)])
+        positionZoneFill = ModelEntity(mesh: OverlayMesh.ring(inner: 0.001, outer: R * 2.9),
+                                       materials: [OverlayMesh.material(Self.green, 0.16)])
+        positionZoneRing.isEnabled = false
+        positionZoneFill.isEnabled = false
+        root.addChild(positionZoneRing)
+        root.addChild(positionZoneFill)
     }
 
     /// "Table found": the whole overlay settles onto the cloth (from slightly raised and enlarged).
@@ -836,11 +859,36 @@ final class TableOverlay {
     func setDimmed(_ d: Bool) {
         dimmed = d
         for e in outline { e.model?.materials = [OverlayMesh.material(AXLive.uiAim, d ? 0.2 : 0.6)] }
-        if d { for e in ballRings + dashes + objectSegs + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost] { e.isEnabled = false } }
+        if d {
+            for e in ballRings + dashes + objectSegs + setupGhostRings
+                + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost, positionZoneRing, positionZoneFill] {
+                e.isEnabled = false
+            }
+        }
     }
 
     func update(_ r: PerceptionResult?) {
         guard !dimmed else { return }
+        for (i, gr) in setupGhostRings.enumerated() {
+            if i < trainingSetupGhosts.count {
+                let (pos, matched) = trainingSetupGhosts[i]
+                gr.model?.mesh = matched ? solidRing : dashedRing
+                gr.model?.materials = [OverlayMesh.material(matched ? Self.green : AXLive.uiAim, matched ? 0.9 : 0.7)]
+                gr.position = [Float(pos.x), Float(pos.y), 0.004]
+                gr.isEnabled = true
+            } else {
+                gr.isEnabled = false
+            }
+        }
+        if vis.line3, let zone = trainingPositionZone {
+            positionZoneRing.position = [Float(zone.x), Float(zone.y), 0.003]
+            positionZoneFill.position = [Float(zone.x), Float(zone.y), 0.002]
+            positionZoneRing.isEnabled = true
+            positionZoneFill.isEnabled = true
+        } else {
+            positionZoneRing.isEnabled = false
+            positionZoneFill.isEnabled = false
+        }
         let tracks = r?.confirmed ?? []
         let now = CACurrentMediaTime()
         let atRest = r?.atRest ?? false

@@ -246,25 +246,48 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
     static func makeModel(stack: PersistenceStack, gameID: UUID, onChanged: @escaping () -> Void,
                           onDismiss: @escaping () -> Void) -> GameReviewModel {
         let m = GameReviewModel(source: PersistenceGameReviewSource(stack: stack, gameID: gameID))
-        m.onDone = onDismiss
+        var refreshTask: Task<Void, Never>?
+        var refreshGen = 0
+        func scheduleAsyncRefresh() {
+            refreshTask?.cancel()
+            refreshGen += 1
+            let gen = refreshGen
+            refreshTask = Task { @MainActor [weak m] in
+                guard let updated = try? await refreshEngineMetrics(gameID: gameID, stack: stack),
+                      !Task.isCancelled, gen == refreshGen else { return }
+                m?.refresh(updated)
+                onChanged()
+            }
+        }
+        m.onDone = {
+            refreshTask?.cancel()
+            onDismiss()
+        }
         m.onConfirmGame = {
             try? StackGameRecorder(stack: stack).confirmGame(id: gameID)
             onChanged()
             return try? loadData(stack: stack, gameID: gameID)
         }
         m.onDeleteGame = {
+            refreshTask?.cancel()
             try? StackGameRecorder(stack: stack).deleteGame(id: gameID)
             onChanged()
             onDismiss()
         }
         m.onCorrectShooter = { shotID, player in
-            let next = try? correctShooter(gameID: gameID, shotID: shotID, to: player, stack: stack, onDeleted: onDismiss)
+            let next = try? correctShooter(
+                gameID: gameID, shotID: shotID, to: player, stack: stack,
+                onDeleted: { refreshTask?.cancel(); onDismiss() })
             onChanged()
+            if next != nil { scheduleAsyncRefresh() }
             return next
         }
         m.onResolveOutcome = { shotID, outcome in
-            let next = try? resolveOutcome(gameID: gameID, shotID: shotID, to: outcome, stack: stack, onDeleted: onDismiss)
+            let next = try? resolveOutcome(
+                gameID: gameID, shotID: shotID, to: outcome, stack: stack,
+                onDeleted: { refreshTask?.cancel(); onDismiss() })
             onChanged()
+            if next != nil { scheduleAsyncRefresh() }
             return next
         }
         m.onPlayClip = { [weak m] shotID in
@@ -351,24 +374,15 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
                 }
             }
             state.shooter = currentTeam
-            let out = s.fullOutcome ?? ShotOutcome(
-                firstContact: s.firstContact,
-                noContact: s.fouls.contains(.noContact),
-                pocketed: s.pocketed,
-                offTable: Set<BallID>(s.fouls.compactMap { f -> BallID? in
-                    switch f {
-                    case .cueBallOffTable: return .cue
-                    case .objectBallOffTable(let b): return b
-                    default: return nil
-                    }
-                }),
-                calledPocket: s.calledPocket)
+            let out = reconstructedOutcome(for: s)
             let res = engine.apply(out, to: state)
             s.fouls = res.fouls
+            let madeObject = out.pocketed.keys.contains { !$0.isCue }
+            s.made = madeObject
+            s.onTarget = madeObject
             if replayRotation {
-                s.decisionRating = RuleRating.classify(
-                    res, shooter: state.shooter,
-                    pocketedObjectBall: out.pocketed.keys.contains { !$0.isCue })
+                s.decisionRating = RuleRating.classify(res, shooter: state.shooter, pocketedObjectBall: madeObject)
+                s.executionRating = ExecutionRating(result: madeObject ? .made : .miss, position: .notApplicable)
                 s.alternative = nil
             }
             state = res.nextState
@@ -384,7 +398,144 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
             return nil
         }
         game.winnerTeam = winner
+        recomputeRuleConsistentMetrics(game: game, ordered: ordered, winner: winner, ctx: ctx)
         try ctx.save()
         return GameReviewData(game: game, profiles: try ctx.fetch(FetchDescriptor<PlayerProfile>()))
+    }
+
+    static func reconstructedOutcome(for s: Shot) -> ShotOutcome {
+        s.fullOutcome ?? ShotOutcome(
+            isBreak: s.index == 0,
+            firstContact: s.firstContact,
+            noContact: s.fouls.contains(.noContact),
+            pocketed: s.pocketed,
+            offTable: Set<BallID>(s.fouls.compactMap { f -> BallID? in
+                switch f {
+                case .cueBallOffTable: return .cue
+                case .objectBallOffTable(let b): return b
+                default: return nil
+                }
+            }),
+            anyRailAfterContact: s.fouls.contains(.noRailAfterContact) ? false : (s.railsAfterContact > 0 ? true : nil),
+            objectBallsToRailOnBreak: s.fouls.contains(.illegalBreak) ? 0 : nil,
+            calledPocket: s.calledPocket,
+            cueBallStartedAboveHeadString: s.fouls.contains(.badCueBallPlacement) ? false : nil,
+            cueBallCrossedHeadStringFirst: s.fouls.contains(.badPlayFromAboveHeadString) ? false : nil)
+    }
+
+    private static func recomputeRuleConsistentMetrics(game: Game, ordered: [Shot], winner: Int, ctx: ModelContext) {
+        var series: [Double] = [0.5]
+        var wp0 = 0.5
+        for (idx, s) in ordered.enumerated() {
+            let team = game.teams.firstIndex(where: { $0.memberIDs.contains(s.shooterID) }) ?? 0
+            let shooterBefore = team == 0 ? wp0 : (1.0 - wp0)
+            let isFinal = idx == ordered.count - 1
+            let nextWP0: Double
+            if isFinal {
+                nextWP0 = winner == 0 ? 1.0 : 0.0
+            } else {
+                let swing: Double = if !s.fouls.isEmpty {
+                    -0.18
+                } else if s.made {
+                    0.10
+                } else {
+                    -0.06
+                }
+                nextWP0 = min(0.95, max(0.05, wp0 + (team == 0 ? swing : -swing)))
+            }
+            let shooterAfter = team == 0 ? nextWP0 : (1.0 - nextWP0)
+            s.wpaDelta = shooterAfter - shooterBefore
+            s.isClutch = abs(s.wpaDelta) >= 0.25 && abs(wp0 - 0.5) <= 0.25
+            wp0 = nextWP0
+            series.append(wp0)
+        }
+        game.winProbSeries = series
+
+        // Prune or refresh Shot of the Game so an overturned winner never retains the losing side's stale highlight.
+        let winningIDs = Set(game.teams.indices.contains(winner) ? game.teams[winner].memberIDs : [])
+        for h in Array(game.highlights) where h.kind == .shotOfGame {
+            let shot = ordered.first { $0.id == h.shotID }
+            if shot == nil || !winningIDs.contains(shot!.shooterID) || !(shot!.fouls.isEmpty) {
+                ctx.delete(h)
+            }
+        }
+        if game.highlights.first(where: { $0.kind == .shotOfGame }) == nil,
+           let bestShot = ordered.filter({ winningIDs.contains($0.shooterID) && $0.fouls.isEmpty && !$0.isGuess })
+               .max(by: { $0.wpaDelta < $1.wpaDelta }) {
+            let label = bestShot.decisionRating == .brilliant ? "Brilliant Shot" : "Rack Winner"
+            let h = Highlight(shotID: bestShot.id, kind: .shotOfGame,
+                              clipFile: bestShot.clipRef ?? "", label: label, score: max(0.1, bestShot.wpaDelta))
+            ctx.insert(h)
+            h.game = game
+        }
+    }
+
+    @discardableResult
+    static func refreshEngineMetrics(gameID: UUID, stack: PersistenceStack) async throws -> GameReviewData? {
+        let ctx = stack.competitiveContext
+        guard let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })).first else {
+            return nil
+        }
+        let ordered = game.shots.sorted { $0.index < $1.index }
+        guard ordered.contains(where: { !$0.isGuess && $0.preState.balls[.cue] != nil }) else {
+            return nil
+        }
+        let profiles = try ctx.fetch(FetchDescriptor<PlayerProfile>())
+        let byID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+        let sessionShots: [SessionShot] = ordered.map { s in
+            let p = byID[s.shooterID]
+            let shell = ShellPlayer(id: s.shooterID, name: p?.name ?? "Player",
+                                    symbol: p?.avatarSymbol ?? "person.fill",
+                                    colorName: p?.avatarColor ?? "teal")
+            let team = game.teams.firstIndex(where: { $0.memberIDs.contains(s.shooterID) }) ?? 0
+            return SessionShot(
+                id: s.id, index: s.index, shooter: shell, team: team,
+                rating: s.decisionRating, pocketed: s.pocketed, fouls: s.fouls,
+                isGuess: s.isGuess,
+                before: s.preState.balls.mapValues(\.position),
+                after: s.postState.balls.mapValues(\.position),
+                attribution: s.attributionSource, firstContact: s.firstContact,
+                needsTap: s.needsTap, alternateOutcome: s.alternateOutcome,
+                outcome: reconstructedOutcome(for: s), clipRef: s.clipRef)
+        }
+        let tableSize = game.session?.tableSize ?? .sevenFoot
+        let summary = await SessionEngineEvaluator().evaluateRack(
+            ruleSet: game.ruleSet, tableSize: tableSize,
+            teamsCount: max(2, game.teams.count), shots: sessionShots)
+        guard !Task.isCancelled,
+              let freshGame = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })).first else {
+            return nil
+        }
+        for s in freshGame.shots {
+            if let e = summary.byShotID[s.id] {
+                s.decisionRating = e.rating
+                s.executionRating = e.executionRating
+                s.wpaDelta = e.wpaDelta
+                s.isClutch = e.isClutch
+                s.alternative = e.alternative
+            }
+        }
+        if !summary.winProbSeries.isEmpty {
+            freshGame.winProbSeries = summary.winProbSeries
+        }
+        if let sotg = summary.shotOfGame {
+            if let existing = freshGame.highlights.first(where: { $0.kind == .shotOfGame }) {
+                let sameShot = existing.shotID == sotg.shotID
+                existing.shotID = sotg.shotID
+                existing.label = sotg.label
+                existing.score = sotg.score
+                if !sameShot {
+                    existing.clipFile = freshGame.shots.first(where: { $0.id == sotg.shotID })?.clipRef ?? ""
+                }
+            } else {
+                let clip = freshGame.shots.first(where: { $0.id == sotg.shotID })?.clipRef ?? ""
+                let h = Highlight(shotID: sotg.shotID, kind: .shotOfGame, clipFile: clip,
+                                  label: sotg.label, score: sotg.score)
+                ctx.insert(h)
+                h.game = freshGame
+            }
+        }
+        try ctx.save()
+        return GameReviewData(game: freshGame, profiles: try ctx.fetch(FetchDescriptor<PlayerProfile>()))
     }
 }

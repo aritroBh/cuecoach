@@ -126,4 +126,22 @@ import Testing
         let biases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
         #expect(biases.first?.resolvedAt != nil)
     }
+
+    @Test func madeShotsWithNaturalCueBallTangentDeflectionNeverTriggerFalseBias() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let controller = TrainingSessionController(drill: .increasingCuts, initialLevel: .full,
+                                                   tableSize: .sevenFoot, playerID: UUID(), stack: stack)
+        let one = BallID(1)!
+        // Simulate 20 successful cut pots where the cue ball deflects ~65° along the tangent line after contact.
+        for _ in 0..<20 {
+            controller.recordAttempt(SettledTrainingShot(
+                made: true,
+                before: [.cue: Vec2(0.6, 0.55), one: Vec2(1.4, 0.35)],
+                after: [.cue: Vec2(1.55, 0.85)],
+                targetPocket: .footRight))
+        }
+        #expect(controller.activeFeedback == nil, "Natural cue-ball collision deflection on made pots is never flagged as bias")
+        let biases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
+        #expect(biases.isEmpty)
+    }
 }

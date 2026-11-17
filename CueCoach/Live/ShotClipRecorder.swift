@@ -68,13 +68,13 @@ struct BufferedClipFrame: @unchecked Sendable {
     var image: CGImage
 }
 
-/// Bounded ~5 s rolling ring buffer (~3 s pre-stroke + ~2 s post-settle).
+/// Bounded rolling ring buffer (~14 s) so slow rolls still retain `stroke - 1 s` through `settle + 2 s`.
 struct RollingFrameBuffer: Sendable {
     let maxDuration: Double
     let maxFrames: Int
     private(set) var frames: [BufferedClipFrame] = []
 
-    init(maxDuration: Double = 5.5, maxFrames: Int = 75) {
+    init(maxDuration: Double = 14.0, maxFrames: Int = 180) {
         self.maxDuration = maxDuration
         self.maxFrames = maxFrames
     }
@@ -88,28 +88,74 @@ struct RollingFrameBuffer: Sendable {
         }
     }
 
-    func window(aroundStroke strokeAt: Double, preSeconds: Double = 3.0, postSeconds: Double = 2.0) -> [BufferedClipFrame] {
+    func window(aroundStroke strokeAt: Double, settledAt: Double? = nil,
+                preSeconds: Double = 1.0, postSeconds: Double = 2.0) -> [BufferedClipFrame] {
         let lo = strokeAt - preSeconds
-        let hi = strokeAt + postSeconds
+        let hi = max(settledAt ?? strokeAt, strokeAt) + postSeconds
         return frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }
     }
 }
 
 actor ShotClipRecorder {
+    private struct ActivePostSettleWindow {
+        var shotID: UUID
+        var lo: Double
+        var hi: Double
+    }
+
+    static let maxRetainedShots = 24
+    static let maxFramesPerShot = 150
+
     let baseDirectory: URL
     private var buffer = RollingFrameBuffer()
+    private var capturedShots: [UUID: [BufferedClipFrame]] = [:]
+    private var shotOrder: [UUID] = []
+    private var activeWindows: [ActivePostSettleWindow] = []
 
     init(baseDirectory: URL = ShotClipStore.defaultBaseDirectory) {
         self.baseDirectory = baseDirectory
     }
 
     func pushFrame(_ image: CGImage, timestamp: Double) {
-        buffer.append(BufferedClipFrame(timestamp: timestamp, image: image))
+        let frame = BufferedClipFrame(timestamp: timestamp, image: image)
+        buffer.append(frame)
+        activeWindows.removeAll { timestamp > $0.hi }
+        for win in activeWindows where timestamp >= win.lo && timestamp <= win.hi {
+            var arr = capturedShots[win.shotID] ?? []
+            if arr.count < Self.maxFramesPerShot {
+                arr.append(frame)
+                capturedShots[win.shotID] = arr
+            }
+        }
+    }
+
+    /// Snapshots `[strokeAt - 1.0, settledAt + 2.0]` for `shotID` and keeps appending incoming reaction frames up to `settledAt + 2.0`
+    /// so an early-rack highlight never ages out before rack end (SPEC §7).
+    func sealShot(shotID: UUID, strokeAt: Double, settledAt: Double) {
+        let lo = strokeAt - 1.0
+        let hi = max(settledAt, strokeAt) + 2.0
+        let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        if capturedShots[shotID] == nil {
+            shotOrder.append(shotID)
+            while shotOrder.count > Self.maxRetainedShots {
+                let oldest = shotOrder.removeFirst()
+                capturedShots.removeValue(forKey: oldest)
+                activeWindows.removeAll { $0.shotID == oldest }
+            }
+        }
+        capturedShots[shotID] = initial
+        activeWindows.removeAll { $0.shotID == shotID }
+        activeWindows.append(ActivePostSettleWindow(shotID: shotID, lo: lo, hi: hi))
+    }
+
+    func capturedFrameCount(for shotID: UUID) -> Int {
+        capturedShots[shotID]?.count ?? 0
     }
 
     /// Exports a short `.mp4` clip with burned-in actual ball paths (`before` → `after` / pocket).
     /// When no live camera frames are buffered (e.g. Simulator replay), renders a clean animated trajectory clip.
-    func exportClip(shotID: UUID, strokeAt: Double? = nil, tableSize: TableSize = .sevenFoot,
+    func exportClip(shotID: UUID, strokeAt: Double? = nil, settledAt: Double? = nil,
+                    tableSize: TableSize = .sevenFoot,
                     before: [BallID: Vec2], after: [BallID: Vec2],
                     pocketed: [BallID: Pocket]) async throws -> (relativePath: String, url: URL) {
         let dir = try ShotClipStore.clipsDirectory(in: baseDirectory)
@@ -122,12 +168,14 @@ actor ShotClipRecorder {
         let paths = Self.computePaths(spec: spec, before: before, after: after, pocketed: pocketed)
 
         let captured: [CGImage]
-        if let strokeAt {
-            captured = buffer.window(aroundStroke: strokeAt).map(\.image)
+        if let sealed = capturedShots[shotID], !sealed.isEmpty {
+            captured = sealed.map(\.image)
+        } else if let strokeAt {
+            captured = buffer.window(aroundStroke: strokeAt, settledAt: settledAt).map(\.image)
         } else {
             captured = buffer.frames.suffix(24).map(\.image)
         }
-        let totalFrames = max(18, min(45, captured.isEmpty ? 24 : captured.count))
+        let totalFrames = captured.isEmpty ? 24 : max(18, min(Self.maxFramesPerShot, captured.count))
 
         let writer = try AVAssetWriter(outputURL: fileURL, fileType: .mp4)
         let settings: [String: Any] = [
@@ -154,7 +202,11 @@ actor ShotClipRecorder {
                 try await Task.sleep(for: .milliseconds(5))
             }
             let progress = Double(frameIdx) / Double(max(1, totalFrames - 1))
-            let bg = captured.isEmpty ? nil : captured[min(captured.count - 1, frameIdx)]
+            let bg: CGImage? = if captured.isEmpty {
+                nil
+            } else {
+                captured[min(captured.count - 1, Int((progress * Double(captured.count - 1)).rounded()))]
+            }
             if let pb = Self.renderFrame(width: width, height: height, background: bg,
                                          spec: spec, paths: paths, before: before, progress: progress) {
                 let pts = CMTime(value: CMTimeValue(frameIdx), timescale: fps)
