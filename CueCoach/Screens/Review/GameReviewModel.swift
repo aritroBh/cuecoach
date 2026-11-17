@@ -24,6 +24,8 @@ public final class GameReviewModel {
     @ObservationIgnored var onDone: (() -> Void)?
     /// Full-screen clip player hook (Highlights module wires it; no-op until then).
     @ObservationIgnored var onPlayClip: ((UUID) -> Void)?
+    /// D49 (plan 015): post-game shooter correction from timeline long-press; nil on sample screens and joiners.
+    @ObservationIgnored var onCorrectShooter: ((UUID, ReviewPlayer) -> GameReviewData?)?
 
     init(source: any GameReviewSource) {
         self.source = source
@@ -180,6 +182,20 @@ public final class GameReviewModel {
     }
 
     // MARK: Selection
+
+    var allPlayers: [ReviewPlayer] { (data?.teams ?? []).flatMap { $0 } }
+    var canCorrectShooter: Bool { onCorrectShooter != nil && !allPlayers.isEmpty }
+
+    func correctShooter(_ shotID: UUID, to player: ReviewPlayer) {
+        guard let next = onCorrectShooter?(shotID, player) else { return }
+        data = next
+        phase = .loaded
+        if next.shots.contains(where: { $0.id == shotID }) {
+            selectedShotID = shotID
+        } else {
+            selectedShotID = shotOfGame?.id ?? next.shots.first?.id
+        }
+    }
 
     func select(_ id: UUID) {
         guard shots.contains(where: { $0.id == id }) else { return }

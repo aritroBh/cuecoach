@@ -135,6 +135,11 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
         return !SizeAmbiguity.isAmbiguous(measuredLength: est, snapped: p.snappedSize, prior: prior)
     }
 
+    /// Plan 005 follow-up: a settled pose that fails `sizeIsTrusted` sits ambiguously between presets → `.unusualSize`.
+    static func untrustedSizeFailure(_ p: AutoTablePose, prior: TableSize? = nil) -> LockFailure? {
+        sizeIsTrusted(p, prior: prior) ? nil : .unusualSize
+    }
+
     /// The candidate's six pocket centres in working-image pixels (where the keypoint model's mouths land).
     static func pocketPixels(_ p: AutoTablePose, camera: CameraModel, image: PixelImage) -> [SIMD2<Double>] {
         let sx = Double(image.width) / camera.intrinsics.width, sy = Double(image.height) / camera.intrinsics.height
@@ -174,10 +179,10 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
                 return TableEstimate(corners: p.corners, confidence: 0.9, locked: false, size: p.snappedSize,
                                      failure: .badShape, frame: nil, generation: e.generation)
             }
-            // Size between two presets (a shadow or occluder edge stood in for a rail): wait for a second look.
-            guard Self.sizeIsTrusted(p, prior: prior) else {
+            // Size between two presets: show the ruler size hint and wait for a clearer measurement.
+            if let why = Self.untrustedSizeFailure(p, prior: prior) {
                 return TableEstimate(corners: p.corners, confidence: 0.9, locked: false, size: nil,
-                                     failure: .partialTable, frame: nil, generation: e.generation)
+                                     failure: why, frame: nil, generation: e.generation)
             }
             state.withLock { $0.consecutiveFailures = 0; $0.lastFailure = nil }
             let frame = TableFrame(tableToWorld: p.tableToWorld, spec: p.spec)

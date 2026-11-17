@@ -234,22 +234,7 @@ public struct GameReviewView: View {
                         ForEach(model.shots) { s in
                             let selected = s.id == model.selectedShotID
                             let style = model.timelineStyle(s)
-                            Button { model.select(s.id) } label: {
-                                VStack(spacing: 2) {
-                                    RatingBadgeCircle(style: style, diameter: selected ? 56 : 44, symbolSize: 20,
-                                                      selected: selected, showGlow: false)
-                                    TeamArc().stroke(AX.team(s.team), style: AX.teamStroke(s.team))
-                                        .frame(width: 30, height: 12)
-                                        .offset(y: -14)
-                                }
-                                .opacity(style.recedes && !selected ? 0.6 : 1)
-                                .frame(width: 60, height: 76)
-                            }
-                            .buttonStyle(.plain)
-                            .id(s.id)
-                            .accessibilityLabel(model.accessibilityLabel(s))
-                            .accessibilityAddTraits(selected ? .isSelected : [])
-                            .accessibilityIdentifier("review.shot.\(s.index)")
+                            timelineShotButton(s, selected: selected, style: style)
                         }
                     }
                     .padding(.vertical, 6)
@@ -261,6 +246,37 @@ public struct GameReviewView: View {
                     if let id { withAnimation(.snappy) { proxy.scrollTo(id, anchor: .center) } }
                 }
             }
+        }
+    }
+
+    @ViewBuilder private func timelineShotButton(_ s: ReviewShot, selected: Bool, style: RatingBadgeStyle) -> some View {
+        let button = Button { model.select(s.id) } label: {
+            VStack(spacing: 2) {
+                RatingBadgeCircle(style: style, diameter: selected ? 56 : 44, symbolSize: 20,
+                                  selected: selected, showGlow: false)
+                TeamArc().stroke(AX.team(s.team), style: AX.teamStroke(s.team))
+                    .frame(width: 30, height: 12)
+                    .offset(y: -14)
+            }
+            .opacity(style.recedes && !selected ? 0.6 : 1)
+            .frame(width: 60, height: 76)
+        }
+        .buttonStyle(.plain)
+        .id(s.id)
+        .accessibilityLabel(model.accessibilityLabel(s))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("review.shot.\(s.index)")
+
+        if model.canCorrectShooter {
+            button.contextMenu {
+                ForEach(model.allPlayers) { player in
+                    Button { model.correctShooter(s.id, to: player) } label: {
+                        Label(player.name, systemImage: s.shooter?.id == player.id ? "checkmark" : "person")
+                    }
+                }
+            }
+        } else {
+            button
         }
     }
 

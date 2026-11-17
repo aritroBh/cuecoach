@@ -53,9 +53,15 @@ final class GameSessionModel {
     var mesh: (any GameMeshLink)? {
         didSet {
             oldValue?.onCommittedLog = nil
-            mesh?.onCommittedLog = { [weak self] log, seq in self?.ingest(log: log, commitSeq: seq) }
+            if mesh?.isJoiner == true { everJoiner = true }
+            mesh?.onCommittedLog = { [weak self] log, seq in
+                if self?.mesh?.isJoiner == true { self?.everJoiner = true }
+                self?.ingest(log: log, commitSeq: seq)
+            }
         }
     }
+    /// True once this session acted as a mesh joiner, even after `endGame` tears down `mesh` (D39, plan 015).
+    @ObservationIgnored private(set) var everJoiner = false
     @ObservationIgnored let badge = PostShotBadgeModel()
     /// The game's rules (D11 rule set from setup) and state, which Live rates shots against. The fold owns the state.
     @ObservationIgnored let rulesEngine: RulesEngine
@@ -80,8 +86,10 @@ final class GameSessionModel {
     @ObservationIgnored private let startedAt = Date()
     /// When the fold first gave the rack a winner (the saved `endedAt`).
     @ObservationIgnored private var wonAt: Date?
-    /// This phone saved the rack: later commits and `endGame` write nothing more.
+    /// This phone saved the rack; corrections in Review can still update or remove it (D49, D54).
     @ObservationIgnored private var saved = false
+    @ObservationIgnored private var savedGameID: UUID?
+    @ObservationIgnored private var lastSaved: FinishedGame?
     /// Folded shots up to and including the one that gave the rack its winner (the saved rack's boundary).
     @ObservationIgnored private var winningShotCount: Int?
 
@@ -250,14 +258,33 @@ final class GameSessionModel {
     /// only, never `!isJoiner`; a discovering phone never saves) with a majority of the game's members
     /// (`hasGameQuorum`; an island never saves, plan 013 merges first). A throw is logged and retried on the next
     /// commit with the same rack (shots up to the winning one); it never blocks play or review.
+    /// D49/D54 (plan 015): if a correction changes a saved rack's shots or winner, `record` updates it in place; if the
+    /// rack is no longer finished (`winner == nil`), `deleteGame` removes it so unfinished racks never stay saved.
     private func saveIfWon() {
-        guard winner != nil else { return }
-        if wonAt == nil { wonAt = Date() }
-        guard !saved, let recorder, let game = finishedGame() else { return }
+        if mesh?.isJoiner == true { everJoiner = true }
+        guard !everJoiner, let recorder else { return }
         if let mesh, !(mesh.isHost && mesh.hasGameQuorum) || mesh.isIsland { return }   // plan 013a: never an island
+        guard winner != nil else {
+            wonAt = nil
+            if saved, let id = savedGameID {
+                do {
+                    try recorder.deleteGame(id: id)
+                    saved = false
+                    savedGameID = nil
+                    lastSaved = nil
+                } catch {
+                    StackGameRecorder.log.error("deleting un-finished rack failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+            return
+        }
+        if wonAt == nil { wonAt = Date() }
+        guard let game = finishedGame(), !saved || lastSaved != game else { return }
         do {
             try recorder.record(game)
             saved = true
+            savedGameID = game.id
+            lastSaved = game
         } catch {
             StackGameRecorder.log.error("saving the finished rack failed: \(String(describing: error), privacy: .public)")
         }
@@ -284,8 +311,22 @@ final class GameSessionModel {
         needsShooter = false
         rulesState = TargetLegality.startingGame(config.ruleSet, teams: config.teams.count).1
         winningShotCount = nil
-        var corrected: [UUID: Int] = [:]
-        for case .shooterCorrection(let id, let team, _) in events { corrected[id] = team }
+        var corrected: [UUID: (team: Int, shooter: UUID?)] = [:]
+        for case .shooterCorrection(let id, let team, let shooterID, _) in events { corrected[id] = (team, shooterID) }
+        func resolveShooter(for id: UUID) -> (ShellPlayer, AttributionSource) {
+            guard let corr = corrected[id] else { return (shooter, .turnOrder) }
+            if hasLineup, teams.indices.contains(corr.team), !teams[corr.team].isEmpty {
+                if corr.team != currentTeam {
+                    hand(to: corr.team)
+                    if let sid = corr.shooter, let slot = teams[corr.team].firstIndex(where: { $0.id == sid }) {
+                        currentSlot = slot
+                    }
+                } else if let sid = corr.shooter, let p = teams[corr.team].first(where: { $0.id == sid }) {
+                    return (p, .tap)
+                }
+            }
+            return (shooter, .tap)
+        }
         var lostAt = -1
         for i in 0...events.count {
             for w in swaps where w.afterEvent == i { applySwap(w.team, w.a, w.b) }
@@ -298,17 +339,13 @@ final class GameSessionModel {
                 if r.needsTap, let k = shots.firstIndex(where: { $0.id == r.shotID }) { shots[k].needsTap = true }
             case .shot(let r):
                 needsShooter = false
-                var attribution = AttributionSource.turnOrder
-                if let t = corrected[r.shotID] {
-                    attribution = .tap
-                    if hasLineup, teams.indices.contains(t), !teams[t].isEmpty, t != currentTeam { hand(to: t) }
-                }
+                let (who, attribution) = resolveShooter(for: r.shotID)
                 var state = rulesState
                 state.shooter = shootingTeam
                 let result = rulesEngine.apply(r.outcome, to: state)
                 let rating = r.decisionRating ?? RuleRating.classify(
                     result, shooter: state.shooter, pocketedObjectBall: r.outcome.pocketed.keys.contains { $0 != .cue })
-                shots.append(SessionShot(id: r.shotID, index: shots.count, shooter: shooter, team: shootingTeam,
+                shots.append(SessionShot(id: r.shotID, index: shots.count, shooter: who, team: shootingTeam,
                                          rating: rating, pocketed: r.outcome.pocketed, fouls: result.fouls,
                                          isGuess: r.isGuess, before: Self.positions(r.preState),
                                          after: Self.positions(r.postState), attribution: attribution,
@@ -317,7 +354,9 @@ final class GameSessionModel {
                 if winningShotCount == nil, rulesState.winner != nil { winningShotCount = shots.count }
                 if result.turnPasses { passTurn() }
             case .shotLost(let id, _, _):
-                shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
+                let (who, attribution) = resolveShooter(for: id)
+                shots.append(SessionShot(id: id, index: shots.count, shooter: who, team: shootingTeam, rating: nil,
+                                         attribution: attribution))
                 needsShooter = true
                 lostAt = i
             case .nextShooter(let team, _):
@@ -350,6 +389,18 @@ final class GameSessionModel {
                             endedAt: wonAt ?? Date(),
                             shots: shots.prefix(winningShotCount ?? shots.count)
                                 .compactMap { RecordedShot($0, tableSize: config.tableSize) })
+    }
+
+    /// D49 (plan 015): fix a recorded shot's shooter from Game Review. Appends `.shooterCorrection`, replays the fold,
+    /// updates/deletes the saved rack (D54), and returns the updated review data. Joiners cannot correct (D39).
+    @discardableResult
+    func correctShooter(shotID: UUID, to player: ReviewPlayer) -> GameReviewData? {
+        if mesh?.isJoiner == true { everJoiner = true }
+        guard !everJoiner, !(mesh?.isJoiner ?? false),
+              shots.contains(where: { $0.id == shotID }),
+              let team = teams.firstIndex(where: { $0.contains { $0.id == player.id } }) else { return nil }
+        append(.shooterCorrection(shotID: shotID, team: team, shooter: player.id))
+        return reviewData()
     }
 
     /// The review header follows the rules: winner from the rack's final state, score = racks won this session (one

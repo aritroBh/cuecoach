@@ -109,18 +109,25 @@ final class AppRouter {
     /// `endCap` seconds from End (D42: never stuck), then reviews what is committed and stops the link.
     func endGame() {
         guard case .live(let s)? = stage, let game = s.game else { return }
-        guard let link = game.mesh else { stage = .review(review(game.reviewData())); return }
+        guard let link = game.mesh else { stage = .review(review(game.reviewData(), game: game)); return }
+        let canCorrect = link.isHost
         let m = GameReviewModel(source: MeshReviewSource(game: game, link: link,
                                                          deadline: Date().addingTimeInterval(endCap)))
         m.onDone = { [weak self] in self?.finishReview() }
+        if canCorrect {
+            m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
+        }
         stage = .review(m)
         Task { await m.load() }   // the link stops even if the review is never shown
     }
     @ObservationIgnored var endCap: Double = 2
 
-    private func review(_ data: GameReviewData) -> GameReviewModel {
+    private func review(_ data: GameReviewData, game: GameSessionModel) -> GameReviewModel {
         let m = GameReviewModel(data: data)
         m.onDone = { [weak self] in self?.finishReview() }
+        if !game.everJoiner {
+            m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
+        }
         return m
     }
 

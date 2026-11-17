@@ -10,6 +10,11 @@ import Stats
 /// One writer: the solo phone or the mesh host. Upserts by id, so a repeat changes nothing.
 @MainActor protocol GameRecorder: AnyObject {
     func record(_ game: FinishedGame) throws
+    func deleteGame(id: UUID) throws
+}
+
+extension GameRecorder {
+    func deleteGame(id: UUID) throws {}
 }
 
 struct FinishedGame: Hashable, Sendable {
@@ -132,6 +137,27 @@ extension StoredShotFeatures {
                 ctx.insert(shot)
                 shot.game = game
             }
+        }
+        let keptIDs = Set(g.shots.map(\.id))
+        for stale in game.shots where !keptIDs.contains(stale.id) {
+            ctx.delete(stale)
+        }
+        try ctx.save()
+    }
+
+    func deleteGame(id: UUID) throws {
+        let ctx = stack.competitiveContext
+        if let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == id })).first {
+            let session = game.session
+            for shot in game.shots { ctx.delete(shot) }
+            for highlight in game.highlights { ctx.delete(highlight) }
+            ctx.delete(game)
+            if let session, session.games.filter({ $0.id != id }).isEmpty {
+                ctx.delete(session)
+            }
+        } else if let session = try ctx.fetch(FetchDescriptor<Session>(predicate: #Predicate { $0.id == id })).first,
+                  session.games.isEmpty {
+            ctx.delete(session)
         }
         try ctx.save()
     }
