@@ -453,13 +453,16 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 `GameSessionModel` rules:
 - `shotSettled(_:)`: host or solo appends `.shot(MeshShotRecord)` built from the `SettledShot` (fresh `shotID`,
   `shooterTeam` = shooting team, `outcome`, `before`/`after` as `preState`/`postState`, `decisionRating` = its
-  rating, `isGuess`). A client drops its own settle (D39). Badge, shot and turn come from the fold, never from this
-  call. Returns the badge signal when the shot folded at once (solo), else nil.
-- `shotLost()`: host or solo appends `.shotLost(shotID:shooterTeam:)`. A client drops it.
+  rating, `isGuess`). Plan 013a: in a mesh the record goes to `mesh.settled(_:strokeAt:)` on every phone (the host
+  logs it; a client keeps it for a re-run, never proposes it, D39). Badge, shot and turn come from the fold, never from
+  this call (an island's own provisional badge aside, D48). Returns the badge signal when the shot folded at once
+  (solo), else nil.
+- `shotLost()`: solo appends `.shotLost(shotID:shooterTeam:)`; in a mesh it goes to `mesh.settled` like a settle.
 - `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
   `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
 - `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
-  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped).
+  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped;
+  plan 013a: one at the same `commitSeq` is forwarded only when an island merge rewrote that committed prefix).
   The role comes from `roleChanged` and from each forwarded snapshot. `isHost` only as `.host` (never while
   discovering: plan 011 saves on `isHost`); `isJoiner` only as a client; the model writes unless `isJoiner`.
   Inputs made while discovering are buffered and flushed in order when the role resolves: a host appends all; a
@@ -546,8 +549,8 @@ func finishedGame() -> FinishedGame?                    // nil while the folded 
 
 Rules:
 - One writer: solo (`mesh == nil`), or `mesh.isHost && mesh.hasGameQuorum`. `isHost` is role `.host` only; never
-  `!isJoiner`: a discovering phone never saves. A commit alone is not enough: after a host loss `MeshNode` shrinks its
-  commit quorum, so a lone survivor of two phones commits alone. `GameMeshLink.hasGameQuorum` is true only when the
+  `!isJoiner`: a discovering phone never saves. Plan 013a: `MeshNode` now commits only with a strict majority of
+  the game's members, so a lone survivor of two phones commits nothing; the guard stays. `GameMeshLink.hasGameQuorum` is true only when the
   current roster is a strict majority of the game's members (every phone seen in this game's roster; a late joiner
   only raises the bar). An island never saves; plan 013 saves island games after the merge.
 - The saved rack is the folded shots up to and including the one that gave it its winner. A retry after a failed
@@ -562,6 +565,131 @@ Rules:
 - D43: a guessed shot is saved with `isGuess = true`. Saved review (`GameReviewData(game:)`) sets `ReviewShot.isGuess`
   and, like live review, draws no replay for it (no pre/post states, no paths). The `Shot → CompetitiveShot` stats
   projection (not built yet) must skip `isGuess` rows for pot %, cut, distance and pocket buckets.
+
+## Host loss and islands (plan 013a; D44, D47, D48; mesh-identity.md §2.5)
+
+Losing the host or the link keeps the game: every phone keeps its own settles, a phone cut off from a majority keeps
+playing as an island, and on heal the islands' shots merge into one log. 013a builds the engine only: `needsTap` is a
+flag (D47's side-by-side pick and D51's unconfirmed save are plan 013b). No new screen, no SwiftData change.
+
+```swift
+// Packages/CueCore/Sources/Sync (new target, depends on Geometry + Rules). Pure and deterministic.
+public struct IslandShot: Hashable, Sendable {
+    public var id: UUID
+    public var strokeTime: Double              // seconds on the game clock (below)
+    public var preState: [BallID: Vec2]        // empty = unknown: time alone aligns
+    public var outcome: ShotOutcome
+    public var confidence: Double              // higher wins a disagreement; ties go to the smaller id
+}
+public struct MergedShot: Hashable, Sendable {
+    public var shot: IslandShot                // the kept view
+    public var needsTap: Bool                  // the views disagreed on the outcome (D47 asks one tap, 013b)
+    public var members: [UUID]                 // every view folded into it, sorted
+}
+public enum IslandMerge {
+    public static let timeTolerance = 0.5      // s
+    // Same physical shot: same id, or |Δt| ≤ 0.5 s and every ball seen by both within one ball radius
+    // (an empty pre-state on either side matches on time alone; two non-empty states with no common ball never match).
+    public static func aligned(_ a: IslandShot, _ b: IslandShot, ballRadius: Double = TableSpec.ballRadius) -> Bool
+    // One entry per physical shot that any island saw, sorted by (earliest stroke time, kept id). At most one view
+    // per island per shot. Same outcome → one shot; different → the higher-confidence view, needsTap. Unmatched → kept.
+    // Independent of island order and of the order inside an island.
+    public static func merge(_ islands: [[IslandShot]], ballRadius: Double = TableSpec.ballRadius) -> [MergedShot]
+    // THE same-stroke rule (Codex 013a review 3), used at every site: a host's own settle, kept-settle clearing,
+    // heal grouping and dedupe, flag amendments, and (through MeshUpdate.settleAbsorbed) the link's drain.
+    // Same id; or both timed: |Δt| ≤ 0.5 s and, for two shots, pre-states agree (unknown = time alone), a gap matches
+    // any result in the window; or a side untimed: two shots whose known pre-states share ≥ 2 balls, all within one
+    // radius. An untimed gap matches only its own id.
+    public static func sameStroke(_ a: StrokeView, _ b: StrokeView, ballRadius: Double = TableSpec.ballRadius) -> Bool
+}
+public struct StrokeView: Hashable, Sendable { var id: UUID; var time: Double?; var preState: [BallID: Vec2]; var isGap: Bool }
+
+// Wire (minor, additive; protocol major unchanged). Missing keys decode as nil / false.
+struct MeshShotRecord { …
+    var strokeHostTime: Int64? = nil           // stroke start on the game clock, ns; nil = unknown (legacy / no fit)
+    var needsTap: Bool = false                 // a merge kept one of two disagreeing views (flag only in 013a)
+}
+struct Heartbeat { …
+    var gameOffset: Int64? = nil               // game clock − this host's clock, ns, at send time; nil = 0
+    var gameTimeUnknown: Bool? = nil           // true = this host has no game clock: clients stamp no time; nil = known
+}
+enum GameEvent { … case shotLost(shotID: UUID, shooterTeam: Int, strokeHostTime: Int64? = nil) }   // gaps are timed
+struct LogEntry { … var epoch: UInt64? = nil } // host's rewrite count when written; nil = 0
+struct LogAck { … var epoch: UInt64? = nil }   // the acked entry's epoch: an ack for a replaced version never counts
+struct IslandSettle: Hashable, Codable, Sendable { var event: GameEvent; var strokeHostTime: Int64? }
+struct IslandLog: Hashable, Codable, Sendable {   // MeshMessage.islandLog, any → host, reliable
+    var commitSeq: UInt64                      // sender's commit point
+    var entries: [LogEntry]                    // sender's whole log, one batch (≤ logBatch entries) per message
+    var settles: [IslandSettle] = []           // sender's own unlogged settles (last batch only)
+    var last: Bool                             // the host merges once the last batch arrives
+}
+
+// MeshNode
+enum MeshUpdate { … case island(Bool)        // on every change
+                   case settleAbsorbed(shotID: UUID) }  // an own settle answered by another entry of its stroke
+var isIsland: Bool { get }                     // after first joining: discovering, or hosting without a majority
+                                               // (roster × 2 ≤ commit quorum). A client is never an island.
+mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep
+                                               // e = .shot / .shotLost; strokeAt = this phone's clock (s).
+                                               // Host: stamps record.strokeHostTime on the game clock, appends.
+                                               // Otherwise: kept as an unlogged settle (see "Every phone keeps…").
+// MeshSession: func settled(_ event: GameEvent, strokeAt: Double) async
+// GameMeshLink: var isIsland: Bool { get }                    (default false)
+//               func settled(_ event: GameEvent, strokeAt: Double)  (default: append unless isJoiner)
+// PostShotRating: var isProvisional = false   (D48: an island's own badge; the merged commit replaces it)
+// GameSessionModel: var now: () -> Double     (stroke clock, default MultipeerMeshSession.hostNow)
+// SessionShot: var needsTap = false            (from the record; no UI in 013a)
+```
+
+Rules:
+- **Game clock.** Stroke times live on one clock: the first host's. A host that took over keeps its last clock fit to
+  the old host (frozen, plus that host's `gameOffset`) and maps its own times through it; it sends the difference as
+  `Heartbeat.gameOffset`, and a client's game time is `clock.hostTime(fromLocal:) + gameOffset`. A phone without a
+  fit (a client, or a host that was ever a client) has no game time: its settle keeps `strokeHostTime == nil` and
+  aligns by shot id only. Only a phone that never was a client uses its own clock. Such a host sends
+  `gameTimeUnknown`, and its clients stamp no time either (their offset is unknown until a heartbeat says otherwise). Fits drift ≈ 3 ms/min (§2.5).
+- **Every phone keeps its own settles.** `GameSessionModel.shotSettled` / `shotLost` hand the record to
+  `mesh.settled(_:strokeAt:)` with the time of the last `aimEnded()` (else now). The node stamps it on the game clock
+  at once (if it can) and keeps it in `kept` until a committed entry answers its stroke under the same rule
+  (`sameStroke`); answered under another id it is reported `settleAbsorbed`. A host appends it unless any log entry
+  (any term) already answers the stroke; then it is absorbed. On becoming host (after collecting) the node re-runs its
+  kept settles; a phone that adopts a host sends them in an `IslandLog` and keeps them until it sees them committed
+  (that host may die first). A kept `.shotLost` (no confident record) is a D38 gap unless a result of the same stroke
+  exists. Real strokes are seconds apart: two settles of one stroke time and position are one stroke.
+- **Island.** While `isIsland`: tracking, overlay and appends go on as before. `GameSessionModel` fires its own settle's badge with `isProvisional`
+  (D48), never saves (`saveIfWon` refuses while `mesh.isIsland`, besides `isHost && hasGameQuorum`).
+- **Commits** (head decision, Codex 013a review 3). A host commits only with a strict majority of the game's
+  members: every phone seen in a roster since joining, minus graceful leavers (the same membership as
+  `hasGameQuorum`). Phones going silent never shrink it, so two sides of a split can never both commit. Any side
+  without that majority is an island, the lone survivor of a two-phone game included: it keeps playing provisionally
+  (D48), commits nothing, and merges on heal (D44); D51 covers a rack that never reconnects (plan 013b). Committed
+  entries never change.
+- **Heal.** Higher term hosts (unchanged). Every phone that adopts a host sends, after its full log and before its
+  `Hello`, `IslandLog` batches of its whole log with its `commitSeq`, plus its kept settles. The host merges a
+  sender's `IslandLog` when its `Hello` admits it (while collecting: after collecting, after its own re-run), so the
+  sender counts toward the commit of whatever the merge adds:
+  - `p` = the common prefix (equal events). If the sender committed entries after `p` and I did not, those are
+    pulled in as they are (a minority that won the term never loses the majority's commits); else mine up to my
+    commit point stay. Everything committed, my uncommitted tail and the sender's tail + settles are grouped by
+    stroke: timed shots through `IslandMerge`, then timed gaps and untimed shots join a group by `sameStroke`. Other
+    events (taps, corrections, rule set, untimed gaps) follow the timed result before them on their own island; the
+    sender's are dropped if equal to one of mine. An id's first occurrence is its result; later ones are copies or
+    flag amendments, and a flag on any occurrence reaches its stroke.
+  - Per group: with a committed result, nothing new, or an amendment (the committed record again with `needsTap`)
+    when its results disagree or any is flagged and the log lacks the flag; the fold reads it as a flag, never a new
+    shot. Otherwise shots beat gaps; agreeing shots keep my logged record; disagreeing ones keep the most confident
+    view, flagged. One gap per stroke; a committed gap stands (views of its stroke go).
+  - The host rewrites after the longest unchanged prefix (never at or before its commit point). A rewrite sets the
+    log epoch above every epoch in the log, inherited ones included (new entries carry it; acks clamp to the cut and only an ack naming the current epoch of its seq
+    counts) and the node reports `logChanged` on any content change. A client that receives a replacement drops its
+    commit point below it. `MeshGameLink` forwards a rewritten prefix at the same `commitSeq`; the fold pushes Live's
+    legality whenever the committed events change by content.
+- Out of 013a: D47's pick UI (013b, reuses plan 015's replay), D51's unconfirmed save (013b, schema change),
+  resume after a kill. Known limits: the other island's unmatched shots follow the winner's committed ones (committed
+  entries keep their place); a committed gap beats a later-arriving confident view of its stroke (D38's ask stands);
+  a phone without a clock fit settles untimed (it matches by id, or a shot by its pre-state; an untimed gap cannot
+  be reconciled with another phone's result of its stroke); a host's own `.tableState` captureTime stays on its own
+  clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time.
 
 ## Proposed (plan 006 — not approved)
 

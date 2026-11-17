@@ -23,6 +23,11 @@ import UIKit
     /// This phone's current members are a strict majority of the game's members (every phone seen in this game's
     /// roster), not of the shrunken commit quorum: an island (a lone survivor of two) has none. Plan 011 saves only with it.
     var hasGameQuorum: Bool { get }
+    /// Plan 013a: this phone is cut off from a majority of the game's members (INTERFACES "Host loss and islands").
+    var isIsland: Bool { get }
+    /// Plan 013a: this phone's own settle (`.shot` / `.shotLost`) with its stroke time (`hostNow()` clock). The host
+    /// logs it; any other phone keeps it for a re-run after a host loss. Never a proposal (D39).
+    func settled(_ event: GameEvent, strokeAt: Double)
     /// Teardown: returns once this phone's inputs are committed (a joiner also lets the host's commits go quiet),
     /// or at `deadline`.
     func drain(until deadline: Date) async
@@ -30,6 +35,8 @@ import UIKit
 
 extension GameMeshLink {
     var isJoiner: Bool { !isHost }
+    var isIsland: Bool { false }
+    func settled(_ event: GameEvent, strokeAt: Double) { if !isJoiner { append(event) } }
     func drain(until deadline: Date) async {}
 }
 
@@ -44,6 +51,8 @@ extension GameMeshLink {
     var isHost: Bool { role == .host }
     var isJoiner: Bool { if case .client = role { true } else { false } }
     var hasGameQuorum: Bool { members.count * 2 > gameMembers.count }
+    /// Plan 013a: the session's last `.island` report.
+    private(set) var isIsland = false
     /// Every phone seen in this game's roster (the game's members).
     private(set) var gameMembers: Set<PeerID> = []
     /// The roster as this link last heard it.
@@ -55,7 +64,10 @@ extension GameMeshLink {
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?
 
     /// Startup inputs made while discovering, flushed in order once the role resolves.
-    @ObservationIgnored private var queued: [GameEvent] = []
+    @ObservationIgnored private var queued: [Input] = []
+    private enum Input { case event(GameEvent), settle(GameEvent, strokeAt: Double) }
+    /// The committed prefix last forwarded: an island merge can rewrite it without moving `commitSeq`.
+    @ObservationIgnored private var forwarded: [LogEntry] = []
     @ObservationIgnored private var lastAppend: Task<Void, Never>?
     /// Inputs this phone sent (appended or proposed) not yet seen in the committed log.
     @ObservationIgnored private var unconfirmed: [GameEvent] = []
@@ -65,7 +77,18 @@ extension GameMeshLink {
 
     /// The session turns a client's append into a `.proposal` to the host. Appends reach it in call order.
     func append(_ event: GameEvent) {
-        if role == .discovering { queued.append(event) } else { send(event) }
+        if role == .discovering { queued.append(.event(event)) } else { send(event) }
+    }
+
+    /// Plan 013a: the session logs it on the host and keeps it anywhere else (a re-run after a host loss).
+    func settled(_ event: GameEvent, strokeAt: Double) {
+        if role == .discovering { queued.append(.settle(event, strokeAt: strokeAt)) } else { sendSettle(event, strokeAt) }
+    }
+
+    private func sendSettle(_ event: GameEvent, _ strokeAt: Double) {
+        if role == .host { unconfirmed.append(event) }
+        let s = session, prev = lastAppend
+        lastAppend = Task { await prev?.value; await s.settled(event, strokeAt: strokeAt) }
     }
 
     private func send(_ event: GameEvent) {
@@ -80,9 +103,13 @@ extension GameMeshLink {
         guard r != .discovering else { return }
         let early = queued
         queued = []
-        for e in early {
-            if case .client = r, e.isShotResult { continue }   // D39: the host rates every shot
-            send(e)
+        for input in early {
+            switch input {
+            case .settle(let e, let t): sendSettle(e, t)            // a joiner's session keeps it (D39)
+            case .event(let e):
+                if case .client = r, e.isShotResult { continue }   // D39: the host rates every shot
+                send(e)
+            }
         }
     }
 
@@ -123,6 +150,8 @@ extension GameMeshLink {
                 case .rosterChanged(let roster): self?.peerCount = max(1, roster.count); self?.see(roster)
                 case .roleChanged(let role, _): self?.resolve(role)
                 case .logChanged: await self?.forwardCommitted(from: s)
+                case .island(let i): self?.isIsland = i
+                case .settleAbsorbed(let id): self?.confirmAbsorbed(id)
                 default: break
                 }
             }
@@ -136,13 +165,22 @@ extension GameMeshLink {
         resolve(snap.role)
         see(snap.roster)
         handledLastSeq = max(handledLastSeq, snap.log.last?.seq ?? 0)
-        guard snap.commitSeq > commitSeq else { return }
-        for entry in snap.log where entry.seq > commitSeq && entry.seq <= snap.commitSeq {
-            if let i = unconfirmed.firstIndex(of: entry.event) { unconfirmed.remove(at: i) }
+        let committed = snap.log.filter { $0.seq <= snap.commitSeq }
+        // Newer commit point, or (plan 013a) the same one over a prefix an island merge rewrote.
+        guard snap.commitSeq > commitSeq || (snap.commitSeq == commitSeq && committed != forwarded) else { return }
+        for entry in committed {
+            if let i = unconfirmed.firstIndex(where: { $0.isSameInput(as: entry.event) }) { unconfirmed.remove(at: i) }
         }
+        if snap.commitSeq > commitSeq { lastCommitAdvance = Date() }
         commitSeq = snap.commitSeq
-        lastCommitAdvance = Date()
-        onCommittedLog?(snap.log.filter { $0.seq <= snap.commitSeq }, snap.commitSeq)
+        forwarded = committed
+        onCommittedLog?(committed, snap.commitSeq)
+    }
+
+    /// Plan 013a: the node answered this settle with another entry for the same stroke; it will never commit under its
+    /// own id, so a drain must not wait for it.
+    private func confirmAbsorbed(_ id: UUID) {
+        if let i = unconfirmed.firstIndex(where: { IslandHeal.id($0) == id }) { unconfirmed.remove(at: i) }
     }
 
     private func see(_ roster: [PeerID]) {
@@ -161,6 +199,13 @@ extension GameMeshLink {
 }
 
 private extension GameEvent {
+    /// The same input: shots by shotID (the node stamps the stroke time into the logged record), else equal.
+    func isSameInput(as other: GameEvent) -> Bool {
+        if case .shot(let a) = self, case .shot(let b) = other { return a.shotID == b.shotID }
+        if case .shotLost(let a, _, _) = self, case .shotLost(let b, _, _) = other { return a == b }   // logged with its time
+        return self == other
+    }
+
     /// A shot's result, which only the host records (D39).
     var isShotResult: Bool {
         switch self {

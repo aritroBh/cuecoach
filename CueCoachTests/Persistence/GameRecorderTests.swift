@@ -238,6 +238,30 @@ import Training
         #expect(try games(stack).isEmpty)
     }
 
+    /// Plan 013a: an island never writes, even if its fold has a winner; its own settles show provisional badges (D48).
+    /// Once healed (merged, not an island, quorum back) the next commit saves the rack once.
+    @Test func islandShowsAProvisionalBadgeAndWritesNothing() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = solo(stack)
+        let link = FakeGameMeshLink(isHost: true)
+        link.isIsland = true
+        g.mesh = link
+        g.shotSettled(SettledShot(rating: .best, turnPasses: false, outcome: Self.pot(1)))
+        #expect(g.badge.current?.rating == .best)
+        #expect(g.badge.current?.isProvisional == true)
+        g.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))
+        link.commit()
+        #expect(g.reviewData().winnerTeam == 1)
+        #expect(try games(stack).isEmpty)
+        #expect(try shots(stack).isEmpty)
+        #expect(try sessions(stack).isEmpty)
+        link.isIsland = false
+        link.commit()
+        #expect(try games(stack).count == 1, "healed: saved once")
+        link.commit()
+        #expect(try games(stack).count == 1)
+    }
+
     /// Codex plan 011 review 2: a failed save retries the rack as it stood at its winning commit.
     @Test func aRetryAfterAFailedSaveKeepsTheWinningBoundary() throws {
         let stack = try PersistenceStack(inMemory: true)
@@ -366,6 +390,8 @@ import Training
         let g = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
         g.recorder = StackGameRecorder(stack: stack)
         g.mesh = link
+        var clock = 0.0
+        g.now = { clock += 5; return clock }   // Codex 013a review 3: distinct strokes (a repeat of one is absorbed)
         return g
     }
 
@@ -377,7 +403,10 @@ import Training
 
     func gameCount(_ stack: PersistenceStack) throws -> Int { try stack.competitiveContext.fetchCount(FetchDescriptor<Game>()) }
 
-    @Test func loneSurvivorOfATwoPhoneGameCommitsTheWinButNeverSaves() async throws {
+    /// Plan 013a head decision: the lone survivor of a silent two-phone split is an island. It commits nothing (no
+    /// strict majority of the game's members), so its rack never wins on the log and nothing is saved. Was
+    /// `loneSurvivorOfATwoPhoneGameCommitsTheWinButNeverSaves`.
+    @Test func loneSurvivorOfATwoPhoneGameIsAnIslandAndNeverSaves() async throws {
         let hub = MemoryHub()
         let sessions = [MeshGameLinkTests.session(hub, device: 18), MeshGameLinkTests.session(hub, device: 16)]
         let links = sessions.map { MeshGameLink(session: $0) }
@@ -386,14 +415,13 @@ import Training
         #expect(links[0].hasGameQuorum, "both phones present")
         let stack = try PersistenceStack(inMemory: true)
         let g = game(stack, on: links[1])
-        links[0].stop()
-        hub.kill(sessions[0].localPeer)
-        #expect(await poll(4) { links[1].isHost })
+        hub.kill(sessions[0].localPeer)                 // silent: no goodbye
+        #expect(await poll(4) { links[1].isHost && links[1].isIsland })
         playARack(g)
-        #expect(await poll(3) { g.reviewData().winnerTeam == 1 }, "the lone survivor commits alone")
+        #expect(!(await poll(1.5) { g.reviewData().winnerTeam != nil }), "an island commits nothing")
         #expect(!links[1].hasGameQuorum)
         #expect(try gameCount(stack) == 0)
-        links[1].stop()
+        links[0].stop(); links[1].stop()
     }
 
     @Test func threePhoneGameWithTwoLeftStillSaves() async throws {

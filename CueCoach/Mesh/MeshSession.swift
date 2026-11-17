@@ -24,6 +24,9 @@ protocol MeshSession: AnyObject, Sendable {
     func stop() async
     /// Host appends to the replicated log; clients forward it to the host.
     func append(_ event: GameEvent) async
+    /// Plan 013a: this phone's own settle with its stroke time (`hostNow()` clock). The host logs it; any other phone
+    /// keeps it for a re-run after a host loss (INTERFACES "Host loss and islands").
+    func settled(_ event: GameEvent, strokeAt: Double) async
     func openRuleVote() async
     func castBallot(_ choice: RuleSetID) async
     func setPhase(_ phase: MeshPhase) async
@@ -104,6 +107,7 @@ actor MultipeerMeshSession: MeshSession {
     }
 
     func append(_ event: GameEvent) async { apply(node.append(event, now: now)) }
+    func settled(_ event: GameEvent, strokeAt: Double) async { apply(node.settled(event, strokeAt: strokeAt, now: now)) }
     func openRuleVote() async { apply(node.openRuleVote(now: now)) }
     func castBallot(_ choice: RuleSetID) async { apply(node.castBallot(choice, now: now)) }
     func setPhase(_ phase: MeshPhase) async { apply(node.setPhase(phase, now: now)) }

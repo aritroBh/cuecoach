@@ -22,6 +22,8 @@ struct SessionShot: Hashable, Sendable {
     var attribution: AttributionSource = .turnOrder
     /// `ShotOutcome.firstContact` (nil for a gap).
     var firstContact: BallID? = nil
+    /// Plan 013a: an island merge kept one of two disagreeing views (D47's pick is plan 013b; a flag only).
+    var needsTap = false
 }
 
 /// In-game state the chrome shows: whose turn (D17 rotation), the post-shot badge, rated shots for review.
@@ -69,6 +71,10 @@ final class GameSessionModel {
     @ObservationIgnored private var badged: Set<UUID> = []
     /// D38: an aim answered the ask once this many events were folded (the current shooter keeps the turn).
     @ObservationIgnored private var askAnsweredAt = -1
+    /// Plan 013a: the stroke clock (`MultipeerMeshSession.hostNow()`, seconds); a settle's stroke is the last aim end.
+    @ObservationIgnored var now: () -> Double = { MultipeerMeshSession.hostNow() }
+    /// The last aim end (the stroke), consumed by the next settle or lost shot.
+    @ObservationIgnored private var strokeAt: Double?
     /// Saves the finished rack (plan 011). nil = nothing is saved.
     @ObservationIgnored var recorder: (any GameRecorder)?
     @ObservationIgnored private let startedAt = Date()
@@ -155,25 +161,41 @@ final class GameSessionModel {
         }
     }
 
-    /// The balls settled and Live rated the shot. The host (or this phone alone) logs it; a client drops its own
-    /// settle (D39: the host rates) and re-pushes the committed legality over what Live published locally. Shot, badge
-    /// and turn come from the fold. Returns the badge signal when the shot folded at once (solo), else nil.
+    /// The balls settled and Live rated the shot. Solo logs it at once. In a mesh every phone hands it to
+    /// `mesh.settled` with its stroke (plan 013a): the host logs it, a client keeps it for a re-run after a host loss
+    /// (D39: the host rates; the client re-pushes the committed legality over what Live published locally). An island
+    /// shows its own rating as a provisional badge (D48). Shot, badge and turn come from the fold. Returns the badge
+    /// signal when the shot folded at once (solo), else nil.
     @discardableResult
     func shotSettled(_ shot: SettledShot) -> PostShotRating? {
-        guard writesLog else { pushLegal(); return nil }
         let id = UUID()
-        append(.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
-                                    postState: table(shot.after), preState: table(shot.before),
-                                    decisionRating: shot.rating, isGuess: shot.isGuess)))
+        let event = GameEvent.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
+                                                  postState: table(shot.after), preState: table(shot.before),
+                                                  decisionRating: shot.rating, isGuess: shot.isGuess))
+        if let mesh {
+            mesh.settled(event, strokeAt: takeStroke())
+            guard writesLog else { pushLegal(); return nil }
+            if mesh.isIsland, badged.insert(id).inserted {
+                badge.receive(.rated(PostShotRating(shotID: id, rating: shot.rating, shooterName: shooter.name,
+                                                    team: shootingTeam, isProvisional: true)))
+            }
+        } else {
+            append(event)
+        }
         guard let s = shots.last(where: { $0.id == id }), let rating = s.rating else { return nil }
         return PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)
     }
 
-    /// D38: a game shot was lost with no guess. The host (or this phone alone) logs a gap for the current shooter,
-    /// which asks who shoots next; the shooter stays until a disc tap or the next aim.
+    /// D38: a game shot was lost with no guess. Solo logs a gap for the current shooter, which asks who shoots next;
+    /// the shooter stays until a disc tap or the next aim. In a mesh it goes to `mesh.settled` like a settle.
     func shotLost() {
-        guard writesLog else { pushLegal(); return }
-        append(.shotLost(shotID: UUID(), shooterTeam: shootingTeam))
+        let event = GameEvent.shotLost(shotID: UUID(), shooterTeam: shootingTeam)
+        if let mesh {
+            mesh.settled(event, strokeAt: takeStroke())
+            if !writesLog { pushLegal() }
+        } else {
+            append(event)
+        }
     }
 
     /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
@@ -182,7 +204,16 @@ final class GameSessionModel {
         needsShooter = false
         badge.receive(.aimStarted)
     }
-    func aimEnded() { badge.receive(.aimEnded) }
+    func aimEnded() {
+        strokeAt = now()
+        badge.receive(.aimEnded)
+    }
+
+    /// The stroke of the shot that just settled: the last aim end, else now.
+    private func takeStroke() -> Double {
+        defer { strokeAt = nil }
+        return strokeAt ?? now()
+    }
 
     // MARK: The log
 
@@ -200,17 +231,18 @@ final class GameSessionModel {
     }
 
     private func apply(_ committed: [GameEvent]) {
-        let fresh = committed.dropFirst(events.count)
+        let changed = committed != events   // by content: an island merge can rewrite without growing (Codex P2-9)
         events = committed
         fold()
         // The badge fires once per shot, for the newest newly committed rated shot only.
         let unseen = shots.filter { !badged.contains($0.id) }
         badged.formUnion(unseen.map(\.id))
         if let s = unseen.last(where: { $0.rating != nil }), let rating = s.rating {
-            badge.receive(.rated(PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)))
+            badge.receive(.rated(PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team,
+                                                isProvisional: mesh?.isIsland == true)))
         }
         // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
-        if !fresh.isEmpty { pushLegal() }
+        if changed { pushLegal() }
         saveIfWon()
     }
 
@@ -222,7 +254,7 @@ final class GameSessionModel {
         guard winner != nil else { return }
         if wonAt == nil { wonAt = Date() }
         guard !saved, let recorder, let game = finishedGame() else { return }
-        if let mesh, !(mesh.isHost && mesh.hasGameQuorum) { return }
+        if let mesh, !(mesh.isHost && mesh.hasGameQuorum) || mesh.isIsland { return }   // plan 013a: never an island
         do {
             try recorder.record(game)
             saved = true
@@ -261,6 +293,9 @@ final class GameSessionModel {
             switch events[i] {
             case .ruleSetChosen, .shooterCorrection:
                 break
+            case .shot(let r) where shots.contains { $0.id == r.shotID }:
+                // Plan 013a: a repeated shotID is a merge's amendment of a committed shot: a flag, never a new shot.
+                if r.needsTap, let k = shots.firstIndex(where: { $0.id == r.shotID }) { shots[k].needsTap = true }
             case .shot(let r):
                 needsShooter = false
                 var attribution = AttributionSource.turnOrder
@@ -277,11 +312,11 @@ final class GameSessionModel {
                                          rating: rating, pocketed: r.outcome.pocketed, fouls: result.fouls,
                                          isGuess: r.isGuess, before: Self.positions(r.preState),
                                          after: Self.positions(r.postState), attribution: attribution,
-                                         firstContact: r.outcome.firstContact))
+                                         firstContact: r.outcome.firstContact, needsTap: r.needsTap))
                 rulesState = result.nextState
                 if winningShotCount == nil, rulesState.winner != nil { winningShotCount = shots.count }
                 if result.turnPasses { passTurn() }
-            case .shotLost(let id, _):
+            case .shotLost(let id, _, _):
                 shots.append(SessionShot(id: id, index: shots.count, shooter: shooter, team: shootingTeam, rating: nil))
                 needsShooter = true
                 lostAt = i

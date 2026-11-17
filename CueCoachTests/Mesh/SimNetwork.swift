@@ -38,6 +38,8 @@ final class SimNetwork {
     private var rng: SeededRNG
     private var lastDelivery: [String: Double] = [:]
     private var cut: Set<String> = []
+    /// Plan 013a: phones whose unreliable traffic (time pings and pongs) never arrives: they never get a clock fit.
+    var noClock: Set<PeerID> = []
     private var extraDelay: [String: Double] = [:]
 
     /// Make one direction of one link slower (e.g. a host → successor link through a wall).
@@ -70,7 +72,7 @@ final class SimNetwork {
                             clockOffset: clockOffset, skew: skew)
         joinOrder.append(id)
         apply(id, boxes[id]!.node.start(now: localTime(id)))
-        for other in boxes.keys where other != id && boxes[other]!.alive {
+        for other in joinOrder where other != id && boxes[other]!.alive {   // join order, not hash order (deterministic)
             schedule(from: id, to: other, kind: .connected, delay: 0.01)
             schedule(from: other, to: id, kind: .connected, delay: 0.01)
         }
@@ -145,6 +147,7 @@ final class SimNetwork {
             for to in out.to where to != p {
                 guard boxes[to]?.alive == true, !cut.contains(key(p, to)) else { continue }
                 if out.channel == .unreliable {
+                    if noClock.contains(p) || noClock.contains(to) { continue }
                     if Double.random(in: 0..<1, using: &rng) < unreliableLoss { continue }
                     let d = latency + Double.random(in: 0...jitter, using: &rng)
                     order += 1

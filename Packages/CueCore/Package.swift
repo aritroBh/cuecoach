@@ -5,7 +5,7 @@ let package = Package(
     name: "CueCore",
     platforms: [.iOS("27.0"), .macOS("27.0")],
     products: [
-        .library(name: "CueCore", targets: ["Geometry", "Physics", "Rules", "Engine", "Stats", "Training"]),
+        .library(name: "CueCore", targets: ["Geometry", "Physics", "Rules", "Engine", "Stats", "Training", "Sync"]),
     ],
     targets: [
         .target(name: "Geometry"),
@@ -14,12 +14,14 @@ let package = Package(
         .target(name: "Engine", dependencies: ["Geometry", "Physics", "Rules"]),
         .target(name: "Stats", dependencies: ["Geometry", "Rules"]),
         .target(name: "Training", dependencies: ["Geometry"]),
+        .target(name: "Sync", dependencies: ["Geometry", "Rules"]),
         .testTarget(name: "GeometryTests", dependencies: ["Geometry"]),
         .testTarget(name: "PhysicsTests", dependencies: ["Physics"], resources: [.copy("Fixtures")]),
         .testTarget(name: "RulesTests", dependencies: ["Rules"]),
         .testTarget(name: "EngineTests", dependencies: ["Engine"]),
         .testTarget(name: "StatsTests", dependencies: ["Stats"]),
         .testTarget(name: "TrainingTests", dependencies: ["Training"]),
+        .testTarget(name: "SyncTests", dependencies: ["Sync", "Geometry", "Rules"]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -9,6 +9,8 @@ struct PostShotRating: Equatable, Sendable {
     var shooterName: String
     /// 0 = Team A, 1 = Team B.
     var team: Int
+    /// D48 (plan 013a): an island's own rating, shown before the merge; the merged commit replaces it.
+    var isProvisional = false
 }
 
 /// What the live game (engine + mesh) tells the badge. Live game wires a real source later.

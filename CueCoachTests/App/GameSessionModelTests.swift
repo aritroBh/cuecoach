@@ -424,7 +424,7 @@ import Engine
         let (s, link) = meshGame(host: true)
         let start = s.rules.1
         s.shotLost()
-        guard case .shotLost(let id, let team)? = link.log.last?.event else { Issue.record("no shotLost"); return }
+        guard case .shotLost(let id, let team, _)? = link.log.last?.event else { Issue.record("no shotLost"); return }
         #expect(team == 0)
         #expect(s.shots.isEmpty && !s.needsShooter, "nothing shows before the commit")
         link.commit()
@@ -553,6 +553,60 @@ import Engine
         #expect(pushed.last == s.rulesEngine.legalTargets(s.rules.1))
         #expect(pushed.last?.allSatisfy { $0.group == .solids } == true)
     }
+
+    // MARK: Plan 013a: every phone hands its own settle to the mesh
+
+    @Test func everyPhoneHandsItsSettleToTheMeshWithTheStrokeTime() throws {
+        for host in [true, false] {
+            let (s, link) = meshGame(host: host)
+            s.now = { 42 }
+            s.aimStarted(); s.aimEnded()
+            s.now = { 50 }
+            s.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1)))
+            s.shotLost()
+            try #require(link.settles.count == 2)
+            #expect(link.settles[0].strokeAt == 42, "the stroke is the last aim end")
+            #expect(link.settles[1].strokeAt == 50, "no aim end since: now")
+            guard case .shot = link.settles[0].event, case .shotLost = link.settles[1].event else {
+                Issue.record("settle kinds: \(link.settles.map(\.event))"); continue
+            }
+            #expect(link.proposals.isEmpty, "a client keeps its settles, never proposes them (D39)")
+            #expect(link.log.count == (host ? 2 : 0))
+        }
+    }
+
+    /// Codex 013a P2-9: a same-length rewrite (an island merge) re-folds and pushes the new legality.
+    @Test func aSameLengthRewritePushesLegality() {
+        let (s, link) = meshGame(host: false)
+        var pushes = 0
+        s.legalChanged = { _ in pushes += 1 }
+        let id = UUID()
+        link.receive(entries([record(Self.pot(1), id: id)]), commitSeq: 1)
+        let after = pushes
+        #expect(s.shooter == a1)
+        link.receive(entries([record(Self.miss, id: UUID())]), commitSeq: 1)
+        #expect(s.shooter == b1, "the rewritten shot passed the turn")
+        #expect(pushes > after, "Live's rings follow the rewritten fold")
+    }
+
+    /// Codex 013a P1-7: a repeated shotID is a flag amendment of the committed shot, never a second shot.
+    @Test func aRepeatedShotIDFlagsTheShotInsteadOfAddingOne() {
+        let (s, link) = meshGame(host: false)
+        let r = MeshShotRecord(shotID: UUID(), shooterTeam: 0, outcome: Self.pot(1), postState: nil)
+        var flagged = r
+        flagged.needsTap = true
+        link.receive(entries([.shot(r), .shot(flagged)]), commitSeq: 2)
+        #expect(s.shots.count == 1)
+        #expect(s.shots.first?.needsTap == true)
+        #expect(s.shooter == a1, "the amendment changes no rules state")
+    }
+
+    @Test func aMergedShotKeepsItsNeedsTapFlag() {
+        let (s, link) = meshGame(host: false)
+        let r = MeshShotRecord(shotID: UUID(), shooterTeam: 0, outcome: Self.pot(1), postState: nil, needsTap: true)
+        link.receive(entries([.shot(r)]), commitSeq: 1)
+        #expect(s.shots.first?.needsTap == true)
+    }
 }
 
 
@@ -563,6 +617,10 @@ import Engine
     var isStopped = false
     let isHost: Bool
     var hasGameQuorum = true
+    /// Plan 013a: cut off from a majority.
+    var isIsland = false
+    /// Plan 013a: every settle handed over, with its stroke time.
+    private(set) var settles: [(event: GameEvent, strokeAt: Double)] = []
     private(set) var commitSeq: UInt64 = 0
     var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
     private(set) var log: [LogEntry] = []
@@ -573,6 +631,11 @@ import Engine
     func stop() { isStopped = true }
     func append(_ event: GameEvent) {
         if isHost { log.append(LogEntry(seq: UInt64(log.count + 1), term: 1, event: event)) } else { proposals.append(event) }
+    }
+    /// Like the real node: the host logs its settle; a client keeps it (never proposes it).
+    func settled(_ event: GameEvent, strokeAt: Double) {
+        settles.append((event, strokeAt))
+        if isHost { append(event) }
     }
     /// A majority acked the whole log.
     func commit() {

@@ -54,6 +54,8 @@ import Rules
             .clipChunkAck(ClipChunkAck(shotID: shot, index: 2, ok: true)),
             .clipComplete(ClipComplete(shotID: shot, sha256: Data(repeating: 9, count: 32))),
             .profile(ProfileShare(summary: Data([1, 2, 3]))),
+            .islandLog(IslandLog(commitSeq: 3, entries: [entry], settles: [
+                IslandSettle(event: .shotLost(shotID: shot, shooterTeam: 1), strokeHostTime: 42)], last: true)),
         ]
     }
 
@@ -183,6 +185,39 @@ import Rules
         #expect(back == r)
         let env = Self.envelope(.logEntries([LogEntry(seq: 1, term: 1, event: .shot(r))]))
         #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+    }
+
+    /// Plan 013a fields are additive: a record or heartbeat without them decodes as nil / false.
+    @Test func plan013FieldsRoundTripAndDecodeWhenMissing() throws {
+        var r = MeshShotRecord(shotID: Self.shot, shooterTeam: 1, outcome: Self.sampleOutcome, postState: nil)
+        let old = try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r))
+        #expect(old.strokeHostTime == nil && !old.needsTap)
+        r.strokeHostTime = 1_234_567_890_123
+        r.needsTap = true
+        #expect(try JSONDecoder().decode(MeshShotRecord.self, from: JSONEncoder().encode(r)) == r)
+        let json = #"{"term":3,"host":"\#(Self.a.raw.uuidString)","lastSeq":1,"commitSeq":1,"phase":"aiming"}"#
+        let hb = try JSONDecoder().decode(Heartbeat.self, from: Data(json.utf8))
+        #expect(hb.gameOffset == nil && hb.gameTimeUnknown == nil, "old peers: a known game clock")
+        var withOffset = hb
+        withOffset.gameOffset = -5_000
+        #expect(try MeshCodec.decode(MeshCodec.encode(Self.envelope(.heartbeat(withOffset)))).message == .heartbeat(withOffset))
+    }
+
+    /// Codex 013a: entry/ack epochs and a gap's stroke time are additive; missing keys decode as nil.
+    @Test func epochsAndGapTimesRoundTripAndDecodeWhenMissing() throws {
+        let gap = GameEvent.shotLost(shotID: Self.shot, shooterTeam: 1, strokeHostTime: 77)
+        let entry = LogEntry(seq: 2, term: 3, event: gap, epoch: 4)
+        for m in [MeshMessage.logEntries([entry]), .logAck(LogAck(term: 3, upTo: 2, epoch: 4))] {
+            let env = Self.envelope(m)
+            #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
+        }
+        let oldGap = #"{"shotLost":{"shotID":"\#(Self.shot.uuidString)","shooterTeam":1}}"#
+        #expect(try JSONDecoder().decode(GameEvent.self, from: Data(oldGap.utf8))
+                == .shotLost(shotID: Self.shot, shooterTeam: 1, strokeHostTime: nil))
+        let oldEntry = try JSONDecoder().decode(LogEntry.self, from: JSONEncoder().encode(LogEntry(seq: 1, term: 1, event: gap)))
+        #expect(oldEntry.epoch == nil)
+        let oldAck = try JSONDecoder().decode(LogAck.self, from: Data(#"{"term":1,"upTo":2}"#.utf8))
+        #expect(oldAck.epoch == nil)
     }
 
     @Test func nextShooterAndShotLostRoundTrip() throws {
