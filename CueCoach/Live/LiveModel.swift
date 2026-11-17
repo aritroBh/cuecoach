@@ -11,9 +11,11 @@ import Engine
 @MainActor @Observable
 final class LiveModel {
     let editor = CalibrationEditor()
-    let mode: LiveMode
+    var mode: LiveMode
     /// The drill being trained (Line 3 is position play only, D24); nil in a game or standalone.
     var drill: DrillID?
+    var trainingSetupGhosts: [(Vec2, Bool)] = []
+    var trainingPositionZone: Vec2? = nil
     /// What the overlay may draw right now (read live by the views): the aiming set, or (D1) the after-shot set once
     /// the last shot has settled and no aim is open. A new aim (or a relock) hides it again.
     var visibility: OverlayVisibility {
@@ -339,7 +341,8 @@ final class LiveModel {
             showBadge(BadgeStyle.of(rating))
         } else {
             let madeObject = shotOutcome.pocketed.keys.contains { !$0.isCue } && result.fouls.isEmpty
-            let targetPocket = shotOutcome.pocketed.first(where: { !$0.key.isCue })?.value ?? .footRight
+            let fallbackPocket = TrainingSessionController.defaultPocket(for: drill ?? .straightIn)
+            let targetPocket = shotOutcome.pocketed.first(where: { !$0.key.isCue })?.value ?? fallbackPocket
             hooks.trainingSettled(SettledTrainingShot(
                 made: madeObject,
                 before: identified(record.preState),
@@ -393,6 +396,7 @@ final class LiveModel {
         // Nothing seen to judge by (e.g. right after a relock) is not quiet either.
         movingNow = moving || r.confirmed.isEmpty
         if !clearSinceReset, !evidence, !movingNow { clearSinceReset = true }
+        hooks.tableQuietChanged(quiet)
         // D31: the table's rule-id state before a shot, and where each ball was last measured.
         lastFrameAt = r.timestamp
         for b in r.confirmed where b.measured { if let id = r.ballIDs[b.id] { lastSeenAt[id] = b.position } }
@@ -482,6 +486,10 @@ final class LiveModel {
         aim = r.aim
         if mode != .game {
             hooks.detectedBalls(r.confirmed.map(\.position), tableSize ?? tablePrior)
+            if let ov = hooks.trainingOverlayState() {
+                trainingSetupGhosts = ov.ghosts
+                trainingPositionZone = ov.zone
+            }
         }
         drive(r)
         detectMs = detectMs * 0.8 + r.detectMs * 0.2

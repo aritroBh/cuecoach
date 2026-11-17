@@ -12,10 +12,11 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 4. [x] Plan 011 merged (acd3ebd; Codex REJECT → APPROVE; unit 1320/1320, AppShell UI 12/12) save the finished rack on the winning commit (D45)
 5. [x] Plan 012 merged (e50bac2; Codex APPROVE; unit 1329/1329, AppShell UI 12/12) `Shot.isGuess` V3 migration (D43)
 6. [x] Plan 014 (Claude worker in wt/plan-014, sole build owner) steps 3–6 (auto-fit precedence, lock matrix alone on the sim, mesh under major 2)
-7. [~] Plan 013a host loss + island merge engine (D44, D48), no new screens. 013b (after 015): D47 side-by-side pick + D51 unconfirmed island save
-7a. [ ] Plan 015 (to write): fix a recorded shot from Game Review by long-press (D49)
-8. [ ] Plan 005 follow-up MINOR: size hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift:180`)
-9. [ ] Final simulator QA pass (XCUITest), then erase QA sims
+7. [x] Plan 013a + 013b host loss, island merge (`D44`, `D48`), `D47`/`D52` side-by-side dispute glyph picker (Live + Review), and `D51`/`D53` `CompetitiveSchemaV4` unconfirmed island save + peer-backup auto-confirm
+7a. [x] Plan 015 (`D49` + `D54`): fix a recorded shot's shooter from Game Review by long-press (`.contextMenu`, winner recompute / unfinished rack delete)
+8. [x] Plan 005 follow-up MINOR: `.unusualSize` ruler hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift`)
+8a. [x] Full app wiring (`D55`): Profile stats/archetypes/pro-comps/History→Review (`PersistenceProfileSources`), `ShotEngine` live/review evaluation (`SessionEngineEvaluator`), Solo Training loop (`TrainingSessionController` → `Training.store`), opt-in Identity enrollment + live attribution (`IdentityRegistrationSheet`), and rolling SotG `.mp4` clip recorder + in-app `ClipPlayerSheet`
+9. [~] Cross-vendor Codex review + final simulator QA pass (unit + XCUITest), then merge `phase/1-core` → `main`
 
 Blocked on the user / phones:
 - [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max

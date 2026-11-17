@@ -269,10 +269,11 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         }
         m.onPlayClip = { [weak m] shotID in
             let ctx = stack.competitiveContext
+            let clipBase = stack.directory ?? ShotClipStore.defaultBaseDirectory
             guard let game = (try? ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })))?.first else { return }
             let rel = game.highlights.first(where: { $0.shotID == shotID && !$0.clipFile.isEmpty })?.clipFile
                 ?? game.shots.first(where: { $0.id == shotID })?.clipRef
-            guard let rel, let url = ShotClipStore.resolveURL(relativePath: rel) else { return }
+            guard let rel, let url = ShotClipStore.resolveURL(relativePath: rel, baseDirectory: clipBase) else { return }
             m?.presentClip(shotID: shotID, url: url)
         }
         return m
@@ -292,10 +293,9 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         guard let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })).first,
               let target = game.shots.first(where: { $0.id == shotID }),
               let newTeam = game.teams.firstIndex(where: { $0.memberIDs.contains(player.id) }) else { return nil }
-        let oldTeam = game.teams.firstIndex(where: { $0.memberIDs.contains(target.shooterID) }) ?? 0
         target.shooterID = player.id
         target.attributionSource = .tap
-        return try replayAndSave(game: game, fromShotID: oldTeam != newTeam ? shotID : nil, forcedTeam: newTeam,
+        return try replayAndSave(game: game, fromShotID: shotID, forcedTeam: newTeam, forcedShooterID: player.id,
                                  stack: stack, onDeleted: onDeleted)
     }
 
@@ -304,17 +304,21 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         let ctx = stack.competitiveContext
         guard let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })).first,
               let target = game.shots.first(where: { $0.id == shotID }) else { return nil }
+        target.fullOutcome = outcome
         target.pocketed = outcome.pocketed
         target.firstContact = outcome.firstContact
+        target.calledPocket = outcome.calledPocket
         target.made = outcome.pocketed.keys.contains { !$0.isCue }
         target.onTarget = target.made
         target.needsTap = false
         target.alternateOutcome = nil
-        return try replayAndSave(game: game, fromShotID: nil, forcedTeam: nil, stack: stack, onDeleted: onDeleted)
+        let targetTeam = game.teams.firstIndex(where: { $0.memberIDs.contains(target.shooterID) })
+        return try replayAndSave(game: game, fromShotID: shotID, forcedTeam: targetTeam,
+                                 forcedShooterID: target.shooterID, stack: stack, onDeleted: onDeleted)
     }
 
-    private static func replayAndSave(game: Game, fromShotID: UUID?, forcedTeam: Int?, stack: PersistenceStack,
-                                      onDeleted: (() -> Void)?) throws -> GameReviewData? {
+    private static func replayAndSave(game: Game, fromShotID: UUID?, forcedTeam: Int?, forcedShooterID: UUID?,
+                                      stack: PersistenceStack, onDeleted: (() -> Void)?) throws -> GameReviewData? {
         let ctx = stack.competitiveContext
         let ordered = game.shots.sorted { $0.index < $1.index }
         let (engine, start) = TargetLegality.startingGame(game.ruleSet, teams: max(2, game.teams.count))
@@ -323,20 +327,50 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         var nextSlot = Array(repeating: 0, count: max(2, game.teams.count))
         var replayRotation = false
         for s in ordered {
-            if s.id == fromShotID, let ft = forcedTeam {
-                currentTeam = ft
+            if s.id == fromShotID {
+                if let ft = forcedTeam { currentTeam = ft }
+                if game.teams.indices.contains(currentTeam), let fsid = forcedShooterID,
+                   let slot = game.teams[currentTeam].shootingOrder.firstIndex(of: fsid) {
+                    nextSlot[currentTeam] = slot
+                }
                 replayRotation = true
             } else if !replayRotation, let t = game.teams.firstIndex(where: { $0.memberIDs.contains(s.shooterID) }) {
                 currentTeam = t
-            } else if replayRotation, s.id != fromShotID, game.teams.indices.contains(currentTeam),
-                      !game.teams[currentTeam].shootingOrder.isEmpty {
-                let order = game.teams[currentTeam].shootingOrder
-                s.shooterID = order[nextSlot[currentTeam] % order.count]
+                if let slot = game.teams[t].shootingOrder.firstIndex(of: s.shooterID) {
+                    nextSlot[t] = slot
+                }
+            } else if replayRotation {
+                if s.attributionSource == .tap, let tapTeam = game.teams.firstIndex(where: { $0.memberIDs.contains(s.shooterID) }) {
+                    currentTeam = tapTeam
+                    if let slot = game.teams[tapTeam].shootingOrder.firstIndex(of: s.shooterID) {
+                        nextSlot[tapTeam] = slot
+                    }
+                } else if game.teams.indices.contains(currentTeam), !game.teams[currentTeam].shootingOrder.isEmpty {
+                    let order = game.teams[currentTeam].shootingOrder
+                    s.shooterID = order[nextSlot[currentTeam] % order.count]
+                }
             }
             state.shooter = currentTeam
-            let out = ShotOutcome(firstContact: s.firstContact, pocketed: s.pocketed)
+            let out = s.fullOutcome ?? ShotOutcome(
+                firstContact: s.firstContact,
+                noContact: s.fouls.contains(.noContact),
+                pocketed: s.pocketed,
+                offTable: Set<BallID>(s.fouls.compactMap { f -> BallID? in
+                    switch f {
+                    case .cueBallOffTable: return .cue
+                    case .objectBallOffTable(let b): return b
+                    default: return nil
+                    }
+                }),
+                calledPocket: s.calledPocket)
             let res = engine.apply(out, to: state)
             s.fouls = res.fouls
+            if replayRotation {
+                s.decisionRating = RuleRating.classify(
+                    res, shooter: state.shooter,
+                    pocketedObjectBall: out.pocketed.keys.contains { !$0.isCue })
+                s.alternative = nil
+            }
             state = res.nextState
             if res.turnPasses, game.teams.count >= 2 {
                 nextSlot[currentTeam] = nextSlot[currentTeam] + 1

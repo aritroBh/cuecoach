@@ -459,6 +459,17 @@ final class ARLiveController: NSObject {
             return
         }
         model.noteResult(r)
+        if let r, let cg = s.sampledCGImage {
+            var cueNorm = CGPoint(x: 0.5, y: 0.5)
+            if let tf = tableFrame, let v = view,
+               let cueTrack = r.confirmed.first(where: { r.marks[$0.id] == .cue }),
+               let proj = v.project(tf.world(cueTrack.position).f),
+               v.bounds.width > 0, v.bounds.height > 0 {
+                cueNorm = CGPoint(x: CGFloat(proj.x) / v.bounds.width,
+                                  y: 1.0 - CGFloat(proj.y) / v.bounds.height)
+            }
+            model.hooks.cameraFrame(cg, r.timestamp, cueNorm)
+        }
         defer { overlay?.vis = model.visibility; overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
         if let r {
             // Shot events are haptic only (no audio, no text while aiming).
@@ -489,6 +500,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var convertMs: Double?
         /// Some frame since the last delivered status had non-normal tracking (latched per frame).
         var limitedSeen = false
+        var sampledCGImage: CGImage? = nil
     }
     enum Mode: Sendable { case idle, locating, detecting }
 
@@ -603,6 +615,10 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var rs = status
         rs.isResult = true
         rs.convertMs = convertMs
+        if seq % 3 == 0 {
+            let small = img.width > 480 ? img.decimated(by: max(2, img.width / 480)) : img
+            rs.sampledCGImage = small.makeCGImage()
+        }
         let resultStatus = rs
         Task.detached(priority: .userInitiated) { [weak self] in
             let r = await pipeline.process(pf)

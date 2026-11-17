@@ -79,6 +79,11 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
         let resolved = ShotClipStore.resolveURL(relativePath: rel, baseDirectory: tempDir)
         #expect(resolved != nil)
         #expect(ShotClipStore.resolveURL(relativePath: "Clips/../escape.mp4", baseDirectory: tempDir) == nil)
+        #expect(!ShotClipStore.isValidRelativeClipPath("Clips/"))
+        #expect(!ShotClipStore.isValidRelativeClipPath("Clips/."))
+        #expect(!ShotClipStore.isValidRelativeClipPath("Clips/not-a-uuid.mp4"))
+        ShotClipStore.deleteClips(relativePaths: ["Clips/", "Clips/.", "Clips/../Clips"], baseDirectory: tempDir)
+        #expect(FileManager.default.fileExists(atPath: url.path), "Directory-level strings must never delete sibling valid MP4 clips")
 
         // Verify GameReviewModel play hook presents `activeClip`.
         let player = ReviewPlayer(id: UUID(), name: "Aritro", symbol: "hare.fill", colorName: "teal")
@@ -104,5 +109,73 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
 
         ShotClipStore.deleteClips(relativePaths: [rel], baseDirectory: tempDir)
         #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test func soloReviewRetainsSessionCallbacksAndGuestTableGuardsUnconfirmedStats() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let owner = PlayerProfile(name: "Aritro", avatarSymbol: "hare.fill", avatarColor: "teal", isLocalOwner: true)
+        let rival = PlayerProfile(name: "Rival", avatarSymbol: "bolt.fill", avatarColor: "orange", isLocalOwner: false)
+        stack.competitiveContext.insert(owner)
+        stack.competitiveContext.insert(rival)
+        try stack.competitiveContext.save()
+
+        // 1. Solo AppRouter review retains `reviewedGame` so `correctShooter` stays alive after `endGame()`.
+        let suiteName = "cc.test.router.review.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let router = AppRouter()
+        router.stack = stack
+        router.recorder = StackGameRecorder(stack: stack)
+        router.defaults = defaults
+
+        let shellOwner = ShellPlayer(id: owner.id, name: owner.name, symbol: owner.avatarSymbol, colorName: owner.avatarColor)
+        let shellRival = ShellPlayer(id: rival.id, name: rival.name, symbol: rival.avatarSymbol, colorName: rival.avatarColor)
+        router.startGame(GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[shellOwner], [shellRival]]))
+        guard case .live(let liveSession)? = router.stage, let game = liveSession.game else {
+            Issue.record("Expected live session")
+            return
+        }
+        // D52: `LiveSession.isTableQuiet` gates `resolveDispute`.
+        #expect(liveSession.isTableQuiet)
+        liveSession.tableQuietChanged(false)
+        #expect(!liveSession.isTableQuiet)
+        liveSession.tableQuietChanged(true)
+        #expect(liveSession.isTableQuiet)
+
+        // Settle an early 8-ball foul on Shot 0 (Owner shoots 8 early → Team 1 wins).
+        game.shotSettled(SettledShot(rating: .blunder, turnPasses: true,
+                                     outcome: ShotOutcome(firstContact: .eight, pocketed: [.eight: .footLeft])))
+        let shot0ID = try #require(game.shots.first?.id)
+        router.endGame()
+
+        guard case .review(let reviewModel)? = router.stage else {
+            Issue.record("Expected review stage")
+            return
+        }
+        #expect(reviewModel.data?.winnerTeam == 1)
+        let rivalReview = ReviewPlayer(id: rival.id, name: rival.name, symbol: rival.avatarSymbol, colorName: rival.avatarColor)
+        reviewModel.correctShooter(shot0ID, to: rivalReview)
+        #expect(reviewModel.data?.winnerTeam == 0, "Retained solo GameSessionModel flips winner to Team 0 on shooter fix")
+
+        // 2. D28: At a guest table with active IdentitySession, unconfirmed turn-order shots on a registered player
+        // are flagged `isGuess = true` + `needsShooter = true` until confirmed by tap or strict `.auto`.
+        let guestShell = ShellPlayer(id: UUID(), name: "Guest", symbol: "person.fill", colorName: "gold", isGuest: true)
+        let guestGame = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot,
+                                                            teams: [[shellOwner], [guestShell]]))
+        guestGame.identitySession = IdentitySession.registered(
+            on: stack, players: [owner.id], guests: [guestShell.id],
+            faceModelID: "test.face", bodyModelID: "test.body")
+        guestGame.shotSettled(SettledShot(
+            rating: .best, turnPasses: false,
+            outcome: ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footRight])))
+        #expect(guestGame.needsShooter)
+        #expect(guestGame.shots.first?.isGuess == true)
+
+        let ownerReview = ReviewPlayer(id: owner.id, name: owner.name, symbol: owner.avatarSymbol, colorName: owner.avatarColor)
+        let confirmedShotID = try #require(guestGame.shots.first?.id)
+        _ = guestGame.correctShooter(shotID: confirmedShotID, to: ownerReview)
+        #expect(guestGame.shots.first?.attribution == .tap)
+        #expect(guestGame.shots.first?.isGuess == false)
     }
 }

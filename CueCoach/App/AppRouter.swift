@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 import Geometry
@@ -19,6 +20,8 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
     /// From aim start until the balls settle (or the aim is cancelled). No text may appear: the menu
     /// closes and can't open (SPEC §2).
     private(set) var isAiming = false
+    /// D52: immediately false on any raw ball motion, cue creep, dropout, or aim evidence.
+    private(set) var isTableQuiet = true
     private var menuOpen = false
 
     init(mode: ShellLiveMode, game: GameSessionModel?, drill: DrillID?,
@@ -36,25 +39,34 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
 
     func aimStarted() {
         isAiming = true
+        isTableQuiet = false
         menuOpen = false
         game?.aimStarted()
     }
 
     /// Stroke taken: balls are moving, the menu stays closed until `ballsSettled`.
-    func aimEnded() { game?.aimEnded() }
+    func aimEnded() {
+        isTableQuiet = false
+        game?.aimEnded()
+    }
 
     /// Aim abandoned without a stroke.
     func aimCancelled() {
         isAiming = false
+        isTableQuiet = true
         game?.aimEnded()
     }
 
     /// Balls at rest (Training, or a game shot without a rating yet).
-    func ballsSettled() { isAiming = false }
+    func ballsSettled() {
+        isAiming = false
+        isTableQuiet = true
+    }
 
     /// D38: a game shot was lost with no guess: balls at rest, the game records a gap and asks for the shooter.
     func shotLost() {
         isAiming = false
+        isTableQuiet = true
         game?.shotLost()
     }
 
@@ -65,25 +77,36 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
         game?.handTurn(toTeam: team)
     }
 
-    /// D47/D52 (plan 013b): one-tap pick between two disagreeing island outcomes, between shots only.
+    /// D47/D52 (plan 013b): one-tap pick between two disagreeing island outcomes, between shots and while quiet only.
     func resolveDispute(shotID: UUID, outcome: Rules.ShotOutcome) {
-        guard !isAiming else { return }
+        guard !isAiming && isTableQuiet else { return }
         game?.resolveOutcome(shotID: shotID, outcome: outcome)
     }
 
     /// A game shot settled and was rated, with what the Rules engine saw (kept for Game Review).
     func settled(_ shot: SettledShot) {
         isAiming = false
+        isTableQuiet = true
         game?.shotSettled(shot)
     }
 
     func trainingSettled(_ shot: SettledTrainingShot) {
         isAiming = false
+        isTableQuiet = true
         training?.recordAttempt(shot)
     }
 
     func detectedBalls(_ balls: [Vec2], tableSize: TableSize?) {
         training?.updateDetectedBalls(balls, tableSize: tableSize)
+    }
+
+    func tableQuietChanged(_ quiet: Bool) {
+        isTableQuiet = quiet && !isAiming
+        game?.noteTableQuiet(isTableQuiet)
+    }
+
+    func cameraFrame(_ image: CGImage, timestamp: Double, cueBall: CGPoint) {
+        game?.noteCameraFrame(image, timestamp: timestamp, cueBall: cueBall)
     }
 }
 
@@ -106,6 +129,9 @@ final class AppRouter {
     @ObservationIgnored var recorder: (any GameRecorder)?
     /// Backing persistence stack for Training (`Training.store`), Identity (`Recognition.store`), and Clips.
     @ObservationIgnored var stack: PersistenceStack?
+    @ObservationIgnored var defaults: UserDefaults = .standard
+    /// Retains the reviewed `GameSessionModel` throughout Game Review so solo review callbacks and clip playback stay live.
+    @ObservationIgnored private var reviewedGame: GameSessionModel?
 
     func openGame() { path = [.gameHub] }
     func openNewGame() { path = [.gameHub, .newGame] }
@@ -114,11 +140,14 @@ final class AppRouter {
 
     func startGame(_ config: GameConfig) {
         if case .live(let old)? = stage { old.game?.mesh?.stop(); old.game?.mesh = nil; old.game?.identitySession?.end() }
+        reviewedGame?.identitySession?.end()
+        reviewedGame = nil
         let game = GameSessionModel(config: config)
         game.recorder = recorder
         game.engineEvaluator = SessionEngineEvaluator()
-        game.clipRecorder = ShotClipRecorder()
-        if let stack, UserDefaults.standard.bool(forKey: SettingsKeys.recognitionOptIn) {
+        let clipBase = stack?.directory ?? ShotClipStore.defaultBaseDirectory
+        game.clipRecorder = ShotClipRecorder(baseDirectory: clipBase)
+        if let stack, defaults.bool(forKey: SettingsKeys.recognitionOptIn) {
             let allPlayers = config.teams.flatMap { $0 }
             let members = allPlayers.filter { !$0.isGuest }.map(\.id)
             let guests = allPlayers.filter(\.isGuest).map(\.id)
@@ -137,7 +166,7 @@ final class AppRouter {
     }
 
     func startTraining(drill: DrillID, level: AssistLevel) {
-        let controller = TrainingSessionController(drill: drill, initialLevel: level, stack: stack)
+        let controller = TrainingSessionController(drill: drill, initialLevel: level, stack: stack, defaults: defaults)
         stage = .live(LiveSession(mode: .training(level), game: nil, drill: drill, training: controller))
     }
 
@@ -146,25 +175,21 @@ final class AppRouter {
     /// `endCap` seconds from End (D42: never stuck), then reviews what is committed and stops the link.
     func endGame() {
         guard case .live(let s)? = stage, let game = s.game else { return }
+        reviewedGame = game
         guard let link = game.mesh else { stage = .review(review(game.reviewData(), game: game)); return }
         let canCorrect = link.isHost
         let m = GameReviewModel(source: MeshReviewSource(game: game, link: link,
                                                          deadline: Date().addingTimeInterval(endCap)))
         m.onDone = { [weak self] in self?.finishReview() }
         wirePlayClip(on: m, game: game)
+        game.onReviewRefreshed = { [weak m] next in m?.refresh(next) }
         if canCorrect {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
             m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
-            if let rec = recorder {
-                m.onConfirmGame = { [weak game, weak rec] in
-                    guard let gid = game?.shots.first?.id else { return nil }
-                    try? rec?.confirmGame(id: gid)
-                    var d = game?.reviewData()
-                    d?.isUnconfirmed = false
-                    return d
-                }
-                m.onDeleteGame = { [weak self, weak game, weak rec] in
-                    if let gid = game?.shots.first?.id { try? rec?.deleteGame(id: gid) }
+            if recorder != nil {
+                m.onConfirmGame = { [weak game] in game?.confirmSavedRack() }
+                m.onDeleteGame = { [weak self, weak game] in
+                    game?.deleteSavedRack()
                     self?.finishReview()
                 }
             }
@@ -178,6 +203,7 @@ final class AppRouter {
         let m = GameReviewModel(data: data)
         m.onDone = { [weak self] in self?.finishReview() }
         wirePlayClip(on: m, game: game)
+        game.onReviewRefreshed = { [weak m] next in m?.refresh(next) }
         if !game.isJoinerSession {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
             m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
@@ -191,8 +217,9 @@ final class AppRouter {
 
     private func wirePlayClip(on model: GameReviewModel, game: GameSessionModel) {
         model.onPlayClip = { [weak model, weak game] shotID in
-            guard let rel = game?.shotClipFiles[shotID],
-                  let url = ShotClipStore.resolveURL(relativePath: rel) else { return }
+            guard let game, let rel = game.shotClipFiles[shotID] else { return }
+            let base = game.clipRecorder?.baseDirectory ?? ShotClipStore.defaultBaseDirectory
+            guard let url = ShotClipStore.resolveURL(relativePath: rel, baseDirectory: base) else { return }
             model?.presentClip(shotID: shotID, url: url)
         }
     }
@@ -210,6 +237,9 @@ final class AppRouter {
     }
 
     func finishReview() {
+        reviewedGame?.onReviewRefreshed = nil
+        reviewedGame?.identitySession?.end()
+        reviewedGame = nil
         stage = nil
         path = []
     }

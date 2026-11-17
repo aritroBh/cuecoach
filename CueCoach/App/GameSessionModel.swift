@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 import Engine
@@ -62,17 +63,36 @@ final class GameSessionModel {
         didSet {
             oldValue?.onCommittedLog = nil
             oldValue?.onClipReceived = nil
-            wasJoinerAtEnd = (mesh == nil) ? (oldValue?.isJoiner == true) : false
+            if let oldValue, mesh == nil {
+                wasJoinerAtEnd = oldValue.isJoiner
+                wasHostAtEnd = oldValue.isHost
+                hadQuorumAtEnd = oldValue.hasGameQuorum
+                wasIslandAtEnd = oldValue.isIsland
+            } else if mesh != nil {
+                hadMeshSession = true
+                wasJoinerAtEnd = false
+                wasHostAtEnd = false
+                hadQuorumAtEnd = false
+                wasIslandAtEnd = false
+            }
             mesh?.onCommittedLog = { [weak self] log, seq in self?.ingest(log: log, commitSeq: seq) }
             mesh?.onClipReceived = { [weak self] shotID, data in
-                if let rel = try? ShotClipStore.saveReceivedClip(shotID: shotID, data: data) {
-                    self?.attachClip(shotID: shotID, relativePath: rel)
+                guard let self else { return }
+                let base = self.clipRecorder?.baseDirectory ?? ShotClipStore.defaultBaseDirectory
+                if let rel = try? ShotClipStore.saveReceivedClip(shotID: shotID, data: data, baseDirectory: base) {
+                    self.attachClip(shotID: shotID, relativePath: rel)
                 }
             }
         }
     }
-    /// Preserves joiner status after `endGame` tears down `mesh` (D39, plan 015), while letting a promoted host act as host.
+    /// Preserves mesh role/quorum/island state after `endGame` tears down `mesh` (D39, D51, plan 013b/015).
+    @ObservationIgnored private var hadMeshSession = false
     @ObservationIgnored private var wasJoinerAtEnd = false
+    @ObservationIgnored private var wasHostAtEnd = false
+    @ObservationIgnored private var hadQuorumAtEnd = false
+    @ObservationIgnored private var wasIslandAtEnd = false
+    @ObservationIgnored private var manuallyDeletedRack = false
+    @ObservationIgnored private(set) var isAimingOrMoving = false
     var isJoinerSession: Bool { mesh?.isJoiner ?? wasJoinerAtEnd }
     @ObservationIgnored let badge = PostShotBadgeModel()
     /// The game's rules (D11 rule set from setup) and state, which Live rates shots against. The fold owns the state.
@@ -117,6 +137,11 @@ final class GameSessionModel {
     @ObservationIgnored var clipRecorder: ShotClipRecorder?
     @ObservationIgnored var identitySession: IdentitySession?
     @ObservationIgnored var shooterIdentifier: (any ShooterIdentifier)?
+    @ObservationIgnored var onReviewRefreshed: (@MainActor (GameReviewData) -> Void)?
+    @ObservationIgnored private var shotStrokeTimes: [UUID: Double] = [:]
+    @ObservationIgnored private var recentIdentityFrames: [(timestamp: Double, frame: IdentityFrame)] = []
+    @ObservationIgnored private var autoAttributions: [UUID: UUID] = [:]
+    @ObservationIgnored private var unknownGuestShots: Set<UUID> = []
 
     init(config: GameConfig) {
         self.config = config
@@ -202,11 +227,15 @@ final class GameSessionModel {
     @discardableResult
     func shotSettled(_ shot: SettledShot) -> PostShotRating? {
         let id = UUID()
+        let strokeTime = takeStroke()
+        shotStrokeTimes[id] = strokeTime
+        isAimingOrMoving = false
         let event = GameEvent.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
                                                   postState: table(shot.after), preState: table(shot.before),
                                                   decisionRating: shot.rating, isGuess: shot.isGuess))
         if let mesh {
-            mesh.settled(event, strokeAt: takeStroke())
+            mesh.setPhase(rulesState.winner != nil ? .gameOver : .settled)
+            mesh.settled(event, strokeAt: strokeTime)
             guard writesLog else { pushLegal(); return nil }
             if mesh.isIsland, provisionalBadged.insert(id).inserted {
                 badge.receive(.rated(PostShotRating(shotID: id, rating: shot.rating, shooterName: shooter.name,
@@ -215,6 +244,15 @@ final class GameSessionModel {
         } else {
             append(event)
         }
+        if identitySession != nil, shooterIdentifier != nil {
+            let frames = recentIdentityFrames
+                .filter { abs($0.timestamp - strokeTime) <= 0.75 }
+                .map(\.frame)
+            let window = StrokeWindow(frames: frames)
+            Task { @MainActor [weak self] in
+                _ = await self?.attributeStroke(shotID: id, window: window)
+            }
+        }
         guard let s = shots.last(where: { $0.id == id }), let rating = s.rating else { return nil }
         return PostShotRating(shotID: s.id, rating: rating, shooterName: s.shooter.name, team: s.team)
     }
@@ -222,8 +260,10 @@ final class GameSessionModel {
     /// D38: a game shot was lost with no guess. Solo logs a gap for the current shooter, which asks who shoots next;
     /// the shooter stays until a disc tap or the next aim. In a mesh it goes to `mesh.settled` like a settle.
     func shotLost() {
+        isAimingOrMoving = false
         let event = GameEvent.shotLost(shotID: UUID(), shooterTeam: shootingTeam)
         if let mesh {
+            mesh.setPhase(.settled)
             mesh.settled(event, strokeAt: takeStroke())
             if !writesLog { pushLegal() }
         } else {
@@ -233,13 +273,32 @@ final class GameSessionModel {
 
     /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
     func aimStarted() {
+        isAimingOrMoving = true
         askAnsweredAt = events.count
         needsShooter = false
         badge.receive(.aimStarted)
+        mesh?.setPhase(.aiming)
     }
     func aimEnded() {
         strokeAt = now()
         badge.receive(.aimEnded)
+        mesh?.setPhase(.inMotion)
+    }
+
+    func noteTableQuiet(_ quiet: Bool) {
+        if !quiet { isAimingOrMoving = true }
+    }
+
+    func noteCameraFrame(_ image: CGImage, timestamp: Double, cueBall: CGPoint) {
+        if let recorder = clipRecorder {
+            Task { await recorder.pushFrame(image, timestamp: timestamp) }
+        }
+        recentIdentityFrames.append((timestamp, IdentityFrame(image: image, cueBall: cueBall)))
+        let cutoff = timestamp - 2.5
+        recentIdentityFrames.removeAll { $0.timestamp < cutoff }
+        if recentIdentityFrames.count > 24 {
+            recentIdentityFrames.removeFirst(recentIdentityFrames.count - 24)
+        }
     }
 
     /// The stroke of the shot that just settled: the last aim end, else now.
@@ -298,11 +357,27 @@ final class GameSessionModel {
     /// D49/D54 (plan 015): if a correction changes a saved rack's shots or winner, `record` updates it in place; if the
     /// rack is no longer finished (`winner == nil`), `deleteGame` removes it so unfinished racks never stay saved.
     private func saveIfWon() {
-        guard !isJoinerSession, let recorder else { return }
-        let confirmedWriter = mesh == nil || (mesh!.isHost && mesh!.hasGameQuorum && !mesh!.isIsland)
-        let islandWriter = mesh?.isHost == true && mesh?.isIsland == true
+        guard !isJoinerSession, !manuallyDeletedRack, let recorder else { return }
+        let confirmedWriter: Bool
+        let islandWriter: Bool
+        if let mesh {
+            confirmedWriter = mesh.isHost && mesh.hasGameQuorum && !mesh.isIsland
+            islandWriter = mesh.isHost && mesh.isIsland
+        } else if hadMeshSession {
+            confirmedWriter = wasHostAtEnd && hadQuorumAtEnd && !wasIslandAtEnd
+            islandWriter = wasHostAtEnd && wasIslandAtEnd
+        } else {
+            confirmedWriter = true
+            islandWriter = false
+        }
         guard confirmedWriter || islandWriter else { return }
         guard winner != nil else {
+            // Heal 1-RTT guard: while a reconnected island peer's `LogAck` hasn't yet advanced `commitSeq` to cover the
+            // provisional tail, keep the already-saved unconfirmed rack intact instead of deleting it prematurely.
+            if saved, lastSaved?.isUnconfirmed == true, let mesh, !mesh.isIsland,
+               events.count < (lastSaved?.shots.count ?? 0) {
+                return
+            }
             wonAt = nil
             if saved, let id = savedGameID {
                 do {
@@ -317,8 +392,12 @@ final class GameSessionModel {
             return
         }
         if wonAt == nil { wonAt = Date() }
+        if mesh != nil { mesh?.setPhase(.gameOver) }
         guard let game = finishedGame(isUnconfirmed: !confirmedWriter), !saved || lastSaved != game else { return }
         do {
+            if saved, let oldID = savedGameID, oldID != game.id {
+                try? recorder.deleteGame(id: oldID)
+            }
             try recorder.record(game)
             saved = true
             savedGameID = game.id
@@ -358,21 +437,31 @@ final class GameSessionModel {
             default: break
             }
         }
+        let hasGuestAtTable = config.teams.flatMap { $0 }.contains(where: \.isGuest)
         func resolveShooter(for id: UUID) -> (ShellPlayer, AttributionSource) {
-            guard let corr = corrected[id] else { return (shooter, .turnOrder) }
-            if hasLineup, teams.indices.contains(corr.team), !teams[corr.team].isEmpty {
-                if corr.team != currentTeam {
-                    hand(to: corr.team)
+            if let corr = corrected[id] {
+                if hasLineup, teams.indices.contains(corr.team), !teams[corr.team].isEmpty {
+                    if corr.team != currentTeam {
+                        hand(to: corr.team)
+                    }
                     if let sid = corr.shooter, let slot = teams[corr.team].firstIndex(where: { $0.id == sid }) {
                         currentSlot = slot
+                        return (teams[corr.team][slot], .tap)
                     }
-                } else if let sid = corr.shooter, let p = teams[corr.team].first(where: { $0.id == sid }) {
-                    return (p, .tap)
                 }
+                return (shooter, .tap)
             }
-            return (shooter, .tap)
+            if let autoID = autoAttributions[id],
+               let teamIdx = teams.firstIndex(where: { $0.contains { $0.id == autoID } }),
+               let slot = teams[teamIdx].firstIndex(where: { $0.id == autoID }) {
+                if teamIdx != currentTeam { hand(to: teamIdx) }
+                currentSlot = slot
+                return (teams[teamIdx][slot], .auto)
+            }
+            return (shooter, .turnOrder)
         }
         var lostAt = -1
+        var stateDiverged = false
         for i in 0...events.count {
             for w in swaps where w.afterEvent == i { applySwap(w.team, w.a, w.b) }
             guard i < events.count else { break }
@@ -387,18 +476,28 @@ final class GameSessionModel {
                 }
             case .shot(let r):
                 needsShooter = false
+                if corrected[r.shotID] != nil { stateDiverged = true }
                 let (who, attribution) = resolveShooter(for: r.shotID)
                 let chosenOutcome = resolvedOutcomes[r.shotID] ?? r.outcome
                 let outcomeChanged = resolvedOutcomes[r.shotID] != nil && chosenOutcome != r.outcome
+                if outcomeChanged { stateDiverged = true }
                 var state = rulesState
                 state.shooter = shootingTeam
                 let result = rulesEngine.apply(chosenOutcome, to: state)
-                let rating = (!outcomeChanged ? r.decisionRating : nil) ?? RuleRating.classify(
+                let rating = (!stateDiverged ? r.decisionRating : nil) ?? RuleRating.classify(
                     result, shooter: state.shooter, pocketedObjectBall: chosenOutcome.pocketed.keys.contains { $0 != .cue })
                 let stillDisputed = resolvedOutcomes[r.shotID] == nil && r.needsTap
+                // D28: when recognition is active and a guest is at the table, a registered player's shot without `.tap`
+                // or `.auto` confirmation is never silently credited to their competitive stats.
+                let unconfirmedGuestTable = identitySession != nil && hasGuestAtTable && !who.isGuest
+                    && attribution == .turnOrder
+                if unconfirmedGuestTable || unknownGuestShots.contains(r.shotID) {
+                    needsShooter = true
+                    lostAt = i
+                }
                 shots.append(SessionShot(id: r.shotID, index: shots.count, shooter: who, team: shootingTeam,
                                          rating: rating, pocketed: chosenOutcome.pocketed, fouls: result.fouls,
-                                         isGuess: r.isGuess, before: Self.positions(r.preState),
+                                         isGuess: r.isGuess || unconfirmedGuestTable, before: Self.positions(r.preState),
                                          after: Self.positions(r.postState), attribution: attribution,
                                          firstContact: chosenOutcome.firstContact, needsTap: stillDisputed,
                                          alternateOutcome: stillDisputed ? r.alternateOutcome : nil,
@@ -483,16 +582,25 @@ final class GameSessionModel {
             self.engineSummary = summary
             self.applyCachedEnrichments()
             self.saveIfWon()
-            if let sotg = summary.shotOfGame,
+            self.onReviewRefreshed?(self.reviewData())
+            // Export SotG clip only once the rack is finished (`winner != nil`), preventing mid-rack orphan `.mp4` leaks.
+            if self.winner != nil,
+               let sotg = summary.shotOfGame,
                self.shotClipFiles[sotg.shotID] == nil,
                let recorder = self.clipRecorder,
                let s = self.shots.first(where: { $0.id == sotg.shotID }) {
+                let strokeTime = self.shotStrokeTimes[sotg.shotID]
                 if let (rel, url) = try? await recorder.exportClip(
-                    shotID: sotg.shotID, tableSize: tableSize,
+                    shotID: sotg.shotID, strokeAt: strokeTime, tableSize: tableSize,
                     before: s.before, after: s.after, pocketed: s.pocketed) {
-                    guard !Task.isCancelled, self.engineGeneration == gen else { return }
+                    guard !Task.isCancelled, self.engineGeneration == gen, !self.manuallyDeletedRack else {
+                        ShotClipStore.deleteClips(relativePaths: [rel], baseDirectory: recorder.baseDirectory)
+                        return
+                    }
                     self.attachClip(shotID: sotg.shotID, relativePath: rel)
-                    if let data = try? Data(contentsOf: url) {
+                    self.onReviewRefreshed?(self.reviewData())
+                    // D3: never offer bulk clips while anyone is aiming or balls are moving.
+                    if !self.isAimingOrMoving, let data = try? Data(contentsOf: url) {
                         self.mesh?.offerClip(shotID: sotg.shotID, data: data, viewScore: sotg.score)
                     }
                 }
@@ -505,11 +613,37 @@ final class GameSessionModel {
     }
 
     func attachClip(shotID: UUID, relativePath: String) {
+        guard ShotClipStore.isValidRelativeClipPath(relativePath) else { return }
         shotClipFiles[shotID] = relativePath
         if let idx = shots.firstIndex(where: { $0.id == shotID }) {
             shots[idx].clipRef = relativePath
         }
         saveIfWon()
+    }
+
+    func confirmSavedRack() -> GameReviewData? {
+        guard let gid = savedGameID else { return nil }
+        try? recorder?.confirmGame(id: gid)
+        wasIslandAtEnd = false
+        hadQuorumAtEnd = true
+        lastSaved?.isUnconfirmed = false
+        return reviewData()
+    }
+
+    func deleteSavedRack() {
+        manuallyDeletedRack = true
+        engineGeneration += 1
+        engineTask?.cancel()
+        engineTask = nil
+        if let gid = savedGameID {
+            try? recorder?.deleteGame(id: gid)
+        }
+        let base = clipRecorder?.baseDirectory ?? ShotClipStore.defaultBaseDirectory
+        ShotClipStore.deleteClips(relativePaths: Array(shotClipFiles.values), baseDirectory: base)
+        shotClipFiles.removeAll()
+        saved = false
+        savedGameID = nil
+        lastSaved = nil
     }
 
     /// D49 (plan 015): fix a recorded shot's shooter from Game Review. Appends `.shooterCorrection`, replays the fold,
@@ -519,6 +653,8 @@ final class GameSessionModel {
         guard !isJoinerSession,
               shots.contains(where: { $0.id == shotID }),
               let team = teams.firstIndex(where: { $0.contains { $0.id == player.id } }) else { return nil }
+        unknownGuestShots.remove(shotID)
+        engineSummary = nil
         _ = identitySession?.correct(shot: shotID, to: player.id)
         append(.shooterCorrection(shotID: shotID, team: team, shooter: player.id))
         return reviewData()
@@ -536,15 +672,20 @@ final class GameSessionModel {
             shotID, window: window, expectedShooter: target.shooter.id,
             teamInTurn: teamSet, using: identifier)
         if attr.source == .auto, let pid = attr.playerID,
-           let team = teams.firstIndex(where: { $0.contains { $0.id == pid } }) {
-            if pid != target.shooter.id {
-                append(.shooterCorrection(shotID: shotID, team: team, shooter: pid))
-            } else if let idx = shots.firstIndex(where: { $0.id == shotID }) {
-                shots[idx].attribution = .auto
-                saveIfWon()
-            }
+           teams.contains(where: { $0.contains { $0.id == pid } }) {
+            autoAttributions[shotID] = pid
+            unknownGuestShots.remove(shotID)
+            fold()
+            applyCachedEnrichments()
+            pushLegal()
+            saveIfWon()
+            scheduleEngineEvaluation()
         } else if attr.source == .unknown {
+            unknownGuestShots.insert(shotID)
+            fold()
+            applyCachedEnrichments()
             needsShooter = true
+            saveIfWon()
         }
         return attr
     }
@@ -558,6 +699,7 @@ final class GameSessionModel {
     func resolveOutcome(shotID: UUID, outcome: ShotOutcome) -> GameReviewData? {
         guard shots.contains(where: { $0.id == shotID }) else { return nil }
         if mesh == nil, isJoinerSession { return nil }
+        engineSummary = nil
         append(.outcomeResolution(shotID: shotID, outcome: outcome))
         return reviewData()
     }
@@ -585,12 +727,14 @@ final class GameSessionModel {
             return ReviewShot(id: s.id, index: s.index, shooter: rp(s.shooter), team: s.team, rating: s.rating,
                               pre: pre, post: post, pocketed: s.pocketed, fouls: s.fouls, paths: paths,
                               alternative: s.alternative, wpaDelta: s.wpaDelta, pathsAreTraced: false,
-                              isGuess: s.isGuess, needsTap: s.needsTap, alternateOutcome: s.alternateOutcome)
+                              isGuess: s.isGuess, needsTap: s.needsTap, outcome: s.outcome,
+                              alternateOutcome: s.alternateOutcome)
         }
         let winner = rulesState.winner.flatMap { teams.indices.contains($0) ? $0 : nil }
         var score = [Int](repeating: 0, count: teams.count)
         if let winner { score[winner] += 1 }
-        let unconfirmed = mesh?.isIsland == true || (lastSaved?.isUnconfirmed == true)
+        let islandState = (mesh?.isIsland == true) || (mesh == nil && hadMeshSession && wasIslandAtEnd)
+        let unconfirmed = winner != nil && (islandState || lastSaved?.isUnconfirmed == true)
         let sotg = engineSummary?.shotOfGame.map { h in
             let hasClip = !(shotClipFiles[h.shotID] ?? h.clipFile).isEmpty
             return ReviewHighlight(shotID: h.shotID, label: h.label, hasClip: hasClip)

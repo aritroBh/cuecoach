@@ -25,10 +25,20 @@ enum ShotClipStore {
         "Clips/\(shotID.uuidString).mp4"
     }
 
+    /// Strict canonical single-file validation (`Clips/<UUID>.mp4`) so untrusted backup strings like `"Clips/"` or `"Clips/."`
+    /// can never escape `Clips/` or delete the directory itself.
+    static func isValidRelativeClipPath(_ relativePath: String) -> Bool {
+        guard !relativePath.contains(".."), !relativePath.contains("\\") else { return false }
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == "Clips" else { return false }
+        let filename = String(parts[1])
+        guard filename.hasSuffix(".mp4") else { return false }
+        let stem = String(filename.dropLast(4))
+        return UUID(uuidString: stem) != nil
+    }
+
     static func resolveURL(relativePath: String, baseDirectory: URL = defaultBaseDirectory) -> URL? {
-        guard !relativePath.isEmpty,
-              !relativePath.contains(".."),
-              relativePath.hasPrefix("Clips/") else { return nil }
+        guard isValidRelativeClipPath(relativePath) else { return nil }
         let url = baseDirectory.appending(path: relativePath)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
@@ -38,7 +48,7 @@ enum ShotClipStore {
         let dir = try clipsDirectory(in: baseDirectory)
         let rel = relativePath(for: shotID)
         var fileURL = dir.appending(path: "\(shotID.uuidString).mp4")
-        try data.write(to: fileURL, options: .atomic)
+        try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         var rv = URLResourceValues()
         rv.isExcludedFromBackup = true
         try? fileURL.setResourceValues(rv)
@@ -46,7 +56,7 @@ enum ShotClipStore {
     }
 
     static func deleteClips(relativePaths: [String], baseDirectory: URL = defaultBaseDirectory) {
-        for rel in relativePaths where !rel.isEmpty && !rel.contains("..") && rel.hasPrefix("Clips/") {
+        for rel in Set(relativePaths) where isValidRelativeClipPath(rel) {
             let url = baseDirectory.appending(path: rel)
             try? FileManager.default.removeItem(at: url)
         }

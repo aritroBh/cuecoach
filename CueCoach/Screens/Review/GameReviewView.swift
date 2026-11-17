@@ -409,7 +409,7 @@ public struct GameReviewView: View {
     /// D47/D52: side-by-side ball-glyph picker when two reconnected islands disagreed on this shot's outcome.
     @ViewBuilder private func disputeRow(_ s: ReviewShot) -> some View {
         if s.needsTap, let alt = s.alternateOutcome, model.canResolveOutcome {
-            let kept = ShotOutcome(firstContact: nil, pocketed: s.pocketed)
+            let kept = s.outcome
             HStack(spacing: 12) {
                 disputeChoice(outcome: kept, fouls: !s.fouls.isEmpty, id: "review.dispute.keep") {
                     model.resolveOutcome(s.id, to: kept)
@@ -730,7 +730,9 @@ private struct WinChanceChart: View {
         .chartXAxis(.hidden)
         .chartYAxis {
             AxisMarks(values: [0.5]) { _ in
-                AxisValueLabel("50%").font(.footnote.weight(.semibold))   // Charts takes a Font, not a view modifier.foregroundStyle(AX.inkMuted)
+                AxisValueLabel("50%")
+                    .font(.footnote.weight(.semibold))   // Charts takes a Font, not a view modifier
+                    .foregroundStyle(AX.inkMuted)
             }
         }
         .chartLegend(.hidden)

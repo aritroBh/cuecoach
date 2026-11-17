@@ -1,8 +1,11 @@
+import AVFoundation
 import CoreGraphics
+import CoreVideo
 import Foundation
 import Observation
 import SwiftData
 import SwiftUI
+import Synchronization
 
 /// Drives opt-in recognition consent and multi-sample enrollment into `Recognition.store` (SPEC §2, §5.8, D26, D28).
 /// Raw frames are embedded on-device and discarded immediately; only vectors reach `Recognition.store`.
@@ -13,7 +16,7 @@ final class IdentityRegistrationModel {
     let stack: PersistenceStack
     @ObservationIgnored let faceExtractor: (any EmbeddingExtracting)?
     @ObservationIgnored let bodyExtractor: any EmbeddingExtracting
-    @ObservationIgnored var sampleProvider: (@Sendable (RecognitionConsent) async -> RegistrationCapture)?
+    @ObservationIgnored var sampleProvider: (@Sendable (RecognitionConsent) async throws -> RegistrationCapture)?
 
     var clothesConsent = true
     var faceConsent = false
@@ -23,9 +26,9 @@ final class IdentityRegistrationModel {
     var canEnroll: Bool { (clothesConsent || (faceConsent && canSelectFace)) && step != .capturing }
 
     init(stack: PersistenceStack,
-         faceExtractor: (any EmbeddingExtracting)? = FaceEmbeddingExtractor.bundled(),
+         faceExtractor: (any EmbeddingExtracting)? = FaceEmbeddingExtractor.bundled().map { AlignedFaceExtractor(embedder: $0) },
          bodyExtractor: any EmbeddingExtracting = VisionFeaturePrintExtractor(kind: "body"),
-         sampleProvider: (@Sendable (RecognitionConsent) async -> RegistrationCapture)? = nil) {
+         sampleProvider: (@Sendable (RecognitionConsent) async throws -> RegistrationCapture)? = nil) {
         self.stack = stack
         self.faceExtractor = faceExtractor
         self.bodyExtractor = bodyExtractor
@@ -39,39 +42,43 @@ final class IdentityRegistrationModel {
             step = .failed("Turn on at least one recognition option.")
             return false
         }
-        step = .capturing
-        let owner = resolveOrCreateLocalOwner()
-        let capture: RegistrationCapture
-        if let sampleProvider {
-            capture = await sampleProvider(effectiveConsent)
-        } else {
-            capture = Self.syntheticSamples(for: effectiveConsent)
+        guard let owner = existingLocalOwner() else {
+            step = .failed("Create your profile first in Profile.")
+            return false
         }
-        let decision = ConsentDecision(consent: effectiveConsent, agreedAt: .now)
-        let registrar = RecognitionRegistrar(stack: stack, face: faceExtractor, body: bodyExtractor)
+        step = .capturing
+        let capture: RegistrationCapture
         do {
+            if let sampleProvider {
+                capture = try await sampleProvider(effectiveConsent)
+            } else {
+                #if targetEnvironment(simulator)
+                capture = Self.syntheticSamples(for: effectiveConsent)
+                #else
+                capture = try await DeviceRegistrationCamera.captureSamples(
+                    for: effectiveConsent, count: RecognitionRegistrar.minSamples)
+                #endif
+            }
+            let decision = ConsentDecision(consent: effectiveConsent, agreedAt: .now)
+            let registrar = RecognitionRegistrar(stack: stack, face: faceExtractor, body: bodyExtractor)
             try await registrar.register(owner, decision: decision, capture: capture)
             step = .done
             return true
+        } catch DeviceRegistrationCamera.CaptureError.permissionDenied {
+            step = .failed("Camera permission is needed to enroll.")
+            return false
         } catch {
             step = .failed("Couldn't enroll right now. Try again.")
             return false
         }
     }
 
-    private func resolveOrCreateLocalOwner() -> PlayerProfile {
+    private func existingLocalOwner() -> PlayerProfile? {
         let ctx = stack.competitiveContext
-        if let existing = (try? ctx.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })))?.first {
-            return existing
-        }
-        let created = PlayerProfile(name: "Player", avatarSymbol: ShellPalette.symbols[0],
-                                    avatarColor: ShellPalette.names[1], isLocalOwner: true)
-        ctx.insert(created)
-        try? ctx.save()
-        return created
+        return (try? ctx.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })))?.first
     }
 
-    /// Deterministic multi-angle sample generator when running without a live camera feed (e.g. Simulator).
+    #if targetEnvironment(simulator)
     static func syntheticSamples(for consent: RecognitionConsent) -> RegistrationCapture {
         let count = RecognitionRegistrar.minSamples
         let bodies = consent.clothes ? (0..<count).compactMap { makeSampleImage(seed: 10 + $0) } : []
@@ -96,6 +103,78 @@ final class IdentityRegistrationModel {
             space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         return ctx.makeImage()
+    }
+    #endif
+}
+
+/// Real front/back camera multi-frame capture for physical iPhone enrollment (never writes images to disk).
+enum DeviceRegistrationCamera {
+    enum CaptureError: Error { case permissionDenied, cameraUnavailable, insufficientFrames }
+
+    static func captureSamples(for consent: RecognitionConsent, count: Int) async throws -> RegistrationCapture {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        if status == .notDetermined {
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            if !granted { throw CaptureError.permissionDenied }
+        } else if status != .authorized {
+            throw CaptureError.permissionDenied
+        }
+
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+                ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device) else {
+            throw CaptureError.cameraUnavailable
+        }
+
+        let collector = SampleFrameCollector(targetCount: count)
+        let session = AVCaptureSession()
+        session.sessionPreset = .vga640x480
+        let output = AVCaptureVideoDataOutput()
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+        let queue = DispatchQueue(label: "cuecoach.identity.enroll")
+        output.setSampleBufferDelegate(collector, queue: queue)
+
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            throw CaptureError.cameraUnavailable
+        }
+        session.addInput(input)
+        session.addOutput(output)
+        session.startRunning()
+        defer { session.stopRunning() }
+
+        let deadline = Date().addingTimeInterval(4.0)
+        while Date() < deadline && collector.frames.count < count {
+            try await Task.sleep(for: .milliseconds(120))
+        }
+        let captured = collector.frames
+        guard captured.count >= count else { throw CaptureError.insufficientFrames }
+        return RegistrationCapture(
+            faceImages: consent.face ? captured : [],
+            bodyImages: consent.clothes ? captured : [])
+    }
+
+    private final class SampleFrameCollector: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+        let targetCount: Int
+        private let lock = Mutex((frames: [CGImage](), lastTime: 0.0))
+
+        init(targetCount: Int) { self.targetCount = targetCount }
+
+        var frames: [CGImage] { lock.withLock { $0.frames } }
+
+        func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                           from connection: AVCaptureConnection) {
+            let now = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            let shouldTake = lock.withLock { state -> Bool in
+                guard state.frames.count < targetCount, now - state.lastTime >= 0.18 else { return false }
+                state.lastTime = now
+                return true
+            }
+            guard shouldTake,
+                  let pb = CMSampleBufferGetImageBuffer(sampleBuffer),
+                  let px = PixelImage(pixelBuffer: pb, maxWidth: 480),
+                  let cg = px.makeCGImage() else { return }
+            lock.withLock { if $0.frames.count < targetCount { $0.frames.append(cg) } }
+        }
     }
 }
 

@@ -66,13 +66,21 @@ actor SessionEngineEvaluator {
 
         var byID: [UUID: ShotEngineEnrichment] = [:]
         var indexedRecords: [(shotID: UUID, wonRack: Bool, isSafety: Bool, record: ShotRatingRecord)] = []
+        var sawRackWinner = false
 
         for s in shots {
+            // D38 `.shotLost` gap (`s.rating == nil`): `GameSessionModel.fold()` leaves `rulesState` untouched,
+            // so we must NOT apply an empty `ShotOutcome()` here either.
+            guard s.rating != nil else {
+                winProbSeries.append(Self.clamp01(currentTeamZeroWP))
+                continue
+            }
             gameState.shooter = s.team
             let res = rulesEngine.apply(s.outcome, to: gameState)
             let rackWinner = res.winner ?? res.nextState.winner
+            if rackWinner != nil { sawRackWinner = true }
 
-            if !s.isGuess, s.rating != nil, let pre = makeTable(s.before),
+            if !s.isGuess, let pre = makeTable(s.before),
                pre.balls[.cue] != nil, pre.balls.count >= 2 {
                 let eval = await shotEngine.evaluate(pre, gameState, skill: .reference, opponentSkill: .reference, budget: budget)
                 let wpBefore = eval.winProbability
@@ -100,7 +108,9 @@ actor SessionEngineEvaluator {
 
                 let best = eval.ranked.first
                 let chosenScore = Self.matchCandidate(shot: s, game: gameState, ranked: eval.ranked)
-                let isBook = gameState.phase == .breakShot || (chosenScore?.candidate.kind.isBook == true)
+                let isBook = s.rating == .book || gameState.phase == .breakShot
+                    || (chosenScore?.candidate.kind.isBook == true)
+                    || (s.index == 0 && s.before.count >= 9)
                 let isBest = chosenScore != nil && chosenScore?.candidate.id == best?.candidate.id
                 let loss = isBest ? 0 : max(0, (best?.ev ?? wpBefore) - (chosenScore?.ev ?? wpAfter))
                 let lossSE = chosenScore?.evSE ?? best?.evSE ?? 0
@@ -172,8 +182,8 @@ actor SessionEngineEvaluator {
             gameState = res.nextState
         }
 
-        // Post-rack Brilliant finalize (D18: at most one `.brilliant` per rack) + Shot of the Game selection (SPEC §9).
-        if !indexedRecords.isEmpty {
+        // Post-rack Brilliant finalize (D18: decided post-game only once the rack is finished; live it stays `.great`).
+        if sawRackWinner, !indexedRecords.isEmpty {
             let rawRecords = indexedRecords.map(\.record)
             if let brilliantIdx = Ratings.selectBrilliant(rawRecords) {
                 let promotedID = indexedRecords[brilliantIdx].shotID

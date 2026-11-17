@@ -48,29 +48,6 @@ import Testing
             clipRef: nil, isGuess: isGuess)
     }
 
-    @Test func profileUnlocksArchetypeProCompHeatGridAndBadgesFromSavedRacks() throws {
-        let (stack, owner, rival) = try makeStackWithOwner()
-        let recorder = StackGameRecorder(stack: stack)
-        let teams = [
-            StoredTeam(memberIDs: [owner.id], shootingOrder: [owner.id]),
-            StoredTeam(memberIDs: [rival.id], shootingOrder: [rival.id]),
-        ]
-        // Record 3 confirmed racks with 18 shots each (54 total shots ≥ 50 unlock threshold).
-        for rack in 0..<3 {
-            var shots: [RecordedShot] = []
-            for idx in 0..<18 {
-                let rating: DecisionRating = (rack == 0 && idx == 17) ? .brilliant : .best
-                shots.append(makeShot(index: idx, shooterID: owner.id, team: 0, made: true, rating: rating))
-            }
-            let start = Date(timeIntervalSince1970: Double(1_700_000_000 + rack * 600))
-            try recorder.record(FinishedGame(
-                id: UUID(), ruleSet: .barEight, tableSize: .sevenFoot, format: .oneVsOne,
-                teams: teams, winnerTeam: 0, winProbSeries: Array(repeating: 0.7, count: 19),
-                startedAt: start, endedAt: start.addingTimeInterval(300), shots: shots))
-        }
-        return
-    }
-
     @Test func viewModelLoadsUnlockedCareerFromPersistenceStack() async throws {
         let (stack, owner, rival) = try makeStackWithOwner()
         let recorder = StackGameRecorder(stack: stack)
@@ -218,5 +195,64 @@ import Testing
         #expect(flipped.winnerTeam == 1)
         let saved = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first)
         #expect(saved.winnerTeam == 1)
+
+        // D54: resolving the decisive early-8 shot into an ordinary legal miss leaves the rack unfinished and deletes it!
+        var deletedCallbackFired = false
+        let afterUnfinish = try PersistedGameReviewEditor.resolveOutcome(
+            gameID: gameID, shotID: earlyEightID,
+            to: ShotOutcome(firstContact: BallID(1)!, pocketed: [:]),
+            stack: stack, onDeleted: { deletedCallbackFired = true })
+        #expect(afterUnfinish == nil)
+        #expect(deletedCallbackFired)
+        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).isEmpty)
+    }
+
+    @Test func persistedReviewPreservesFullNoContactOutcomeOnNineBallThreeFoul() throws {
+        let (stack, owner, rival) = try makeStackWithOwner()
+        let mate1 = PlayerProfile(name: "Mate", avatarSymbol: "flame.fill", avatarColor: "red", isLocalOwner: false)
+        let mate0 = PlayerProfile(name: "Partner", avatarSymbol: "leaf.fill", avatarColor: "green", isLocalOwner: false)
+        stack.competitiveContext.insert(mate0)
+        stack.competitiveContext.insert(mate1)
+        try stack.competitiveContext.save()
+
+        let recorder = StackGameRecorder(stack: stack)
+        let gameID = UUID()
+        let teams = [
+            StoredTeam(memberIDs: [owner.id, mate0.id], shootingOrder: [owner.id, mate0.id]),
+            StoredTeam(memberIDs: [rival.id, mate1.id], shootingOrder: [rival.id, mate1.id]),
+        ]
+        // WPA 9-ball: Team 0 misses legal 1-ball contact on shots 0, 2, 4; Team 1 commits 3 consecutive `.noContact` fouls on shots 1, 3, 5 → Team 0 wins!
+        let legalMiss = ShotOutcome(firstContact: BallID(1)!, pocketed: [:])
+        let noContactFoul = ShotOutcome(noContact: true)
+        var shots: [RecordedShot] = []
+        let sequence: [(UUID, Int, ShotOutcome)] = [
+            (owner.id, 0, legalMiss),
+            (rival.id, 1, noContactFoul),
+            (mate0.id, 0, legalMiss),
+            (mate1.id, 1, noContactFoul),
+            (owner.id, 0, legalMiss),
+            (rival.id, 1, noContactFoul),
+        ]
+        for (idx, item) in sequence.enumerated() {
+            var rs = makeShot(index: idx, shooterID: item.0, team: item.1, made: false, pocketed: [:],
+                              firstContact: item.2.firstContact)
+            rs.fouls = item.2.noContact ? [.noContact] : []
+            rs.fullOutcome = item.2
+            shots.append(rs)
+        }
+        try recorder.record(FinishedGame(
+            id: gameID, ruleSet: .wpaNine, tableSize: .nineFoot, format: .twoVsTwo,
+            teams: teams, winnerTeam: 0, winProbSeries: [0.5, 0.48, 0.55, 0.52, 0.65, 0.62, 1.0],
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            endedAt: Date(timeIntervalSince1970: 1_700_000_240),
+            shots: shots))
+
+        // Correcting shot 1 between Team 1 teammates preserves `fullOutcome` (`noContact: true`) and Team 0's 3-foul win!
+        let mate1Review = ReviewPlayer(id: mate1.id, name: mate1.name, symbol: mate1.avatarSymbol, colorName: mate1.avatarColor)
+        let updated = try #require(try PersistedGameReviewEditor.correctShooter(
+            gameID: gameID, shotID: shots[1].id, to: mate1Review, stack: stack))
+        #expect(updated.winnerTeam == 0)
+        #expect(updated.isFinished)
+        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).count == 1)
     }
 }

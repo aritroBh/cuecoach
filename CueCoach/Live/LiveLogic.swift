@@ -496,6 +496,11 @@ struct LiveHooks {
     /// Solo Training: settled attempt payload + live detected ball positions for `SetupMatcher`.
     var trainingSettled: @MainActor (SettledTrainingShot) -> Void = { _ in }
     var detectedBalls: @MainActor ([Vec2], TableSize?) -> Void = { _, _ in }
+    var trainingOverlayState: @MainActor () -> (ghosts: [(Vec2, Bool)], zone: Vec2?)? = { nil }
+    /// D52: true only when the table has zero motion, zero aim evidence, and zero active shot.
+    var tableQuietChanged: @MainActor (Bool) -> Void = { _ in }
+    /// Throttled live camera frame + timestamp + normalized cue-ball position for SotG clips & stroke attribution.
+    var cameraFrame: @MainActor (CGImage, Double, CGPoint) -> Void = { _, _, _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

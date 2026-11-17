@@ -85,4 +85,45 @@ import Testing
         let resolvedBiases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
         #expect(resolvedBiases.first?.resolvedAt != nil)
     }
+
+    @Test func nilPlayerIDResolvesStableFallbackPersistsAcrossReloadAndSyncsLiveModelMode() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let suiteName = "cc.test.training.fallback.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(TrainingSessionController.defaultPocket(for: .rail) == .footLeft)
+        #expect(TrainingSessionController.defaultPocket(for: .sidePocket) == .sideLeft)
+
+        let c1 = TrainingSessionController(drill: .rail, initialLevel: .full,
+                                           tableSize: .sevenFoot, playerID: nil,
+                                           stack: stack, defaults: defaults)
+        let liveModel = LiveModel(mode: .training(level: c1.level.rawValue))
+        #expect(liveModel.visibility.line2)
+        #expect(liveModel.visibility.line1)
+
+        for i in 0..<10 {
+            c1.recordAttempt(SettledTrainingShot(made: i < 8))
+        }
+        #expect(c1.level == .objectLineOnly)
+        liveModel.mode = .training(level: c1.level.rawValue)
+        #expect(liveModel.visibility.line2)
+        #expect(!liveModel.visibility.line1, "Level 2 hides cue-to-ghost path live in-session")
+
+        // Reloading with `playerID: nil` right after promotion recovers the exact same fallback UUID and Level 2!
+        let c2 = TrainingSessionController(drill: .rail, initialLevel: .full,
+                                           tableSize: .sevenFoot, playerID: nil,
+                                           stack: stack, defaults: defaults)
+        #expect(c2.playerID == c1.playerID)
+        #expect(c2.level == .objectLineOnly)
+
+        // Subsequent consistent overcuts on the reloaded controller surface feedback and resolve BiasRecord on dismiss.
+        for _ in 0..<15 {
+            c2.recordAttempt(SettledTrainingShot(made: false, explicitErrors: [.cut: 0.12]))
+        }
+        #expect(c2.activeFeedback != nil)
+        c2.dismissFeedback()
+        let biases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
+        #expect(biases.first?.resolvedAt != nil)
+    }
 }

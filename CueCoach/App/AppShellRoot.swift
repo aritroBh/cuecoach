@@ -65,7 +65,12 @@ struct ShellMain: View {
         .environment(\.shellNoLoops, env.noLoops)
         .environment(\.sbForceReduceMotion, env.reduceMotion)
         .cueCoachTheme()
-        .onAppear { router.meshFactory = env.meshFactory; router.recorder = env.recorder; router.stack = env.stack }
+        .onAppear {
+            router.meshFactory = env.meshFactory
+            router.recorder = env.recorder
+            router.stack = env.stack
+            router.defaults = env.defaults
+        }
         #if DEBUG
         .task { await ShellAutopilot.run(env: env, router: router) }
         #endif
@@ -149,7 +154,12 @@ private struct SettingsSheetHost: View {
                     showingEnroll = true
                 }
             }
-            .sheet(isPresented: $showingEnroll) {
+            .sheet(isPresented: $showingEnroll, onDismiss: {
+                settingsModel.refreshRecognitionStatus()
+                if !settingsModel.hasRecognitionData {
+                    settingsModel.recognitionOptIn = false
+                }
+            }) {
                 if let enrolling {
                     IdentityRegistrationSheet(model: enrolling) { enrolled in
                         showingEnroll = false

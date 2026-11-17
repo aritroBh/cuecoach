@@ -21,9 +21,10 @@ struct SettledTrainingShot: Hashable, Sendable {
 @MainActor @Observable
 final class TrainingSessionController {
     static let setupTolerance: Double = 0.065
+    static let fallbackPlayerKey = "cc.training.fallbackPlayerID"
 
     let drill: DrillID
-    let playerID: UUID?
+    let playerID: UUID
     let policy: LevelPolicy
     @ObservationIgnored private let stack: PersistenceStack?
     @ObservationIgnored private let defaults: UserDefaults
@@ -46,16 +47,26 @@ final class TrainingSessionController {
          playerID: UUID? = nil, stack: PersistenceStack? = nil,
          policy: LevelPolicy = .standard, defaults: UserDefaults = .standard) {
         self.drill = drill
-        self.playerID = playerID
         self.policy = policy
         self.stack = stack
         self.defaults = defaults
+        self.playerID = playerID
+            ?? stack.flatMap(Self.resolveOwnerID(in:))
+            ?? Self.resolveFallbackPlayerID(defaults: defaults)
         self.tableSize = tableSize
         self.level = initialLevel
         self.progress = LevelProgress(level: initialLevel)
         self.coach = FeedbackCoach(drill: drill)
         loadPersistedState()
         refreshSetupTargets()
+    }
+
+    static func defaultPocket(for drill: DrillID) -> Pocket {
+        switch drill {
+        case .sidePocket, .banks: .sideLeft
+        case .rail: .footLeft
+        default: .footRight
+        }
     }
 
     func updateDetectedBalls(_ detected: [Vec2], tableSize newSize: TableSize? = nil) {
@@ -68,7 +79,8 @@ final class TrainingSessionController {
 
     func dismissFeedback() {
         coach.dismiss()
-        if let stack, let pid = playerID {
+        if let stack {
+            let pid = playerID
             let dRaw = drill.rawValue
             let ctx = stack.trainingContext
             if let rows = try? ctx.fetch(FetchDescriptor<BiasRecord>()) {
@@ -190,7 +202,8 @@ final class TrainingSessionController {
     // MARK: - Training.store Persistence
 
     private func loadPersistedState() {
-        guard let stack, let pid = playerID else { return }
+        guard let stack else { return }
+        let pid = playerID
         let dRaw = drill.rawValue
         let ctx = stack.trainingContext
         if let row = (try? ctx.fetch(FetchDescriptor<DrillProgress>()))?
@@ -212,7 +225,7 @@ final class TrainingSessionController {
     private func persistAttempt(shot: SettledTrainingShot, spec: TableSpec, features: StoredAttemptFeatures,
                                 previousLevel: AssistLevel, levelChanged: Bool, at now: Date) {
         guard let stack else { return }
-        let pid = playerID ?? Self.resolveOwnerID(in: stack) ?? UUID()
+        let pid = playerID
         let ctx = stack.trainingContext
 
         if ((try? ctx.fetch(FetchDescriptor<TrainingProfile>()))?.contains(where: { $0.playerID == pid }) ?? false) == false {
@@ -281,5 +294,14 @@ final class TrainingSessionController {
         try? stack.competitiveContext.fetch(
             FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })
         ).first?.id
+    }
+
+    private static func resolveFallbackPlayerID(defaults: UserDefaults) -> UUID {
+        if let str = defaults.string(forKey: fallbackPlayerKey), let existing = UUID(uuidString: str) {
+            return existing
+        }
+        let created = UUID()
+        defaults.set(created.uuidString, forKey: fallbackPlayerKey)
+        return created
     }
 }

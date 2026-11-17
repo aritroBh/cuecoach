@@ -43,6 +43,7 @@ struct ReviewShot: Identifiable, Hashable, Sendable {
     var isGuess = false
     /// D47 (plan 013b): islands disagreed on this shot; `alternateOutcome` is the other version for one-tap pick.
     var needsTap = false
+    var outcome: ShotOutcome = ShotOutcome()
     var alternateOutcome: ShotOutcome? = nil
 }
 
@@ -134,7 +135,9 @@ extension GameReviewData {
                               pocketed: pocketed, fouls: s.fouls, paths: paths,
                               alternative: analysis?.alternative(shotID: s.id) ?? s.alternative, wpaDelta: s.wpaDelta,
                               pathsAreTraced: traced != nil && !s.isGuess, isGuess: s.isGuess,
-                              needsTap: s.needsTap, alternateOutcome: s.alternateOutcome)
+                              needsTap: s.needsTap,
+                              outcome: s.fullOutcome ?? ShotOutcome(firstContact: s.firstContact, pocketed: s.pocketed, calledPocket: s.calledPocket),
+                              alternateOutcome: s.alternateOutcome)
         }
 
         var score = [0, 0]

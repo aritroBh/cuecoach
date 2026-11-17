@@ -34,6 +34,7 @@ import UIKit
     /// Post-settle SotG clip offer & receive (D3).
     var onClipReceived: (@MainActor (UUID, Data) -> Void)? { get set }
     func offerClip(shotID: UUID, data: Data, viewScore: Double)
+    func setPhase(_ phase: MeshPhase)
 }
 
 extension GameMeshLink {
@@ -43,6 +44,7 @@ extension GameMeshLink {
     func settled(_ event: GameEvent, strokeAt: Double) { if !isJoiner { append(event) } }
     func drain(until deadline: Date) async {}
     func offerClip(shotID: UUID, data: Data, viewScore: Double) {}
+    func setPhase(_ phase: MeshPhase) {}
 }
 
 @MainActor @Observable final class MeshGameLink: GameMeshLink {
@@ -203,6 +205,11 @@ extension GameMeshLink {
     func offerClip(shotID: UUID, data: Data, viewScore: Double) {
         let s = session
         Task { await s.offerClip(shotID: shotID, data: data, viewScore: viewScore) }
+    }
+
+    func setPhase(_ phase: MeshPhase) {
+        let s = session
+        Task { await s.setPhase(phase) }
     }
 
     func stop() {

@@ -13,6 +13,7 @@ struct LiveScreen: View {
     /// D42: the ~5 s give-up; cancelled when Live goes away.
     @State private var giveUp: Task<Void, Never>?
 
+    private let liveMode: LiveMode
     private let drill: DrillID?
     private let onClose: (() -> Void)?
 
@@ -26,6 +27,7 @@ struct LiveScreen: View {
         m.tablePrior = tablePrior
         m.hooks = hooks
         _model = State(initialValue: m)
+        self.liveMode = mode
         self.drill = drill
         self.onClose = onClose
     }
@@ -70,6 +72,7 @@ struct LiveScreen: View {
             if ProcessInfo.processInfo.arguments.contains("-cuecoach.hud") { showHUD = true }
             UIApplication.shared.isIdleTimerDisabled = true      // no auto-lock while Live is up
         }
+        .onChange(of: liveMode) { _, updated in model.mode = updated }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             giveUp?.cancel()
@@ -506,6 +509,9 @@ struct ReplayLiveView: View {
                     let r = await pipeline.process(PerceptionFrame(image: px, camera: cam, timestamp: t))
                     result = r
                     model.noteResult(r)
+                    if let img = image, Int((t * 15).rounded()) % 3 == 0 {
+                        model.hooks.cameraFrame(img, t, CGPoint(x: 0.5, y: 0.5))
+                    }
                     if let pk = model.pocketConfirm?.pocket, let tf = table,
                        let p = FrameGeometry(frame: tf, camera: cam).cloth.apply(tf.spec.pocketCenter(pk)) {
                         model.pocketConfirmPoint = map.toView(p)
@@ -588,6 +594,18 @@ struct ReplayLiveView: View {
         for p in table.spec.pockets {
             let r = (p.isSide ? table.spec.sideMouth : table.spec.cornerMouth) / 2
             ctx.stroke(circle(table.spec.pocketCenter(p), r, geo.cloth, map), with: .color(AXLive.aim.opacity(0.7)), lineWidth: 2)
+        }
+        // Solo Training cloth setup ghosts + glowing position-play target zone (SPEC §10).
+        for (ghostPos, matched) in model.trainingSetupGhosts {
+            let gc = matched ? green : AXLive.aim.opacity(0.7)
+            ctx.stroke(circle(ghostPos, TableSpec.ballRadius * 1.15, geo.cloth, map),
+                       with: .color(gc),
+                       style: StrokeStyle(lineWidth: matched ? 2.5 : 1.5, dash: matched ? [] : [4, 4]))
+        }
+        if model.visibility.line3, let zone = model.trainingPositionZone {
+            let zp = circle(zone, TableSpec.ballRadius * 3.2, geo.cloth, map)
+            ctx.fill(zp, with: .color(green.opacity(0.18)))
+            ctx.stroke(zp, with: .color(green.opacity(0.75)), lineWidth: 2)
         }
         for t in result?.confirmed ?? [] {
             let mark = result?.marks[t.id] ?? .unknown

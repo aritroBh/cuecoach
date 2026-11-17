@@ -25,6 +25,12 @@ struct LiveScreenAdapter: View {
         h.settledShot = { session.settled($0) }
         h.trainingSettled = { session.trainingSettled($0) }
         h.detectedBalls = { session.detectedBalls($0, tableSize: $1) }
+        h.trainingOverlayState = {
+            guard let t = session.training else { return nil }
+            return (Array(zip(t.ghostTargets, t.matchedGhosts)), t.positionZoneCenter)
+        }
+        h.tableQuietChanged = { session.tableQuietChanged($0) }
+        h.cameraFrame = { session.cameraFrame($0, timestamp: $1, cueBall: $2) }
         if session.game != nil { h.shotLost = { session.shotLost() } }
         let game = session.game
         h.currentGame = { game?.rules }
@@ -78,19 +84,19 @@ struct InGameChrome: View {
                 if let game = session.game, game.hasLineup {
                     TurnDiscs(game: game, reduceMotion: reduce || forced) { session.handTurn(toTeam: $0) }
                 }
-                if session.menuAvailable, !menuOpen, let training = session.training, !training.matchedGhosts.isEmpty {
+                if session.menuAvailable, session.isTableQuiet, !menuOpen, let training = session.training, !training.matchedGhosts.isEmpty {
                     TrainingSetupGhostRow(matched: training.matchedGhosts)
                 }
                 Spacer()
-                // Solo Training post-shot tendency card (≤ 2 words + visual glyph, zero numbers, hidden while aiming).
-                if session.menuAvailable, !menuOpen, let training = session.training,
+                // Solo Training post-shot tendency card (≤ 2 words + visual glyph, zero numbers, hidden while aiming/moving).
+                if session.menuAvailable, session.isTableQuiet, !menuOpen, let training = session.training,
                    let fb = training.activeFeedback {
                     TrainingFeedbackBanner(feedback: fb) { training.dismissFeedback() }
                         .padding(.bottom, 68)
                 }
                 // D47/D52: icon-only side-by-side ball-glyph picker when reconnected phones disagreed on a shot;
-                // strictly hidden while aiming or when the menu is open (SPEC §2: no text/clutter while aiming).
-                if session.menuAvailable, !menuOpen, let game = session.game, let dispute = game.pendingDispute,
+                // strictly hidden while aiming, during any motion, or when the menu is open (SPEC §2, D52).
+                if session.menuAvailable, session.isTableQuiet, !menuOpen, let game = session.game, let dispute = game.pendingDispute,
                    let alt = dispute.alternateOutcome {
                     ShotDisputeBanner(primary: dispute.outcome, alternate: alt) { chosen in
                         session.resolveDispute(shotID: dispute.id, outcome: chosen)
@@ -102,6 +108,11 @@ struct InGameChrome: View {
             if menuOpen { menu.transition(.opacity) }
         }
         .animation(reduce || forced ? nil : .smooth(duration: 0.3), value: menuOpen)
+        .onChange(of: session.isAiming) { _, aiming in
+            if aiming, session.game == nil {
+                UIAccessibility.post(notification: .announcement, argument: "")
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             Color.clear.frame(width: 1, height: 1)
                 .accessibilityElement()
