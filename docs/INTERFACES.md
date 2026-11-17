@@ -499,7 +499,9 @@ struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, o
 // CueCoach/Persistence/GameRecorder.swift. Main actor: PersistenceStack is @MainActor.
 @MainActor protocol GameRecorder: AnyObject {
     func record(_ game: FinishedGame) throws   // upsert by id: a repeat changes nothing
+    func deleteGame(id: UUID) throws           // D54: remove a saved rack that replay un-finished
 }
+extension GameRecorder { func deleteGame(id: UUID) throws {} }
 @MainActor final class StackGameRecorder: GameRecorder { init(stack: PersistenceStack) }   // competitiveContext only
 
 struct FinishedGame: Hashable, Sendable {
@@ -565,6 +567,42 @@ Rules:
 - D43: a guessed shot is saved with `isGuess = true`. Saved review (`GameReviewData(game:)`) sets `ReviewShot.isGuess`
   and, like live review, draws no replay for it (no pre/post states, no paths). The `Shot → CompetitiveShot` stats
   projection (not built yet) must skip `isGuess` rows for pot %, cut, distance and pocket buckets.
+
+## Shooter correction in Game Review (plan 015; D49, D54)
+
+Post-game only (never in `CueCoach/Live`): long-pressing a shot on the Game Review timeline opens a `.contextMenu`
+listing every player in the game (current shooter checked). Picking one appends `.shooterCorrection` and replays from
+that shot.
+
+```swift
+// MeshMessage.swift (inside protocol major 2; shooter is optional via decodeIfPresent)
+enum GameEvent {
+    …
+    case shooterCorrection(shotID: UUID, team: Int, shooter: UUID? = nil, id: UUID? = UUID())
+}
+
+// GameSessionModel.swift
+func correctShooter(shotID: UUID, to player: ReviewPlayer) -> GameReviewData?   // nil on a joiner or unknown player/shot
+
+// GameReviewModel.swift
+@ObservationIgnored var onCorrectShooter: ((UUID, ReviewPlayer) -> GameReviewData?)?
+var canCorrectShooter: Bool { get }
+var allPlayers: [ReviewPlayer] { get }
+func correctShooter(_ shotID: UUID, to player: ReviewPlayer)   // applies returned data and keeps selection on shotID
+```
+
+Rules:
+- Fold: `.shooterCorrection` maps `shotID → (team, shooter)`. For a `.shot` or `.shotLost` with a correction, if `team`
+  differs from `currentTeam`, `hand(to: team)` runs first (replaying the D17 rotation for subsequent shots); if
+  `shooter` names a member of `team`, that player is credited on the `SessionShot` (same-team fix changes only that
+  shot's `shooter`; cross-team fix sets `currentSlot` to that player's slot). `attribution` becomes `.tap`; a D38 gap
+  keeps `rating == nil`.
+- Joiners (`isJoiner`, or a session that was a joiner before `endGame` stopped its link) never expose `onCorrectShooter`
+  and `correctShooter` returns `nil` (D39).
+- D54: when a correction re-folds an already-saved rack: if the rack still has a winner, `recorder.record(finishedGame)`
+  upserts the updated shots and `winnerTeam` (removing any orphaned post-win `Shot` rows); if the rack no longer has a
+  winner (`winner == nil`), `recorder.deleteGame(id:)` deletes the saved `Game` (and empty `Session`) so unfinished
+  racks never remain in `Competitive.store` (D40).
 
 ## Host loss and islands (plan 013a; D44, D47, D48; mesh-identity.md §2.5)
 
