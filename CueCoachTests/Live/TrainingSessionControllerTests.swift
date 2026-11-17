@@ -51,9 +51,10 @@ import Testing
         #expect(progressRows.first?.level == AssistLevel.objectLineOnly.rawValue)
         #expect(progressRows.first?.levelHistory.count == 1)
         #expect(attemptRows.count == 10)
-        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).isEmpty,
-                "Training attempts must NEVER write to Competitive.store")
-        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Shot>()).isEmpty)
+        let compGames = try stack.competitiveContext.fetch(FetchDescriptor<Game>())
+        let compShots = try stack.competitiveContext.fetch(FetchDescriptor<Shot>())
+        #expect(compGames.isEmpty, "Training attempts must NEVER write to Competitive.store")
+        #expect(compShots.isEmpty)
     }
 
     @Test func consistentSameSignErrorSurfacesNonNumericVisualFeedbackAndPersistsBiasRecord() throws {
@@ -61,8 +62,8 @@ import Testing
         let playerID = UUID()
         let controller = TrainingSessionController(drill: .increasingCuts, initialLevel: .full,
                                                    tableSize: .sevenFoot, playerID: playerID, stack: stack)
-        // Feed 12 consistent positive overcut errors (+0.12 rad ≈ 7°, well above 0.035 typicalNoise).
-        for _ in 0..<12 {
+        // Feed 15 consistent positive overcut errors (+0.12 rad ≈ 7°, well above 0.035 typicalNoise; 15 × ln(1.5) ≈ 6.08 ≥ 5.5 CUSUM threshold).
+        for _ in 0..<15 {
             controller.recordAttempt(SettledTrainingShot(
                 made: false,
                 explicitErrors: [.cut: 0.12]))
@@ -70,7 +71,7 @@ import Testing
         let fb = try #require(controller.activeFeedback)
         #expect(fb.correction == .hitThicker)
         #expect(fb.label == "Hit thicker")
-        #expect(!fb.label.contains(where: \.isNumber))
+        #expect(fb.label.allSatisfy { !$0.isNumber })
 
         let biases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
         #expect(biases.count == 1)
@@ -81,6 +82,7 @@ import Testing
         // Dismissing clears activeFeedback and marks the BiasRecord resolved.
         controller.dismissFeedback()
         #expect(controller.activeFeedback == nil)
-        #expect(try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>()).first?.resolvedAt != nil)
+        let resolvedBiases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
+        #expect(resolvedBiases.first?.resolvedAt != nil)
     }
 }

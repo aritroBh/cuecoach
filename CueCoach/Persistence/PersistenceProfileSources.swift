@@ -89,7 +89,8 @@ final class PersistenceProfileStatsSource: ProfileStatsSource, @unchecked Sendab
         let tags = Archetypes.tags(for: vec, friends: friendVecs)
         let pros = try? ProProfiles.bundled()
 
-        let existing = try ctx.fetch(FetchDescriptor<CueCoach.ArchetypeSnapshot>(predicate: #Predicate { $0.playerID == id }))
+        let existing = try ctx.fetch(FetchDescriptor<CueCoach.ArchetypeSnapshot>())
+            .filter { $0.playerID == id }
             .sorted { $0.computedAt < $1.computedAt }
 
         if Archetypes.isUnlocked(a), let snap = Archetypes.snapshot(player: id, games: games, friends: friendVecs,
@@ -104,7 +105,8 @@ final class PersistenceProfileStatsSource: ProfileStatsSource, @unchecked Sendab
                 try? ctx.save()
             }
         }
-        let updated = try ctx.fetch(FetchDescriptor<CueCoach.ArchetypeSnapshot>(predicate: #Predicate { $0.playerID == id }))
+        let updated = try ctx.fetch(FetchDescriptor<CueCoach.ArchetypeSnapshot>())
+            .filter { $0.playerID == id }
             .sorted { $0.computedAt < $1.computedAt }
         let previous = updated.count >= 2 ? updated[updated.count - 2].vector : nil
         return ArchetypeView(vector: vec.stringKeyed, tags: tags.map(\.rawValue), previous: previous)
@@ -222,7 +224,7 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
 
     @MainActor private func loadDrills(_ playerID: UUID) throws -> [DrillLevel] {
         let ctx = stack.trainingContext
-        let rows = try ctx.fetch(FetchDescriptor<DrillProgress>(predicate: #Predicate { $0.playerID == playerID }))
+        let rows = try ctx.fetch(FetchDescriptor<DrillProgress>()).filter { $0.playerID == playerID }
         let byDrill = Dictionary(rows.map { ($0.drill, $0) }, uniquingKeysWith: { a, b in a.updatedAt >= b.updatedAt ? a : b })
         guard !byDrill.isEmpty else { return [] }
         return DrillID.allCases.compactMap { d in
@@ -233,7 +235,7 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
 
     @MainActor private func loadActiveBias(_ playerID: UUID) throws -> BiasHint? {
         let ctx = stack.trainingContext
-        let rows = try ctx.fetch(FetchDescriptor<BiasRecord>(predicate: #Predicate { $0.playerID == playerID && $0.resolvedAt == nil }))
+        let rows = try ctx.fetch(FetchDescriptor<BiasRecord>()).filter { $0.playerID == playerID && $0.resolvedAt == nil }
         guard let newest = rows.max(by: { $0.detectedAt < $1.detectedAt }) else { return nil }
         return BiasHint(axis: newest.axis, sign: newest.sign)
     }
@@ -264,6 +266,14 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
             let next = try? resolveOutcome(gameID: gameID, shotID: shotID, to: outcome, stack: stack, onDeleted: onDismiss)
             onChanged()
             return next
+        }
+        m.onPlayClip = { [weak m] shotID in
+            let ctx = stack.competitiveContext
+            guard let game = (try? ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })))?.first else { return }
+            let rel = game.highlights.first(where: { $0.shotID == shotID && !$0.clipFile.isEmpty })?.clipFile
+                ?? game.shots.first(where: { $0.id == shotID })?.clipRef
+            guard let rel, let url = ShotClipStore.resolveURL(relativePath: rel) else { return }
+            m?.presentClip(shotID: shotID, url: url)
         }
         return m
     }

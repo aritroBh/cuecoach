@@ -83,7 +83,7 @@ actor SessionEngineEvaluator {
                 } else {
                     var postPositions = s.after
                     if postPositions[.cue] == nil, res.nextState.ballInHand != .none {
-                        postPositions[.cue] = Point2D(spec.length * 0.25, spec.width * 0.5)
+                        postPositions[.cue] = Vec2(spec.length * 0.25, spec.width * 0.5)
                     }
                     if let post = makeTable(postPositions, pocketed: Set(s.pocketed.keys)),
                        post.balls[.cue] != nil, post.balls.count >= 2 {

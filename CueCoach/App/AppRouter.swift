@@ -113,10 +113,22 @@ final class AppRouter {
     func openTraining() { path = [.training] }
 
     func startGame(_ config: GameConfig) {
-        if case .live(let old)? = stage { old.game?.mesh?.stop(); old.game?.mesh = nil }
+        if case .live(let old)? = stage { old.game?.mesh?.stop(); old.game?.mesh = nil; old.game?.identitySession?.end() }
         let game = GameSessionModel(config: config)
         game.recorder = recorder
         game.engineEvaluator = SessionEngineEvaluator()
+        game.clipRecorder = ShotClipRecorder()
+        if let stack, UserDefaults.standard.bool(forKey: SettingsKeys.recognitionOptIn) {
+            let allPlayers = config.teams.flatMap { $0 }
+            let members = allPlayers.filter { !$0.isGuest }.map(\.id)
+            let guests = allPlayers.filter(\.isGuest).map(\.id)
+            game.identitySession = IdentitySession.registered(
+                on: stack, players: members, guests: guests,
+                faceModelID: FaceEmbeddingExtractor.modelID,
+                bodyModelID: VisionFeaturePrintExtractor(kind: "body").modelID)
+            game.shooterIdentifier = VisionShooterIdentifier(
+                analyzer: VisionPersonAnalyzer(face: FaceEmbeddingExtractor.bundled()))
+        }
         if let tag = config.sessionTag, let link = meshFactory?(tag) {
             link.start()
             game.mesh = link
@@ -139,6 +151,7 @@ final class AppRouter {
         let m = GameReviewModel(source: MeshReviewSource(game: game, link: link,
                                                          deadline: Date().addingTimeInterval(endCap)))
         m.onDone = { [weak self] in self?.finishReview() }
+        wirePlayClip(on: m, game: game)
         if canCorrect {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
             m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
@@ -164,6 +177,7 @@ final class AppRouter {
     private func review(_ data: GameReviewData, game: GameSessionModel) -> GameReviewModel {
         let m = GameReviewModel(data: data)
         m.onDone = { [weak self] in self?.finishReview() }
+        wirePlayClip(on: m, game: game)
         if !game.isJoinerSession {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
             m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
@@ -173,6 +187,14 @@ final class AppRouter {
             if let next = game?.reviewData() { m?.refresh(next) }
         }
         return m
+    }
+
+    private func wirePlayClip(on model: GameReviewModel, game: GameSessionModel) {
+        model.onPlayClip = { [weak model, weak game] shotID in
+            guard let rel = game?.shotClipFiles[shotID],
+                  let url = ShotClipStore.resolveURL(relativePath: rel) else { return }
+            model?.presentClip(shotID: shotID, url: url)
+        }
     }
 
     /// LiveScreen dismissed itself (its own ✕). Game → review; Training → back to the drill picker.

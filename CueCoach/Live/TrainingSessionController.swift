@@ -12,7 +12,7 @@ struct SettledTrainingShot: Hashable, Sendable {
     var targetPocket: Pocket = .footRight
     var tableSize: TableSize = .sevenFoot
     /// Optional explicit signed errors (used by synthetic replay or unit tests when camera positions are minimal).
-    var explicitErrors: [BiasAxis: Double]? = nil
+    var explicitErrors: [Training.BiasAxis: Double]? = nil
 }
 
 /// Orchestrates Solo Training setup ghosts (`SetupMatcher`), rolling auto level-up (`LevelPolicy`),
@@ -71,9 +71,8 @@ final class TrainingSessionController {
         if let stack, let pid = playerID {
             let dRaw = drill.rawValue
             let ctx = stack.trainingContext
-            if let rows = try? ctx.fetch(FetchDescriptor<BiasRecord>(
-                predicate: #Predicate { $0.playerID == pid && $0.drill == dRaw && $0.resolvedAt == nil })) {
-                for r in rows { r.resolvedAt = .now }
+            if let rows = try? ctx.fetch(FetchDescriptor<BiasRecord>()) {
+                for r in rows where r.playerID == pid && r.drill == dRaw && r.resolvedAt == nil { r.resolvedAt = .now }
                 try? ctx.save()
             }
         }
@@ -142,7 +141,7 @@ final class TrainingSessionController {
     // MARK: - Error Extraction
 
     private static func extractErrors(shot: SettledTrainingShot, spec: TableSpec,
-                                      zone: Vec2?) -> (StoredAttemptFeatures, [BiasAxis: Double]) {
+                                      zone: Vec2?) -> (StoredAttemptFeatures, [Training.BiasAxis: Double]) {
         if let explicit = shot.explicitErrors {
             let stored = StoredAttemptFeatures(
                 signedCutError: explicit[.cut] ?? 0,
@@ -153,7 +152,7 @@ final class TrainingSessionController {
             return (stored, explicit)
         }
 
-        var errors: [BiasAxis: Double] = [:]
+        var errors: [Training.BiasAxis: Double] = [:]
         var cutErr = 0.0
         var speedErr = 0.0
         var landingErr = 0.0
@@ -194,8 +193,8 @@ final class TrainingSessionController {
         guard let stack, let pid = playerID else { return }
         let dRaw = drill.rawValue
         let ctx = stack.trainingContext
-        if let row = try? ctx.fetch(FetchDescriptor<DrillProgress>(
-            predicate: #Predicate { $0.playerID == pid && $0.drill == dRaw }))
+        if let row = (try? ctx.fetch(FetchDescriptor<DrillProgress>()))?
+            .filter({ $0.playerID == pid && $0.drill == dRaw })
             .max(by: { $0.updatedAt < $1.updatedAt }),
            let storedLevel = AssistLevel(rawValue: row.level) {
             // Replay stored recent window into `LevelProgress` at the stored level.
@@ -216,14 +215,14 @@ final class TrainingSessionController {
         let pid = playerID ?? Self.resolveOwnerID(in: stack) ?? UUID()
         let ctx = stack.trainingContext
 
-        if (try? ctx.fetch(FetchDescriptor<TrainingProfile>(predicate: #Predicate { $0.playerID == pid })).first) == nil {
+        if ((try? ctx.fetch(FetchDescriptor<TrainingProfile>()))?.contains(where: { $0.playerID == pid }) ?? false) == false {
             ctx.insert(TrainingProfile(playerID: pid, createdAt: now, updatedAt: now))
         }
 
         let dRaw = drill.rawValue
         let progressRow: DrillProgress
-        if let existing = try? ctx.fetch(FetchDescriptor<DrillProgress>(
-            predicate: #Predicate { $0.playerID == pid && $0.drill == dRaw }))
+        if let existing = (try? ctx.fetch(FetchDescriptor<DrillProgress>()))?
+            .filter({ $0.playerID == pid && $0.drill == dRaw })
             .max(by: { $0.updatedAt < $1.updatedAt }) {
             progressRow = existing
         } else {
@@ -248,16 +247,17 @@ final class TrainingSessionController {
         attempt.progress = progressRow
 
         // Sync active / resolved `BiasRecord`s in `Training.store`.
-        let openBiases = (try? ctx.fetch(FetchDescriptor<BiasRecord>(
-            predicate: #Predicate { $0.playerID == pid && $0.drill == dRaw && $0.resolvedAt == nil }))) ?? []
+        let openBiases = ((try? ctx.fetch(FetchDescriptor<BiasRecord>())) ?? [])
+            .filter { $0.playerID == pid && $0.drill == dRaw && $0.resolvedAt == nil }
         if let fb = activeFeedback {
             let sign = fb.bias.direction == .positive ? 1 : -1
-            for other in openBiases where other.axis != fb.bias.axis || other.sign != sign {
+            let storedAxis = Self.storedBiasAxis(fb.bias.axis)
+            for other in openBiases where other.axis != storedAxis || other.sign != sign {
                 other.resolvedAt = now
             }
-            if !openBiases.contains(where: { $0.axis == fb.bias.axis && $0.sign == sign }) {
+            if !openBiases.contains(where: { $0.axis == storedAxis && $0.sign == sign }) {
                 let detectedCount = coach.detector.activeBiases().first(where: { $0.key == fb.bias })?.attempts ?? 8
-                ctx.insert(BiasRecord(playerID: pid, drill: dRaw, axis: fb.bias.axis, sign: sign,
+                ctx.insert(BiasRecord(playerID: pid, drill: dRaw, axis: storedAxis, sign: sign,
                                       attemptsWindow: detectedCount, detectedAt: now))
             }
         } else {
@@ -265,6 +265,16 @@ final class TrainingSessionController {
         }
 
         try? ctx.save()
+    }
+
+    private static func storedBiasAxis(_ a: Training.BiasAxis) -> CueCoach.BiasAxis {
+        switch a {
+        case .cut: .cut
+        case .side: .side
+        case .speed: .speed
+        case .cueBallDistance: .cueDistance
+        case .spin: .spin
+        }
     }
 
     private static func resolveOwnerID(in stack: PersistenceStack) -> UUID? {

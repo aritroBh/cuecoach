@@ -21,9 +21,10 @@ import Testing
         let spec = TableSpec(size: .sevenFoot)
         let corner = spec.pocketCenter(.footRight)
         // Hanger setup: 1-ball near foot-right corner, 9-ball also on table.
+        let one = BallID(1)!
         let layout: [BallID: Vec2] = [
             .cue: Vec2(0.8, 0.5),
-            .one: Vec2(corner.x - 0.12, corner.y - 0.10),
+            one: Vec2(corner.x - 0.12, corner.y - 0.10),
             .nine: Vec2(corner.x - 0.22, corner.y - 0.08),
         ]
 
@@ -31,13 +32,13 @@ import Testing
         game.shotSettled(SettledShot(
             rating: .book, turnPasses: true,
             before: layout, after: layout,
-            outcome: ShotOutcome(firstContact: .one, objectBallsToRailOnBreak: 4,
+            outcome: ShotOutcome(firstContact: one, objectBallsToRailOnBreak: 4,
                                  objectBallsPastHeadStringOrPocketedOnBreak: 3)))
 
         // Shot 1 (Team 1): misses completely (foul no-contact) when 1-ball hanger was available → EngineAlternative!
         let afterFoul: [BallID: Vec2] = [
             .cue: Vec2(0.6, 0.4),
-            .one: layout[.one]!,
+            one: layout[one]!,
             .nine: layout[.nine]!,
         ]
         game.shotSettled(SettledShot(
@@ -48,13 +49,13 @@ import Testing
         // Shot 2 (Team 0): legally contacts the 1-ball and combos the 9-ball into foot-right to win the rack!
         let afterWin: [BallID: Vec2] = [
             .cue: Vec2(1.1, 0.55),
-            .one: Vec2(1.4, 0.65),
+            one: Vec2(1.4, 0.65),
         ]
         game.shotSettled(SettledShot(
             rating: .great, turnPasses: false,
             pocketed: [.nine: .footRight],
             before: afterFoul, after: afterWin,
-            outcome: ShotOutcome(firstContact: .one, pocketed: [.nine: .footRight])))
+            outcome: ShotOutcome(firstContact: one, pocketed: [.nine: .footRight])))
 
         await game.awaitEngineEvaluation()
 
@@ -83,7 +84,7 @@ import Testing
                     let label = SessionEngineEvaluator.highlightLabel(rating: r, wonRack: won, isSafety: safe)
                     let words = label.split(separator: " ")
                     #expect(words.count >= 1 && words.count <= 2)
-                    #expect(!label.contains(where: \.isNumber))
+                    #expect(label.allSatisfy { !$0.isNumber })
                 }
             }
         }

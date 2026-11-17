@@ -61,8 +61,14 @@ final class GameSessionModel {
     var mesh: (any GameMeshLink)? {
         didSet {
             oldValue?.onCommittedLog = nil
+            oldValue?.onClipReceived = nil
             wasJoinerAtEnd = (mesh == nil) ? (oldValue?.isJoiner == true) : false
             mesh?.onCommittedLog = { [weak self] log, seq in self?.ingest(log: log, commitSeq: seq) }
+            mesh?.onClipReceived = { [weak self] shotID, data in
+                if let rel = try? ShotClipStore.saveReceivedClip(shotID: shotID, data: data) {
+                    self?.attachClip(shotID: shotID, relativePath: rel)
+                }
+            }
         }
     }
     /// Preserves joiner status after `endGame` tears down `mesh` (D39, plan 015), while letting a promoted host act as host.
@@ -107,6 +113,10 @@ final class GameSessionModel {
     @ObservationIgnored private var engineGeneration = 0
     /// Relative clip file paths by `shotID`, recorded locally or received over mesh.
     @ObservationIgnored private(set) var shotClipFiles: [UUID: String] = [:]
+    /// Rolling SotG video clip recorder + opt-in shooter attribution session (D55).
+    @ObservationIgnored var clipRecorder: ShotClipRecorder?
+    @ObservationIgnored var identitySession: IdentitySession?
+    @ObservationIgnored var shooterIdentifier: (any ShooterIdentifier)?
 
     init(config: GameConfig) {
         self.config = config
@@ -473,6 +483,20 @@ final class GameSessionModel {
             self.engineSummary = summary
             self.applyCachedEnrichments()
             self.saveIfWon()
+            if let sotg = summary.shotOfGame,
+               self.shotClipFiles[sotg.shotID] == nil,
+               let recorder = self.clipRecorder,
+               let s = self.shots.first(where: { $0.id == sotg.shotID }) {
+                if let (rel, url) = try? await recorder.exportClip(
+                    shotID: sotg.shotID, tableSize: tableSize,
+                    before: s.before, after: s.after, pocketed: s.pocketed) {
+                    guard !Task.isCancelled, self.engineGeneration == gen else { return }
+                    self.attachClip(shotID: sotg.shotID, relativePath: rel)
+                    if let data = try? Data(contentsOf: url) {
+                        self.mesh?.offerClip(shotID: sotg.shotID, data: data, viewScore: sotg.score)
+                    }
+                }
+            }
         }
     }
 
@@ -495,8 +519,34 @@ final class GameSessionModel {
         guard !isJoinerSession,
               shots.contains(where: { $0.id == shotID }),
               let team = teams.firstIndex(where: { $0.contains { $0.id == player.id } }) else { return nil }
+        _ = identitySession?.correct(shot: shotID, to: player.id)
         append(.shooterCorrection(shotID: shotID, team: team, shooter: player.id))
         return reviewData()
+    }
+
+    /// Event-driven stroke attribution via `IdentitySession` (D28: never auto-credits when a guest lacks a template).
+    @discardableResult
+    func attributeStroke(shotID: UUID, window: StrokeWindow) async -> Attribution? {
+        guard !isJoinerSession,
+              let identitySession,
+              let identifier = shooterIdentifier,
+              let target = shots.first(where: { $0.id == shotID }) else { return nil }
+        let teamSet = teams.indices.contains(target.team) ? Set(teams[target.team].map(\.id)) : nil
+        let attr = await identitySession.identifyShot(
+            shotID, window: window, expectedShooter: target.shooter.id,
+            teamInTurn: teamSet, using: identifier)
+        if attr.source == .auto, let pid = attr.playerID,
+           let team = teams.firstIndex(where: { $0.contains { $0.id == pid } }) {
+            if pid != target.shooter.id {
+                append(.shooterCorrection(shotID: shotID, team: team, shooter: pid))
+            } else if let idx = shots.firstIndex(where: { $0.id == shotID }) {
+                shots[idx].attribution = .auto
+                saveIfWon()
+            }
+        } else if attr.source == .unknown {
+            needsShooter = true
+        }
+        return attr
     }
 
     /// D47/D52 (plan 013b): first unresolved disputed shot (`needsTap == true` with an `alternateOutcome`).

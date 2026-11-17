@@ -189,6 +189,8 @@ extension StoredShotFeatures {
     func deleteGame(id: UUID) throws {
         let ctx = stack.competitiveContext
         if let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == id })).first {
+            let clipRefs = game.highlights.map(\.clipFile) + game.shots.compactMap(\.clipRef)
+            ShotClipStore.deleteClips(relativePaths: clipRefs)
             let session = game.session
             for shot in game.shots { ctx.delete(shot) }
             for highlight in game.highlights { ctx.delete(highlight) }

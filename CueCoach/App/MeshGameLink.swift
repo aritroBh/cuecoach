@@ -31,13 +31,18 @@ import UIKit
     /// Teardown: returns once this phone's inputs are committed (a joiner also lets the host's commits go quiet),
     /// or at `deadline`.
     func drain(until deadline: Date) async
+    /// Post-settle SotG clip offer & receive (D3).
+    var onClipReceived: (@MainActor (UUID, Data) -> Void)? { get set }
+    func offerClip(shotID: UUID, data: Data, viewScore: Double)
 }
 
 extension GameMeshLink {
     var isJoiner: Bool { !isHost }
     var isIsland: Bool { false }
+    var onClipReceived: (@MainActor (UUID, Data) -> Void)? { get { nil } set {} }
     func settled(_ event: GameEvent, strokeAt: Double) { if !isJoiner { append(event) } }
     func drain(until deadline: Date) async {}
+    func offerClip(shotID: UUID, data: Data, viewScore: Double) {}
 }
 
 @MainActor @Observable final class MeshGameLink: GameMeshLink {
@@ -62,6 +67,7 @@ extension GameMeshLink {
     /// The last commit point forwarded to `onCommittedLog`.
     private(set) var commitSeq: UInt64 = 0
     @ObservationIgnored var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)?
+    @ObservationIgnored var onClipReceived: (@MainActor (UUID, Data) -> Void)?
 
     /// Startup inputs made while discovering, flushed in order once the role resolves.
     @ObservationIgnored private var queued: [Input] = []
@@ -154,6 +160,7 @@ extension GameMeshLink {
                     self?.isIsland = i
                     await self?.forwardCommitted(from: s)
                 case .settleAbsorbed(let id): self?.confirmAbsorbed(id)
+                case .clipReceived(let shotID, _, let data): self?.onClipReceived?(shotID, data)
                 default: break
                 }
             }
@@ -191,6 +198,11 @@ extension GameMeshLink {
     private func see(_ roster: [PeerID]) {
         members = roster
         gameMembers.formUnion(roster)
+    }
+
+    func offerClip(shotID: UUID, data: Data, viewScore: Double) {
+        let s = session
+        Task { await s.offerClip(shotID: shotID, data: data, viewScore: viewScore) }
     }
 
     func stop() {

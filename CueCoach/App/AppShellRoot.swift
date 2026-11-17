@@ -119,12 +119,48 @@ struct ShellMain: View {
     @ViewBuilder private func sheetContent(_ sheet: ShellSheet) -> some View {
         switch sheet {
         case .settings:
-            SettingsView(model: SettingsViewModel(store: env.settings, measurement: env.measurement, defaults: env.defaults))
+            SettingsSheetHost(env: env)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { router.sheet = nil }.accessibilityIdentifier("sheet.done") } }
         case .profile:
             ProfileSheet(model: ProfileEntryModel(store: env.owners), stack: env.stack)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { router.sheet = nil }.accessibilityIdentifier("sheet.done") } }
         }
+    }
+}
+
+private struct SettingsSheetHost: View {
+    let env: ShellEnvironment
+    @State private var settingsModel: SettingsViewModel
+    @State private var enrolling: IdentityRegistrationModel?
+    @State private var showingEnroll = false
+
+    init(env: ShellEnvironment) {
+        self.env = env
+        self._settingsModel = State(initialValue: SettingsViewModel(
+            store: env.settings, measurement: env.measurement, defaults: env.defaults))
+    }
+
+    var body: some View {
+        SettingsView(model: settingsModel)
+            .onAppear {
+                settingsModel.onOptIn = {
+                    guard let stack = env.stack else { return }
+                    enrolling = IdentityRegistrationModel(stack: stack)
+                    showingEnroll = true
+                }
+            }
+            .sheet(isPresented: $showingEnroll) {
+                if let enrolling {
+                    IdentityRegistrationSheet(model: enrolling) { enrolled in
+                        showingEnroll = false
+                        if enrolled {
+                            settingsModel.refreshRecognitionStatus()
+                        } else if !settingsModel.hasRecognitionData {
+                            settingsModel.recognitionOptIn = false
+                        }
+                    }
+                }
+            }
     }
 }
 

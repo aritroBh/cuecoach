@@ -24,9 +24,9 @@ import Testing
     private func samplePreState(cueX: Double = 0.5, objX: Double = 1.2) -> TableState {
         let spec = TableSpec(size: .sevenFoot)
         return TableState(spec: spec, balls: [
-            .cue: BallState(position: Point2D(cueX, 0.5)),
-            BallID(1)!: BallState(position: Point2D(objX, 0.55)),
-            .eight: BallState(position: Point2D(1.5, 0.6)),
+            .cue: BallState(position: Vec2(cueX, 0.5)),
+            BallID(1)!: BallState(position: Vec2(objX, 0.55)),
+            .eight: BallState(position: Vec2(1.5, 0.6)),
         ])
     }
 
@@ -41,9 +41,9 @@ import Testing
             attributionSource: .turnOrder, preState: pre, postState: post,
             calledPocket: nil, firstContact: firstContact, railsAfterContact: 1,
             pocketed: pock, fouls: [],
-            features: StoredShotFeatures(cutBucket: .c15to30, distanceBucket: .medium, pocketType: .corner, kind: .plain),
-            made: made, onTarget: made, cueResult: .good, decisionRating: rating,
-            executionRating: ExecutionRating(result: made ? .made : .miss, position: .good),
+            features: StoredShotFeatures(cutBucket: .c15to30, distanceBucket: .mid, pocketType: .corner, kind: .plain),
+            made: made, onTarget: made, cueResult: .inZone, decisionRating: rating,
+            executionRating: ExecutionRating(result: made ? .made : .miss, position: .inZone),
             wpaDelta: made ? 0.08 : -0.05, isClutch: index >= 15, timeOnShot: 12,
             clipRef: nil, isGuess: isGuess)
     }
@@ -102,11 +102,15 @@ import Testing
         #expect(content.summary.shots == 54)
         #expect(content.summary.makes == 54)
         #expect(content.proComp != nil)
-        #expect(content.archetype != nil)
+        #expect(content.topArchetype != nil)
         #expect(content.badges.contains { $0.name == "Brilliant" })
         #expect(content.badges.contains { $0.name == "Clean Rack" })
-        #expect(content.heat.contains { $0.cut == .c15to30 && $0.distance == .medium && $0.attempts == 54 && $0.makes == 54 })
-        #expect(content.history.count == 3)
+        let cell = content.heat.first { $0.cut == .c15to30 && $0.distance == .mid }
+        #expect(cell?.hasData == true)
+        let rawGrid = try await PersistenceProfileStatsSource(stack: stack).makeGrid(owner.id)
+        #expect(rawGrid.first?.attempts == 54)
+        #expect(rawGrid.first?.makes == 54)
+        #expect(content.history.flatMap(\.sessions).count == 3)
     }
 
     @Test func unconfirmedGamesAppearMarkedInHistoryAndStayOutOfStatsUntilConfirmed() async throws {
@@ -183,7 +187,8 @@ import Testing
         let bias = try await training.activeBias(owner.id)
         #expect(drills == [DrillLevel(drill: "increasingCuts", name: "Cuts", level: 3)])
         #expect(bias == BiasHint(axis: .cut, sign: 1))
-        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).isEmpty)
+        let compGames = try stack.competitiveContext.fetch(FetchDescriptor<Game>())
+        #expect(compGames.isEmpty)
     }
 
     @Test func persistedReviewShooterCorrectionFlipsWinnerOrDeletesUnfinishedRack() throws {

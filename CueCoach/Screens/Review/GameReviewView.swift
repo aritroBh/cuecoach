@@ -41,6 +41,9 @@ public struct GameReviewView: View {
         }
         .task { await model.load() }
         .sensoryFeedback(.selection, trigger: model.selectedShotID)
+        .sheet(item: $model.activeClip) { item in
+            ClipPlayerSheet(item: item) { model.activeClip = nil }
+        }
     }
 
     private var wide: Bool { (vSize == .compact || hSize == .regular) && !typeSize.isAccessibilitySize }

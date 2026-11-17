@@ -20,6 +20,7 @@ public final class GameReviewModel {
     private(set) var data: GameReviewData?
     private(set) var selectedShotID: UUID?
     var replayMoment: ReplayMoment = .after
+    var activeClip: PresentedClipItem? = nil
 
     @ObservationIgnored private let source: (any GameReviewSource)?
     @ObservationIgnored var onDone: (() -> Void)?
@@ -239,6 +240,11 @@ public final class GameReviewModel {
 
     func deleteGame() {
         onDeleteGame?()
+    }
+
+    func presentClip(shotID: UUID, url: URL) {
+        let label = data?.shotOfGame?.label ?? "Shot of the Game"
+        activeClip = PresentedClipItem(id: shotID, url: url, label: label)
     }
 
     func select(_ id: UUID) {
