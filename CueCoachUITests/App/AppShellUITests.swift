@@ -315,13 +315,13 @@ final class AppShellUITests: XCTestCase {
         let shot0 = wait(app, "review.shot.0", 8)
         XCTAssertTrue(shot0.label.contains("Ari"), "before: \(shot0.label)")
         shot0.press(forDuration: 1.0)
-        let guestPick = app.buttons["Guest 1"].firstMatch
-        XCTAssertTrue(guestPick.waitForExistence(timeout: 5), "context menu should list Guest 1")
+        let guestPick = app.buttons["Guest"].firstMatch
+        XCTAssertTrue(guestPick.waitForExistence(timeout: 5), "context menu should list Guest")
         guestPick.tap()
         let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline && !shot0.label.contains("Guest 1") {
+        while Date() < deadline && !shot0.label.contains("Guest") {
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-        XCTAssertTrue(shot0.label.contains("Guest 1"), "after: \(shot0.label)")
+        XCTAssertTrue(shot0.label.contains("Guest"), "after: \(shot0.label)")
     }
 }

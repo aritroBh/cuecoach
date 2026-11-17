@@ -415,7 +415,7 @@ public struct GameReviewView: View {
                     .font(AXGlyph.font(18, .semibold))
                     .foregroundStyle(AX.caution)
                     .accessibilityHidden(true)
-                disputeChoice(outcome: alt, fouls: alt.pocketed[.cue] != nil || alt.cueOffTable, id: "review.dispute.alt") {
+                disputeChoice(outcome: alt, fouls: alt.pocketed[.cue] != nil || alt.offTable.contains(.cue), id: "review.dispute.alt") {
                     model.resolveOutcome(s.id, to: alt)
                 }
             }
@@ -428,7 +428,7 @@ public struct GameReviewView: View {
         let balls = outcome.pocketed.keys.filter { !$0.isCue }.sorted()
         return Button(action: action) {
             HStack(spacing: 8) {
-                ForEach(balls.prefix(4), id: \.self) { ReviewBallGlyph(ball: $0, size: 28) }
+                ForEach(balls.prefix(4), id: \.self) { ReviewBallGlyph(ball: $0) }
                 if fouls {
                     Image(systemName: "xmark.octagon.fill")
                         .font(AXGlyph.font(22, .semibold))

@@ -266,10 +266,10 @@ struct ShotDisputeBanner: View {
 
     private func optionButton(_ outcome: ShotOutcome, id: String) -> some View {
         let balls = outcome.pocketed.keys.filter { !$0.isCue }.sorted()
-        let scratched = outcome.pocketed[.cue] != nil || outcome.cueOffTable
+        let scratched = outcome.pocketed[.cue] != nil || outcome.offTable.contains(.cue)
         return Button { onPick(outcome) } label: {
             HStack(spacing: 6) {
-                ForEach(balls.prefix(3), id: \.self) { ReviewBallGlyph(ball: $0, size: 28) }
+                ForEach(balls.prefix(3), id: \.self) { ReviewBallGlyph(ball: $0) }
                 if scratched {
                     Image(systemName: "xmark.octagon.fill")
                         .font(AXGlyph.font(22, .semibold))
