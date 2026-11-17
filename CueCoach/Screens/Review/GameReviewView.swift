@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 import Geometry
 import Engine
+import Rules
 
 /// Game review (pages/screens-b.md §3).
 public struct GameReviewView: View {
@@ -150,9 +151,61 @@ public struct GameReviewView: View {
                 .accessibilityLabel("Team A \(d.score.first ?? 0), Team B \(d.score.last ?? 0)"
                                     + (d.winnerTeam.map { ", team \($0 == 0 ? "A" : "B") won" } ?? ""))
                 .accessibilityIdentifier("review.header")
+                if d.isUnconfirmed {
+                    AnyView(unconfirmedBanner)
+                }
             }
         }
         .padding(.top, 8)
+    }
+
+    /// D51/D53: marker for an unconfirmed island rack, with one-tap Confirm / Delete when available.
+    @ViewBuilder private var unconfirmedBanner: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(AXGlyph.font(18, .semibold))
+                    .foregroundStyle(AX.caution)
+                Text("Unconfirmed")
+                    .axFont(.headline)
+                    .foregroundStyle(AX.caution)
+                Spacer(minLength: 0)
+            }
+            if model.canConfirmGame || model.canDeleteGame {
+                HStack(spacing: 12) {
+                    if model.canConfirmGame {
+                        Button { model.confirmGame() } label: {
+                            Label("Confirm", systemImage: "checkmark.circle.fill")
+                                .axFont(.headline)
+                                .foregroundStyle(AX.onAccent)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.accent))
+                                .contentShape(RoundedRectangle(cornerRadius: AX.radius.element))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("review.confirmGame")
+                    }
+                    if model.canDeleteGame {
+                        Button { model.deleteGame() } label: {
+                            Label("Delete", systemImage: "trash")
+                                .axFont(.headline)
+                                .foregroundStyle(AX.danger)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.surface))
+                                .overlay(RoundedRectangle(cornerRadius: AX.radius.element).strokeBorder(AX.danger.opacity(0.5), lineWidth: 1.5))
+                                .contentShape(RoundedRectangle(cornerRadius: AX.radius.element))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("review.deleteGame")
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
+        .overlay(RoundedRectangle(cornerRadius: AX.radius.container).strokeBorder(AX.caution.opacity(0.45), lineWidth: 1.5))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("review.unconfirmed")
     }
 
     /// Same footprint as the loaded header row (two 40-pt avatars per side + score), so nothing jumps.
@@ -234,22 +287,7 @@ public struct GameReviewView: View {
                         ForEach(model.shots) { s in
                             let selected = s.id == model.selectedShotID
                             let style = model.timelineStyle(s)
-                            Button { model.select(s.id) } label: {
-                                VStack(spacing: 2) {
-                                    RatingBadgeCircle(style: style, diameter: selected ? 56 : 44, symbolSize: 20,
-                                                      selected: selected, showGlow: false)
-                                    TeamArc().stroke(AX.team(s.team), style: AX.teamStroke(s.team))
-                                        .frame(width: 30, height: 12)
-                                        .offset(y: -14)
-                                }
-                                .opacity(style.recedes && !selected ? 0.6 : 1)
-                                .frame(width: 60, height: 76)
-                            }
-                            .buttonStyle(.plain)
-                            .id(s.id)
-                            .accessibilityLabel(model.accessibilityLabel(s))
-                            .accessibilityAddTraits(selected ? .isSelected : [])
-                            .accessibilityIdentifier("review.shot.\(s.index)")
+                            timelineShotButton(s, selected: selected, style: style)
                         }
                     }
                     .padding(.vertical, 6)
@@ -264,6 +302,44 @@ public struct GameReviewView: View {
         }
     }
 
+    @ViewBuilder private func timelineShotButton(_ s: ReviewShot, selected: Bool, style: RatingBadgeStyle) -> some View {
+        let button = Button { model.select(s.id) } label: {
+            VStack(spacing: 2) {
+                RatingBadgeCircle(style: style, diameter: selected ? 56 : 44, symbolSize: 20,
+                                  selected: selected, showGlow: false)
+                    .overlay(alignment: .topTrailing) {
+                        if s.needsTap {
+                            Circle().fill(AX.caution).frame(width: 12, height: 12)
+                                .overlay(Circle().strokeBorder(AX.page, lineWidth: 2))
+                                .offset(x: 2, y: -2)
+                        }
+                    }
+                TeamArc().stroke(AX.team(s.team), style: AX.teamStroke(s.team))
+                    .frame(width: 30, height: 12)
+                    .offset(y: -14)
+            }
+            .opacity(style.recedes && !selected ? 0.6 : 1)
+            .frame(width: 60, height: 76)
+        }
+        .buttonStyle(.plain)
+        .id(s.id)
+        .accessibilityLabel(model.accessibilityLabel(s))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("review.shot.\(s.index)")
+
+        if model.canCorrectShooter {
+            button.contextMenu {
+                ForEach(model.allPlayers) { player in
+                    Button { model.correctShooter(s.id, to: player) } label: {
+                        Label(player.name, systemImage: s.shooter?.id == player.id ? "checkmark" : "person")
+                    }
+                }
+            }
+        } else {
+            button
+        }
+    }
+
     // MARK: Replay
 
     @ViewBuilder private var replayCard: some View {
@@ -274,6 +350,7 @@ public struct GameReviewView: View {
                     Spacer()
                     Text("Shot \(s.index + 1)").axFont(.body).foregroundStyle(AX.inkMuted)
                 }
+                AnyView(disputeRow(s))
                 AnyView(resultRow(s))   // type-erased like every Review section (aab3667: iOS 27.3 runtime crash)
                 Group {
                     if model.isReplayAvailable(s) {
@@ -324,6 +401,53 @@ public struct GameReviewView: View {
             .padding(16)
             .background(RoundedRectangle(cornerRadius: AX.radius.container).fill(AX.surface))
         }
+    }
+
+    /// D47/D52: side-by-side ball-glyph picker when two reconnected islands disagreed on this shot's outcome.
+    @ViewBuilder private func disputeRow(_ s: ReviewShot) -> some View {
+        if s.needsTap, let alt = s.alternateOutcome, model.canResolveOutcome {
+            let kept = ShotOutcome(firstContact: nil, pocketed: s.pocketed)
+            HStack(spacing: 12) {
+                disputeChoice(outcome: kept, fouls: !s.fouls.isEmpty, id: "review.dispute.keep") {
+                    model.resolveOutcome(s.id, to: kept)
+                }
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(AXGlyph.font(18, .semibold))
+                    .foregroundStyle(AX.caution)
+                    .accessibilityHidden(true)
+                disputeChoice(outcome: alt, fouls: alt.pocketed[.cue] != nil || alt.offTable.contains(.cue), id: "review.dispute.alt") {
+                    model.resolveOutcome(s.id, to: alt)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("review.dispute")
+        }
+    }
+
+    private func disputeChoice(outcome: ShotOutcome, fouls: Bool, id: String, action: @escaping () -> Void) -> some View {
+        let balls = outcome.pocketed.keys.filter { !$0.isCue }.sorted()
+        return Button(action: action) {
+            HStack(spacing: 8) {
+                ForEach(balls.prefix(4), id: \.self) { ReviewBallGlyph(ball: $0) }
+                if fouls {
+                    Image(systemName: "xmark.octagon.fill")
+                        .font(AXGlyph.font(22, .semibold))
+                        .foregroundStyle(AX.danger)
+                } else if balls.isEmpty {
+                    Image(systemName: "circle.slash")
+                        .font(AXGlyph.font(22, .semibold))
+                        .foregroundStyle(AX.inkMuted)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .background(RoundedRectangle(cornerRadius: AX.radius.element).fill(AX.page))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element).strokeBorder(AX.caution, lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.element))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(ShotDisputeBanner.spokenOutcome(balls: balls, scratched: fouls))
+        .accessibilityIdentifier(id)
     }
 
     /// What the shot did: pocketed ball glyphs and a foul mark. A D31 best guess sits in a dashed outline with a

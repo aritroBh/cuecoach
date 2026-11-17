@@ -89,7 +89,7 @@ import Engine
         let made = try makeV2Store(at: dir)
 
         let stack = try PersistenceStack(directory: dir)
-        #expect(stack.competitiveContainer.schema.version == Schema.Version(3, 0, 0))
+        #expect(stack.competitiveContainer.schema.version == Schema.Version(4, 0, 0))
         let rows = try stack.competitiveContext.fetch(FetchDescriptor<Shot>())
         #expect(rows.count == 4)
         #expect(Set(rows.map(\.id)) == Set(made.keys))
@@ -139,15 +139,95 @@ import Engine
         #expect(rows.count == 2)
     }
 
-    @Test func competitiveIsAtV3WithALightweightStage() throws {
+    @Test func competitiveIsAtV4WithLightweightStages() throws {
         #expect(CompetitiveSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
+        #expect(CompetitiveSchemaV4.versionIdentifier == Schema.Version(4, 0, 0))
         #expect(CompetitiveMigrationPlan.schemas.map { $0.versionIdentifier }
-                == [Schema.Version(1, 0, 0), Schema.Version(2, 0, 0), Schema.Version(3, 0, 0)])
-        #expect(CompetitiveMigrationPlan.stages.count == 2)
-        #expect(Set(CompetitiveSchemaV3.models.map { "\($0)" }) == Set(PersistenceStack.competitiveModels.map { "\($0)" }))
-        let shot = try #require(Schema(versionedSchema: CompetitiveSchemaV3.self).entities.first { $0.name == "Shot" })
-        #expect(shot.attributes.contains { $0.name == "isGuessValue" })
+                == [Schema.Version(1, 0, 0), Schema.Version(2, 0, 0), Schema.Version(3, 0, 0), Schema.Version(4, 0, 0)])
+        #expect(CompetitiveMigrationPlan.stages.count == 3)
+        #expect(Set(CompetitiveSchemaV4.models.map { "\($0)" }) == Set(PersistenceStack.competitiveModels.map { "\($0)" }))
+        let shotV4 = try #require(Schema(versionedSchema: CompetitiveSchemaV4.self).entities.first { $0.name == "Shot" })
+        #expect(shotV4.attributes.contains { $0.name == "isGuessValue" })
+        #expect(shotV4.attributes.contains { $0.name == "needsTapValue" })
+        let gameV4 = try #require(Schema(versionedSchema: CompetitiveSchemaV4.self).entities.first { $0.name == "Game" })
+        #expect(gameV4.attributes.contains { $0.name == "isUnconfirmedValue" })
+        let shotV3 = try #require(Schema(versionedSchema: CompetitiveSchemaV3.self).entities.first { $0.name == "Shot" })
+        #expect(shotV3.attributes.contains { $0.name == "isGuessValue" })
+        #expect(!shotV3.attributes.contains { $0.name == "needsTapValue" })
         let old = try #require(Schema(versionedSchema: CompetitiveSchemaV2.self).entities.first { $0.name == "Shot" })
         #expect(!old.attributes.contains { $0.name == "isGuessValue" })
+    }
+
+    /// D51 (plan 013b): a real V3 store opens as V4 with `isUnconfirmed == false` and `needsTap == false`.
+    @Test func v3StoreOpensAsV4WithSafeDefaults() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let gid = UUID(), sid = UUID()
+        do {
+            let schema = Schema(versionedSchema: CompetitiveSchemaV3.self)
+            let config = ModelConfiguration("Competitive", schema: schema, url: dir.appendingPathComponent("Competitive.store"),
+                                            allowsSave: true, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let ctx = ModelContext(container)
+            ctx.insert(Fixture.owner())
+            let session = CompetitiveSchemaV3.Session(id: Self.sessionID, startedAt: Fixture.t0, ruleSet: .barEight,
+                                                      format: .oneVsOne, tableSize: .sevenFoot)
+            ctx.insert(session)
+            let game = CompetitiveSchemaV3.Game(
+                id: gid, index: 0, ruleSet: .barEight,
+                teams: [StoredTeam(memberIDs: [Fixture.ownerID], shootingOrder: [Fixture.ownerID]),
+                        StoredTeam(memberIDs: [Fixture.guestID], shootingOrder: [Fixture.guestID])],
+                winnerTeam: 0, startedAt: Fixture.t0, endedAt: Fixture.t0)
+            game.sessionLink = session
+            ctx.insert(game)
+            let shot = CompetitiveSchemaV3.Shot(
+                id: sid, index: 0, shooterID: Fixture.ownerID, attributionSource: .turnOrder,
+                preState: Fixture.table(), postState: Fixture.table(), calledPocket: nil, firstContact: .eight,
+                railsAfterContact: 0, pocketed: [.eight: .footLeft], fouls: [],
+                features: StoredShotFeatures(cutBucket: .c0to15, distanceBucket: .short, pocketType: .corner, kind: .plain),
+                made: true, onTarget: true, cueResult: .notApplicable, decisionRating: .best,
+                executionRating: ExecutionRating(result: .made, position: .notApplicable), wpaDelta: 0,
+                isClutch: false, timeOnShot: -1, clipRef: nil, isGuess: true, updatedAt: Fixture.t0)
+            shot.gameLink = game
+            ctx.insert(shot)
+            try ctx.save()
+        }
+        let stack = try PersistenceStack(directory: dir)
+        let game = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first)
+        #expect(game.id == gid && !game.isUnconfirmed)
+        let shot = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Shot>()).first)
+        #expect(shot.id == sid && shot.isGuess && !shot.needsTap && shot.alternateOutcome == nil && shot.alternative == nil)
+    }
+
+    /// D53: importing a peer's backup containing the same game ID confirms a local unconfirmed island game,
+    /// while re-importing one's own backup preserves `isUnconfirmed`.
+    @Test func peerBackupImportAutoConfirmsUnconfirmedIslandGame() throws {
+        let localStack = try PersistenceStack(inMemory: true)
+        let peerStack = try PersistenceStack(inMemory: true)
+        let localOwner = PlayerProfile(id: UUID(), name: "Ari", avatarSymbol: "person.fill", avatarColor: "teal", isLocalOwner: true)
+        let peerOwner = PlayerProfile(id: UUID(), name: "Sam", avatarSymbol: "hare.fill", avatarColor: "orange", isLocalOwner: true)
+        localStack.competitiveContext.insert(localOwner)
+        peerStack.competitiveContext.insert(peerOwner)
+        let gid = UUID(), sid = UUID()
+        let teams = [StoredTeam(memberIDs: [localOwner.id], shootingOrder: [localOwner.id]),
+                     StoredTeam(memberIDs: [peerOwner.id], shootingOrder: [peerOwner.id])]
+        for (stack, unconfirmed) in [(localStack, true), (peerStack, true)] {
+            let s = Session(id: sid, startedAt: Fixture.t0, ruleSet: .barEight, format: .oneVsOne, tableSize: .sevenFoot)
+            let g = Game(id: gid, index: 0, ruleSet: .barEight, teams: teams, winnerTeam: 0,
+                         startedAt: Fixture.t0, endedAt: Fixture.t0, isUnconfirmed: unconfirmed)
+            g.session = s
+            stack.competitiveContext.insert(s)
+            stack.competitiveContext.insert(g)
+            try stack.competitiveContext.save()
+        }
+        // Re-importing our own backup is a no-op (stays unconfirmed).
+        let ownBackup = try localStack.exportBackup()
+        try localStack.importBackup(ownBackup)
+        #expect(try localStack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == true)
+        // Importing the peer phone's backup with the same game ID confirms our local copy (D53).
+        let peerBackup = try peerStack.exportBackup()
+        try localStack.importBackup(peerBackup)
+        #expect(try localStack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == false)
     }
 }

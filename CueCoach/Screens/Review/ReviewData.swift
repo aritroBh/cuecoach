@@ -12,7 +12,7 @@ struct ReviewPlayer: Identifiable, Hashable, Sendable {
 }
 
 /// The engine's preferred shot, ghosted in the replay.
-struct EngineAlternative: Hashable, Sendable {
+struct EngineAlternative: Hashable, Codable, Sendable {
     var ghostCue: Vec2
     var cuePath: [Vec2]
     var objectBall: BallID
@@ -41,6 +41,9 @@ struct ReviewShot: Identifiable, Hashable, Sendable {
     var pathsAreTraced = false
     /// D31: the shot was lost to a relock; `pocketed` is a best guess, never shown as camera-confirmed.
     var isGuess = false
+    /// D47 (plan 013b): islands disagreed on this shot; `alternateOutcome` is the other version for one-tap pick.
+    var needsTap = false
+    var alternateOutcome: ShotOutcome? = nil
 }
 
 struct ReviewHighlight: Hashable, Sendable {
@@ -61,6 +64,8 @@ struct GameReviewData: Hashable, Sendable {
     var shots: [ReviewShot]
     var shotOfGame: ReviewHighlight?
     var tableSize: TableSize
+    /// D51 (plan 013b): finished on an island that never reconnected; excluded from stats until confirmed.
+    var isUnconfirmed = false
 }
 
 // MARK: - Dependencies (local protocols)
@@ -127,8 +132,9 @@ extension GameReviewData {
             return ReviewShot(id: s.id, index: s.index, shooter: player(s.shooterID), team: team(of: s.shooterID),
                               rating: s.decisionRating, pre: decodable ? pre : nil, post: decodable ? post : nil,
                               pocketed: pocketed, fouls: s.fouls, paths: paths,
-                              alternative: analysis?.alternative(shotID: s.id), wpaDelta: s.wpaDelta,
-                              pathsAreTraced: traced != nil && !s.isGuess, isGuess: s.isGuess)
+                              alternative: analysis?.alternative(shotID: s.id) ?? s.alternative, wpaDelta: s.wpaDelta,
+                              pathsAreTraced: traced != nil && !s.isGuess, isGuess: s.isGuess,
+                              needsTap: s.needsTap, alternateOutcome: s.alternateOutcome)
         }
 
         var score = [0, 0]
@@ -141,7 +147,8 @@ extension GameReviewData {
         self.init(gameIndex: game.index, teams: teams.count == 2 ? teams : teams + Array(repeating: [], count: max(0, 2 - teams.count)),
                   score: score, winnerTeam: game.winnerTeam, isFinished: game.endedAt != nil,
                   winProb: game.winProbSeries, shots: shots, shotOfGame: sotg,
-                  tableSize: game.session?.tableSize ?? shots.first?.pre?.spec.size ?? .sevenFoot)
+                  tableSize: game.session?.tableSize ?? shots.first?.pre?.spec.size ?? .sevenFoot,
+                  isUnconfirmed: game.isUnconfirmed)
     }
 }
 

@@ -122,6 +122,9 @@ final class Game {
     var startedAt: Date { get { startedAtValue } set { startedAtValue = newValue; updatedAt = .now } }
     private var endedAtValue: Date?
     var endedAt: Date? { get { endedAtValue } set { endedAtValue = newValue; updatedAt = .now } }
+    /// V4 (D51): finished on an island without quorum; excluded from competitive stats until confirmed.
+    private var isUnconfirmedValue: Bool = false
+    var isUnconfirmed: Bool { get { isUnconfirmedValue } set { isUnconfirmedValue = newValue; updatedAt = .now } }
     var updatedAt: Date
     @Relationship(deleteRule: .cascade, inverse: \Shot.gameLink)
     fileprivate var shotsLink: [Shot] = []
@@ -140,7 +143,8 @@ final class Game {
     }
 
     init(id: UUID = UUID(), index: Int, ruleSet: RuleSetID, teams: [StoredTeam], winnerTeam: Int? = nil,
-         winProbSeries: [Double] = [], startedAt: Date, endedAt: Date? = nil, updatedAt: Date? = nil) {
+         winProbSeries: [Double] = [], startedAt: Date, endedAt: Date? = nil, isUnconfirmed: Bool = false,
+         updatedAt: Date? = nil) {
         self.id = id
         self.indexValue = index
         self.ruleSetRaw = ruleSet.rawValue
@@ -149,6 +153,7 @@ final class Game {
         self.winProbSeriesValue = winProbSeries
         self.startedAtValue = startedAt
         self.endedAtValue = endedAt
+        self.isUnconfirmedValue = isUnconfirmed
         self.updatedAt = updatedAt ?? endedAt ?? startedAt
     }
 
@@ -192,6 +197,11 @@ final class Shot {
     /// V3 (D43): `pocketed` is a D31 best guess. Never counted in pot %, cut, distance or pocket stats.
     private var isGuessValue: Bool = false
     var isGuess: Bool { get { isGuessValue } set { isGuessValue = newValue; updatedAt = .now } }
+    /// V4 (D47, D55): disputed island shot (`needsTap` + `alternateOutcome`) and Engine preferred alternative.
+    private var needsTapValue: Bool = false
+    var needsTap: Bool { get { needsTapValue } set { needsTapValue = newValue; updatedAt = .now } }
+    private var alternateOutcomeData: Data? = nil
+    private var alternativeData: Data? = nil
     var updatedAt: Date
 
     var attributionSource: AttributionSource {
@@ -240,13 +250,22 @@ final class Shot {
                           fallback: ExecutionRating(result: .miss, position: .notApplicable)) }
         set { executionRatingData = Blob.encode(newValue); updatedAt = .now }
     }
+    var alternateOutcome: ShotOutcome? {
+        get { alternateOutcomeData.flatMap { try? JSONDecoder().decode(ShotOutcome.self, from: $0) } }
+        set { alternateOutcomeData = newValue.map(Blob.encode); updatedAt = .now }
+    }
+    var alternative: EngineAlternative? {
+        get { alternativeData.flatMap { try? JSONDecoder().decode(EngineAlternative.self, from: $0) } }
+        set { alternativeData = newValue.map(Blob.encode); updatedAt = .now }
+    }
 
     init(id: UUID = UUID(), index: Int, shooterID: UUID, attributionSource: AttributionSource,
          preState: TableState, postState: TableState, calledPocket: Pocket?, firstContact: BallID?,
          railsAfterContact: Int, pocketed: [BallID: Pocket], fouls: [Foul], features: StoredShotFeatures,
          made: Bool, onTarget: Bool, cueResult: CueResult, decisionRating: DecisionRating,
          executionRating: ExecutionRating, wpaDelta: Double, isClutch: Bool, timeOnShot: Double,
-         clipRef: String?, isGuess: Bool = false, updatedAt: Date = .now) {
+         clipRef: String?, isGuess: Bool = false, needsTap: Bool = false, alternateOutcome: ShotOutcome? = nil,
+         alternative: EngineAlternative? = nil, updatedAt: Date = .now) {
         self.id = id
         self.indexValue = index
         self.shooterIDValue = shooterID
@@ -269,6 +288,9 @@ final class Shot {
         self.timeOnShotValue = timeOnShot
         self.clipRefValue = clipRef
         self.isGuessValue = isGuess
+        self.needsTapValue = needsTap
+        self.alternateOutcomeData = alternateOutcome.map(Blob.encode)
+        self.alternativeData = alternative.map(Blob.encode)
         self.updatedAt = updatedAt
     }
 

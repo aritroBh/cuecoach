@@ -437,6 +437,67 @@ import Engine
         #expect(GameReviewModel.showsResult(g), "a guess with nothing made still shows its cue")
         #expect(GameReviewModel.resultAccessibilityLabel(g) == "Nothing pocketed. Best guess")
     }
+
+    // MARK: Plan 015 (D49): shooter correction from the timeline
+
+    @Test func noHookNoMenu() {
+        let m = GameReviewModel(data: data(shots: [shot(0, .good, by: a1, team: 0)]))
+        #expect(!m.canCorrectShooter)
+    }
+
+    @Test func correctingAShooterAppliesTheNewDataAndKeepsSelection() {
+        let s0 = shot(0, .good, by: a1, team: 0)
+        let s1 = shot(1, .mistake, by: b1, team: 1)
+        let initial = data(shots: [s0, s1])
+        let m = GameReviewModel(data: initial)
+        m.select(s1.id)
+        var fixedS1 = s1
+        fixedS1.shooter = a1
+        fixedS1.team = 0
+        let updated = data(shots: [s0, fixedS1])
+        var got: (UUID, ReviewPlayer)?
+        m.onCorrectShooter = { id, p in got = (id, p); return updated }
+        #expect(m.canCorrectShooter)
+        #expect(m.allPlayers.map(\.id) == [a1.id, b1.id])
+        m.correctShooter(s1.id, to: a1)
+        #expect(got?.0 == s1.id && got?.1 == a1)
+        #expect(m.selectedShotID == s1.id, "selection stays on the corrected shot")
+        #expect(m.selectedShot?.shooter == a1 && m.selectedShot?.team == 0)
+    }
+
+    // MARK: Plan 013b (D47/D52, D51/D53): dispute resolution & unconfirmed game confirm/delete
+
+    @Test func resolveOutcomeAndConfirmUnconfirmedGame() {
+        var s0 = shot(0, .good, by: a1, team: 0)
+        s0.needsTap = true
+        s0.alternateOutcome = ShotOutcome(firstContact: BallID(1)!)
+        var initial = data(shots: [s0])
+        initial.isUnconfirmed = true
+        let m = GameReviewModel(data: initial)
+        #expect(m.isUnconfirmed && !m.canConfirmGame && !m.canResolveOutcome)
+        var resolvedOutcome: ShotOutcome?
+        m.onResolveOutcome = { _, out in
+            resolvedOutcome = out
+            var fixed = s0; fixed.needsTap = false; fixed.alternateOutcome = nil
+            var next = initial; next.shots = [fixed]
+            return next
+        }
+        var confirmed = false, deleted = false
+        m.onConfirmGame = {
+            confirmed = true
+            var next = m.data!; next.isUnconfirmed = false
+            return next
+        }
+        m.onDeleteGame = { deleted = true }
+        #expect(m.canConfirmGame && m.canDeleteGame && m.canResolveOutcome)
+        m.resolveOutcome(s0.id, to: ShotOutcome(firstContact: BallID(1)!))
+        #expect(resolvedOutcome == ShotOutcome(firstContact: BallID(1)!))
+        #expect(m.selectedShot?.needsTap == false)
+        m.confirmGame()
+        #expect(confirmed && !m.isUnconfirmed)
+        m.deleteGame()
+        #expect(deleted)
+    }
 }
 
 @MainActor private final class FixedAnalysis: ReviewShotAnalysis {

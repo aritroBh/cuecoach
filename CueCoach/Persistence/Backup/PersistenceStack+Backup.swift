@@ -35,7 +35,7 @@ extension PersistenceStack {
         comp.games = sorted(try all(Game.self, c).map {
             .init(id: $0.id, sessionID: $0.session?.id, index: $0.index, ruleSet: $0.ruleSet, teams: $0.teams,
                   winnerTeam: $0.winnerTeam, winProbSeries: $0.winProbSeries, startedAt: $0.startedAt,
-                  endedAt: $0.endedAt, updatedAt: $0.updatedAt)
+                  endedAt: $0.endedAt, updatedAt: $0.updatedAt, isUnconfirmed: $0.isUnconfirmed ? true : nil)
         }, \.id)
         comp.shots = sorted(try all(Shot.self, c).map {
             .init(id: $0.id, gameID: $0.game?.id, index: $0.index, shooterID: $0.shooterID,
@@ -46,7 +46,8 @@ extension PersistenceStack {
                   fouls: $0.fouls, features: $0.features, made: $0.made, onTarget: $0.onTarget,
                   cueResult: $0.cueResult, decisionRating: $0.decisionRating, executionRating: $0.executionRating,
                   wpaDelta: $0.wpaDelta, isClutch: $0.isClutch, timeOnShot: $0.timeOnShot, clipRef: $0.clipRef,
-                  updatedAt: $0.updatedAt, isGuess: $0.isGuess)
+                  updatedAt: $0.updatedAt, isGuess: $0.isGuess, needsTap: $0.needsTap ? true : nil,
+                  alternateOutcome: $0.alternateOutcome, alternative: $0.alternative)
         }, \.id)
         comp.archetypes = sorted(try all(ArchetypeSnapshot.self, c).map {
             .init(id: $0.id, playerID: $0.playerID, computedAt: $0.computedAt, gamesCount: $0.gamesCount,
@@ -202,7 +203,10 @@ extension PersistenceStack {
 
     private func mergeCompetitive(_ b: BackupV1.Competitive, fencing fenced: Set<UUID>, at now: Date,
                                   into ctx: ModelContext) throws {
-        var hasOwner = try ctx.fetchCount(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })) > 0
+        let localOwnerID = try ctx.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isLocalOwner })).first?.id
+        let backupOwnerID = b.profiles.first(where: \.isLocalOwner)?.id
+        let isPeerBackup = localOwnerID != nil && backupOwnerID != nil && localOwnerID != backupOwnerID
+        var hasOwner = localOwnerID != nil
 
         let profiles = try upsert(b.profiles, ctx, id: \PlayerProfile.id, dtoID: \BackupV1.Profile.id,
             newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
@@ -242,14 +246,28 @@ extension PersistenceStack {
                 m.updatedAt = d.updatedAt
             })
 
+        let existingGameIDs = Set(try all(Game.self, ctx).map(\.id))
         let games = try upsert(b.games, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
-            make: { Game(id: $0.id, index: $0.index, ruleSet: $0.ruleSet, teams: $0.teams, startedAt: $0.startedAt) },
+            make: { Game(id: $0.id, index: $0.index, ruleSet: $0.ruleSet, teams: $0.teams, startedAt: $0.startedAt,
+                         isUnconfirmed: $0.isUnconfirmed ?? false) },
             apply: { d, m in
                 m.session = d.sessionID.flatMap { sessions[$0] }
                 m.index = d.index; m.ruleSet = d.ruleSet; m.teams = d.teams; m.winnerTeam = d.winnerTeam
                 m.winProbSeries = d.winProbSeries; m.startedAt = d.startedAt; m.endedAt = d.endedAt
+                if !existingGameIDs.contains(d.id) {
+                    m.isUnconfirmed = d.isUnconfirmed ?? false
+                } else if !(d.isUnconfirmed ?? false) {
+                    m.isUnconfirmed = false
+                }
                 m.updatedAt = d.updatedAt
             })
+        // D53: importing a peer's backup containing the same game ID (or any confirmed copy of that game) confirms our
+        // local unconfirmed island rack even when our local `updatedAt` was newer.
+        for d in b.games where existingGameIDs.contains(d.id) {
+            if let m = games[d.id], m.isUnconfirmed, isPeerBackup || !(d.isUnconfirmed ?? false) {
+                m.isUnconfirmed = false
+            }
+        }
 
         _ = try upsert(b.shots, ctx, id: \.id, dtoID: \.id, newer: { isNewer($0.updatedAt, than: $1.updatedAt) },
             make: { d in
@@ -259,7 +277,8 @@ extension PersistenceStack {
                      fouls: d.fouls, features: d.features, made: d.made, onTarget: d.onTarget,
                      cueResult: d.cueResult, decisionRating: d.decisionRating, executionRating: d.executionRating,
                      wpaDelta: d.wpaDelta, isClutch: d.isClutch, timeOnShot: d.timeOnShot, clipRef: d.clipRef,
-                     isGuess: d.isGuess ?? false, updatedAt: d.updatedAt)
+                     isGuess: d.isGuess ?? false, needsTap: d.needsTap ?? false,
+                     alternateOutcome: d.alternateOutcome, alternative: d.alternative, updatedAt: d.updatedAt)
             },
             apply: { d, m in
                 m.game = d.gameID.flatMap { games[$0] }
@@ -273,6 +292,7 @@ extension PersistenceStack {
                 m.cueResult = d.cueResult; m.decisionRating = d.decisionRating
                 m.executionRating = d.executionRating; m.wpaDelta = d.wpaDelta; m.isClutch = d.isClutch
                 m.timeOnShot = d.timeOnShot; m.clipRef = d.clipRef; m.isGuess = d.isGuess ?? false
+                m.needsTap = d.needsTap ?? false; m.alternateOutcome = d.alternateOutcome; m.alternative = d.alternative
                 m.updatedAt = d.updatedAt
             })
 

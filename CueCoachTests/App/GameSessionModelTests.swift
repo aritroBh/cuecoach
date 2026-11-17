@@ -607,6 +607,86 @@ import Engine
         link.receive(entries([.shot(r)]), commitSeq: 1)
         #expect(s.shots.first?.needsTap == true)
     }
+
+    // MARK: Plan 015 (D49): fix a recorded shot's shooter from Game Review
+
+    @Test func correctShooterAppendsACorrectionAndReplays() throws {
+        let s = teams()
+        s.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))   // 0: A1 → B1
+        s.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: Self.miss))   // 1: B1 → A2
+        let firstID = try #require(s.shots.first?.id)
+        let b1Review = ReviewPlayer(id: b1.id, name: b1.name, symbol: b1.symbol, colorName: b1.colorName)
+        let updated = try #require(s.correctShooter(shotID: firstID, to: b1Review))
+        #expect(updated.shots.map(\.shooter?.id) == [b1.id, a2.id])
+        #expect(updated.shots.map(\.team) == [1, 0])
+        #expect(s.shots[0].attribution == .tap)
+        #expect(s.shots[1].attribution == .turnOrder)
+        // Same-team player change (A2 → A1 on shot 1) changes only that shot's shooter.
+        let a1Review = ReviewPlayer(id: a1.id, name: a1.name, symbol: a1.symbol, colorName: a1.colorName)
+        let sameTeam = try #require(s.correctShooter(shotID: s.shots[1].id, to: a1Review))
+        #expect(sameTeam.shots[1].shooter?.id == a1.id && sameTeam.shots[1].team == 0)
+    }
+
+    @Test func correctingAGapClearsNothingElse() throws {
+        let s = teams()
+        s.shotLost()                                                                       // 0: gap
+        s.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1))) // 1: pot
+        let gapID = try #require(s.shots.first?.id)
+        let b1Review = ReviewPlayer(id: b1.id, name: b1.name, symbol: b1.symbol, colorName: b1.colorName)
+        let updated = try #require(s.correctShooter(shotID: gapID, to: b1Review))
+        #expect(updated.shots[0].rating == nil, "D38 gap stays unrated")
+        #expect(updated.shots[0].shooter?.id == b1.id && updated.shots[0].team == 1)
+        #expect(s.shots[0].attribution == .tap)
+        #expect(updated.shots[1].team == 1, "subsequent shot replayed from B1's turn")
+    }
+
+    @Test func joinerCannotCorrect() {
+        let (s, link) = meshGame(host: false)
+        link.receive(entries([record(Self.miss, rating: .okay, id: UUID())]), commitSeq: 1)
+        let id = s.shots[0].id
+        let b1Review = ReviewPlayer(id: b1.id, name: b1.name, symbol: b1.symbol, colorName: b1.colorName)
+        #expect(s.correctShooter(shotID: id, to: b1Review) == nil)
+        #expect(link.proposals.isEmpty)
+        s.mesh = nil   // even after endGame clears the link, a session that was a joiner never corrects
+        #expect(s.correctShooter(shotID: id, to: b1Review) == nil)
+    }
+
+    // MARK: Plan 013b (D47, D48, D52): outcome dispute resolution + provisional badge replacement
+
+    @Test func resolveOutcomeReplaysFromDisputedShotAndClearsNeedsTap() throws {
+        let s = teams()
+        let id = UUID()
+        let pot = Self.pot(1)
+        let miss = Self.miss
+        let disputed = MeshShotRecord(shotID: id, shooterTeam: 0, outcome: pot, postState: nil,
+                                      needsTap: true, alternateOutcome: miss)
+        // Solo event stream via FakeGameMeshLink:
+        let (hostGame, link) = meshGame(host: true)
+        link.receive(entries([.shot(disputed), record(Self.miss, rating: .okay, id: UUID())]), commitSeq: 2)
+        #expect(hostGame.pendingDispute?.id == id)
+        #expect(hostGame.shots[0].pocketed == [BallID(1)!: .footLeft])
+        #expect(hostGame.shots[1].shooter == a1, "before resolution: A1 kept table after potting 1")
+        _ = hostGame.resolveOutcome(shotID: id, outcome: miss)
+        link.commit()
+        #expect(hostGame.pendingDispute == nil)
+        #expect(!hostGame.shots[0].needsTap && hostGame.shots[0].alternateOutcome == nil)
+        #expect(hostGame.shots[0].pocketed.isEmpty)
+        #expect(hostGame.shots[1].shooter == b1, "after picking miss: turn passed to B1 on shot 1")
+        _ = s
+    }
+
+    @Test func provisionalIslandBadgeIsReplacedByConfirmedBadgeOnHeal() {
+        let (s, link) = meshGame(host: true)
+        link.isIsland = true
+        s.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1)))
+        #expect(s.badge.current?.isProvisional == true)
+        let firstShotID = link.log[0].event
+        _ = firstShotID
+        // Reconnect: same shotID commits with `isIsland == false` → non-provisional badge replaces provisional (D48).
+        link.isIsland = false
+        link.commit()
+        #expect(s.badge.current?.isProvisional == false)
+    }
 }
 
 

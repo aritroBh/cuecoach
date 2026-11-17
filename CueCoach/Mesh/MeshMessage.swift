@@ -106,19 +106,20 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
     var isGuess = false
     /// Plan 013a: stroke start on the game clock, ns (INTERFACES "Host loss and islands"); nil = unknown.
     var strokeHostTime: Int64? = nil
-    /// Plan 013a: an island merge kept one of two disagreeing views (D47 asks a tap in 013b; a flag only for now).
+    /// Plan 013a/013b: an island merge kept one of two disagreeing views; `alternateOutcome` carries the other view (D47).
     var needsTap = false
+    var alternateOutcome: ShotOutcome? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case shotID, shooterTeam, outcome, postState, preState, decisionRating, isGuess, strokeHostTime, needsTap
+        case shotID, shooterTeam, outcome, postState, preState, decisionRating, isGuess, strokeHostTime, needsTap, alternateOutcome
     }
 
     init(shotID: UUID, shooterTeam: Int, outcome: ShotOutcome, postState: TableState?, preState: TableState? = nil,
          decisionRating: DecisionRating? = nil, isGuess: Bool = false, strokeHostTime: Int64? = nil,
-         needsTap: Bool = false) {
+         needsTap: Bool = false, alternateOutcome: ShotOutcome? = nil) {
         self.shotID = shotID; self.shooterTeam = shooterTeam; self.outcome = outcome; self.postState = postState
         self.preState = preState; self.decisionRating = decisionRating; self.isGuess = isGuess
-        self.strokeHostTime = strokeHostTime; self.needsTap = needsTap
+        self.strokeHostTime = strokeHostTime; self.needsTap = needsTap; self.alternateOutcome = alternateOutcome
     }
 
     init(from decoder: Decoder) throws {
@@ -132,6 +133,7 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
         isGuess = try c.decodeIfPresent(Bool.self, forKey: .isGuess) ?? false
         strokeHostTime = try c.decodeIfPresent(Int64.self, forKey: .strokeHostTime)
         needsTap = try c.decodeIfPresent(Bool.self, forKey: .needsTap) ?? false
+        alternateOutcome = try c.decodeIfPresent(ShotOutcome.self, forKey: .alternateOutcome)
     }
 }
 
@@ -140,15 +142,17 @@ struct MeshShotRecord: Hashable, Codable, Sendable {
 enum GameEvent: Hashable, Codable, Sendable {
     case ruleSetChosen(RuleSetID)
     case shot(MeshShotRecord)
-    /// Fix a recorded shot's team (attribution `.tap`). `id` tells two identical corrections apart (as for
-    /// `.nextShooter`); decodeIfPresent, nil = absent. The fold ignores it.
-    case shooterCorrection(shotID: UUID, team: Int, id: UUID? = UUID())
+    /// Fix a recorded shot's team/shooter (attribution `.tap`). `shooter` names a specific player in team games
+    /// (plan 015, D49); `id` tells two identical corrections apart (as for `.nextShooter`). Both use `decodeIfPresent`.
+    case shooterCorrection(shotID: UUID, team: Int, shooter: UUID? = nil, id: UUID? = UUID())
     /// D41: a turn-disc tap. Changes only who shoots next. `id` tells two identical taps apart (a joiner's drain
     /// waits for its own); decoded with decodeIfPresent, so nil = a payload without one.
     case nextShooter(team: Int, id: UUID? = UUID())
     /// D38: a lost shot with no guess. A gap (no rating, no rules change) that asks who shoots next.
     /// Plan 013a: `strokeHostTime` (game clock, ns; decodeIfPresent, nil = unknown) lets an island merge reconcile it.
     case shotLost(shotID: UUID, shooterTeam: Int, strokeHostTime: Int64? = nil)
+    /// D47 (plan 013b): one-tap pick resolving a disputed island shot (`needsTap`). Replays from `shotID`.
+    case outcomeResolution(shotID: UUID, outcome: ShotOutcome, id: UUID? = UUID())
 }
 
 struct LogEntry: Hashable, Codable, Sendable {

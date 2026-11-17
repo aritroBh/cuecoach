@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Geometry
 import Engine
+import Rules
 
 struct ReviewMVP: Hashable {
     var player: ReviewPlayer
@@ -24,6 +25,13 @@ public final class GameReviewModel {
     @ObservationIgnored var onDone: (() -> Void)?
     /// Full-screen clip player hook (Highlights module wires it; no-op until then).
     @ObservationIgnored var onPlayClip: ((UUID) -> Void)?
+    /// D49 (plan 015): post-game shooter correction from timeline long-press; nil on sample screens and joiners.
+    @ObservationIgnored var onCorrectShooter: ((UUID, ReviewPlayer) -> GameReviewData?)?
+    /// D47/D52 (plan 013b): side-by-side outcome pick on a disputed shot.
+    @ObservationIgnored var onResolveOutcome: ((UUID, ShotOutcome) -> GameReviewData?)?
+    /// D51/D53 (plan 013b): confirm or delete an unconfirmed island rack opened from History / Review.
+    @ObservationIgnored var onConfirmGame: (() -> GameReviewData?)?
+    @ObservationIgnored var onDeleteGame: (() -> Void)?
 
     init(source: any GameReviewSource) {
         self.source = source
@@ -180,6 +188,47 @@ public final class GameReviewModel {
     }
 
     // MARK: Selection
+
+    var allPlayers: [ReviewPlayer] { (data?.teams ?? []).flatMap { $0 } }
+    var canCorrectShooter: Bool { onCorrectShooter != nil && !allPlayers.isEmpty }
+    var canResolveOutcome: Bool { onResolveOutcome != nil }
+    var isUnconfirmed: Bool { data?.isUnconfirmed == true }
+    var canConfirmGame: Bool { isUnconfirmed && onConfirmGame != nil }
+    var canDeleteGame: Bool { isUnconfirmed && onDeleteGame != nil }
+
+    func correctShooter(_ shotID: UUID, to player: ReviewPlayer) {
+        guard let next = onCorrectShooter?(shotID, player) else { return }
+        data = next
+        phase = .loaded
+        if next.shots.contains(where: { $0.id == shotID }) {
+            selectedShotID = shotID
+        } else {
+            selectedShotID = shotOfGame?.id ?? next.shots.first?.id
+        }
+    }
+
+    func resolveOutcome(_ shotID: UUID, to outcome: ShotOutcome) {
+        guard let next = onResolveOutcome?(shotID, outcome) else { return }
+        data = next
+        phase = .loaded
+        if next.shots.contains(where: { $0.id == shotID }) {
+            selectedShotID = shotID
+        } else {
+            selectedShotID = shotOfGame?.id ?? next.shots.first?.id
+        }
+    }
+
+    func confirmGame() {
+        if let next = onConfirmGame?() {
+            data = next
+        } else {
+            data?.isUnconfirmed = false
+        }
+    }
+
+    func deleteGame() {
+        onDeleteGame?()
+    }
 
     func select(_ id: UUID) {
         guard shots.contains(where: { $0.id == id }) else { return }

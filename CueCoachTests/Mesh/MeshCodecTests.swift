@@ -239,7 +239,18 @@ import Rules
         #expect(GameEvent.shooterCorrection(shotID: shot, team: 1) != GameEvent.shooterCorrection(shotID: shot, team: 1))
         let json = #"{"shooterCorrection":{"shotID":"\#(shot.uuidString)","team":1}}"#
         let oldFix = try JSONDecoder().decode(GameEvent.self, from: Data(json.utf8))
-        #expect(oldFix == .shooterCorrection(shotID: shot, team: 1, id: nil))
+        #expect(oldFix == .shooterCorrection(shotID: shot, team: 1, shooter: nil, id: nil))
+    }
+
+    /// Plan 015: `.shooterCorrection` carries an optional `shooter` UUID; payloads without `shooter` still decode.
+    @Test func shooterCorrectionWithoutShooterDecodes() throws {
+        let shot = UUID(), player = UUID()
+        let oldJSON = #"{"shooterCorrection":{"shotID":"\#(shot.uuidString)","team":0}}"#
+        let decodedOld = try JSONDecoder().decode(GameEvent.self, from: Data(oldJSON.utf8))
+        #expect(decodedOld == .shooterCorrection(shotID: shot, team: 0, shooter: nil, id: nil))
+        let withShooter = GameEvent.shooterCorrection(shotID: shot, team: 1, shooter: player)
+        let env = Self.envelope(.proposal(withShooter))
+        #expect(try MeshCodec.decode(MeshCodec.encode(env)) == env)
     }
 
     /// New GameEvent cases are a wire break: the frame header and the Hello both speak major 2 only.

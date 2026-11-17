@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Training
 import Engine
+import Rules
 
 enum ShellRoute: Hashable { case gameHub, newGame, joinNearby, training }
 
@@ -59,6 +60,12 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
         game?.handTurn(toTeam: team)
     }
 
+    /// D47/D52 (plan 013b): one-tap pick between two disagreeing island outcomes, between shots only.
+    func resolveDispute(shotID: UUID, outcome: Rules.ShotOutcome) {
+        guard !isAiming else { return }
+        game?.resolveOutcome(shotID: shotID, outcome: outcome)
+    }
+
     /// A game shot settled and was rated, with what the Rules engine saw (kept for Game Review).
     func settled(_ shot: SettledShot) {
         isAiming = false
@@ -109,18 +116,40 @@ final class AppRouter {
     /// `endCap` seconds from End (D42: never stuck), then reviews what is committed and stops the link.
     func endGame() {
         guard case .live(let s)? = stage, let game = s.game else { return }
-        guard let link = game.mesh else { stage = .review(review(game.reviewData())); return }
+        guard let link = game.mesh else { stage = .review(review(game.reviewData(), game: game)); return }
+        let canCorrect = link.isHost
         let m = GameReviewModel(source: MeshReviewSource(game: game, link: link,
                                                          deadline: Date().addingTimeInterval(endCap)))
         m.onDone = { [weak self] in self?.finishReview() }
+        if canCorrect {
+            m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
+            m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
+            if let rec = recorder {
+                m.onConfirmGame = { [weak game, weak rec] in
+                    guard let gid = game?.shots.first?.id else { return nil }
+                    try? rec?.confirmGame(id: gid)
+                    var d = game?.reviewData()
+                    d?.isUnconfirmed = false
+                    return d
+                }
+                m.onDeleteGame = { [weak self, weak game, weak rec] in
+                    if let gid = game?.shots.first?.id { try? rec?.deleteGame(id: gid) }
+                    self?.finishReview()
+                }
+            }
+        }
         stage = .review(m)
         Task { await m.load() }   // the link stops even if the review is never shown
     }
     @ObservationIgnored var endCap: Double = 2
 
-    private func review(_ data: GameReviewData) -> GameReviewModel {
+    private func review(_ data: GameReviewData, game: GameSessionModel) -> GameReviewModel {
         let m = GameReviewModel(data: data)
         m.onDone = { [weak self] in self?.finishReview() }
+        if !game.isJoinerSession {
+            m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
+            m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
+        }
         return m
     }
 

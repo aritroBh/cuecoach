@@ -27,9 +27,11 @@ public struct MergedShot: Hashable, Sendable {
     public var needsTap: Bool
     /// Every view folded into it, sorted.
     public var members: [UUID]
+    /// Plan 013b (D47): the highest-confidence differing outcome when `needsTap == true`, else nil.
+    public var alternateOutcome: ShotOutcome?
 
-    public init(shot: IslandShot, needsTap: Bool, members: [UUID]) {
-        self.shot = shot; self.needsTap = needsTap; self.members = members
+    public init(shot: IslandShot, needsTap: Bool, members: [UUID], alternateOutcome: ShotOutcome? = nil) {
+        self.shot = shot; self.needsTap = needsTap; self.members = members; self.alternateOutcome = alternateOutcome
     }
 }
 
@@ -89,12 +91,14 @@ public enum IslandMerge {
         }
         return clusters.map { c -> (start: Double, merged: MergedShot) in
             let shots = c.map(\.shot)
-            let kept = shots.max { a, b in
+            func rank(_ a: IslandShot, _ b: IslandShot) -> Bool {
                 a.confidence != b.confidence ? a.confidence < b.confidence : a.id.uuidString > b.id.uuidString
-            }!
+            }
+            let kept = shots.max(by: rank)!
+            let alt = shots.filter { $0.outcome != kept.outcome }.max(by: rank)?.outcome
             let members = Set(shots.map(\.id)).sorted { $0.uuidString < $1.uuidString }
             return (shots.map(\.strokeTime).min()!,
-                    MergedShot(shot: kept, needsTap: Set(shots.map(\.outcome)).count > 1, members: members))
+                    MergedShot(shot: kept, needsTap: alt != nil, members: members, alternateOutcome: alt))
         }
         .sorted { $0.start != $1.start ? $0.start < $1.start : $0.merged.shot.id.uuidString < $1.merged.shot.id.uuidString }
         .map(\.merged)

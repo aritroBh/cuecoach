@@ -1,5 +1,6 @@
 import SwiftUI
 import Geometry
+import Rules
 
 /// The one place that constructs LiveScreen: mode, drill and the hooks that drive `LiveSession` (aim → menu
 /// closed + badge silenced; settled → rating recorded, badge, turn), with the shell's game injected for ratings
@@ -75,6 +76,15 @@ struct InGameChrome: View {
                     TurnDiscs(game: game, reduceMotion: reduce || forced) { session.handTurn(toTeam: $0) }
                 }
                 Spacer()
+                // D47/D52: icon-only side-by-side ball-glyph picker when reconnected phones disagreed on a shot;
+                // strictly hidden while aiming or when the menu is open (SPEC §2: no text/clutter while aiming).
+                if session.menuAvailable, !menuOpen, let game = session.game, let dispute = game.pendingDispute,
+                   let alt = dispute.alternateOutcome {
+                    ShotDisputeBanner(primary: dispute.outcome, alternate: alt) { chosen in
+                        session.resolveDispute(shotID: dispute.id, outcome: chosen)
+                    }
+                    .padding(.bottom, 68)
+                }
             }
             .padding(16)
             if menuOpen { menu.transition(.opacity) }
@@ -227,5 +237,64 @@ struct OrderEditor: View {
         .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.neutral))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chrome.order")
+    }
+}
+
+/// D47/D52: icon-only side-by-side ball-glyph picker for a shot two reconnected islands disagreed on.
+/// Zero visible text; ≥ 56 pt touch targets; hidden the instant anyone aims (`session.menuAvailable`).
+struct ShotDisputeBanner: View {
+    let primary: ShotOutcome
+    let alternate: ShotOutcome
+    let onPick: (ShotOutcome) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            optionButton(primary, id: "chrome.dispute.primary")
+            Image(systemName: "arrow.left.arrow.right")
+                .font(AXGlyph.font(18, .semibold))
+                .foregroundStyle(AXLive.caution)
+                .accessibilityHidden(true)
+            optionButton(alternate, id: "chrome.dispute.alt")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AXLive.chip.opacity(0.9)))
+        .overlay(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous)
+            .strokeBorder(AXLive.caution.opacity(0.75), lineWidth: 2))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chrome.dispute")
+    }
+
+    private func optionButton(_ outcome: ShotOutcome, id: String) -> some View {
+        let balls = outcome.pocketed.keys.filter { !$0.isCue }.sorted()
+        let scratched = outcome.pocketed[.cue] != nil || outcome.offTable.contains(.cue)
+        return Button { onPick(outcome) } label: {
+            HStack(spacing: 6) {
+                ForEach(balls.prefix(3), id: \.self) { ReviewBallGlyph(ball: $0) }
+                if scratched {
+                    Image(systemName: "xmark.octagon.fill")
+                        .font(AXGlyph.font(22, .semibold))
+                        .foregroundStyle(AXLive.danger)
+                } else if balls.isEmpty {
+                    Image(systemName: "circle.slash")
+                        .font(AXGlyph.font(22, .semibold))
+                        .foregroundStyle(AXLive.aim.opacity(0.8))
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(minWidth: 72, minHeight: 56)
+            .background(RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous).fill(AXLive.stage.opacity(0.65)))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous)
+                .strokeBorder(AXLive.aim.opacity(0.35), lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous))
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityLabel(Self.spokenOutcome(balls: balls, scratched: scratched))
+        .accessibilityIdentifier(id)
+    }
+
+    static func spokenOutcome(balls: [BallID], scratched: Bool) -> String {
+        var parts = [balls.isEmpty ? "Nothing pocketed" : "Pocketed " + balls.map { "\($0.number)" }.joined(separator: ", ")]
+        if scratched { parts.append("Scratch") }
+        return parts.joined(separator: ". ")
     }
 }

@@ -218,8 +218,157 @@ enum CompetitiveSchemaV2: VersionedSchema {
 }
 
 /// V3 (D43, plan 012): `Shot` gained `isGuess` (default false), so V2 → V3 is a lightweight stage.
+/// Frozen copy of the Session → Game → Shot/Highlight component before V4 added `Game.isUnconfirmed` and V4 `Shot` fields.
 enum CompetitiveSchemaV3: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(3, 0, 0) }
+    static var models: [any PersistentModel.Type] {
+        [PlayerProfile.self, Session.self, Game.self, Shot.self, ArchetypeSnapshot.self, Highlight.self]
+    }
+
+    @Model
+    final class Session {
+        @Attribute(.unique) var id: UUID
+        var startedAtValue: Date
+        var endedAtValue: Date?
+        var ruleSetRaw: String
+        var formatRaw: String
+        var tableSizeRaw: String
+        var peerDeviceNamesValue: [String]
+        var voteTallyData: Data
+        var updatedAt: Date
+        @Relationship(deleteRule: .cascade, inverse: \Game.sessionLink)
+        var gamesLink: [Game] = []
+
+        init(id: UUID = UUID(), startedAt: Date, ruleSet: RuleSetID, format: GameFormat, tableSize: TableSize) {
+            self.id = id
+            startedAtValue = startedAt
+            ruleSetRaw = ruleSet.rawValue
+            formatRaw = format.rawValue
+            tableSizeRaw = tableSize.rawValue
+            peerDeviceNamesValue = []
+            voteTallyData = Blob.encode([RuleSetID: Int]())
+            updatedAt = startedAt
+        }
+    }
+
+    @Model
+    final class Game {
+        @Attribute(.unique) var id: UUID
+        var sessionLink: Session?
+        var indexValue: Int
+        var ruleSetRaw: String
+        var teamsData: Data
+        var winnerTeamValue: Int?
+        var winProbSeriesValue: [Double]
+        var startedAtValue: Date
+        var endedAtValue: Date?
+        var updatedAt: Date
+        @Relationship(deleteRule: .cascade, inverse: \Shot.gameLink)
+        var shotsLink: [Shot] = []
+        @Relationship(deleteRule: .cascade, inverse: \Highlight.gameLink)
+        var highlightsLink: [Highlight] = []
+
+        init(id: UUID = UUID(), index: Int, ruleSet: RuleSetID, teams: [StoredTeam], winnerTeam: Int?,
+             startedAt: Date, endedAt: Date?) {
+            self.id = id
+            indexValue = index
+            ruleSetRaw = ruleSet.rawValue
+            teamsData = Blob.encode(teams)
+            winnerTeamValue = winnerTeam
+            winProbSeriesValue = []
+            startedAtValue = startedAt
+            endedAtValue = endedAt
+            updatedAt = endedAt ?? startedAt
+        }
+    }
+
+    @Model
+    final class Highlight {
+        @Attribute(.unique) var id: UUID
+        var gameLink: Game?
+        var shotIDValue: UUID
+        var kindRaw: String
+        var clipFileValue: String
+        var labelValue: String
+        var scoreValue: Double
+        var updatedAt: Date
+
+        init(id: UUID = UUID(), shotID: UUID, kind: HighlightKind, clipFile: String, label: String, score: Double,
+             updatedAt: Date) {
+            self.id = id
+            shotIDValue = shotID
+            kindRaw = kind.rawValue
+            clipFileValue = clipFile
+            labelValue = label
+            scoreValue = score
+            self.updatedAt = updatedAt
+        }
+    }
+
+    @Model
+    final class Shot {
+        @Attribute(.unique) var id: UUID
+        var gameLink: Game?
+        var indexValue: Int
+        var shooterIDValue: UUID
+        var attributionSourceRaw: String
+        var preStateData: Data
+        var postStateData: Data
+        var calledPocketRaw: String?
+        var firstContactNumber: Int?
+        var railsAfterContactValue: Int
+        var pocketedData: Data
+        var foulsData: Data
+        var featuresData: Data
+        var madeValue: Bool
+        var onTargetValue: Bool
+        var cueResultRaw: String
+        var decisionRatingRaw: String
+        var executionRatingData: Data
+        var wpaDeltaValue: Double
+        var isClutchValue: Bool
+        var timeOnShotValue: Double
+        var clipRefValue: String?
+        var isGuessValue: Bool = false
+        var updatedAt: Date
+
+        init(id: UUID = UUID(), index: Int, shooterID: UUID, attributionSource: AttributionSource,
+             preState: TableState, postState: TableState, calledPocket: Pocket?, firstContact: BallID?,
+             railsAfterContact: Int, pocketed: [BallID: Pocket], fouls: [Foul], features: StoredShotFeatures,
+             made: Bool, onTarget: Bool, cueResult: CueResult, decisionRating: DecisionRating,
+             executionRating: ExecutionRating, wpaDelta: Double, isClutch: Bool, timeOnShot: Double,
+             clipRef: String?, isGuess: Bool = false, updatedAt: Date = .now) {
+            self.id = id
+            indexValue = index
+            shooterIDValue = shooterID
+            attributionSourceRaw = attributionSource.rawValue
+            preStateData = Blob.encode(preState)
+            postStateData = Blob.encode(postState)
+            calledPocketRaw = calledPocket?.rawValue
+            firstContactNumber = firstContact?.number
+            railsAfterContactValue = railsAfterContact
+            pocketedData = Blob.encode(pocketed)
+            foulsData = Blob.encode(fouls)
+            featuresData = Blob.encode(features)
+            madeValue = made
+            onTargetValue = onTarget
+            cueResultRaw = cueResult.rawValue
+            decisionRatingRaw = decisionRating.rawValue
+            executionRatingData = Blob.encode(executionRating)
+            wpaDeltaValue = wpaDelta
+            isClutchValue = isClutch
+            timeOnShotValue = timeOnShot
+            clipRefValue = clipRef
+            isGuessValue = isGuess
+            self.updatedAt = updatedAt
+        }
+    }
+}
+
+/// V4 (D51, D47, D55, plan 013b): `Game` gained `isUnconfirmed` (default false) and `Shot` gained `needsTap`,
+/// `alternateOutcome` and `alternative` (defaults false / nil), so V3 → V4 is a lightweight stage.
+enum CompetitiveSchemaV4: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
     static var models: [any PersistentModel.Type] {
         [PlayerProfile.self, Session.self, Game.self, Shot.self, ArchetypeSnapshot.self, Highlight.self]
     }
@@ -239,9 +388,14 @@ enum RecognitionSchemaV1: VersionedSchema {
 
 enum CompetitiveMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [CompetitiveSchemaV1.self, CompetitiveSchemaV2.self, CompetitiveSchemaV3.self]
+        [CompetitiveSchemaV1.self, CompetitiveSchemaV2.self, CompetitiveSchemaV3.self, CompetitiveSchemaV4.self]
     }
-    static var stages: [MigrationStage] { [v1ToV2, v2ToV3] }
+    static var stages: [MigrationStage] { [v1ToV2, v2ToV3, v3ToV4] }
+
+    /// D51/D47/D55: adds `Game.isUnconfirmed` and `Shot.needsTap`/`alternateOutcome`/`alternative` with safe defaults.
+    static var v3ToV4: MigrationStage {
+        MigrationStage.lightweight(fromVersion: CompetitiveSchemaV3.self, toVersion: CompetitiveSchemaV4.self)
+    }
 
     /// D43: adds `Shot.isGuess`; every existing row reads as not a guess.
     static var v2ToV3: MigrationStage {

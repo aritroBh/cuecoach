@@ -299,4 +299,29 @@ final class AppShellUITests: XCTestCase {
 
     @MainActor func testMatrixAX5() { walkMatrix(.ax5) }
     @MainActor func testMatrixReduceMotion() { walkMatrix(.reduceMotion) }
+
+    // MARK: Plan 015 (D49): long-press a shot on the Game Review timeline to fix its shooter
+
+    @MainActor func testLongPressFixesShooter() {
+        let app = launch(["-appshell.demoShot"])
+        tapThrough(app, "home.game", to: "game.new")
+        tapThrough(app, "game.new", to: "setup.start")
+        tapSeat(app, "0.0", pick: "seat.player.Ari")
+        tapSeat(app, "1.0", pick: "seat.guest")
+        element(app, "setup.start").tap()
+        wait(app, "postshot.badge.great", 8)
+        wait(app, "chrome.menu").tap()
+        tapThrough(app, "chrome.endGame", to: "review.done")
+        let shot0 = wait(app, "review.shot.0", 8)
+        XCTAssertTrue(shot0.label.contains("Ari"), "before: \(shot0.label)")
+        shot0.press(forDuration: 1.0)
+        let guestPick = app.buttons["Guest"].firstMatch
+        XCTAssertTrue(guestPick.waitForExistence(timeout: 5), "context menu should list Guest")
+        guestPick.tap()
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline && !shot0.label.contains("Guest") {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertTrue(shot0.label.contains("Guest"), "after: \(shot0.label)")
+    }
 }
