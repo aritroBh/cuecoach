@@ -244,4 +244,15 @@ struct AutoTableUnlistedSizeTests {
         #expect(run.estimate.state != .locked)
         #expect(run.estimate.frame.sizeBetweenPresets)
     }
+
+    /// Plan 005 follow-up: a settled pose that fails `sizeIsTrusted` (sits ambiguously between presets) reports the
+    /// `.unusualSize` ruler hint, not `.partialTable`.
+    @Test func settledPoseThatFailsSizeIsTrustedReportsSizeHint() throws {
+        var f = AutoTableFusion()
+        let mid = (TableSize.eightFoot.playingLength + TableSize.nineFoot.playingLength) / 2
+        for i in 0..<30 { f.add(AutoTableBetweenPresetsTests.m(length: mid, snapped: .eightFoot, i: i)) }
+        let p = try #require(f.fused)
+        #expect(!AutoTableLocating.sizeIsTrusted(p))
+        #expect(AutoTableLocating.untrustedSizeFailure(p) == .unusualSize)
+    }
 }

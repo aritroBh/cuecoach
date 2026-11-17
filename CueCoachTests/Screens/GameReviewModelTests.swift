@@ -437,6 +437,33 @@ import Engine
         #expect(GameReviewModel.showsResult(g), "a guess with nothing made still shows its cue")
         #expect(GameReviewModel.resultAccessibilityLabel(g) == "Nothing pocketed. Best guess")
     }
+
+    // MARK: Plan 015 (D49): shooter correction from the timeline
+
+    @Test func noHookNoMenu() {
+        let m = GameReviewModel(data: data(shots: [shot(0, .good, by: a1, team: 0)]))
+        #expect(!m.canCorrectShooter)
+    }
+
+    @Test func correctingAShooterAppliesTheNewDataAndKeepsSelection() {
+        let s0 = shot(0, .good, by: a1, team: 0)
+        let s1 = shot(1, .mistake, by: b1, team: 1)
+        let initial = data(shots: [s0, s1])
+        let m = GameReviewModel(data: initial)
+        m.select(s1.id)
+        var fixedS1 = s1
+        fixedS1.shooter = a1
+        fixedS1.team = 0
+        let updated = data(shots: [s0, fixedS1])
+        var got: (UUID, ReviewPlayer)?
+        m.onCorrectShooter = { id, p in got = (id, p); return updated }
+        #expect(m.canCorrectShooter)
+        #expect(m.allPlayers.map(\.id) == [a1.id, a2.id, b1.id, b2.id])
+        m.correctShooter(s1.id, to: a1)
+        #expect(got?.0 == s1.id && got?.1 == a1)
+        #expect(m.selectedShotID == s1.id, "selection stays on the corrected shot")
+        #expect(m.selectedShot?.shooter == a1 && m.selectedShot?.team == 0)
+    }
 }
 
 @MainActor private final class FixedAnalysis: ReviewShotAnalysis {

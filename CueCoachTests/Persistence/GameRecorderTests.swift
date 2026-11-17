@@ -364,6 +364,45 @@ import Training
         #expect(try shots(stack).isEmpty)
         #expect(try sessions(stack).isEmpty)
     }
+
+    // MARK: Plan 015 (D49 + D54): correcting a shooter updates or deletes the saved rack
+
+    @Test func correctionAfterSaveUpdatesTheSavedShotAndWinner() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let g = solo(stack)
+        playARack(g)   // A1 pots 1, A1 misses, B1 sinks 8 early → team 0 wins
+        #expect(try games(stack).first?.winnerTeam == 0)
+        // Fix shot 2 (the early 8) to A1: now A1 sank the 8 early, so team 1 wins!
+        let a1Review = ReviewPlayer(id: a1.id, name: a1.name, symbol: a1.symbol, colorName: a1.colorName)
+        _ = try #require(g.correctShooter(shotID: g.shots[2].id, to: a1Review))
+        let saved = try #require(try games(stack).first)
+        #expect(try games(stack).count == 1)
+        #expect(saved.winnerTeam == 1, "D54: flipped winner updates the saved Game")
+        let rows = try shots(stack)
+        #expect(rows[2].shooterID == a1.id && rows[2].attributionSource == .tap)
+    }
+
+    @Test func correctionThatUnfinishesSavedRackDeletesIt() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let nine = GameConfig(ruleSet: .wpaNine, tableSize: .sevenFoot, teams: [[a1], [b1]])
+        let g = GameSessionModel(config: nine)
+        g.recorder = StackGameRecorder(stack: stack)
+        // 3 consecutive fouls by A1 loses the rack in WPA 9-ball (winner = team 1).
+        let foul = ShotOutcome(firstContact: nil)
+        g.shotSettled(SettledShot(rating: .mistake, turnPasses: true, outcome: foul))   // 0: A1 foul #1
+        g.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: ShotOutcome(firstContact: BallID(1)!))) // 1: B1 safe
+        g.shotSettled(SettledShot(rating: .mistake, turnPasses: true, outcome: foul))   // 2: A1 foul #2
+        g.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: ShotOutcome(firstContact: BallID(1)!))) // 3: B1 safe
+        g.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: foul))   // 4: A1 foul #3 → loses!
+        #expect(try games(stack).count == 1)
+        // Fix shot 4's shooter to B1: neither team has 3 consecutive fouls, so the rack has NO winner now!
+        let b1Review = ReviewPlayer(id: b1.id, name: b1.name, symbol: b1.symbol, colorName: b1.colorName)
+        let data = try #require(g.correctShooter(shotID: g.shots[4].id, to: b1Review))
+        #expect(data.winnerTeam == nil && !data.isFinished)
+        #expect(try games(stack).isEmpty, "D54: an un-finished rack is removed so only finished racks stay saved")
+        #expect(try shots(stack).isEmpty)
+        #expect(try sessions(stack).isEmpty)
+    }
 }
 
 /// Throws on its first `fails` calls, then forwards.
