@@ -13,6 +13,7 @@ struct MeshSnapshot: Sendable {
     var undecodable: Int
     var ignoredMessages: Int
     var droppedRealtime: Int
+    var isIsland: Bool = false
 }
 
 /// App-facing mesh (INTERFACES "App-side protocols": `MeshSession`). Works with one phone: a lone phone
@@ -122,7 +123,8 @@ actor MultipeerMeshSession: MeshSession {
     func snapshot() async -> MeshSnapshot {
         MeshSnapshot(role: node.role, term: node.term, roster: node.roster, log: node.log, commitSeq: node.commitSeq,
                      phase: node.phase, clock: node.clock.estimate, undecodable: undecodable,
-                     ignoredMessages: node.ignoredMessages, droppedRealtime: queue.droppedRealtime)
+                     ignoredMessages: node.ignoredMessages, droppedRealtime: queue.droppedRealtime,
+                     isIsland: node.isIsland)
     }
 
     // MARK: private

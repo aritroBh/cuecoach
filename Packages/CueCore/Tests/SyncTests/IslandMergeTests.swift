@@ -287,4 +287,25 @@ struct SeededRNG: RandomNumberGenerator {
         let views = [Self.shot(10), Self.shot(nil), Self.gap(10.2), Self.gap(nil), Self.shot(10.45)]
         for a in views { for b in views { #expect(IslandMerge.sameStroke(a, b) == IslandMerge.sameStroke(b, a)) } }
     }
+
+    /// Plan 013b (D47): when islands disagree on a stroke's outcome, `MergedShot` carries the best differing outcome
+    /// as `alternateOutcome` so the UI can show both versions side by side.
+    @Test func disagreeingIslandsKeepTheBestAlternateOutcome() {
+        let pot = ShotOutcome(firstContact: BallID(1)!, pocketed: [BallID(1)!: .footLeft])
+        let miss = ShotOutcome(firstContact: BallID(1)!)
+        let a = IslandShot(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, strokeTime: 5.0,
+                           preState: Self.layout, outcome: pot, confidence: 1.0)
+        let b = IslandShot(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, strokeTime: 5.1,
+                           preState: Self.layout, outcome: miss, confidence: 0.8)
+        let merged = IslandMerge.merge([[a], [b]])
+        #expect(merged.count == 1)
+        #expect(merged[0].shot.outcome == pot)
+        #expect(merged[0].needsTap)
+        #expect(merged[0].alternateOutcome == miss)
+        // Order-independent:
+        #expect(IslandMerge.merge([[b], [a]]) == merged)
+        // Agreeing views have nil alternateOutcome:
+        let agree = IslandMerge.merge([[a], [IslandShot(id: UUID(), strokeTime: 5.1, preState: Self.layout, outcome: pot, confidence: 0.9)]])
+        #expect(!agree[0].needsTap && agree[0].alternateOutcome == nil)
+    }
 }

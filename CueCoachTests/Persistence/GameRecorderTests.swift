@@ -238,9 +238,9 @@ import Training
         #expect(try games(stack).isEmpty)
     }
 
-    /// Plan 013a: an island never writes, even if its fold has a winner; its own settles show provisional badges (D48).
-    /// Once healed (merged, not an island, quorum back) the next commit saves the rack once.
-    @Test func islandShowsAProvisionalBadgeAndWritesNothing() throws {
+    /// Plan 013b (D48, D51): an island shows provisional badges and saves its finished rack flagged `isUnconfirmed`;
+    /// once healed (not an island, quorum back) the next commit upgrades that same row to confirmed (`isUnconfirmed == false`).
+    @Test func islandShowsProvisionalBadgeSavesUnconfirmedAndConfirmsOnHeal() throws {
         let stack = try PersistenceStack(inMemory: true)
         let g = solo(stack)
         let link = FakeGameMeshLink(isHost: true)
@@ -252,12 +252,13 @@ import Training
         g.shotSettled(SettledShot(rating: .blunder, turnPasses: true, outcome: Self.eightEarly))
         link.commit()
         #expect(g.reviewData().winnerTeam == 1)
-        #expect(try games(stack).isEmpty)
-        #expect(try shots(stack).isEmpty)
-        #expect(try sessions(stack).isEmpty)
+        #expect(g.reviewData().isUnconfirmed)
+        #expect(try games(stack).count == 1)
+        #expect(try games(stack).first?.isUnconfirmed == true, "D51: island saves finished rack flagged unconfirmed")
         link.isIsland = false
         link.commit()
-        #expect(try games(stack).count == 1, "healed: saved once")
+        #expect(try games(stack).count == 1, "healed: still one row, upgraded in place")
+        #expect(try games(stack).first?.isUnconfirmed == false)
         link.commit()
         #expect(try games(stack).count == 1)
     }
@@ -442,10 +443,9 @@ import Training
 
     func gameCount(_ stack: PersistenceStack) throws -> Int { try stack.competitiveContext.fetchCount(FetchDescriptor<Game>()) }
 
-    /// Plan 013a head decision: the lone survivor of a silent two-phone split is an island. It commits nothing (no
-    /// strict majority of the game's members), so its rack never wins on the log and nothing is saved. Was
-    /// `loneSurvivorOfATwoPhoneGameCommitsTheWinButNeverSaves`.
-    @Test func loneSurvivorOfATwoPhoneGameIsAnIslandAndNeverSaves() async throws {
+    /// Plan 013b (D51): the lone survivor of a silent two-phone split is an island; it folds its provisional island
+    /// tail locally and saves its finished rack flagged `isUnconfirmed == true` (excluded from stats until confirmed).
+    @Test func loneSurvivorOfATwoPhoneGameSavesUnconfirmedRack() async throws {
         let hub = MemoryHub()
         let sessions = [MeshGameLinkTests.session(hub, device: 18), MeshGameLinkTests.session(hub, device: 16)]
         let links = sessions.map { MeshGameLink(session: $0) }
@@ -457,9 +457,13 @@ import Training
         hub.kill(sessions[0].localPeer)                 // silent: no goodbye
         #expect(await poll(4) { links[1].isHost && links[1].isIsland })
         playARack(g)
-        #expect(!(await poll(1.5) { g.reviewData().winnerTeam != nil }), "an island commits nothing")
+        #expect(await poll(3) { g.reviewData().winnerTeam == 1 && g.reviewData().isUnconfirmed })
         #expect(!links[1].hasGameQuorum)
-        #expect(try gameCount(stack) == 0)
+        #expect(await poll(2) { (try? self.gameCount(stack)) == 1 })
+        let saved = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first)
+        #expect(saved.isUnconfirmed == true)
+        try StackGameRecorder(stack: stack).confirmGame(id: saved.id)
+        #expect(saved.isUnconfirmed == false, "D53: one-tap confirm clears isUnconfirmed")
         links[0].stop(); links[1].stop()
     }
 

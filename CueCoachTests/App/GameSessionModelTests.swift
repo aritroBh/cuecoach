@@ -650,6 +650,43 @@ import Engine
         s.mesh = nil   // even after endGame clears the link, a session that was a joiner never corrects
         #expect(s.correctShooter(shotID: id, to: b1Review) == nil)
     }
+
+    // MARK: Plan 013b (D47, D48, D52): outcome dispute resolution + provisional badge replacement
+
+    @Test func resolveOutcomeReplaysFromDisputedShotAndClearsNeedsTap() throws {
+        let s = teams()
+        let id = UUID()
+        let pot = Self.pot(1)
+        let miss = Self.miss
+        let disputed = MeshShotRecord(shotID: id, shooterTeam: 0, outcome: pot, postState: nil,
+                                      needsTap: true, alternateOutcome: miss)
+        // Solo event stream via FakeGameMeshLink:
+        let (hostGame, link) = meshGame(host: true)
+        link.receive(entries([.shot(disputed), record(Self.miss, rating: .okay, id: UUID())]), commitSeq: 2)
+        #expect(hostGame.pendingDispute?.id == id)
+        #expect(hostGame.shots[0].pocketed == [BallID(1)!: .footLeft])
+        #expect(hostGame.shots[1].shooter == a1, "before resolution: A1 kept table after potting 1")
+        _ = hostGame.resolveOutcome(shotID: id, outcome: miss)
+        link.commit()
+        #expect(hostGame.pendingDispute == nil)
+        #expect(!hostGame.shots[0].needsTap && hostGame.shots[0].alternateOutcome == nil)
+        #expect(hostGame.shots[0].pocketed.isEmpty)
+        #expect(hostGame.shots[1].shooter == b1, "after picking miss: turn passed to B1 on shot 1")
+        _ = s
+    }
+
+    @Test func provisionalIslandBadgeIsReplacedByConfirmedBadgeOnHeal() {
+        let (s, link) = meshGame(host: true)
+        link.isIsland = true
+        s.shotSettled(SettledShot(rating: .good, turnPasses: false, outcome: Self.pot(1)))
+        #expect(s.badge.current?.isProvisional == true)
+        let firstShotID = link.log[0].event
+        _ = firstShotID
+        // Reconnect: same shotID commits with `isIsland == false` → non-provisional badge replaces provisional (D48).
+        link.isIsland = false
+        link.commit()
+        #expect(s.badge.current?.isProvisional == false)
+    }
 }
 
 

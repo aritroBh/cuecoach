@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Training
 import Engine
+import Rules
 
 enum ShellRoute: Hashable { case gameHub, newGame, joinNearby, training }
 
@@ -57,6 +58,12 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
     func handTurn(toTeam team: Int) {
         guard !isAiming else { return }
         game?.handTurn(toTeam: team)
+    }
+
+    /// D47/D52 (plan 013b): one-tap pick between two disagreeing island outcomes, between shots only.
+    func resolveDispute(shotID: UUID, outcome: Rules.ShotOutcome) {
+        guard !isAiming else { return }
+        game?.resolveOutcome(shotID: shotID, outcome: outcome)
     }
 
     /// A game shot settled and was rated, with what the Rules engine saw (kept for Game Review).
@@ -116,6 +123,20 @@ final class AppRouter {
         m.onDone = { [weak self] in self?.finishReview() }
         if canCorrect {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
+            m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
+            if let rec = recorder {
+                m.onConfirmGame = { [weak game, weak rec] in
+                    guard let gid = game?.shots.first?.id else { return nil }
+                    try? rec?.confirmGame(id: gid)
+                    var d = game?.reviewData()
+                    d?.isUnconfirmed = false
+                    return d
+                }
+                m.onDeleteGame = { [weak self, weak game, weak rec] in
+                    if let gid = game?.shots.first?.id { try? rec?.deleteGame(id: gid) }
+                    self?.finishReview()
+                }
+            }
         }
         stage = .review(m)
         Task { await m.load() }   // the link stops even if the review is never shown
@@ -125,8 +146,9 @@ final class AppRouter {
     private func review(_ data: GameReviewData, game: GameSessionModel) -> GameReviewModel {
         let m = GameReviewModel(data: data)
         m.onDone = { [weak self] in self?.finishReview() }
-        if !game.everJoiner {
+        if !game.isJoinerSession {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
+            m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
         }
         return m
     }

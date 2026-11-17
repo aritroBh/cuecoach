@@ -1170,12 +1170,16 @@ enum IslandHeal {
         var primary: Set<Ref> = []
         var firstOf: [UUID: Ref] = [:]
         var flagWanted: Set<UUID> = [], flagHave: Set<UUID> = []
+        var altByID: [UUID: ShotOutcome] = [:]
         for (k, l) in islands.enumerated() {
             for (j, e) in l.enumerated() {
                 guard let id = id(e) else { continue }
-                if case .shot(let r) = e, r.needsTap {
-                    flagWanted.insert(id)
-                    if k <= 1 { flagHave.insert(id) }
+                if case .shot(let r) = e {
+                    if let alt = r.alternateOutcome, altByID[id] == nil { altByID[id] = alt }
+                    if r.needsTap {
+                        flagWanted.insert(id)
+                        if k <= 1 { flagHave.insert(id) }
+                    }
                 }
                 if firstOf[id] == nil { firstOf[id] = Ref(k: k, j: j); primary.insert(Ref(k: k, j: j)) }
             }
@@ -1205,19 +1209,26 @@ enum IslandHeal {
         var amendments: [GameEvent] = []
         for (g, members) in groups.enumerated() {
             let shots = members.compactMap { r -> (Ref, MeshShotRecord)? in if case .shot(let x) = event(r) { (r, x) } else { nil } }
+            func rankShot(_ a: (Ref, MeshShotRecord), _ b: (Ref, MeshShotRecord)) -> Bool {
+                let ca = a.1.isGuess ? 0.5 : 1.0, cb = b.1.isGuess ? 0.5 : 1.0
+                return ca != cb ? ca < cb : a.1.shotID.uuidString > b.1.shotID.uuidString
+            }
             let disagree = Set(shots.map(\.1.outcome)).count > 1 || shots.contains { flagWanted.contains($0.1.shotID) }
             if let c = members.first(where: { $0.k == 0 }) {
                 guard disagree, case .shot(var r) = event(c), !flagHave.contains(r.shotID) else { continue }
                 r.needsTap = true
+                r.alternateOutcome = shots.filter { $0.1.outcome != r.outcome }.max(by: rankShot)?.1.outcome
+                    ?? shots.compactMap { altByID[$0.1.shotID] }.first(where: { $0 != r.outcome }) ?? r.alternateOutcome
                 if gTime(g) == nil { amendments.append(.shot(r)) } else { emit[g] = .shot(r) }
                 continue
             }
-            if let best = shots.max(by: { a, b in
-                let ca = a.1.isGuess ? 0.5 : 1.0, cb = b.1.isGuess ? 0.5 : 1.0
-                return ca != cb ? ca < cb : a.1.shotID.uuidString > b.1.shotID.uuidString
-            }) {
+            if let best = shots.max(by: rankShot) {
                 var r = disagree ? best.1 : (shots.first { $0.0.k == 1 }?.1 ?? best.1)
                 r.needsTap = r.needsTap || disagree
+                if r.needsTap {
+                    r.alternateOutcome = shots.filter { $0.1.outcome != r.outcome }.max(by: rankShot)?.1.outcome
+                        ?? shots.compactMap { altByID[$0.1.shotID] }.first(where: { $0 != r.outcome }) ?? r.alternateOutcome
+                }
                 emit[g] = .shot(r)
             } else if let gap = members.first(where: { $0.k == 1 }) ?? members.first {
                 emit[g] = event(gap)

@@ -68,6 +68,8 @@ struct BackupV1: Codable, Equatable, Sendable {
         var startedAt: Date
         var endedAt: Date?
         var updatedAt: Date
+        /// D51 (plan 013b): optional so backups written before V4 decode as false; nil/false omitted when confirmed.
+        var isUnconfirmed: Bool? = nil
     }
 
     struct ShotDTO: Codable, Equatable, Sendable {
@@ -97,6 +99,10 @@ struct BackupV1: Codable, Equatable, Sendable {
         var updatedAt: Date
         /// D43. Optional so a file written before Competitive V3 (no key) still decodes; missing means false.
         var isGuess: Bool? = nil
+        /// D47 / D55 (Competitive V4): optional on wire/backup.
+        var needsTap: Bool? = nil
+        var alternateOutcome: ShotOutcome? = nil
+        var alternative: EngineAlternative? = nil
     }
 
     struct Archetype: Codable, Equatable, Sendable {

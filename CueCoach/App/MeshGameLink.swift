@@ -150,7 +150,9 @@ extension GameMeshLink {
                 case .rosterChanged(let roster): self?.peerCount = max(1, roster.count); self?.see(roster)
                 case .roleChanged(let role, _): self?.resolve(role)
                 case .logChanged: await self?.forwardCommitted(from: s)
-                case .island(let i): self?.isIsland = i
+                case .island(let i):
+                    self?.isIsland = i
+                    await self?.forwardCommitted(from: s)
                 case .settleAbsorbed(let id): self?.confirmAbsorbed(id)
                 default: break
                 }
@@ -158,23 +160,26 @@ extension GameMeshLink {
         }
     }
 
-    /// One fresh snapshot per `logChanged`, forwarded in order; a commit point not newer than the last is dropped.
+    /// One fresh snapshot per `logChanged` / `island`, forwarded in order. Outside an island only committed entries
+    /// (`seq <= commitSeq`) are forwarded (D39); while an island host (`snap.isIsland && snap.role == .host`) the full
+    /// log (committed prefix + provisional island tail) is forwarded so the phone keeps scoring locally (D44, D48, D51).
     private func forwardCommitted(from s: any MeshSession) async {
         let snap = await s.snapshot()
         guard !Task.isCancelled else { return }
+        isIsland = snap.isIsland
         resolve(snap.role)
         see(snap.roster)
         handledLastSeq = max(handledLastSeq, snap.log.last?.seq ?? 0)
         let committed = snap.log.filter { $0.seq <= snap.commitSeq }
-        // Newer commit point, or (plan 013a) the same one over a prefix an island merge rewrote.
-        guard snap.commitSeq > commitSeq || (snap.commitSeq == commitSeq && committed != forwarded) else { return }
+        let visible = (snap.isIsland && snap.role == .host) ? snap.log : committed
+        guard snap.commitSeq > commitSeq || visible != forwarded else { return }
         for entry in committed {
             if let i = unconfirmed.firstIndex(where: { $0.isSameInput(as: entry.event) }) { unconfirmed.remove(at: i) }
         }
         if snap.commitSeq > commitSeq { lastCommitAdvance = Date() }
         commitSeq = snap.commitSeq
-        forwarded = committed
-        onCommittedLog?(committed, snap.commitSeq)
+        forwarded = visible
+        onCommittedLog?(visible, snap.commitSeq)
     }
 
     /// Plan 013a: the node answered this settle with another entry for the same stroke; it will never commit under its
