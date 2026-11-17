@@ -1,14 +1,15 @@
 import SwiftUI
 import Geometry
 import Rules
+import Training
 
 /// The one place that constructs LiveScreen: mode, drill and the hooks that drive `LiveSession` (aim → menu
 /// closed + badge silenced; settled → rating recorded, badge, turn), with the shell's game injected for ratings
 /// and ring legality. Live's own ✕ dismisses; the cover's `onDismiss` maps it (`AppRouter.liveClosed`).
 struct LiveScreenAdapter: View {
-    let session: LiveSession
+    @Bindable var session: LiveSession
     var body: some View {
-        LiveScreen(mode: session.mode.liveMode, drill: session.drill, hooks: Self.hooks(for: session),
+        LiveScreen(mode: session.effectiveMode.liveMode, drill: session.drill, hooks: Self.hooks(for: session),
                    tablePrior: Self.tablePrior(for: session))
     }
 
@@ -22,6 +23,8 @@ struct LiveScreenAdapter: View {
                           aimCancelled: { session.aimCancelled() }, ballsSettled: { session.ballsSettled() },
                           settled: { _, _ in })
         h.settledShot = { session.settled($0) }
+        h.trainingSettled = { session.trainingSettled($0) }
+        h.detectedBalls = { session.detectedBalls($0, tableSize: $1) }
         if session.game != nil { h.shotLost = { session.shotLost() } }
         let game = session.game
         h.currentGame = { game?.rules }
@@ -75,7 +78,16 @@ struct InGameChrome: View {
                 if let game = session.game, game.hasLineup {
                     TurnDiscs(game: game, reduceMotion: reduce || forced) { session.handTurn(toTeam: $0) }
                 }
+                if session.menuAvailable, !menuOpen, let training = session.training, !training.matchedGhosts.isEmpty {
+                    TrainingSetupGhostRow(matched: training.matchedGhosts)
+                }
                 Spacer()
+                // Solo Training post-shot tendency card (≤ 2 words + visual glyph, zero numbers, hidden while aiming).
+                if session.menuAvailable, !menuOpen, let training = session.training,
+                   let fb = training.activeFeedback {
+                    TrainingFeedbackBanner(feedback: fb) { training.dismissFeedback() }
+                        .padding(.bottom, 68)
+                }
                 // D47/D52: icon-only side-by-side ball-glyph picker when reconnected phones disagreed on a shot;
                 // strictly hidden while aiming or when the menu is open (SPEC §2: no text/clutter while aiming).
                 if session.menuAvailable, !menuOpen, let game = session.game, let dispute = game.pendingDispute,
@@ -266,10 +278,10 @@ struct ShotDisputeBanner: View {
 
     private func optionButton(_ outcome: ShotOutcome, id: String) -> some View {
         let balls = outcome.pocketed.keys.filter { !$0.isCue }.sorted()
-        let scratched = outcome.pocketed[.cue] != nil || outcome.cueOffTable
+        let scratched = outcome.pocketed[.cue] != nil || outcome.offTable.contains(.cue)
         return Button { onPick(outcome) } label: {
             HStack(spacing: 6) {
-                ForEach(balls.prefix(3), id: \.self) { ReviewBallGlyph(ball: $0, size: 28) }
+                ForEach(balls.prefix(3), id: \.self) { ReviewBallGlyph(ball: $0) }
                 if scratched {
                     Image(systemName: "xmark.octagon.fill")
                         .font(AXGlyph.font(22, .semibold))
@@ -296,5 +308,76 @@ struct ShotDisputeBanner: View {
         var parts = [balls.isEmpty ? "Nothing pocketed" : "Pocketed " + balls.map { "\($0.number)" }.joined(separator: ", ")]
         if scratched { parts.append("Scratch") }
         return parts.joined(separator: ". ")
+    }
+}
+
+/// Icon-only setup ghost indicator for Solo Training (`SetupMatcher` circles turn `AXLive.legal` when matched).
+struct TrainingSetupGhostRow: View {
+    let matched: [Bool]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(Array(matched.enumerated()), id: \.offset) { _, isMatched in
+                Circle()
+                    .fill(isMatched ? AXLive.legal : AXLive.stage.opacity(0.4))
+                    .frame(width: 18, height: 18)
+                    .overlay(Circle().strokeBorder(isMatched ? AXLive.legal : AXLive.aim.opacity(0.75), lineWidth: 2))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Capsule().fill(AXLive.chip.opacity(0.8)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(matched.allSatisfy { $0 } ? "Setup ready" : "Place balls on ghost circles")
+        .accessibilityIdentifier("chrome.training.setup")
+    }
+}
+
+/// Post-shot visual tendency coaching banner (SPEC §10: visual glyph + ≤2 words, zero numbers, hidden while aiming).
+struct TrainingFeedbackBanner: View {
+    let feedback: Feedback
+    let onDismiss: () -> Void
+
+    var body: some View {
+        Button(action: onDismiss) {
+            HStack(spacing: 12) {
+                visualGlyph
+                Text(feedback.label)
+                    .axFont(.headline)
+                    .foregroundStyle(AXLive.aim)
+                Image(systemName: "xmark")
+                    .font(AXGlyph.font(14, .semibold))
+                    .foregroundStyle(AXLive.aim.opacity(0.65))
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 52)
+            .background(Capsule().fill(AXLive.chip.opacity(0.92)))
+            .overlay(Capsule().strokeBorder(AXLive.caution.opacity(0.7), lineWidth: 1.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityLabel("Tendency: \(feedback.label). Tap to dismiss.")
+        .accessibilityIdentifier("chrome.training.feedback")
+    }
+
+    @ViewBuilder private var visualGlyph: some View {
+        switch feedback.visual {
+        case .averageLineVsCorrect:
+            Image(systemName: "angle")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        case .missHeatmap:
+            Image(systemName: "circle.dotted.and.circle")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        case .arrow(let dir):
+            Image(systemName: dir == .softer || dir == .shorter ? "arrow.down.circle.fill" : "arrow.up.circle.fill")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        case .spinDotVsIntended:
+            Image(systemName: "circle.circle.fill")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        }
     }
 }

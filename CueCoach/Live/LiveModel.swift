@@ -324,20 +324,28 @@ final class LiveModel {
         shotSettledNoAim = true
         hooks.gameAdvanced(result.nextState)
         legalChanged(eng.legalTargets(result.nextState))
+        func identified(_ s: [Int: Vec2]) -> [BallID: Vec2] {
+            var out: [BallID: Vec2] = [:]
+            for (tid, p) in s { if let id = ids[tid] { out[id] = p } }
+            return out
+        }
+        let shotOutcome = RuleRating.outcome(record, ids: ids, pocketTimes: pocketTimes)
         if mode == .game {
-            // Unidentified tracks are dropped, like RuleRating.outcome (D29).
-            func identified(_ s: [Int: Vec2]) -> [BallID: Vec2] {
-                var out: [BallID: Vec2] = [:]
-                for (tid, p) in s { if let id = ids[tid] { out[id] = p } }
-                return out
-            }
             hooks.settledShot(SettledShot(rating: rating, turnPasses: result.turnPasses,
                                           pocketed: RuleRating.outcome(record, ids: ids).pocketed,
                                           fouls: result.fouls, isGuess: guessed,
                                           before: identified(record.preState), after: identified(record.finalState),
-                                          outcome: RuleRating.outcome(record, ids: ids, pocketTimes: pocketTimes)))
+                                          outcome: shotOutcome))
             showBadge(BadgeStyle.of(rating))
         } else {
+            let madeObject = shotOutcome.pocketed.keys.contains { !$0.isCue } && result.fouls.isEmpty
+            let targetPocket = shotOutcome.pocketed.first(where: { !$0.key.isCue })?.value ?? .footRight
+            hooks.trainingSettled(SettledTrainingShot(
+                made: madeObject,
+                before: identified(record.preState),
+                after: identified(record.finalState),
+                targetPocket: targetPocket,
+                tableSize: tableSize ?? tablePrior ?? .sevenFoot))
             hooks.ballsSettled()
         }
     }
@@ -472,6 +480,9 @@ final class LiveModel {
         ballCount = r.confirmed.count
         atRest = r.atRest
         aim = r.aim
+        if mode != .game {
+            hooks.detectedBalls(r.confirmed.map(\.position), tableSize ?? tablePrior)
+        }
         drive(r)
         detectMs = detectMs * 0.8 + r.detectMs * 0.2
         if let m = CoreMLBallInference.shared {

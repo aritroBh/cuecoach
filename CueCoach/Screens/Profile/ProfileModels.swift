@@ -70,6 +70,8 @@ struct GameSummary: Equatable, Sendable, Identifiable {
     var index: Int
     /// nil = unfinished.
     var won: Bool?
+    /// D51: finished on an island without quorum; excluded from stats until confirmed.
+    var isUnconfirmed: Bool = false
 }
 
 struct SessionSummary: Equatable, Sendable, Identifiable {
@@ -179,11 +181,13 @@ struct ArchetypeTagInfo: Equatable, Sendable {
 enum ArchetypeAxis {
     static let names: [String: String] = [
         "cut": "Cut", "long": "Long", "bank": "Banks", "side": "Side", "clutch": "Clutch",
-        "safety": "Safety", "break": "Break", "runout": "Run-outs",
+        "safety": "Safety", "break": "Break", "breakPower": "Break",
+        "runout": "Run-outs", "runOut": "Run-outs", "pot": "Pot %", "position": "Position",
     ]
     static let symbols: [String: String] = [
         "cut": "scope", "long": "arrow.up.right", "bank": "arrow.turn.up.right", "side": "circle.dotted",
-        "clutch": "snowflake", "safety": "shield.lefthalf.filled", "break": "burst.fill", "runout": "repeat",
+        "clutch": "snowflake", "safety": "shield.lefthalf.filled", "break": "burst.fill", "breakPower": "burst.fill",
+        "runout": "repeat", "runOut": "repeat", "pot": "circle.grid.cross", "position": "target",
     ]
     static func name(_ key: String) -> String { names[key] ?? key.prefix(1).uppercased() + key.dropFirst() }
 }

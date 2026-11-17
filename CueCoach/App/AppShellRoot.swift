@@ -65,7 +65,7 @@ struct ShellMain: View {
         .environment(\.shellNoLoops, env.noLoops)
         .environment(\.sbForceReduceMotion, env.reduceMotion)
         .cueCoachTheme()
-        .onAppear { router.meshFactory = env.meshFactory; router.recorder = env.recorder }
+        .onAppear { router.meshFactory = env.meshFactory; router.recorder = env.recorder; router.stack = env.stack }
         #if DEBUG
         .task { await ShellAutopilot.run(env: env, router: router) }
         #endif
@@ -122,8 +122,58 @@ struct ShellMain: View {
             SettingsView(model: SettingsViewModel(store: env.settings, measurement: env.measurement, defaults: env.defaults))
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { router.sheet = nil }.accessibilityIdentifier("sheet.done") } }
         case .profile:
-            ProfileSheet(model: ProfileEntryModel(store: env.owners))
+            ProfileSheet(model: ProfileEntryModel(store: env.owners), stack: env.stack)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { router.sheet = nil }.accessibilityIdentifier("sheet.done") } }
+        }
+    }
+}
+
+/// Reviewed game wrapper for `fullScreenCover(item:)` from Profile History.
+private struct PresentedHistoryGame: Identifiable {
+    let id: UUID
+    let model: GameReviewModel
+}
+
+private struct OwnerProfileHost: View {
+    let owner: ShellPlayer
+    let ownerStore: any OwnerStore
+    let stack: PersistenceStack?
+    @State private var vm: PlayerProfileViewModel
+    @State private var openedGame: PresentedHistoryGame?
+
+    init(owner: ShellPlayer, ownerStore: any OwnerStore, stack: PersistenceStack?) {
+        self.owner = owner
+        self.ownerStore = ownerStore
+        self.stack = stack
+        if let stack {
+            self._vm = State(initialValue: PlayerProfileViewModel(
+                playerID: owner.id,
+                stats: PersistenceProfileStatsSource(stack: stack),
+                training: PersistenceTrainingSource(stack: stack)))
+        } else {
+            self._vm = State(initialValue: PlayerProfileViewModel(
+                playerID: owner.id,
+                stats: OwnerOnlyStats(owner: owner, store: ownerStore),
+                training: SampleTrainingSource(drills: [], bias: nil)))
+        }
+    }
+
+    var body: some View {
+        PlayerProfileView(model: vm)
+            .onAppear { wireOpenGame() }
+            .fullScreenCover(item: $openedGame) { item in
+                GameReviewView(model: item.model)
+            }
+    }
+
+    private func wireOpenGame() {
+        guard let stack else { return }
+        vm.onOpenGame = { gameID in
+            let reviewModel = PersistedGameReviewEditor.makeModel(
+                stack: stack, gameID: gameID,
+                onChanged: { Task { await vm.load() } },
+                onDismiss: { openedGame = nil })
+            openedGame = PresentedHistoryGame(id: gameID, model: reviewModel)
         }
     }
 }
@@ -131,12 +181,13 @@ struct ShellMain: View {
 /// The owner's profile, or a one-field "your name" form when this phone has no owner yet.
 struct ProfileSheet: View {
     @State var model: ProfileEntryModel
+    var stack: PersistenceStack? = nil
     @State private var name = ""
 
     var body: some View {
         if let owner = model.owner {
-            PlayerProfileView(model: PlayerProfileViewModel(playerID: owner.id, stats: OwnerOnlyStats(owner: owner, store: model.ownerStore),
-                                                            training: SampleTrainingSource(drills: [], bias: nil)))
+            OwnerProfileHost(owner: owner, ownerStore: model.ownerStore, stack: stack)
+                .id(owner.id)
         } else {
             ZStack {
                 ShellBackground()

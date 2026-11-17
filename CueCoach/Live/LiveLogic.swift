@@ -493,6 +493,9 @@ struct LiveHooks {
     /// Live hands the shell a sink into the same `setLegal` its pipeline uses after a settled shot, so ring legality
     /// changed by the shell between shots (one-tap turn hand-over) reaches the rings at once.
     var legalSink: @MainActor (@escaping @MainActor (Set<BallID>) -> Void) -> Void = { _ in }
+    /// Solo Training: settled attempt payload + live detected ball positions for `SetupMatcher`.
+    var trainingSettled: @MainActor (SettledTrainingShot) -> Void = { _ in }
+    var detectedBalls: @MainActor ([Vec2], TableSize?) -> Void = { _, _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

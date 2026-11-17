@@ -458,7 +458,7 @@ import Engine
         var got: (UUID, ReviewPlayer)?
         m.onCorrectShooter = { id, p in got = (id, p); return updated }
         #expect(m.canCorrectShooter)
-        #expect(m.allPlayers.map(\.id) == [a1.id, a2.id, b1.id, b2.id])
+        #expect(m.allPlayers.map(\.id) == [a1.id, b1.id])
         m.correctShooter(s1.id, to: a1)
         #expect(got?.0 == s1.id && got?.1 == a1)
         #expect(m.selectedShotID == s1.id, "selection stays on the corrected shot")

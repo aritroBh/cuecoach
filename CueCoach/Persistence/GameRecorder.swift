@@ -88,7 +88,7 @@ extension RecordedShot {
                   preState: pre, postState: post, calledPocket: nil, firstContact: s.firstContact,
                   railsAfterContact: 0, pocketed: s.pocketed, fouls: s.fouls, features: StoredShotFeatures(features),
                   made: made, onTarget: made, cueResult: .notApplicable, decisionRating: rating,
-                  executionRating: ExecutionRating(result: made ? .made : .miss, position: .notApplicable),
+                  executionRating: s.executionRating ?? ExecutionRating(result: made ? .made : .miss, position: .notApplicable),
                   wpaDelta: s.wpaDelta, isClutch: s.isClutch, timeOnShot: -1, clipRef: s.clipRef,
                   isGuess: s.isGuess, needsTap: s.needsTap, alternateOutcome: s.alternateOutcome,
                   alternative: s.alternative)

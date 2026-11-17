@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Geometry
 import Training
 import Engine
 import Rules
@@ -14,14 +15,18 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
     let mode: ShellLiveMode
     let game: GameSessionModel?
     let drill: DrillID?
+    let training: TrainingSessionController?
     /// From aim start until the balls settle (or the aim is cancelled). No text may appear: the menu
     /// closes and can't open (SPEC §2).
     private(set) var isAiming = false
     private var menuOpen = false
 
-    init(mode: ShellLiveMode, game: GameSessionModel?, drill: DrillID?) {
-        self.mode = mode; self.game = game; self.drill = drill
+    init(mode: ShellLiveMode, game: GameSessionModel?, drill: DrillID?,
+         training: TrainingSessionController? = nil) {
+        self.mode = mode; self.game = game; self.drill = drill; self.training = training
     }
+
+    var effectiveMode: ShellLiveMode { training.map { .training($0.level) } ?? mode }
 
     var menuAvailable: Bool { !isAiming }
     var isMenuOpen: Bool {
@@ -71,6 +76,15 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
         isAiming = false
         game?.shotSettled(shot)
     }
+
+    func trainingSettled(_ shot: SettledTrainingShot) {
+        isAiming = false
+        training?.recordAttempt(shot)
+    }
+
+    func detectedBalls(_ balls: [Vec2], tableSize: TableSize?) {
+        training?.updateDetectedBalls(balls, tableSize: tableSize)
+    }
 }
 
 /// What fills the full-screen cover above the navigation stack.
@@ -90,6 +104,8 @@ final class AppRouter {
     @ObservationIgnored var meshFactory: ((UInt16) -> any GameMeshLink)?
     /// Saves each game's finished rack (production: `StackGameRecorder`; nil = nothing is saved).
     @ObservationIgnored var recorder: (any GameRecorder)?
+    /// Backing persistence stack for Training (`Training.store`), Identity (`Recognition.store`), and Clips.
+    @ObservationIgnored var stack: PersistenceStack?
 
     func openGame() { path = [.gameHub] }
     func openNewGame() { path = [.gameHub, .newGame] }
@@ -100,6 +116,7 @@ final class AppRouter {
         if case .live(let old)? = stage { old.game?.mesh?.stop(); old.game?.mesh = nil }
         let game = GameSessionModel(config: config)
         game.recorder = recorder
+        game.engineEvaluator = SessionEngineEvaluator()
         if let tag = config.sessionTag, let link = meshFactory?(tag) {
             link.start()
             game.mesh = link
@@ -108,7 +125,8 @@ final class AppRouter {
     }
 
     func startTraining(drill: DrillID, level: AssistLevel) {
-        stage = .live(LiveSession(mode: .training(level), game: nil, drill: drill))
+        let controller = TrainingSessionController(drill: drill, initialLevel: level, stack: stack)
+        stage = .live(LiveSession(mode: .training(level), game: nil, drill: drill, training: controller))
     }
 
     /// End game (menu) → review. Ignored in Training or when nothing is live, so a repeat is a no-op.
@@ -150,6 +168,10 @@ final class AppRouter {
             m.onCorrectShooter = { [weak game] id, player in game?.correctShooter(shotID: id, to: player) }
             m.onResolveOutcome = { [weak game] id, outcome in game?.resolveOutcome(shotID: id, outcome: outcome) }
         }
+        Task { @MainActor [weak game, weak m] in
+            await game?.awaitEngineEvaluation()
+            if let next = game?.reviewData() { m?.refresh(next) }
+        }
         return m
     }
 
@@ -187,7 +209,10 @@ final class AppRouter {
         if let result { return await result.value }
         let (game, link, deadline) = (game, link, deadline)
         let task = Task {
-            let drained = Task { await link.drain(until: deadline) }
+            let drained = Task {
+                await link.drain(until: deadline)
+                await game.awaitEngineEvaluation()
+            }
             let cap = Task {   // a drain that overruns is cancelled at the deadline
                 try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
                 drained.cancel()

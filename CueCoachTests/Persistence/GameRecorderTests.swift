@@ -389,7 +389,7 @@ import Training
         let g = GameSessionModel(config: nine)
         g.recorder = StackGameRecorder(stack: stack)
         // 3 consecutive fouls by A1 loses the rack in WPA 9-ball (winner = team 1).
-        let foul = ShotOutcome(firstContact: nil)
+        let foul = ShotOutcome(noContact: true)
         g.shotSettled(SettledShot(rating: .mistake, turnPasses: true, outcome: foul))   // 0: A1 foul #1
         g.shotSettled(SettledShot(rating: .okay, turnPasses: true, outcome: ShotOutcome(firstContact: BallID(1)!))) // 1: B1 safe
         g.shotSettled(SettledShot(rating: .mistake, turnPasses: true, outcome: foul))   // 2: A1 foul #2

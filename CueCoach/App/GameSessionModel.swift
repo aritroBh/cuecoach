@@ -27,6 +27,7 @@ struct SessionShot: Hashable, Sendable {
     var alternateOutcome: ShotOutcome? = nil
     /// Engine / Highlight enrichments (D55).
     var outcome: ShotOutcome = ShotOutcome()
+    var executionRating: ExecutionRating? = nil
     var wpaDelta: Double = 0
     var isClutch = false
     var clipRef: String? = nil
@@ -99,6 +100,13 @@ final class GameSessionModel {
     @ObservationIgnored private var lastSaved: FinishedGame?
     /// Folded shots up to and including the one that gave the rack its winner (the saved rack's boundary).
     @ObservationIgnored private var winningShotCount: Int?
+    /// Background `CueCore/Engine.ShotEngine` evaluator (wired by `AppRouter.startGame` or tests).
+    @ObservationIgnored var engineEvaluator: SessionEngineEvaluator?
+    @ObservationIgnored private var engineSummary: SessionEngineSummary?
+    @ObservationIgnored private var engineTask: Task<Void, Never>?
+    @ObservationIgnored private var engineGeneration = 0
+    /// Relative clip file paths by `shotID`, recorded locally or received over mesh.
+    @ObservationIgnored private(set) var shotClipFiles: [UUID: String] = [:]
 
     init(config: GameConfig) {
         self.config = config
@@ -251,6 +259,7 @@ final class GameSessionModel {
         let changed = committed != events   // by content: an island merge can rewrite without growing (Codex P2-9)
         events = committed
         fold()
+        applyCachedEnrichments()
         if mesh?.isIsland == true {
             let unseen = shots.filter { !provisionalBadged.contains($0.id) && !badged.contains($0.id) }
             provisionalBadged.formUnion(unseen.map(\.id))
@@ -270,6 +279,7 @@ final class GameSessionModel {
         // Any newly committed event can move the rules state or the shooter: Live's rings follow the fold.
         if changed { pushLegal() }
         saveIfWon()
+        if changed { scheduleEngineEvaluation() }
     }
 
     /// D45: the commit that gives the rack its winner saves it, on the one writer: solo, or the host with game quorum.
@@ -417,12 +427,65 @@ final class GameSessionModel {
               let format = GameFormat.allCases.first(where: { $0.playersPerTeam == config.playersPerTeam }),
               config.teams.allSatisfy({ $0.count == format.playersPerTeam }) else { return nil }
         let teams = config.teams.map { t in StoredTeam(memberIDs: t.map(\.id), shootingOrder: t.map(\.id)) }
+        var sotg = engineSummary?.shotOfGame
+        if let sid = sotg?.shotID, let clip = shotClipFiles[sid] { sotg?.clipFile = clip }
         return FinishedGame(id: first.id, ruleSet: config.ruleSet, tableSize: config.tableSize, format: format,
-                            teams: teams, winnerTeam: winner, winProbSeries: [], startedAt: startedAt,
-                            endedAt: wonAt ?? Date(),
+                            teams: teams, winnerTeam: winner, winProbSeries: engineSummary?.winProbSeries ?? [],
+                            startedAt: startedAt, endedAt: wonAt ?? Date(),
                             shots: shots.prefix(winningShotCount ?? shots.count)
                                 .compactMap { RecordedShot($0, tableSize: config.tableSize) },
-                            isUnconfirmed: isUnconfirmed)
+                            isUnconfirmed: isUnconfirmed, shotOfGame: sotg)
+    }
+
+    private func applyCachedEnrichments() {
+        for i in shots.indices {
+            let sid = shots[i].id
+            if let clip = shotClipFiles[sid] { shots[i].clipRef = clip }
+            if let e = engineSummary?.byShotID[sid], shots[i].rating != nil {
+                shots[i].rating = e.rating
+                shots[i].executionRating = e.executionRating
+                shots[i].wpaDelta = e.wpaDelta
+                shots[i].isClutch = e.isClutch
+                shots[i].alternative = e.alternative
+            }
+        }
+    }
+
+    private func scheduleEngineEvaluation() {
+        guard let evaluator = engineEvaluator, !isJoinerSession,
+              shots.contains(where: { !$0.isGuess && $0.rating != nil && $0.before[.cue] != nil }) else {
+            engineTask?.cancel()
+            engineTask = nil
+            engineSummary = nil
+            return
+        }
+        engineGeneration += 1
+        let gen = engineGeneration
+        engineTask?.cancel()
+        let rackShots = Array(shots.prefix(winningShotCount ?? shots.count))
+        let ruleSet = config.ruleSet
+        let tableSize = config.tableSize
+        let teamsCount = config.teams.count
+        engineTask = Task { @MainActor [weak self] in
+            let summary = await evaluator.evaluateRack(
+                ruleSet: ruleSet, tableSize: tableSize, teamsCount: teamsCount, shots: rackShots)
+            guard !Task.isCancelled, let self, self.engineGeneration == gen else { return }
+            self.engineSummary = summary
+            self.applyCachedEnrichments()
+            self.saveIfWon()
+        }
+    }
+
+    func awaitEngineEvaluation() async {
+        await engineTask?.value
+    }
+
+    func attachClip(shotID: UUID, relativePath: String) {
+        shotClipFiles[shotID] = relativePath
+        if let idx = shots.firstIndex(where: { $0.id == shotID }) {
+            shots[idx].clipRef = relativePath
+        }
+        saveIfWon()
     }
 
     /// D49 (plan 015): fix a recorded shot's shooter from Game Review. Appends `.shooterCorrection`, replays the fold,
@@ -478,8 +541,12 @@ final class GameSessionModel {
         var score = [Int](repeating: 0, count: teams.count)
         if let winner { score[winner] += 1 }
         let unconfirmed = mesh?.isIsland == true || (lastSaved?.isUnconfirmed == true)
+        let sotg = engineSummary?.shotOfGame.map { h in
+            let hasClip = !(shotClipFiles[h.shotID] ?? h.clipFile).isEmpty
+            return ReviewHighlight(shotID: h.shotID, label: h.label, hasClip: hasClip)
+        }
         return GameReviewData(gameIndex: 0, teams: teams, score: score, winnerTeam: winner, isFinished: winner != nil,
-                              winProb: [], shots: reviewShots, shotOfGame: nil, tableSize: config.tableSize,
-                              isUnconfirmed: unconfirmed)
+                              winProb: engineSummary?.winProbSeries ?? [], shots: reviewShots, shotOfGame: sotg,
+                              tableSize: config.tableSize, isUnconfirmed: unconfirmed)
     }
 }

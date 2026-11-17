@@ -64,6 +64,17 @@ public final class GameReviewModel {
         selectedShotID = shotOfGame?.id ?? d.shots.first?.id
     }
 
+    func refresh(_ d: GameReviewData) {
+        let previous = selectedShotID
+        data = d
+        phase = .loaded
+        if let previous, d.shots.contains(where: { $0.id == previous }) {
+            selectedShotID = previous
+        } else {
+            selectedShotID = shotOfGame?.id ?? d.shots.first?.id
+        }
+    }
+
     // MARK: Derived
 
     var shots: [ReviewShot] { data?.shots ?? [] }

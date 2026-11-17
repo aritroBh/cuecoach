@@ -361,6 +361,12 @@ private struct HistoryTab: View {
                         .axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
                 }
                 Spacer(minLength: 8)
+                if s.games.contains(where: \.isUnconfirmed) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .axFont(.label, weight: .semibold)
+                        .foregroundStyle(AX.caution)
+                        .accessibilityLabel("Unconfirmed")
+                }
                 ResultMark(result: s.result)
                 Image(systemName: expanded.contains(s.id) ? "chevron.up" : "chevron.down")
                     .axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
@@ -380,6 +386,12 @@ private struct HistoryTab: View {
         Button { open(g.id) } label: {
             HStack(spacing: 16) {
                 Text("Game \(g.index + 1)").axFont(.body).monospacedDigit().foregroundStyle(AX.ink)
+                if g.isUnconfirmed {
+                    Image(systemName: "wifi.exclamationmark")
+                        .axFont(.label, weight: .semibold)
+                        .foregroundStyle(AX.caution)
+                        .accessibilityLabel("Unconfirmed")
+                }
                 Spacer()
                 ResultMark(result: SessionResult(game: g.won))
                 Image(systemName: "chevron.right").axFont(.label, weight: .semibold).foregroundStyle(AX.inkMuted)
