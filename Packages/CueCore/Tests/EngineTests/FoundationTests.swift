@@ -72,6 +72,26 @@ import Physics
     #expect(p.speed < 1.0)                       // miscue: speed × 0.3
 }
 
+@Test func skill_learnedDefaultsToReferenceForNewPlayersAndAdaptsMonotonically() {
+    // SPEC §5.5(2): default for new players (< minAttempts), per-player noise learned from competitive history.
+    #expect(SkillModel.learned(attempts: 0, makes: 0) == .reference)
+    #expect(SkillModel.learned(attempts: 11, makes: 11) == .reference)
+
+    let low = SkillModel.learned(attempts: 40, makes: 6)
+    let mid = SkillModel.learned(attempts: 40, makes: 22)
+    let high = SkillModel.learned(attempts: 40, makes: 36)
+
+    #expect(low.sigmaAim > mid.sigmaAim && mid.sigmaAim > high.sigmaAim)
+    #expect(low.sigmaSpeedRel > mid.sigmaSpeedRel && mid.sigmaSpeedRel > high.sigmaSpeedRel)
+    #expect(low.sigmaTip > mid.sigmaTip && mid.sigmaTip > high.sigmaTip)
+    #expect(high.sigmaAim >= SkillModel.strong.sigmaAim)
+    #expect(low.sigmaAim <= SkillModel.beginner.sigmaAim)
+
+    let avg = SkillModel.averaged([.beginner, .strong])
+    #expect(abs(avg.sigmaAim - 0.5 * (SkillModel.beginner.sigmaAim + SkillModel.strong.sigmaAim)) < 1e-12)
+    #expect(SkillModel.averaged([]) == .reference)
+}
+
 // MARK: - Geometry helpers
 
 @Test func geometry_clearAndBlockedPaths() {

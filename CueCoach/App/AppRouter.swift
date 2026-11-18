@@ -152,7 +152,10 @@ final class AppRouter {
         reviewedGame = nil
         let game = GameSessionModel(config: config)
         game.recorder = recorder
-        game.engineEvaluator = SessionEngineEvaluator()
+        let learnedSkills = stack.map {
+            PersistenceProfileStatsSource.learnedSkills(in: $0.competitiveContext, excludingGameID: nil)
+        } ?? [:]
+        game.engineEvaluator = SessionEngineEvaluator(skillsByPlayerID: learnedSkills)
         let clipBase = stack?.directory ?? ShotClipStore.defaultBaseDirectory
         game.clipRecorder = ShotClipRecorder(baseDirectory: clipBase)
         if let stack, defaults.bool(forKey: SettingsKeys.recognitionOptIn) {

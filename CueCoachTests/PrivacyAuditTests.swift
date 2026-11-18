@@ -114,6 +114,8 @@ struct PrivacyAuditTests {
             // its Button/Item/ListItem/Avatar open `href` links). The Settings deep link is the only URL we build.
             #"\bAsyncImage\b"#, #"\bLink\s*\(\s*destination"#, #"\bOpenURLAction\b"#, #"\.openURL\b"#,
             #"\bURL\(string:(?!\s*UIApplication\.openSettingsURLString)"#,
+            // SPEC §2, §5.9: FoundationModels is allowed strictly for on-device SystemLanguageModel, never Private Cloud Compute.
+            #"\bPrivateCloudComputeLanguageModel\b"#,
         ]
         // D27: sourced pro profiles cite their source URL as data (never fetched) and the validator checks the
         // "https://" prefix; the API checks still apply to these files.
@@ -158,9 +160,9 @@ struct PrivacyAuditTests {
         "SwiftUI", "UIKit", "CoreGraphics", "QuartzCore", "CoreImage", "Metal", "MetalKit", "RealityKit", "Charts",
         // Persistence (SQLite3 only to VACUUM a migrated store file)
         "SwiftData", "SQLite3",
-        // Perception (on-device)
+        // Perception & on-device Intelligence (SPEC §5.9, D23: Apple Foundation Models text-only @Generable labels)
         "AVFoundation", "AVKit", "Vision", "CoreML", "ARKit", "CoreMotion", "CoreVideo", "CoreMedia", "ImageIO",
-        "UniformTypeIdentifiers", "PhotosUI", "Photos",
+        "UniformTypeIdentifiers", "PhotosUI", "Photos", "FoundationModels",
         // Mesh (CLAUDE.md: MultipeerConnectivity only)
         "MultipeerConnectivity", "CryptoKit",   // CryptoKit: on-device hashing of mesh clip payloads
         // Swift standard library (Mutex)

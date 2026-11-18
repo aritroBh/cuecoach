@@ -701,7 +701,8 @@ final class GameSessionModel {
         let rackShots = Array(shots.prefix(winningShotCount ?? shots.count))
         let ruleSet = config.ruleSet
         let tableSize = config.tableSize
-        let teamsCount = config.teams.count
+        let teams = config.teams
+        let teamsCount = teams.count
         engineTask = Task { @MainActor [weak self] in
             defer {
                 if let self, self.engineGeneration == gen {
@@ -709,7 +710,7 @@ final class GameSessionModel {
                 }
             }
             let summary = await evaluator.evaluateRack(
-                ruleSet: ruleSet, tableSize: tableSize, teamsCount: teamsCount, shots: rackShots)
+                ruleSet: ruleSet, tableSize: tableSize, teamsCount: teamsCount, teams: teams, shots: rackShots)
             guard !Task.isCancelled, let self, self.engineGeneration == gen else { return }
             self.engineSummary = summary
             self.applyCachedEnrichments()
