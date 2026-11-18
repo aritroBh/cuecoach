@@ -127,11 +127,8 @@ final class LiveModel {
     /// `done` runs exactly once.
     /// D42: a second request while finishing forces the end at once.
     func requestEnd(_ done: @escaping @MainActor () -> Void) {
-        if isFinishing {
-            let prev = onFinished
-            onFinished = { prev?(); done() }
-            return forceEnd()
-        }
+        guard !hasEnded else { return }
+        if isFinishing { return forceEnd() }
         guard hasOpenShot else { return end(done) }
         isFinishing = true
         onFinished = done

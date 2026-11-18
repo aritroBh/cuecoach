@@ -508,6 +508,7 @@ import Training
         let (_, m, log) = setup()
         #expect(!m.hasOpenShot)
         m.requestEnd { log.events.append("end") }
+        m.requestEnd { log.events.append("end2") }
         #expect(log.events == ["end"])
     }
 
