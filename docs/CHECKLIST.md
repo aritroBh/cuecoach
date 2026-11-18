@@ -2,7 +2,7 @@
 
 Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 
-## NOW — single source of truth (updated 2026-11-11; everything below is history)
+## NOW — single source of truth (updated 2026-11-18; earlier rounds follow below)
 Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; Antigravity out of quota): integrate serially, one build at a time, head owns all builds; prepare in parallel with `swift test` only.
 
 1. [x] Combined gate: unit 1253/1253; UI 41 + 1 skip, 3 ScreensB failures = the "empty review" sample still held one unrated shot, which D38/plan 008 now shows as a gap → sample emptied, ScreensB 11/11; pushed
@@ -17,6 +17,10 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 8. [x] Plan 005 follow-up MINOR: `.unusualSize` ruler hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift`)
 8a. [x] Full app wiring (`D55`): Profile stats/archetypes/pro-comps/History→Review (`PersistenceProfileSources`), `ShotEngine` live/review evaluation (`SessionEngineEvaluator`) + per-player learned `SkillModel` (`SPEC §5.5(2)`), Apple Foundation Models `@Generable` post-rack SotG labeller with deterministic rule fallback (`FoundationModelLabeller`, `D23` / `SPEC §5.9`), Solo Training loop (`TrainingSessionController` → `Training.store`), opt-in Identity enrollment + live attribution (`IdentityRegistrationSheet`), and rolling SotG `.mp4` clip recorder + in-app `ClipPlayerSheet`
 9. [x] Cross-vendor Codex (`gpt-6.1-sol`, 7 adversarial rounds → `VERDICT: APPROVE`), OpenCode multi-model QA (`iceman-free`, `nemotron-3.5-super-vl-free`, `glm-5.3-flash-free`, `deepseek-v4.1-flash-free`, `big-pickle` → findings fixed & verified), Antigravity 4-agent QA workflow, and full simulator QA pass (`CueCore` 717/717, unit/privacy/theme/migration green, XCUITest 45/45), merged `phase/1-core` → `main`
+
+All 717 CueCore tests passed at `3ed2637`. The full simulator run exposed a duplicate end-game callback when a player closed a settling rack twice. Fixed in `4dcfc1c`. The full CueCoach scheme then passed on the iOS 27 iPhone 15 Pro simulator with 1,458 tests passed, 7 skipped and 0 failed, including 45 passing UI tests. The locally prepared AuraFace model passed its embedding check.
+
+The seven skips cover two device-only Vision tests, the two-phone UI test, the opt-in detector benchmark and three disabled regression tests. The disabled cases cover an embedded NUL in an imported player name, a newer save racing a backup import, and false ball detections with a table frame displaced by 0.5 m.
 
 Blocked on the user / phones (hardware-only; simulator & virtual-table QA complete per D32/D39):
 - [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max (phones currently disconnected)
