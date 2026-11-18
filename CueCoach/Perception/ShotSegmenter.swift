@@ -21,6 +21,10 @@ struct ShotRecord: Sendable, Equatable {
     var uncertainPockets: [Int: Pocket] = [:]
     /// Estimated drop time of each pocketed ball (s, same clock as start/end), for the pocketing order.
     var pocketTimes: [Int: Double] = [:]
+    /// Observed cue-ball launch speed (m/s) before first contact or rail bounce (for Training speed bias).
+    var cueLaunchSpeed: Double? = nil
+    /// Observed initial post-contact departure unit vector per object ball BEFORE any rail bounce (for Training cut bias).
+    var departureDir: [Int: Vec2] = [:]
 
     static func == (a: ShotRecord, b: ShotRecord) -> Bool {
         a.start == b.start && a.end == b.end && a.preState == b.preState && a.finalState == b.finalState
@@ -169,6 +173,26 @@ struct ShotSegmenter: ShotSegmenting {
                 }
             }
         }
+        // Sample free-flight cue launch speed ONLY after the contact check, while every pre-shot object ball is still
+        // visible at its rest anchor with speed <= startSpeed and well clear of the cue ball (so close-range or separated
+        // post-impact frames never record post-collision cue speed as launch speed).
+        let anyObjectMovedOrDisplaced = !moved.subtracting([rec.cueID]).isEmpty
+            || visible.contains(where: { b in
+                guard b.id != rec.cueID else { return false }
+                if b.speed > startSpeed { return true }
+                if let pre = rec.preState[b.id], b.measuredPosition.distance(to: pre) > 0.015 { return true }
+                return false
+            })
+            || rec.preState.keys.contains(where: { id in id != rec.cueID && byID[id] == nil })
+        if rec.firstContact == nil, rec.rails.isEmpty, !anyObjectMovedOrDisplaced,
+           let cue = byID[rec.cueID], cue.speed > movingSpeed {
+            let clearOfObjects = visible.allSatisfy { b in
+                b.id == rec.cueID || cue.measuredPosition.distance(to: b.measuredPosition) > 2 * R + contactSlack + 0.03
+            }
+            if clearOfObjects {
+                rec.cueLaunchSpeed = max(rec.cueLaunchSpeed ?? 0, cue.speed)
+            }
+        }
         // Rails: a moving ball's normal velocity reverses near a cushion nose line.
         for b in visible {
             let p = b.measuredPosition
@@ -184,6 +208,13 @@ struct ShotSegmenter: ShotSegmenting {
             }
             lastVel[b.id] = b.velocity
             lastSeen[b.id] = (p, t)
+            if b.id != rec.cueID,
+               rec.departureDir[b.id] == nil,
+               !rec.rails.contains(where: { $0.id == b.id }),
+               let prePos = rec.preState[b.id],
+               p.distance(to: prePos) >= 0.035 {
+                rec.departureDir[b.id] = (p - prePos).normalized
+            }
             hist[b.id, default: []].append((p, t))
             if hist[b.id]!.count > 4 { hist[b.id]!.removeFirst() }
             if b.speed > movingSpeed { moved.insert(b.id) }

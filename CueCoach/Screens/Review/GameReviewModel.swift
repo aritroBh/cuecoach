@@ -20,6 +20,7 @@ public final class GameReviewModel {
     private(set) var data: GameReviewData?
     private(set) var selectedShotID: UUID?
     var replayMoment: ReplayMoment = .after
+    var activeClip: PresentedClipItem? = nil
 
     @ObservationIgnored private let source: (any GameReviewSource)?
     @ObservationIgnored var onDone: (() -> Void)?
@@ -62,6 +63,17 @@ public final class GameReviewModel {
         data = d
         phase = .loaded
         selectedShotID = shotOfGame?.id ?? d.shots.first?.id
+    }
+
+    func refresh(_ d: GameReviewData) {
+        let previous = selectedShotID
+        data = d
+        phase = .loaded
+        if let previous, d.shots.contains(where: { $0.id == previous }) {
+            selectedShotID = previous
+        } else {
+            selectedShotID = shotOfGame?.id ?? d.shots.first?.id
+        }
     }
 
     // MARK: Derived
@@ -228,6 +240,11 @@ public final class GameReviewModel {
 
     func deleteGame() {
         onDeleteGame?()
+    }
+
+    func presentClip(shotID: UUID, url: URL) {
+        let label = data?.shotOfGame?.label ?? "Shot of the Game"
+        activeClip = PresentedClipItem(id: shotID, url: url, label: label)
     }
 
     func select(_ id: UUID) {

@@ -11,9 +11,11 @@ import Engine
 @MainActor @Observable
 final class LiveModel {
     let editor = CalibrationEditor()
-    let mode: LiveMode
+    var mode: LiveMode
     /// The drill being trained (Line 3 is position play only, D24); nil in a game or standalone.
     var drill: DrillID?
+    var trainingSetupGhosts: [(Vec2, Bool)] = []
+    var trainingPositionZone: Vec2? = nil
     /// What the overlay may draw right now (read live by the views): the aiming set, or (D1) the after-shot set once
     /// the last shot has settled and no aim is open. A new aim (or a relock) hides it again.
     var visibility: OverlayVisibility {
@@ -98,6 +100,7 @@ final class LiveModel {
         var answers: [Int: Bool] = [:]
         /// D31: the shot in flight at a relock.
         var guess: LostShotGuess?
+        var clipToken: UUID? = nil
 
         /// A pocket neither answered nor seen either way (only a forced close meets one).
         var hasUnresolvedPocket: Bool {
@@ -221,6 +224,9 @@ final class LiveModel {
     }
 
     private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
+        let token = UUID()
+        let aheadInFIFO = shots.count
+        hooks.shotPhysicallyEnded(token, aheadInFIFO, record.start, record.end)
         // Every pocketed ball with a rule id gets the look (a jaw-stopped "certain" make is overturned by a sighting);
         // only uncertain ones may be asked.
         let uncertain = record.uncertainPockets.filter { ids[$0.key] != nil }
@@ -232,7 +238,8 @@ final class LiveModel {
             shots[i].verdicts = shots[i].resolver?.frozen() ?? [:]
             shots[i].state = .decided
         }
-        shots.append(ShotEntry(id: newID(), state: all.isEmpty ? .decided : .looking, record: record, ids: ids, resolver: resolver))
+        shots.append(ShotEntry(id: newID(), state: all.isEmpty ? .decided : .looking, record: record, ids: ids,
+                               resolver: resolver, clipToken: token))
     }
 
     /// The newest entry's look sees this frame (its own window only), or is frozen by a later shot or motion.
@@ -301,7 +308,7 @@ final class LiveModel {
             rec.uncertainPockets[tid] = nil
         }
         onCloseForTesting?(e.id, rec, true)
-        shotSettled(rec, ids: e.ids, guessed: guessed)
+        shotSettled(rec, ids: e.ids, guessed: guessed, clipToken: e.clipToken)
     }
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
@@ -315,7 +322,7 @@ final class LiveModel {
     /// A shot ended: rate it through the Rules engine against the shell's game (or the local default), advance the
     /// local copy, tell the shell. The shell owns the real game state; it applies its own result.
     /// `guessed`: a D31 lost shot's best-guess record (the shell's review flags it).
-    func shotSettled(_ record: ShotRecord, ids: [Int: BallID], guessed: Bool = false) {
+    func shotSettled(_ record: ShotRecord, ids: [Int: BallID], guessed: Bool = false, clipToken: UUID? = nil) {
         let (eng, state) = hooks.currentGame() ?? (engine, game)
         let pocketTimes = record.pocketTimes.isEmpty ? nil : record.pocketTimes
         let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state, pocketTimes: pocketTimes)
@@ -324,20 +331,39 @@ final class LiveModel {
         shotSettledNoAim = true
         hooks.gameAdvanced(result.nextState)
         legalChanged(eng.legalTargets(result.nextState))
+        func identified(_ s: [Int: Vec2]) -> [BallID: Vec2] {
+            var out: [BallID: Vec2] = [:]
+            for (tid, p) in s { if let id = ids[tid] { out[id] = p } }
+            return out
+        }
+        let shotOutcome = RuleRating.outcome(record, ids: ids, pocketTimes: pocketTimes)
         if mode == .game {
-            // Unidentified tracks are dropped, like RuleRating.outcome (D29).
-            func identified(_ s: [Int: Vec2]) -> [BallID: Vec2] {
-                var out: [BallID: Vec2] = [:]
-                for (tid, p) in s { if let id = ids[tid] { out[id] = p } }
-                return out
-            }
             hooks.settledShot(SettledShot(rating: rating, turnPasses: result.turnPasses,
                                           pocketed: RuleRating.outcome(record, ids: ids).pocketed,
                                           fouls: result.fouls, isGuess: guessed,
                                           before: identified(record.preState), after: identified(record.finalState),
-                                          outcome: RuleRating.outcome(record, ids: ids, pocketTimes: pocketTimes)))
+                                          outcome: shotOutcome, clipToken: clipToken))
             showBadge(BadgeStyle.of(rating))
         } else {
+            let madeObject = shotOutcome.pocketed.keys.contains { !$0.isCue } && result.fouls.isEmpty
+            let fallbackPocket = TrainingSessionController.defaultPocket(for: drill ?? .straightIn)
+            let targetPocket = shotOutcome.pocketed
+                .filter({ !$0.key.isCue })
+                .sorted(by: { $0.key < $1.key })
+                .first?.value ?? fallbackPocket
+            let objTrackID = record.firstContact
+                ?? ids.filter({ !$0.value.isCue }).sorted(by: { $0.value < $1.value }).first?.key
+            let depDir = objTrackID.flatMap { record.departureDir[$0] }
+            let hitRail = objTrackID.map { tid in record.rails.contains { $0.id == tid } } ?? !record.rails.isEmpty
+            hooks.trainingSettled(SettledTrainingShot(
+                made: madeObject,
+                before: identified(record.preState),
+                after: identified(record.finalState),
+                targetPocket: targetPocket,
+                tableSize: tableSize ?? tablePrior ?? .sevenFoot,
+                objectDepartureDir: depDir,
+                cueLaunchSpeed: record.cueLaunchSpeed,
+                objectHitRail: hitRail))
             hooks.ballsSettled()
         }
     }
@@ -376,7 +402,10 @@ final class LiveModel {
                                   shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
             case .aimStarted: shotSettledNoAim = false; hooks.aimStarted()
-            case .aimEnded: hooks.aimEnded()
+            case .aimEnded:
+                let pendingAhead = shots.count + (r.shot != nil ? 1 : 0)
+                hooks.strokeStarted(pendingAhead)
+                hooks.aimEnded()
             case .aimCancelled: hooks.aimCancelled()
             case .settled: break   // the shot closes through the FIFO
             }
@@ -385,6 +414,7 @@ final class LiveModel {
         // Nothing seen to judge by (e.g. right after a relock) is not quiet either.
         movingNow = moving || r.confirmed.isEmpty
         if !clearSinceReset, !evidence, !movingNow { clearSinceReset = true }
+        hooks.tableQuietChanged(quiet)
         // D31: the table's rule-id state before a shot, and where each ball was last measured.
         lastFrameAt = r.timestamp
         for b in r.confirmed where b.measured { if let id = r.ballIDs[b.id] { lastSeenAt[id] = b.position } }
@@ -472,6 +502,13 @@ final class LiveModel {
         ballCount = r.confirmed.count
         atRest = r.atRest
         aim = r.aim
+        if mode != .game {
+            hooks.detectedBalls(r.confirmed.map(\.position), tableSize ?? tablePrior)
+            if let ov = hooks.trainingOverlayState() {
+                trainingSetupGhosts = ov.ghosts
+                trainingPositionZone = ov.zone
+            }
+        }
         drive(r)
         detectMs = detectMs * 0.8 + r.detectMs * 0.2
         if let m = CoreMLBallInference.shared {

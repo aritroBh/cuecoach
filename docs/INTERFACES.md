@@ -729,6 +729,14 @@ Rules:
   be reconciled with another phone's result of its stroke); a host's own `.tableState` captureTime stays on its own
   clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time.
 
+## Full App Wiring (Plan 013b + D52–D55)
+
+- **Disagreement resolution (`D47` / `D52`, plan 013b):** `MergedShot.alternateOutcome: ShotOutcome?` carries the runner-up island outcome on disagreeing strokes; `GameEvent.outcomeResolution(shotID:outcome:at:)` clears `needsTap` and replays the rules state from that shot. `ShotDisputeBanner` in `InGameChrome` (icon-only, hidden while aiming) and `disputeRow` in `GameReviewView` let the user pick with one tap.
+- **Unconfirmed island games (`D51` / `D53`, plan 013b):** an island host (`mesh.isHost && mesh.isIsland`) saves finished racks with `Game.isUnconfirmed = true` (`CompetitiveSchemaV4`). `PersistenceProfileStatsSource` excludes `isUnconfirmed` games from all competitive stats/archetypes/make-grids/badges/pro-comps while surfacing them marked in History; `PersistedGameReviewEditor` provides one-tap Confirm / Delete in `GameReviewView`, and `PersistenceStack.importBackup` auto-confirms when a peer backup carries the same `Game.id`.
+- **Engine evaluation (`D55`):** `SessionEngineEvaluator` runs `CueCore/Engine.ShotEngine` off-actor over non-guess shots with cue-ball positions, computing 10-class `DecisionRating`s + post-rack `Ratings.selectBrilliant` promotion, `wpaDelta`, `winProbSeries` (`shots.count + 1` points), `EngineAlternative` ghost replays, and the `Shot of the Game` `Highlight`, upserting into `Competitive.store`.
+- **Solo Training loop (`D55`):** `TrainingSessionController` drives per-drill `SetupMatcher` ghost circles, records `TrainingAttempt`s + `LevelPolicy.standard` auto level-up (`1…4`) + `FeedbackCoach` non-numeric visual tendency cards (`Training.store` only, never `Competitive.store`).
+- **Identity & SotG Clips (`D55`):** `SettingsSheetHost` presents `IdentityRegistrationSheet` (`RecognitionRegistrar` → `Recognition.store`); `AppRouter` wires `IdentitySession.registered(on: stack, ...)` (`D28` guest safety + immediate RAM purge on one-tap Delete) and `ShotClipRecorder` (`Application Support/Clips/<shotID>.mp4` with burned-in trajectories, post-settle `MeshGameLink.offerClip`, and in-app `ClipPlayerSheet` playback).
+
 ## Proposed (plan 006 — not approved)
 
 Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. (`Shot.isGuess` shipped separately as the Competitive V3 migration, plan 012.)

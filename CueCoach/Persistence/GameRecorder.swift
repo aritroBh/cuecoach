@@ -10,12 +10,13 @@ import Stats
 /// One writer: the solo phone or the mesh host. Upserts by id, so a repeat changes nothing.
 @MainActor protocol GameRecorder: AnyObject {
     func record(_ game: FinishedGame) throws
-    func deleteGame(id: UUID) throws
+    func deleteGame(id: UUID, preservingClips: Set<String>) throws
     func confirmGame(id: UUID) throws
 }
 
 extension GameRecorder {
-    func deleteGame(id: UUID) throws {}
+    func deleteGame(id: UUID, preservingClips: Set<String> = []) throws {}
+    func deleteGame(id: UUID) throws { try deleteGame(id: id, preservingClips: []) }
     func confirmGame(id: UUID) throws {}
 }
 
@@ -69,6 +70,7 @@ struct RecordedShot: Hashable, Sendable {
     /// D31/D43: `pocketed` is a best guess; stored as `Shot.isGuess` so stats skip it.
     var isGuess: Bool
     var needsTap: Bool = false
+    var fullOutcome: ShotOutcome? = nil
     var alternateOutcome: ShotOutcome? = nil
     var alternative: EngineAlternative? = nil
 }
@@ -85,13 +87,13 @@ extension RecordedShot {
             ? ShotFeatures.extract(pre: pre, post: post, trace: ShotTraceSummary(events: [])) : .neutral
         let made = s.pocketed.keys.contains { $0 != .cue }
         self.init(id: s.id, index: s.index, shooterID: s.shooter.id, team: s.team, attributionSource: s.attribution,
-                  preState: pre, postState: post, calledPocket: nil, firstContact: s.firstContact,
+                  preState: pre, postState: post, calledPocket: s.outcome.calledPocket, firstContact: s.firstContact,
                   railsAfterContact: 0, pocketed: s.pocketed, fouls: s.fouls, features: StoredShotFeatures(features),
                   made: made, onTarget: made, cueResult: .notApplicable, decisionRating: rating,
-                  executionRating: ExecutionRating(result: made ? .made : .miss, position: .notApplicable),
+                  executionRating: s.executionRating ?? ExecutionRating(result: made ? .made : .miss, position: .notApplicable),
                   wpaDelta: s.wpaDelta, isClutch: s.isClutch, timeOnShot: -1, clipRef: s.clipRef,
-                  isGuess: s.isGuess, needsTap: s.needsTap, alternateOutcome: s.alternateOutcome,
-                  alternative: s.alternative)
+                  isGuess: s.isGuess, needsTap: s.needsTap, fullOutcome: s.outcome,
+                  alternateOutcome: s.alternateOutcome, alternative: s.alternative)
     }
 }
 
@@ -153,7 +155,8 @@ extension StoredShotFeatures {
                                 onTarget: r.onTarget, cueResult: r.cueResult, decisionRating: r.decisionRating,
                                 executionRating: r.executionRating, wpaDelta: r.wpaDelta, isClutch: r.isClutch,
                                 timeOnShot: r.timeOnShot, clipRef: r.clipRef, isGuess: r.isGuess,
-                                needsTap: r.needsTap, alternateOutcome: r.alternateOutcome, alternative: r.alternative)
+                                needsTap: r.needsTap, fullOutcome: r.fullOutcome,
+                                alternateOutcome: r.alternateOutcome, alternative: r.alternative)
                 ctx.insert(shot)
                 shot.game = game
             }
@@ -164,16 +167,19 @@ extension StoredShotFeatures {
         }
         if let sotg = g.shotOfGame {
             if let h = game.highlights.first(where: { $0.kind == .shotOfGame }) {
+                let changedShot = h.shotID != sotg.shotID
                 h.shotID = sotg.shotID
                 h.label = sotg.label
                 h.score = sotg.score
-                if !sotg.clipFile.isEmpty { h.clipFile = sotg.clipFile }
+                if !sotg.clipFile.isEmpty || changedShot { h.clipFile = sotg.clipFile }
             } else {
                 let h = Highlight(shotID: sotg.shotID, kind: .shotOfGame, clipFile: sotg.clipFile,
                                   label: sotg.label, score: sotg.score)
                 ctx.insert(h)
                 h.game = game
             }
+        } else {
+            for h in game.highlights where h.kind == .shotOfGame { ctx.delete(h) }
         }
         try ctx.save()
     }
@@ -182,13 +188,18 @@ extension StoredShotFeatures {
         let ctx = stack.competitiveContext
         if let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == id })).first {
             game.isUnconfirmed = false
+            game.unconfirmedOriginOwnerID = nil
             try ctx.save()
         }
     }
 
-    func deleteGame(id: UUID) throws {
+    func deleteGame(id: UUID, preservingClips: Set<String> = []) throws {
         let ctx = stack.competitiveContext
+        let clipBase = stack.directory ?? ShotClipStore.defaultBaseDirectory
         if let game = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == id })).first {
+            let clipRefs = game.highlights.map(\.clipFile) + game.shots.compactMap(\.clipRef)
+            let removable = Array(Set(clipRefs).subtracting(preservingClips))
+            ShotClipStore.deleteClips(relativePaths: removable, baseDirectory: clipBase)
             let session = game.session
             for shot in game.shots { ctx.delete(shot) }
             for highlight in game.highlights { ctx.delete(highlight) }
@@ -226,6 +237,7 @@ extension StoredShotFeatures {
         shot.clipRef = r.clipRef
         shot.isGuess = r.isGuess
         shot.needsTap = r.needsTap
+        shot.fullOutcome = r.fullOutcome
         shot.alternateOutcome = r.alternateOutcome
         shot.alternative = r.alternative
     }

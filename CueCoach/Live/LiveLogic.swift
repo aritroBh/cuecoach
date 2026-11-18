@@ -470,6 +470,8 @@ struct SettledShot: Hashable, Sendable {
     /// The outcome Live rated (`RuleRating.outcome` with pocket times). The shell's log fold re-applies it, so the
     /// turn and rules state follow the outcome (`turnPasses` above is Live's own view of the same result).
     var outcome = ShotOutcome()
+    /// Exact correlation token for the camera clip window sealed at physical shot-end (`LiveModel.enqueue`).
+    var clipToken: UUID? = nil
 }
 
 /// What Live tells the app shell (wired by `LiveScreenAdapter` to `LiveSession`). Defaults do nothing, so Live
@@ -493,6 +495,18 @@ struct LiveHooks {
     /// Live hands the shell a sink into the same `setLegal` its pipeline uses after a settled shot, so ring legality
     /// changed by the shell between shots (one-tap turn hand-over) reaches the rings at once.
     var legalSink: @MainActor (@escaping @MainActor (Set<BallID>) -> Void) -> Void = { _ in }
+    /// Solo Training: settled attempt payload + live detected ball positions for `SetupMatcher`.
+    var trainingSettled: @MainActor (SettledTrainingShot) -> Void = { _ in }
+    var detectedBalls: @MainActor ([Vec2], TableSize?) -> Void = { _, _ in }
+    var trainingOverlayState: @MainActor () -> (ghosts: [(Vec2, Bool)], zone: Vec2?)? = { nil }
+    /// D52: true only when the table has zero motion, zero aim evidence, and zero active shot.
+    var tableQuietChanged: @MainActor (Bool) -> Void = { _ in }
+    /// Throttled live camera frame + timestamp + normalized cue-ball position for SotG clips & stroke attribution.
+    var cameraFrame: @MainActor (CGImage, Double, CGPoint) -> Void = { _, _, _ in }
+    /// Physical shot end (`token`, `aheadInFIFO`, `ShotRecord.start`, `ShotRecord.end` on the camera clock), fired BEFORE pocket-confirm FIFO.
+    var shotPhysicallyEnded: @MainActor (UUID, Int, Double, Double) -> Void = { _, _, _, _ in }
+    /// Fired on a real stroke (`.aimEnded`, never `aimCancelled`) with the total unclosed shots ahead of the new stroke.
+    var strokeStarted: @MainActor (Int) -> Void = { _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

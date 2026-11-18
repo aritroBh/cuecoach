@@ -121,6 +121,23 @@ struct PixelImage: Sendable {
         return PixelImage(width: ow, height: oh, rgb: out, scale: scale * Double(k),
                           sourceWidth: sourceWidth, sourceHeight: sourceHeight)
     }
+
+    func makeCGImage() -> CGImage? {
+        guard width > 0, height > 0, rgb.count == width * height * 3 else { return nil }
+        var rgba = [UInt8](repeating: 255, count: width * height * 4)
+        for i in 0..<(width * height) {
+            rgba[i * 4] = rgb[i * 3]
+            rgba[i * 4 + 1] = rgb[i * 3 + 1]
+            rgba[i * 4 + 2] = rgb[i * 3 + 2]
+        }
+        return rgba.withUnsafeMutableBytes { buf -> CGImage? in
+            guard let cs = CGColorSpace(name: CGColorSpace.sRGB),
+                  let ctx = CGContext(data: buf.baseAddress, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: width * 4, space: cs,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+            return ctx.makeImage()
+        }
+    }
 }
 
 enum YCbCr {

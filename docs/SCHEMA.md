@@ -18,7 +18,10 @@ and clears the marker; while it is pending Competitive.store and its sidecars ar
 template bytes reach a device backup even after a crash or a failed scrub) → **V3** (D43, lightweight stage: adds
 `Shot.isGuess`, default false, so every V2 row opens as not a guess; V1 and V2 list frozen
 `CompetitiveSchemaV2` copies of the whole Session/Game/Shot/Highlight relationship component, since a relationship
-to a live type would pull the V3 `Shot` into the old schema; their entity hashes are pinned by a test). Training V1. Recognition V1.
+to a live type would pull the V3 `Shot` into the old schema; their entity hashes are pinned by a test) → **V4**
+(plan 013b + D55, lightweight stage: freezes `CompetitiveSchemaV3` copies of Session/Game/Shot/Highlight and adds
+`Game.isUnconfirmed: Bool = false` (D51), `Shot.needsTap: Bool = false`, `Shot.alternateOutcome: ShotOutcome? = nil`,
+and `Shot.alternative: EngineAlternative? = nil`; V1/V2/V3 entity hashes pinned in `ShotIsGuessMigrationTests`). Training V1. Recognition V1.
 
 ## Competitive store
 
@@ -26,8 +29,8 @@ to a live type would pull the V3 `Shot` into the old schema; their entity hashes
 |---|---|---|
 | `PlayerProfile` | `id: UUID` (unique), `name`, `avatarSymbol`, `avatarColor`, `isLocalOwner: Bool`, `createdAt`, `skillModel: SkillModel` (Codable: aim/speed/spin noise σ, n samples), `recognitionRevokedAt: Date?` (V2; revocation tombstone, exported, merged max-wins) | One local owner per phone; peers' profiles cached only for the session (`isSessionGuest`) and purged on session end (with their templates). A backup profile that matches a guest id is promoted to a saved profile; promotion drops the guest's session templates (and tells the galleries) unless the person consents then (`importBackup(_:keepingRecognitionOf:)`, `promoteSessionGuest(_:keepRecognition:)`); without consent it also moves `recognitionRevokedAt` to now, so a late session capture is refused. |
 | `Session` | `id`, `startedAt`, `endedAt?`, `ruleSet: RuleSetID`, `format: GameFormat`, `tableSize: TableSize`, `peerDeviceNames: [String]`, `voteTally: [RuleSetID: Int]` | |
-| `Game` | `id`, `session`, `index`, `ruleSet`, `teams: [Team]` (Codable: member player IDs, shooting order), `winnerTeam: Int?`, `winProbSeries: [Double]`, `startedAt`, `endedAt?` | Shooting order editable mid-game → stored as order-change events inside `teams`. |
-| `Shot` | `id`, `game`, `index`, `shooterID: UUID`, `attributionSource` (auto/turnOrder/tap), `preState: TableState`, `postState: TableState`, `calledPocket: Pocket?`, `firstContact: BallID?`, `railsAfterContact: Int`, `pocketed: [BallID: Pocket]`, `fouls: [Foul]`, `features: ShotFeatures` (cut bucket, distance bucket, pocket type, kind bank/combo/kick/rail/jump/safety), `made`, `onTarget`, `cueResult` (inZone/outOfZone/nA), `decisionRating`, `executionRating`, `wpaDelta: Double`, `isClutch`, `timeOnShot: Double`, `clipRef: String?`, `isGuess: Bool` (V3, default false; `pocketed` is a D31 best guess; never counted in pot %, cut, distance or pocket stats) | Table states stored as Codable value types from `Geometry`. |
+| `Game` | `id`, `session`, `index`, `ruleSet`, `teams: [Team]` (Codable: member player IDs, shooting order), `winnerTeam: Int?`, `winProbSeries: [Double]`, `startedAt`, `endedAt?`, `isUnconfirmed: Bool` (V4, default false; D51 island rack saved without quorum, excluded from stats until confirmed or matched by a peer backup per D53) | Shooting order editable mid-game → stored as order-change events inside `teams`. |
+| `Shot` | `id`, `game`, `index`, `shooterID: UUID`, `attributionSource` (auto/turnOrder/tap), `preState: TableState`, `postState: TableState`, `calledPocket: Pocket?`, `firstContact: BallID?`, `railsAfterContact: Int`, `pocketed: [BallID: Pocket]`, `fouls: [Foul]`, `features: ShotFeatures` (cut bucket, distance bucket, pocket type, kind bank/combo/kick/rail/jump/safety), `made`, `onTarget`, `cueResult` (inZone/outOfZone/nA), `decisionRating`, `executionRating`, `wpaDelta: Double`, `isClutch`, `timeOnShot: Double`, `clipRef: String?`, `isGuess: Bool` (V3, default false; `pocketed` is a D31 best guess; never counted in pot %, cut, distance or pocket stats), `needsTap: Bool` (V4, D47), `alternateOutcome: ShotOutcome?` (V4, D47), `alternative: EngineAlternative?` (V4, D55) | Table states stored as Codable value types from `Geometry`. |
 | `ArchetypeSnapshot` | `playerID`, `computedAt`, `gamesCount`, `shotsCount`, `vector: [String: Double]`, `tags: [ArchetypeTag]`, `proComp: ProComp?` | Append-only → evolution history. |
 | `Highlight` | `game`, `shotID`, `kind` (shotOfGame/mvp), `clipFile: String` (relative path in app container), `label: String` (≤2 words), `score: Double` | Clips stay in-app (no Photos export). |
 
@@ -62,7 +65,7 @@ marker found at launch means the app died in the window: the stack commits the d
 ## Backup JSON
 `BackupV1 { version: 1, exportedAt, competitive: {profiles, sessions, games, shots, archetypes}, training: {...} }`
 Recognition templates are never exported; a legacy file's `includesRecognition` / `recognition` keys are ignored.
-A shot record's `isGuess` is optional: a file without it (written before V3) imports as `false`; the version stays 1.
+A shot record's `isGuess`, `needsTap`, `alternateOutcome`, and `alternative`, and a game record's `isUnconfirmed`, are optional: files written before V3/V4 import with safe defaults (`false` / `nil`), and `BackupV1` stays version 1. Importing a peer backup containing a matching `Game.id` clears `isUnconfirmed` on the local row (D53).
 Non-finite Doubles are written as the strings `"Infinity"`, `"-Infinity"`, `"NaN"`. Dates must be valid calendar instants (no roll-over). Import refuses while a store has unsaved edits.
 — plain `Codable` DTOs (not the `@Model` classes) so the format is stable. Import merges by UUID; the newer
 `updatedAt` wins. Clips aren't included (size); highlights keep their metadata.

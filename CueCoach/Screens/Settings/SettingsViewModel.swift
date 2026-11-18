@@ -207,6 +207,10 @@ public final class SettingsViewModel {
     nonisolated static let deletedAnnouncement = "Recognition data deleted, Undo available"
 
     var canDelete: Bool { deleteState != .undoable && (hasRecognitionData || commitFailed) }
+
+    func refreshRecognitionStatus() {
+        hasRecognitionData = store.hasRecognitionData
+    }
     /// Export/Import tiles are usable unless a picked file is being read or just finished.
     var backupEnabled: Bool { importState == .idle && exportState != .exporting }
 

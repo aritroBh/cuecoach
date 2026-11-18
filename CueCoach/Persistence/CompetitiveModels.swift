@@ -125,6 +125,11 @@ final class Game {
     /// V4 (D51): finished on an island without quorum; excluded from competitive stats until confirmed.
     private var isUnconfirmedValue: Bool = false
     var isUnconfirmed: Bool { get { isUnconfirmedValue } set { isUnconfirmedValue = newValue; updatedAt = .now } }
+    private var unconfirmedOriginOwnerIDValue: UUID? = nil
+    var unconfirmedOriginOwnerID: UUID? {
+        get { unconfirmedOriginOwnerIDValue }
+        set { unconfirmedOriginOwnerIDValue = newValue; updatedAt = .now }
+    }
     var updatedAt: Date
     @Relationship(deleteRule: .cascade, inverse: \Shot.gameLink)
     fileprivate var shotsLink: [Shot] = []
@@ -200,6 +205,7 @@ final class Shot {
     /// V4 (D47, D55): disputed island shot (`needsTap` + `alternateOutcome`) and Engine preferred alternative.
     private var needsTapValue: Bool = false
     var needsTap: Bool { get { needsTapValue } set { needsTapValue = newValue; updatedAt = .now } }
+    private var fullOutcomeData: Data? = nil
     private var alternateOutcomeData: Data? = nil
     private var alternativeData: Data? = nil
     var updatedAt: Date
@@ -250,12 +256,16 @@ final class Shot {
                           fallback: ExecutionRating(result: .miss, position: .notApplicable)) }
         set { executionRatingData = Blob.encode(newValue); updatedAt = .now }
     }
+    var fullOutcome: ShotOutcome? {
+        get { fullOutcomeData.flatMap { Blob.decode(ShotOutcome?.self, $0, fallback: nil) } }
+        set { fullOutcomeData = newValue.map(Blob.encode); updatedAt = .now }
+    }
     var alternateOutcome: ShotOutcome? {
-        get { alternateOutcomeData.flatMap { try? JSONDecoder().decode(ShotOutcome.self, from: $0) } }
+        get { alternateOutcomeData.flatMap { Blob.decode(ShotOutcome?.self, $0, fallback: nil) } }
         set { alternateOutcomeData = newValue.map(Blob.encode); updatedAt = .now }
     }
     var alternative: EngineAlternative? {
-        get { alternativeData.flatMap { try? JSONDecoder().decode(EngineAlternative.self, from: $0) } }
+        get { alternativeData.flatMap { Blob.decode(EngineAlternative?.self, $0, fallback: nil) } }
         set { alternativeData = newValue.map(Blob.encode); updatedAt = .now }
     }
 
@@ -264,8 +274,8 @@ final class Shot {
          railsAfterContact: Int, pocketed: [BallID: Pocket], fouls: [Foul], features: StoredShotFeatures,
          made: Bool, onTarget: Bool, cueResult: CueResult, decisionRating: DecisionRating,
          executionRating: ExecutionRating, wpaDelta: Double, isClutch: Bool, timeOnShot: Double,
-         clipRef: String?, isGuess: Bool = false, needsTap: Bool = false, alternateOutcome: ShotOutcome? = nil,
-         alternative: EngineAlternative? = nil, updatedAt: Date = .now) {
+         clipRef: String?, isGuess: Bool = false, needsTap: Bool = false, fullOutcome: ShotOutcome? = nil,
+         alternateOutcome: ShotOutcome? = nil, alternative: EngineAlternative? = nil, updatedAt: Date = .now) {
         self.id = id
         self.indexValue = index
         self.shooterIDValue = shooterID
@@ -289,6 +299,7 @@ final class Shot {
         self.clipRefValue = clipRef
         self.isGuessValue = isGuess
         self.needsTapValue = needsTap
+        self.fullOutcomeData = fullOutcome.map(Blob.encode)
         self.alternateOutcomeData = alternateOutcome.map(Blob.encode)
         self.alternativeData = alternative.map(Blob.encode)
         self.updatedAt = updatedAt

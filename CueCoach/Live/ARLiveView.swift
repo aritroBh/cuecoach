@@ -459,7 +459,23 @@ final class ARLiveController: NSObject {
             return
         }
         model.noteResult(r)
-        defer { overlay?.vis = model.visibility; overlay?.update(r) }   // after the live style below is decided (no one-frame lag)
+        if let r, let cg = s.sampledCGImage {
+            var cueNorm = CGPoint(x: 0.5, y: 0.5)
+            if let tf = tableFrame, let v = view,
+               let cueTrack = r.confirmed.first(where: { r.marks[$0.id] == .cue }),
+               let proj = v.project(tf.world(cueTrack.position).f),
+               v.bounds.width > 0, v.bounds.height > 0 {
+                cueNorm = CGPoint(x: CGFloat(proj.x) / v.bounds.width,
+                                  y: 1.0 - CGFloat(proj.y) / v.bounds.height)
+            }
+            model.hooks.cameraFrame(cg, r.timestamp, cueNorm)
+        }
+        defer {
+            overlay?.vis = model.visibility
+            overlay?.trainingSetupGhosts = model.trainingSetupGhosts
+            overlay?.trainingPositionZone = model.trainingPositionZone
+            overlay?.update(r)
+        }   // after the live style below is decided (no one-frame lag)
         if let r {
             // Shot events are haptic only (no audio, no text while aiming).
             if r.shotStarted { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
@@ -489,6 +505,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var convertMs: Double?
         /// Some frame since the last delivered status had non-normal tracking (latched per frame).
         var limitedSeen = false
+        var sampledCGImage: CGImage? = nil
     }
     enum Mode: Sendable { case idle, locating, detecting }
 
@@ -603,6 +620,10 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var rs = status
         rs.isResult = true
         rs.convertMs = convertMs
+        if seq % 3 == 0 {
+            let small = img.width > 480 ? img.decimated(by: max(2, img.width / 480)) : img
+            rs.sampledCGImage = small.makeCGImage()
+        }
         let resultStatus = rs
         Task.detached(priority: .userInitiated) { [weak self] in
             let r = await pipeline.process(pf)
@@ -737,6 +758,9 @@ final class TableOverlay {
     private let ghost: ModelEntity
     private var dashes: [ModelEntity] = []
     private var objectSegs: [ModelEntity] = []
+    private var setupGhostRings: [ModelEntity] = []
+    private let positionZoneRing: ModelEntity
+    private let positionZoneFill: ModelEntity
     private let liveLine: ModelEntity
     private let liveObject: ModelEntity
     private let liveGhost: ModelEntity
@@ -757,6 +781,8 @@ final class TableOverlay {
 
     /// Set from `LiveModel.visibility` every frame (D1: level 4 reveals the full overlay after the shot).
     var vis: OverlayVisibility
+    var trainingSetupGhosts: [(Vec2, Bool)] = []
+    var trainingPositionZone: Vec2? = nil
 
     init(frame: TableFrame, visibility: OverlayVisibility = .of(.training(level: AssistLevel.full.rawValue))) {
         vis = visibility
@@ -806,6 +832,19 @@ final class TableOverlay {
             d.isEnabled = false
             root.addChild(d); dashes.append(d)
         }
+        for _ in 0..<6 {
+            let g = ModelEntity(mesh: dashedRing, materials: [OverlayMesh.material(AXLive.uiAim, 0.7)])
+            g.isEnabled = false
+            root.addChild(g); setupGhostRings.append(g)
+        }
+        positionZoneRing = ModelEntity(mesh: OverlayMesh.ring(inner: R * 2.9, outer: R * 3.2),
+                                       materials: [OverlayMesh.material(Self.green, 0.75)])
+        positionZoneFill = ModelEntity(mesh: OverlayMesh.ring(inner: 0.001, outer: R * 2.9),
+                                       materials: [OverlayMesh.material(Self.green, 0.16)])
+        positionZoneRing.isEnabled = false
+        positionZoneFill.isEnabled = false
+        root.addChild(positionZoneRing)
+        root.addChild(positionZoneFill)
     }
 
     /// "Table found": the whole overlay settles onto the cloth (from slightly raised and enlarged).
@@ -820,11 +859,36 @@ final class TableOverlay {
     func setDimmed(_ d: Bool) {
         dimmed = d
         for e in outline { e.model?.materials = [OverlayMesh.material(AXLive.uiAim, d ? 0.2 : 0.6)] }
-        if d { for e in ballRings + dashes + objectSegs + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost] { e.isEnabled = false } }
+        if d {
+            for e in ballRings + dashes + objectSegs + setupGhostRings
+                + [cueLine, objectLine, ghost, liveLine, liveObject, liveGhost, positionZoneRing, positionZoneFill] {
+                e.isEnabled = false
+            }
+        }
     }
 
     func update(_ r: PerceptionResult?) {
         guard !dimmed else { return }
+        for (i, gr) in setupGhostRings.enumerated() {
+            if i < trainingSetupGhosts.count {
+                let (pos, matched) = trainingSetupGhosts[i]
+                gr.model?.mesh = matched ? solidRing : dashedRing
+                gr.model?.materials = [OverlayMesh.material(matched ? Self.green : AXLive.uiAim, matched ? 0.9 : 0.7)]
+                gr.position = [Float(pos.x), Float(pos.y), 0.004]
+                gr.isEnabled = true
+            } else {
+                gr.isEnabled = false
+            }
+        }
+        if vis.line3, let zone = trainingPositionZone {
+            positionZoneRing.position = [Float(zone.x), Float(zone.y), 0.003]
+            positionZoneFill.position = [Float(zone.x), Float(zone.y), 0.002]
+            positionZoneRing.isEnabled = true
+            positionZoneFill.isEnabled = true
+        } else {
+            positionZoneRing.isEnabled = false
+            positionZoneFill.isEnabled = false
+        }
         let tracks = r?.confirmed ?? []
         let now = CACurrentMediaTime()
         let atRest = r?.atRest ?? false

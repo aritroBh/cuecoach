@@ -484,6 +484,61 @@ import Training
         #expect(await poll(2) { (try? gameCount(stack)) == 1 })
         links[0].stop(); links[1].stop()
     }
+
+    /// Round-3 fix: (1) a 2-event committed prefix `[nextShooter, shot1]` while `shot2` awaits quorum ACK must NOT delete
+    /// the already-saved unconfirmed rack; (2) a former island host that becomes a joiner on heal auto-confirms its local
+    /// unconfirmed rack once quorum commits settle (D53).
+    @Test func islandHealPreservesPendingSaveAndAutoConfirmsReturningJoiner() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let link = ControllableIslandLink()
+        let g = GameSessionModel(config: GameConfig(ruleSet: .barEight, tableSize: .sevenFoot, teams: [[a], [b]]))
+        g.recorder = StackGameRecorder(stack: stack)
+        g.mesh = link
+
+        let e1 = LogEntry(seq: 1, term: 2, event: .nextShooter(team: 0))
+        let e2 = LogEntry(seq: 2, term: 2, event: .shot(MeshShotRecord(
+            shotID: UUID(), shooterTeam: 0, outcome: GameRecorderTests.pot(1),
+            postState: nil, preState: nil, decisionRating: .best)))
+        let e3 = LogEntry(seq: 3, term: 2, event: .shot(MeshShotRecord(
+            shotID: UUID(), shooterTeam: 0, outcome: GameRecorderTests.eightEarly,
+            postState: nil, preState: nil, decisionRating: .blunder)))
+
+        // 1. As island host, fold provisional tail `[e1, e2, e3]` → saves 2-shot rack with `isUnconfirmed == true`.
+        link.isHost = true
+        link.isIsland = true
+        link.hasGameQuorum = false
+        link.commitSeq = 2
+        link.onCommittedLog?([e1, e2, e3], 2)
+        #expect(try gameCount(stack) == 1)
+        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == true)
+
+        // 2. Island heals (`isIsland = false`, `hasGameQuorum = true`), `e3` still awaits ACK (`hasPendingCommits = true`).
+        // Even though `[e1, e2]` has 2 events == 2 saved shots, the saved row must NOT be deleted!
+        link.isIsland = false
+        link.hasGameQuorum = true
+        link.hasPendingCommits = true
+        link.onCommittedLog?([e1, e2], 2)
+        #expect(try gameCount(stack) == 1, "Heal guard keeps unconfirmed rack while uncommitted tail awaits ACK")
+
+        // 3. Furthermore, suppose this phone lost host election on heal (`isHost = false`, `isJoiner = true`) and `e3` commits:
+        // D53 requires its local unconfirmed rack to auto-confirm once quorum commits settle!
+        link.isHost = false
+        link.hasPendingCommits = false
+        link.commitSeq = 3
+        link.onCommittedLog?([e1, e2, e3], 3)
+        #expect(try gameCount(stack) == 1)
+        #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == false,
+                "Returning island joiner auto-confirms on quorum commit")
+
+        // 4. Subsequent committed corrections and clips MUST still update that confirmed local row on the returning joiner!
+        if case .shot(let earlyEightRec) = e3.event {
+            let e4 = LogEntry(seq: 4, term: 2, event: .shooterCorrection(shotID: earlyEightRec.shotID, team: 1, shooter: b.id))
+            link.commitSeq = 4
+            link.onCommittedLog?([e1, e2, e3, e4], 4)
+            let updatedGame = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first)
+            #expect(updatedGame.winnerTeam == 0, "Post-confirmation corrections continue updating the returning joiner's saved row")
+        }
+    }
 }
 
 /// Role unresolved: neither host nor joiner.
@@ -493,6 +548,21 @@ import Training
     var isHost: Bool { false }
     var isJoiner: Bool { false }
     var hasGameQuorum: Bool { false }
+    var commitSeq: UInt64 = 0
+    var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
+    func start() {}
+    func stop() {}
+    func append(_ event: GameEvent) {}
+}
+
+@MainActor final class ControllableIslandLink: GameMeshLink {
+    var peerCount = 2
+    var isStopped = false
+    var isHost = true
+    var isJoiner: Bool { !isHost }
+    var isIsland = true
+    var hasGameQuorum = false
+    var hasPendingCommits = false
     var commitSeq: UInt64 = 0
     var onCommittedLog: (@MainActor ([LogEntry], UInt64) -> Void)?
     func start() {}

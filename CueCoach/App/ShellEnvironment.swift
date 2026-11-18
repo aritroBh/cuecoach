@@ -23,6 +23,8 @@ struct StoredTableMeasurement: TableMeasurementSource {
     var meshFactory: ((UInt16) -> any GameMeshLink)? = { MeshGameLink(sessionTag: $0) }
     /// Saves finished racks (plan 011). nil (UI-test fakes) = nothing is saved.
     var recorder: (any GameRecorder)?
+    /// Backing persistence stack in production (drives Profile stats, Training persistence, Identity, and saved Review).
+    var stack: PersistenceStack?
 
     init(roster: any RosterStore, owners: any OwnerStore, settings: any SettingsStore, mesh: any GameLobbyMesh,
          measurement: any TableMeasurementSource, defaults: UserDefaults) {
@@ -47,6 +49,7 @@ struct StoredTableMeasurement: TableMeasurementSource {
                                    mesh: MPCGameLobby(localName: { owners.owner?.name ?? "Phone" }),
                                    measurement: StoredTableMeasurement(), defaults: .standard)
         env.recorder = StackGameRecorder(stack: stack)
+        env.stack = stack
         return .ready(env)
     }
 

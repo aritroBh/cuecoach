@@ -70,6 +70,7 @@ struct BackupV1: Codable, Equatable, Sendable {
         var updatedAt: Date
         /// D51 (plan 013b): optional so backups written before V4 decode as false; nil/false omitted when confirmed.
         var isUnconfirmed: Bool? = nil
+        var unconfirmedOriginOwnerID: UUID? = nil
     }
 
     struct ShotDTO: Codable, Equatable, Sendable {
@@ -101,6 +102,7 @@ struct BackupV1: Codable, Equatable, Sendable {
         var isGuess: Bool? = nil
         /// D47 / D55 (Competitive V4): optional on wire/backup.
         var needsTap: Bool? = nil
+        var fullOutcome: ShotOutcome? = nil
         var alternateOutcome: ShotOutcome? = nil
         var alternative: EngineAlternative? = nil
     }

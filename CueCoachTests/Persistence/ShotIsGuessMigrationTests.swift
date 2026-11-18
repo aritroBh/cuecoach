@@ -27,6 +27,9 @@ import Engine
     @Test func shippedSchemaHashesNeverChange() {
         #expect(Self.hashes(CompetitiveSchemaV1.self) == Self.v1Hashes)
         #expect(Self.hashes(CompetitiveSchemaV2.self) == Self.v2Hashes)
+        let v3 = Self.hashes(CompetitiveSchemaV3.self)
+        #expect(v3.hasPrefix("ArchetypeSnapshot=Bi+a97BNCOEF5pzGPnXXoRcKFmb2+LISPbp/fEVO+zs=;Game=4A7glKfH7qB0wF8czU1JOmgMdVUCTzUmYddsLFPZjQU=;Highlight=qP2JznoUVDyzmb5+iXbK4nj/MqXjsk/CdNKz6cfG3DI=;PlayerProfile=3UJFD/v/RG8Z7vik4F3NI1ML7VzKRz5wyhBU4WUsSyM=;Session=alt+pBDlz4+9XVyWtaYSY9/GUgpEAAWbkxhtda4lA7I=;Shot="))
+        #expect(v3 != Self.v2Hashes)
     }
     private func tempDir() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("v3-\(UUID().uuidString)", isDirectory: true)
@@ -229,5 +232,47 @@ import Engine
         let peerBackup = try peerStack.exportBackup()
         try localStack.importBackup(peerBackup)
         #expect(try localStack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == false)
+    }
+
+    /// Round-2 fix: importing the SAME peer backup into a third phone twice stays unconfirmed (idempotent),
+    /// and only confirms once a second distinct witness phone's backup is imported (D53).
+    @Test func reimportingSamePeerBackupIsIdempotentUntilSecondWitnessImports() throws {
+        let peerAStack = try PersistenceStack(inMemory: true)
+        let peerBStack = try PersistenceStack(inMemory: true)
+        let phoneCStack = try PersistenceStack(inMemory: true)
+
+        let ownerA = PlayerProfile(id: UUID(), name: "Ari", avatarSymbol: "person.fill", avatarColor: "teal", isLocalOwner: true)
+        let ownerB = PlayerProfile(id: UUID(), name: "Sam", avatarSymbol: "hare.fill", avatarColor: "orange", isLocalOwner: true)
+        let ownerC = PlayerProfile(id: UUID(), name: "Taylor", avatarSymbol: "bolt.fill", avatarColor: "green", isLocalOwner: true)
+        peerAStack.competitiveContext.insert(ownerA)
+        peerBStack.competitiveContext.insert(ownerB)
+        phoneCStack.competitiveContext.insert(ownerC)
+        try phoneCStack.competitiveContext.save()
+
+        let gid = UUID(), sid = UUID()
+        let teams = [StoredTeam(memberIDs: [ownerA.id], shootingOrder: [ownerA.id]),
+                     StoredTeam(memberIDs: [ownerB.id], shootingOrder: [ownerB.id])]
+        for stack in [peerAStack, peerBStack] {
+            let s = Session(id: sid, startedAt: Fixture.t0, ruleSet: .barEight, format: .oneVsOne, tableSize: .sevenFoot)
+            let g = Game(id: gid, index: 0, ruleSet: .barEight, teams: teams, winnerTeam: 0,
+                         startedAt: Fixture.t0, endedAt: Fixture.t0, isUnconfirmed: true)
+            g.session = s
+            stack.competitiveContext.insert(s)
+            stack.competitiveContext.insert(g)
+            try stack.competitiveContext.save()
+        }
+
+        let backupB = try peerBStack.exportBackup()
+        try phoneCStack.importBackup(backupB)
+        #expect(try phoneCStack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == true)
+
+        // Re-importing the exact same peer B backup must NOT self-confirm on Phone C!
+        try phoneCStack.importBackup(backupB)
+        #expect(try phoneCStack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == true)
+
+        // Importing independent witness A's backup confirms the rack on Phone C.
+        let backupA = try peerAStack.exportBackup()
+        try phoneCStack.importBackup(backupA)
+        #expect(try phoneCStack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == false)
     }
 }
