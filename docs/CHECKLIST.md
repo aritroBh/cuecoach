@@ -20,7 +20,13 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 
 All 717 CueCore tests passed at `3ed2637`. The full simulator run exposed a duplicate end-game callback when a player closed a settling rack twice. Fixed in `4dcfc1c`. The full CueCoach scheme then passed on the iOS 27 iPhone 15 Pro simulator with 1,458 tests passed, 7 skipped and 0 failed, including 45 passing UI tests. The locally prepared AuraFace model passed its embedding check.
 
-The seven skips cover two device-only Vision tests, the two-phone UI test, the opt-in detector benchmark and three disabled regression tests. The disabled cases cover an embedded NUL in an imported player name, a newer save racing a backup import, and false ball detections with a table frame displaced by 0.5 m.
+Follow-up on the seven skips from that run (2026-11-18):
+
+- [x] `336714f` rejects embedded NULs before import and preserves competing saves, pending edits and surviving child records during recovery. All 158 persistence tests passed across 18 suites.
+- [x] `e808106` discards poses and corner measurements across tracking loss and rejects physically impossible ball counts. All 17 targeted calibration and perception tests passed, including the 0.5 m stale-frame regression. The app also built for generic iOS with signing disabled.
+- [x] The opt-in detector benchmark ran all three candidates on 544 synthetic frames. Identity F1 reproduced at 77.5% for hybrid and model and 24.2% for classical. Reproduction details are in [the benchmark report](research/detector-benchmark.md).
+- [x] The final build passed 14 privacy checks and two UI checks covering launch and cancellation of a backup import.
+- [!] Two Vision checks and the two-phone UI test require physical devices.
 
 Blocked on the user / phones (hardware-only; simulator & virtual-table QA complete per D32/D39):
 - [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max (phones currently disconnected)

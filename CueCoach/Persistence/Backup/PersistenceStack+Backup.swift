@@ -93,10 +93,11 @@ extension PersistenceStack {
     /// only when the backup's `updatedAt` is strictly newer. Re-importing the same file is a no-op.
     /// Never deletes local rows (a backup without recognition data keeps local embeddings).
     ///
-    /// All-or-nothing across both stores:
+    /// Failure recovery across the two stores:
     /// 1. version + parent references are validated before anything is touched (`BackupError`);
-    /// 2. training is saved first; if that fails, both contexts roll back;
-    /// 3. if the competitive save then fails, the training store is restored from a pre-import snapshot.
+    /// 2. training is saved first; a failure rolls back the staged training changes;
+    /// 3. if the competitive save then fails, undo the imported training rows. A later writer keeps its edits
+    ///    and any imported parent its surviving attempt references.
     ///
     /// Device-local fields are never taken from a backup: `isLocalOwner` of existing profiles is kept;
     /// a new profile becomes the local owner only if this phone has none yet (fresh-phone restore).
