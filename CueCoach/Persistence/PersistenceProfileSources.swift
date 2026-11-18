@@ -415,11 +415,13 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
     }
 
     static func reconstructedOutcome(for s: Shot) -> ShotOutcome {
-        s.fullOutcome ?? ShotOutcome(
+        let deterministicOrder = s.pocketed.count == 1 ? Array(s.pocketed.keys) : []
+        return s.fullOutcome ?? ShotOutcome(
             isBreak: s.index == 0,
             firstContact: s.firstContact,
             noContact: s.fouls.contains(.noContact),
             pocketed: s.pocketed,
+            pocketOrder: deterministicOrder,
             offTable: Set<BallID>(s.fouls.compactMap { f -> BallID? in
                 switch f {
                 case .cueBallOffTable: return .cue
@@ -462,7 +464,11 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         }
         game.winProbSeries = series
 
-        // Prune or refresh Shot of the Game so an overturned winner never retains the losing side's stale highlight.
+        // Prune or refresh Shot of the Game so an overturned winner never retains the losing side's stale highlight,
+        // while preserving any prior valid `clipFile` if the highlight continues to point at the same shot.
+        let priorClipsByShotID: [UUID: String] = Dictionary(
+            game.highlights.compactMap { !$0.clipFile.isEmpty ? ($0.shotID, $0.clipFile) : nil },
+            uniquingKeysWith: { first, _ in first })
         let winningIDs = Set(game.teams.indices.contains(winner) ? game.teams[winner].memberIDs : [])
         for h in Array(game.highlights) where h.kind == .shotOfGame {
             let shot = ordered.first { $0.id == h.shotID }
@@ -474,8 +480,9 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
            let bestShot = ordered.filter({ winningIDs.contains($0.shooterID) && $0.fouls.isEmpty && !$0.isGuess })
                .max(by: { $0.wpaDelta < $1.wpaDelta }) {
             let label = bestShot.decisionRating == .brilliant ? "Brilliant Shot" : "Rack Winner"
+            let clip = bestShot.clipRef ?? priorClipsByShotID[bestShot.id] ?? ""
             let h = Highlight(shotID: bestShot.id, kind: .shotOfGame,
-                              clipFile: bestShot.clipRef ?? "", label: label, score: max(0.1, bestShot.wpaDelta))
+                              clipFile: clip, label: label, score: max(0.1, bestShot.wpaDelta))
             ctx.insert(h)
             h.game = game
         }

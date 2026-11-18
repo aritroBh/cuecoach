@@ -199,4 +199,26 @@ import Testing
         #expect(drawController.activeFeedback?.correction != .moreSpin,
                 "Drawing back behind the stop target must never advise More spin")
     }
+
+    @Test("Banks drill never measures false side error against direct pocket from cushion departure")
+    func bankDrillNeverMeasuresDirectPocketSideErrorFromCushionDeparture() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("TrainTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stack = try PersistenceStack(directory: dir)
+        let one = try #require(BallID(1))
+        let bankController = TrainingSessionController(drill: .banks, initialLevel: .full,
+                                                       tableSize: .sevenFoot, playerID: UUID(), stack: stack)
+        for _ in 0..<15 {
+            bankController.recordAttempt(SettledTrainingShot(
+                made: false,
+                before: [.cue: Vec2(0.80, 0.30), one: Vec2(1.05, 0.72)],
+                after: [.cue: Vec2(0.95, 0.55), one: Vec2(1.10, 0.20)],
+                targetPocket: .headRight,
+                objectDepartureDir: Vec2(0.15, 0.99),
+                objectHitRail: true))
+        }
+        #expect(bankController.activeFeedback == nil,
+                "Cushion-directed bank departure must never be compared against direct un-mirrored pocket direction")
+    }
 }
