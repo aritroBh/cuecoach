@@ -44,7 +44,7 @@ from the table at 20–80° down, eye 0.25–1.45 m above the cloth; layouts inc
 and hands, chalk and specks, moving balls, and empty cloth.
 
 ```sh
-uv run --python 3.12 python bench_scenes.py                    # data/bench/v1: 136 clips × 4 frames (16 empty)
+uv run --python 3.12 python bench_scenes.py --clips 120 --empty-clips 16 --frames 4
 # app path on the simulator (CueCoachTests/DetectorBenchTests, opt-in; build with -O for speed):
 TEST_RUNNER_CUECOACH_BENCH=v1 xcodebuild test … SWIFT_OPTIMIZATION_LEVEL=-O -only-testing:CueCoachTests/DetectorBenchTests
 uv run --python 3.12 python bench_score.py --bench data/bench/v1 --markdown out.md

@@ -37,6 +37,8 @@ on synthetic renders only; real-table accuracy is still unmeasured (see Limits).
 
 ## Results
 
+The 2026-11-18 simulator rerun used seed 32, 120 clips with balls and 16 empty clips, with four frames per clip. Across 3,414 required ball observations, identity F1 reproduced at 77.5% for both hybrid and model and 24.2% for classical. The hybrid detector produced two false positives across all 544 frames.
+
 Candidates: `classical` (v0 colour detector), `model` (bundled model every frame), `hybrid` (model ≤ 30 Hz of frame time,
 classical between runs and on failure). The app processes ≤ 30 Hz (CapturePolicy), so the hybrid's model is always due;
 `hybrid` and `model` scored identically for both weight sets and are shown once.
