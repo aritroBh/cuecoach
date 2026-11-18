@@ -100,6 +100,7 @@ final class LiveModel {
         var answers: [Int: Bool] = [:]
         /// D31: the shot in flight at a relock.
         var guess: LostShotGuess?
+        var clipToken: UUID? = nil
 
         /// A pocket neither answered nor seen either way (only a forced close meets one).
         var hasUnresolvedPocket: Bool {
@@ -207,6 +208,7 @@ final class LiveModel {
     /// unclosed shot (and the one in flight) is lost: it closes unrated, in order, once the table is quiet.
     func perceptionReset() {
         if aimEvents.phase == .aiming { hooks.aimCancelled() }
+        hooks.physicalShotsReset()
         for i in shots.indices where shots[i].state != .lost { shots[i] = ShotEntry(id: shots[i].id, state: .lost) }
         // A guess still looking starts its look over on the new tracker (no shot since).
         for i in shots.indices { shots[i].guess?.restart() }
@@ -223,7 +225,9 @@ final class LiveModel {
     }
 
     private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
-        hooks.shotPhysicallyEnded(record.start, record.end)
+        let token = UUID()
+        let aheadInFIFO = shots.count
+        hooks.shotPhysicallyEnded(token, aheadInFIFO, record.start, record.end)
         // Every pocketed ball with a rule id gets the look (a jaw-stopped "certain" make is overturned by a sighting);
         // only uncertain ones may be asked.
         let uncertain = record.uncertainPockets.filter { ids[$0.key] != nil }
@@ -235,7 +239,8 @@ final class LiveModel {
             shots[i].verdicts = shots[i].resolver?.frozen() ?? [:]
             shots[i].state = .decided
         }
-        shots.append(ShotEntry(id: newID(), state: all.isEmpty ? .decided : .looking, record: record, ids: ids, resolver: resolver))
+        shots.append(ShotEntry(id: newID(), state: all.isEmpty ? .decided : .looking, record: record, ids: ids,
+                               resolver: resolver, clipToken: token))
     }
 
     /// The newest entry's look sees this frame (its own window only), or is frozen by a later shot or motion.
@@ -304,7 +309,7 @@ final class LiveModel {
             rec.uncertainPockets[tid] = nil
         }
         onCloseForTesting?(e.id, rec, true)
-        shotSettled(rec, ids: e.ids, guessed: guessed)
+        shotSettled(rec, ids: e.ids, guessed: guessed, clipToken: e.clipToken)
     }
 
     func hideBadge() { if badge != nil { badge = nil; badgeToken += 1 } }
@@ -318,7 +323,7 @@ final class LiveModel {
     /// A shot ended: rate it through the Rules engine against the shell's game (or the local default), advance the
     /// local copy, tell the shell. The shell owns the real game state; it applies its own result.
     /// `guessed`: a D31 lost shot's best-guess record (the shell's review flags it).
-    func shotSettled(_ record: ShotRecord, ids: [Int: BallID], guessed: Bool = false) {
+    func shotSettled(_ record: ShotRecord, ids: [Int: BallID], guessed: Bool = false, clipToken: UUID? = nil) {
         let (eng, state) = hooks.currentGame() ?? (engine, game)
         let pocketTimes = record.pocketTimes.isEmpty ? nil : record.pocketTimes
         let (rating, result) = RuleRating.rate(record, ids: ids, engine: eng, game: state, pocketTimes: pocketTimes)
@@ -338,7 +343,7 @@ final class LiveModel {
                                           pocketed: RuleRating.outcome(record, ids: ids).pocketed,
                                           fouls: result.fouls, isGuess: guessed,
                                           before: identified(record.preState), after: identified(record.finalState),
-                                          outcome: shotOutcome))
+                                          outcome: shotOutcome, clipToken: clipToken))
             showBadge(BadgeStyle.of(rating))
         } else {
             let madeObject = shotOutcome.pocketed.keys.contains { !$0.isCue } && result.fouls.isEmpty

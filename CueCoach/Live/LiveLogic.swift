@@ -470,6 +470,8 @@ struct SettledShot: Hashable, Sendable {
     /// The outcome Live rated (`RuleRating.outcome` with pocket times). The shell's log fold re-applies it, so the
     /// turn and rules state follow the outcome (`turnPasses` above is Live's own view of the same result).
     var outcome = ShotOutcome()
+    /// Exact correlation token for the camera clip window sealed at physical shot-end (`LiveModel.enqueue`).
+    var clipToken: UUID? = nil
 }
 
 /// What Live tells the app shell (wired by `LiveScreenAdapter` to `LiveSession`). Defaults do nothing, so Live
@@ -501,8 +503,9 @@ struct LiveHooks {
     var tableQuietChanged: @MainActor (Bool) -> Void = { _ in }
     /// Throttled live camera frame + timestamp + normalized cue-ball position for SotG clips & stroke attribution.
     var cameraFrame: @MainActor (CGImage, Double, CGPoint) -> Void = { _, _, _ in }
-    /// Physical shot end (`ShotRecord.start`, `ShotRecord.end` on the camera clock), fired BEFORE pocket-confirm FIFO.
-    var shotPhysicallyEnded: @MainActor (Double, Double) -> Void = { _, _ in }
+    /// Physical shot end (`token`, `aheadInFIFO`, `ShotRecord.start`, `ShotRecord.end` on the camera clock), fired BEFORE pocket-confirm FIFO.
+    var shotPhysicallyEnded: @MainActor (UUID, Int, Double, Double) -> Void = { _, _, _, _ in }
+    var physicalShotsReset: @MainActor () -> Void = {}
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

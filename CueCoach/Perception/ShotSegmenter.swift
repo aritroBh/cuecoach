@@ -173,9 +173,18 @@ struct ShotSegmenter: ShotSegmenting {
                 }
             }
         }
-        // Sample free-flight cue launch speed ONLY after the contact check, while zero object balls have moved and
-        // the cue ball is well clear of every object ball (so close-range collisions never report post-impact speed).
-        if rec.firstContact == nil, rec.rails.isEmpty, moved.subtracting([rec.cueID]).isEmpty,
+        // Sample free-flight cue launch speed ONLY after the contact check, while every pre-shot object ball is still
+        // visible at its rest anchor with speed <= startSpeed and well clear of the cue ball (so close-range or separated
+        // post-impact frames never record post-collision cue speed as launch speed).
+        let anyObjectMovedOrDisplaced = !moved.subtracting([rec.cueID]).isEmpty
+            || visible.contains(where: { b in
+                guard b.id != rec.cueID else { return false }
+                if b.speed > startSpeed { return true }
+                if let pre = rec.preState[b.id], b.measuredPosition.distance(to: pre) > 0.015 { return true }
+                return false
+            })
+            || rec.preState.keys.contains(where: { id in id != rec.cueID && byID[id] == nil })
+        if rec.firstContact == nil, rec.rails.isEmpty, !anyObjectMovedOrDisplaced,
            let cue = byID[rec.cueID], cue.speed > movingSpeed {
             let clearOfObjects = visible.allSatisfy { b in
                 b.id == rec.cueID || cue.measuredPosition.distance(to: b.measuredPosition) > 2 * R + contactSlack + 0.03

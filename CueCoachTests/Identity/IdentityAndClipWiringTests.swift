@@ -260,5 +260,22 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
         let resolvedWaitingID = await recorder.sealPendingLocalIndex(3, strokeAt: 60.5, settledAt: 61.5)
         #expect(resolvedWaitingID == hostCommittedShotID)
         #expect(await recorder.capturedFrameCount(for: hostCommittedShotID) == 3)
+
+        // Verify replacement-ID transfer moves active reaction window + LRU entry cleanly!
+        let replacementID = UUID()
+        let rebound = await recorder.bindPendingLocalIndexIfPresent(3, to: replacementID)
+        #expect(rebound)
+        await recorder.pushFrame(sampleImg, timestamp: 62.5) // inside [59.5, 63.5] active post-settle window!
+        #expect(await recorder.capturedFrameCount(for: replacementID) == 4)
+        #expect(await recorder.capturedFrameCount(for: hostCommittedShotID) == 0)
+
+        // Verify per-shot token correlation (`sealToken` + `bindToken`) is completely immune to unclosed lost shots!
+        let tokenB = UUID(), shotBID = UUID()
+        for t in [80.2, 80.9, 81.4] { await recorder.pushFrame(sampleImg, timestamp: t) }
+        await recorder.sealToken(tokenB, strokeAt: 80.5, settledAt: 81.4)
+        await recorder.pushFrame(sampleImg, timestamp: 82.2)
+        let boundTok = await recorder.bindToken(tokenB, to: shotBID, boundIndex: 5)
+        #expect(boundTok)
+        #expect(await recorder.capturedFrameCount(for: shotBID) == 4)
     }
 }

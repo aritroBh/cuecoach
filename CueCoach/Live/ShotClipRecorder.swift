@@ -110,6 +110,13 @@ actor ShotClipRecorder {
         var frames: [BufferedClipFrame]
     }
 
+    private struct PendingTokenWindow {
+        var token: UUID
+        var lo: Double
+        var hi: Double
+        var frames: [BufferedClipFrame]
+    }
+
     static let maxRetainedShots = 24
     static let maxFramesPerShot = 150
 
@@ -119,6 +126,8 @@ actor ShotClipRecorder {
     private var shotOrder: [UUID] = []
     private var activeWindows: [ActivePostSettleWindow] = []
     private var pendingByIndex: [Int: PendingIndexWindow] = [:]
+    private var pendingByToken: [UUID: PendingTokenWindow] = [:]
+    private var tokenOrder: [UUID] = []
     private var waitingShotIDByIndex: [Int: UUID] = [:]
     private var boundShotIDByIndex: [Int: UUID] = [:]
     private var lastPushedTimestamp: Double?
@@ -147,15 +156,47 @@ actor ShotClipRecorder {
                 pendingByIndex[idx] = pending
             }
         }
+        for (tok, var pending) in pendingByToken where timestamp >= pending.lo && timestamp <= pending.hi {
+            if pending.frames.count < Self.maxFramesPerShot {
+                pending.frames.append(frame)
+                pendingByToken[tok] = pending
+            }
+        }
     }
 
     /// Snapshots `[strokeAt - 1.0, settledAt + 2.0]` for `shotID` and keeps appending incoming reaction frames up to `settledAt + 2.0`
     /// so an early-rack highlight never ages out before rack end (SPEC §7).
-    func sealShot(shotID: UUID, strokeAt: Double, settledAt: Double) {
+    func sealShot(shotID: UUID, strokeAt: Double, settledAt: Double, boundIndex: Int? = nil) {
         let lo = strokeAt - 1.0
         let hi = max(settledAt, strokeAt) + 2.0
         let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        if let boundIndex { boundShotIDByIndex[boundIndex] = shotID }
         registerCaptured(shotID: shotID, frames: initial, lo: lo, hi: hi)
+    }
+
+    /// Seals `[strokeAt - 1.0, settledAt + 2.0]` under an exact per-shot `token` (`LiveModel.enqueue`), bound 1-to-1 to `shotID`
+    /// when `shotSettled` closes that FIFO entry.
+    func sealToken(_ token: UUID, strokeAt: Double, settledAt: Double) {
+        let lo = strokeAt - 1.0
+        let hi = max(settledAt, strokeAt) + 2.0
+        let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        if pendingByToken[token] == nil {
+            tokenOrder.append(token)
+            while tokenOrder.count > Self.maxRetainedShots {
+                let oldest = tokenOrder.removeFirst()
+                pendingByToken.removeValue(forKey: oldest)
+            }
+        }
+        pendingByToken[token] = PendingTokenWindow(token: token, lo: lo, hi: hi, frames: initial)
+    }
+
+    @discardableResult
+    func bindToken(_ token: UUID, to shotID: UUID, boundIndex: Int? = nil) -> Bool {
+        guard let pending = pendingByToken.removeValue(forKey: token) else { return false }
+        tokenOrder.removeAll { $0 == token }
+        if let boundIndex { boundShotIDByIndex[boundIndex] = shotID }
+        registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
+        return true
     }
 
     /// Seals `[strokeAt - 1.0, settledAt + 2.0]` immediately on local physical shot-end (before any pocket-confirm FIFO).
@@ -190,9 +231,18 @@ actor ShotClipRecorder {
             registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
             return true
         }
-        if let prevID = boundShotIDByIndex[index], prevID != shotID, let existing = capturedShots[prevID] {
+        if let prevID = boundShotIDByIndex[index], prevID != shotID,
+           let existing = capturedShots.removeValue(forKey: prevID) {
             boundShotIDByIndex[index] = shotID
+            if let orderIdx = shotOrder.firstIndex(of: prevID) {
+                shotOrder[orderIdx] = shotID
+            } else {
+                shotOrder.append(shotID)
+            }
             capturedShots[shotID] = existing
+            for i in activeWindows.indices where activeWindows[i].shotID == prevID {
+                activeWindows[i].shotID = shotID
+            }
             return true
         }
         waitingShotIDByIndex[index] = shotID

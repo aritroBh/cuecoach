@@ -109,8 +109,12 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
         game?.noteCameraFrame(image, timestamp: timestamp, cueBall: cueBall)
     }
 
-    func shotPhysicallyEnded(start: Double, end: Double) {
-        game?.notePhysicalShotEnd(start: start, end: end)
+    func shotPhysicallyEnded(token: UUID, aheadInFIFO: Int, start: Double, end: Double) {
+        game?.notePhysicalShotEnd(token: token, aheadInFIFO: aheadInFIFO, start: start, end: end)
+    }
+
+    func physicalShotsReset() {
+        game?.notePhysicalShotsReset()
     }
 }
 
