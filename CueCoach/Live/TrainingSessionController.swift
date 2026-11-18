@@ -185,9 +185,9 @@ final class TrainingSessionController {
             let idealObjDir = (pocketPos - objBefore).normalized
             let cueToObj = (objBefore - cueBefore).normalized
 
-            // 1. Cut & side miss: use ONLY pre-rail initial object-ball departure (`objectDepartureDir`) so cushion/jaw
-            // rebounds into `shot.after` never invert coaching advice.
-            if !shot.made, let depDir = shot.objectDepartureDir, depDir.length > 0.5 {
+            // 1. Cut & side miss: use ONLY pre-rail initial object-ball departure (`objectDepartureDir`) on direct
+            // non-bank misses so cushion/jaw rebounds and bank-cushion departure angles never invert coaching advice.
+            if !shot.made, drill != .banks, let depDir = shot.objectDepartureDir, depDir.length > 0.5 {
                 let normDep = depDir.normalized
                 let neededCut = abs(atan2(cueToObj.cross(idealObjDir), cueToObj.dot(idealObjDir)))
                 let actualCut = abs(atan2(cueToObj.cross(normDep), cueToObj.dot(normDep)))

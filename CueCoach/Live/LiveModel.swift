@@ -127,7 +127,11 @@ final class LiveModel {
     /// `done` runs exactly once.
     /// D42: a second request while finishing forces the end at once.
     func requestEnd(_ done: @escaping @MainActor () -> Void) {
-        guard !isFinishing else { return forceEnd() }
+        if isFinishing {
+            let prev = onFinished
+            onFinished = { prev?(); done() }
+            return forceEnd()
+        }
         guard hasOpenShot else { return end(done) }
         isFinishing = true
         onFinished = done
@@ -343,7 +347,9 @@ final class LiveModel {
                                           fouls: result.fouls, isGuess: guessed,
                                           before: identified(record.preState), after: identified(record.finalState),
                                           outcome: shotOutcome, clipToken: clipToken))
-            showBadge(BadgeStyle.of(rating))
+            if !isFinishing && !hasEnded {
+                showBadge(BadgeStyle.of(rating))
+            }
         } else {
             let madeObject = shotOutcome.pocketed.keys.contains { !$0.isCue } && result.fouls.isEmpty
             let fallbackPocket = TrainingSessionController.defaultPocket(for: drill ?? .straightIn)
