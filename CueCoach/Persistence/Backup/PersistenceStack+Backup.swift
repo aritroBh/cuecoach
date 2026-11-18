@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Synchronization
 import Geometry
 import Rules
 
@@ -64,8 +65,8 @@ extension PersistenceStack {
         return comp
     }
 
-    private func trainingSection() throws -> BackupV1.Training {
-        let t = trainingContext
+    private func trainingSection(in context: ModelContext? = nil) throws -> BackupV1.Training {
+        let t = context ?? trainingContext
         var train = BackupV1.Training()
         train.profiles = sorted(try all(TrainingProfile.self, t).map {
             .init(id: $0.id, playerID: $0.playerID, createdAt: $0.createdAt, updatedAt: $0.updatedAt)
@@ -103,7 +104,7 @@ extension PersistenceStack {
     /// max-wins, so a restore never un-revokes. A live session guest that the backup saves is promoted; its
     /// session templates are dropped first unless its id is in `keepingRecognitionOf` (consent given at
     /// promotion time). The drop happens before the merge so a failed import can't leave a promoted profile
-    /// that still holds session templates.
+    /// that still holds session templates. Dropped templates stay deleted if a later write fails.
     ///
     /// Refuses (`BackupError.pendingChanges`) while either context has unsaved edits, because a failed
     /// import rolls the contexts back and would otherwise discard that unrelated work (audit F9).
@@ -115,32 +116,56 @@ extension PersistenceStack {
         let backup = try BackupV1.decode(data)
         try validateParents(backup)
         let backupIDs = Set(backup.competitive.profiles.map(\.id))
-        let promoted = Set(try c.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isSessionGuest }))
-            .map(\.id)).intersection(backupIDs)
-        let fenced = promoted.subtracting(consented)
-        try dropRecognition(of: fenced)
-        let trainingSnapshot = try trainingSection()
-        do {
-            try mergeCompetitive(backup.competitive, fencing: fenced, at: .now, into: c)
+        var trainingSnapshot = BackupV1.Training()
+        try writeImport(to: t, kind: .training) {
+            trainingSnapshot = try trainingSection()
             try mergeTraining(backup.training, into: t)
-            try beforeSave?(.training)
-            try t.save()
-        } catch {
-            c.rollback()
-            t.rollback()
-            throw error
         }
         do {
-            try beforeSave?(.competitive)
-            try c.save()
-        } catch {
-            c.rollback()
-            try compensateTraining(before: trainingSnapshot, imported: backup.training)
-            throw error
+            // Training's didSave and the recognition purge can synchronously notify main-actor writers.
+            guard !c.hasChanges, !recognitionContext.hasChanges else { throw BackupError.pendingChanges }
+            let promoted = Set(try c.fetch(FetchDescriptor<PlayerProfile>(predicate: #Predicate { $0.isSessionGuest }))
+                .map(\.id)).intersection(backupIDs)
+            let fenced = promoted.subtracting(consented)
+            try dropRecognition(of: fenced)
+            guard !c.hasChanges, !recognitionContext.hasChanges else { throw BackupError.pendingChanges }
+            try writeImport(to: c, kind: .competitive) {
+                try mergeCompetitive(backup.competitive, fencing: fenced, at: .now, into: c)
+            }
+        } catch let importError {
+            do { try compensateTraining(before: trainingSnapshot, imported: backup.training) }
+            catch { throw BackupRecoveryError(importError: importError, recoveryError: error) }
+            throw importError
         }
         // The import itself has committed: a failed purge is not an import failure. Galleries were already told,
         // the rows are unreadable behind the tombstone, and every open retries the purge.
         try? purgeRevokedTemplates(of: backupIDs)
+    }
+
+    /// All app writers run on the main actor. If another context commits synchronously while the merge
+    /// is staged, discard the stale UUID comparisons and rebuild them against the committed rows.
+    private func writeImport(to context: ModelContext, kind: StoreKind, merge: () throws -> Void) throws {
+        let container = context.container
+        let changed = Mutex(false)
+        let center = NotificationCenter.default
+        let observer = center.addObserver(forName: ModelContext.didSave, object: nil, queue: nil) { note in
+            guard let writer = note.object as? ModelContext, writer.container === container else { return }
+            changed.withLock { $0 = true }
+        }
+        defer { center.removeObserver(observer) }
+        do {
+            try context.transaction {
+                try merge()
+                try beforeSave?(kind)
+                if changed.withLock({ $0 }) {
+                    context.rollback()
+                    try merge()
+                }
+            }
+        } catch {
+            context.rollback()
+            throw error
+        }
     }
 
     /// Templates opted in at or before their profile's (possibly just imported) revocation tombstone are removed
@@ -173,34 +198,49 @@ extension PersistenceStack {
         for a in b.training.attempts { try check("TrainingAttempt", a.id, a.progressID, in: progress) }
     }
 
-    /// Compensation after a failed competitive save, non-destructive and in one save:
-    /// rows the import updated get their pre-import values back (`before` holds them), and only the rows
-    /// the import inserted (ids absent from `before`) are deleted. Pre-existing rows are never deleted;
-    /// if this save fails too, the training store keeps the imported state (nothing lost).
+    /// Undo the rows the failed import wrote, unless a later edit or a surviving child now owns them.
     private func compensateTraining(before: BackupV1.Training, imported: BackupV1.Training) throws {
-        let t = trainingContext
-        let importedIDs = Set(imported.profiles.map(\.id)).union(imported.drillProgress.map(\.id))
-            .union(imported.attempts.map(\.id)).union(imported.biases.map(\.id))
-        let beforeIDs = Set(before.profiles.map(\.id)).union(before.drillProgress.map(\.id))
-            .union(before.attempts.map(\.id)).union(before.biases.map(\.id))
-        let inserted = importedIDs.subtracting(beforeIDs)
-        var old = before
-        old.profiles.removeAll { !importedIDs.contains($0.id) }
-        old.drillProgress.removeAll { !importedIDs.contains($0.id) }
-        old.attempts.removeAll { !importedIDs.contains($0.id) }
-        old.biases.removeAll { !importedIDs.contains($0.id) }
-        do {
-            // Restore first (re-parents attempts back), then delete inserted rows so cascades can't reach old rows.
-            try mergeTraining(old, into: t, force: true)
-            for m in try all(TrainingAttempt.self, t) where inserted.contains(m.id) { t.delete(m) }
-            for m in try all(BiasRecord.self, t) where inserted.contains(m.id) { t.delete(m) }
-            for m in try all(DrillProgress.self, t) where inserted.contains(m.id) { t.delete(m) }
-            for m in try all(TrainingProfile.self, t) where inserted.contains(m.id) { t.delete(m) }
-            try beforeSave?(.trainingCompensation)
-            try t.save()
-        } catch {
-            t.rollback()
-            throw error
+        // An observer may have left pending edits. A separate context can compensate without saving or rolling them back.
+        let t = trainingContext.hasChanges ? ModelContext(trainingContainer) : trainingContext
+        try writeImport(to: t, kind: .trainingCompensation) {
+            let current = try trainingSection(in: ModelContext(trainingContainer))
+            let pending = trainingContext.hasChanges ? try trainingSection() : nil
+
+            func undo<Row>(_ rows: KeyPath<BackupV1.Training, [Row]>, id: KeyPath<Row, UUID>,
+                           stamp: KeyPath<Row, Date>) -> (restore: [Row], delete: Set<UUID>) {
+                func dates(_ section: BackupV1.Training) -> [UUID: Date] {
+                    Dictionary(section[keyPath: rows].map { ($0[keyPath: id], $0[keyPath: stamp]) },
+                               uniquingKeysWith: max)
+                }
+                let prior = dates(before), written = dates(imported), visible = pending.map(dates)
+                let ours = Set(current[keyPath: rows].compactMap { row -> UUID? in
+                    let key = row[keyPath: id], date = row[keyPath: stamp]
+                    guard written[key] == date, prior[key].map({ isNewer(date, than: $0) }) ?? true,
+                          visible == nil || visible?[key] == date else { return nil }
+                    return key
+                })
+                return (before[keyPath: rows].filter { ours.contains($0[keyPath: id]) }, ours.subtracting(prior.keys))
+            }
+
+            let profiles = undo(\.profiles, id: \.id, stamp: \.updatedAt)
+            let progress = undo(\.drillProgress, id: \.id, stamp: \.updatedAt)
+            let attempts = undo(\.attempts, id: \.id, stamp: \.updatedAt)
+            let biases = undo(\.biases, id: \.id, stamp: \.updatedAt)
+            let restore = BackupV1.Training(profiles: profiles.restore, drillProgress: progress.restore,
+                                           attempts: attempts.restore, biases: biases.restore)
+            try mergeTraining(restore, into: t, force: true)
+            for m in try all(TrainingAttempt.self, t) where attempts.delete.contains(m.id) { t.delete(m) }
+            // A new or independently edited attempt can still point to a progress row the import inserted.
+            // Keep its parent so SwiftData's cascade cannot delete the live attempt.
+            let undoneAttempts = attempts.delete.union(attempts.restore.map(\.id))
+            let retainedParents = Set((current.attempts + (pending?.attempts ?? [])).compactMap {
+                undoneAttempts.contains($0.id) ? nil : $0.progressID
+            })
+            for m in try all(DrillProgress.self, t) where progress.delete.contains(m.id) && !retainedParents.contains(m.id) {
+                t.delete(m)
+            }
+            for m in try all(BiasRecord.self, t) where biases.delete.contains(m.id) { t.delete(m) }
+            for m in try all(TrainingProfile.self, t) where profiles.delete.contains(m.id) { t.delete(m) }
         }
     }
 
@@ -369,7 +409,7 @@ extension PersistenceStack {
     }
 
     /// Strictly newer at millisecond grain (the backup's precision), so re-imports are no-ops.
-    private func isNewer(_ incoming: Date, than local: Date) -> Bool {
+    nonisolated private func isNewer(_ incoming: Date, than local: Date) -> Bool {
         BackupV1.millis(incoming) > BackupV1.millis(local)
     }
 

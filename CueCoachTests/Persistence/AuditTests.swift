@@ -204,19 +204,25 @@ import Testing
         #expect(try fresh.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first?.name == name)
     }
 
-    @Test(.disabled("AUDIT-FINDING F12: an embedded NUL in a string is truncated by the on-disk store (\"Ari\\0hidden\" reads back as \"Ari\"); in-memory and JSON keep it, so disk and backup disagree. Expected: identical round-trip or NUL rejected on import."))
-    func nulCharacterInNameSurvivesDiskStore() throws {
-        let dir = tempDir()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let name = "Ari\u{0000}hidden"
-        do {
-            let s = try PersistenceStack(directory: dir)
-            var b = emptyBackup()
-            b.competitive.profiles = [profile(name: name)]
-            try s.importBackup(b.encoded())
+    @Test(arguments: ["name", "avatarSymbol", "avatarColor", "clipRef", "clipFile", "label", "progressDrill", "biasDrill"])
+    func importingANulInAStoredStringLeavesTheStoreUntouched(field: String) throws {
+        let stack = try populated()
+        let before = try snapshot(stack)
+        var b = before
+        let invalid = "Ari\u{0000}hidden"
+        switch field {
+        case "name": b.competitive.profiles[0].name = invalid
+        case "avatarSymbol": b.competitive.profiles[0].avatarSymbol = invalid
+        case "avatarColor": b.competitive.profiles[0].avatarColor = invalid
+        case "clipRef": b.competitive.shots[0].clipRef = invalid
+        case "clipFile": b.competitive.highlights[0].clipFile = invalid
+        case "label": b.competitive.highlights[0].label = invalid
+        case "progressDrill": b.training.drillProgress[0].drill = invalid
+        case "biasDrill": b.training.biases[0].drill = invalid
+        default: Issue.record("Unknown field \(field)"); return
         }
-        let reopened = try PersistenceStack(directory: dir)
-        #expect(try reopened.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first?.name == name)
+        #expect(throws: BackupError.embeddedNul) { try stack.importBackup(b.encoded()) }
+        #expect(try snapshot(stack) == before)
     }
 
     // MARK: Dates
@@ -497,25 +503,102 @@ import Testing
 
     // MARK: Interleaved / concurrent saves
 
-    @Test(.disabled("AUDIT-FINDING F5: a row saved by another ModelContext between importBackup's fetch and its save is overwritten by the backup's OLDER copy (insert + .unique upsert bypasses newer-wins). Expected: newer row kept."))
-    func concurrentNewerSaveIsNotClobberedByOlderBackupRow() throws {
+    /// Production save notifications can synchronously run other main-actor writers between the two stores.
+    private func afterTrainingSave(_ stack: PersistenceStack, _ action: @escaping @MainActor () throws -> Void) -> NSObjectProtocol {
+        var delivered = false
+        return NotificationCenter.default.addObserver(forName: ModelContext.didSave, object: stack.trainingContext, queue: nil) { _ in
+            MainActor.assumeIsolated {
+                guard !delivered else { return }
+                delivered = true
+                do { try action() } catch { Issue.record(error) }
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func concurrentNewerSaveIsNotClobberedByOlderBackupRow(existing: Bool) throws {
+        let stack = try populated()
+        let id = existing ? Fixture.ownerID : UUID()
+        var b = emptyBackup()
+        b.competitive.profiles = [profile(id, name: "Backup", updatedAt: Fixture.t0.addingTimeInterval(1))]
+        b.training.profiles = [.init(id: UUID(), playerID: id, createdAt: Fixture.t0, updatedAt: Fixture.t0)]
+        let token = afterTrainingSave(stack) {
+            let other = ModelContext(stack.competitiveContainer)
+            if existing {
+                let row = try #require(other.fetch(FetchDescriptor<PlayerProfile>()).first { $0.id == id })
+                row.name = "LiveNewer"
+            } else {
+                other.insert(PlayerProfile(id: id, name: "LiveNewer", avatarSymbol: "s", avatarColor: "c"))
+            }
+            try other.save()
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        try stack.importBackup(b.encoded())
+        let rows = try ModelContext(stack.competitiveContainer).fetch(FetchDescriptor<PlayerProfile>())
+        #expect(rows.filter { $0.id == id }.map(\.name) == ["LiveNewer"])
+    }
+
+    @Test func insertCommittedAfterCompetitiveMergeKeepsItsNewerValues() throws {
         let stack = try PersistenceStack(inMemory: true)
         let id = UUID()
         var b = emptyBackup()
         b.competitive.profiles = [profile(id, name: "Backup", updatedAt: Fixture.t0)]
         stack.beforeSave = { kind in
             guard kind == .competitive else { return }
+            #expect(stack.competitiveContext.hasChanges)
             let other = ModelContext(stack.competitiveContainer)
-            other.insert(PlayerProfile(id: id, name: "LiveNewer", avatarSymbol: "s", avatarColor: "c",
-                                       createdAt: .now, updatedAt: .now))
+            other.insert(PlayerProfile(id: id, name: "LiveNewer", avatarSymbol: "s", avatarColor: "c"))
             try other.save()
         }
         try stack.importBackup(b.encoded())
-        stack.beforeSave = nil
-        let verify = ModelContext(stack.competitiveContainer)
-        let rows = try verify.fetch(FetchDescriptor<PlayerProfile>())
-        #expect(rows.count == 1)
-        #expect(rows.first?.name == "LiveNewer")
+        let rows = try ModelContext(stack.competitiveContainer).fetch(FetchDescriptor<PlayerProfile>())
+        #expect(rows.map(\.name) == ["LiveNewer"])
+    }
+
+    @Test func compensationKeepsLiveTrainingEditsAndNewChildren() throws {
+        let stack = try populated()
+        var b = try snapshot(stack)
+        let progressID = UUID(), newAttemptID = UUID()
+        let biasID = b.training.biases[0].id
+        b.training.biases[0].sign = -1
+        b.training.biases[0].updatedAt = .now
+        var newProgress = b.training.drillProgress[0]
+        newProgress.id = progressID
+        b.training.drillProgress.append(newProgress)
+        let token = afterTrainingSave(stack) {
+            let other = ModelContext(stack.trainingContainer)
+            let bias = try #require(other.fetch(FetchDescriptor<BiasRecord>()).first { $0.id == biasID })
+            bias.attemptsWindow = 123
+            let parent = try #require(other.fetch(FetchDescriptor<DrillProgress>()).first { $0.id == progressID })
+            let liveAttempt = TrainingAttempt(id: newAttemptID, at: .now, setup: Fixture.table(), result: Fixture.table(),
+                                               made: true, features: b.training.attempts[0].features)
+            liveAttempt.progress = parent
+            other.insert(liveAttempt)
+            try other.save()
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        stack.beforeSave = { if $0 == .competitive { throw Injected() } }
+        #expect(throws: Injected.self) { try stack.importBackup(b.encoded()) }
+        let fresh = ModelContext(stack.trainingContainer)
+        #expect(try fresh.fetch(FetchDescriptor<BiasRecord>()).first { $0.id == biasID }?.attemptsWindow == 123)
+        #expect(try fresh.fetch(FetchDescriptor<TrainingAttempt>()).first { $0.id == newAttemptID }?.progress?.id == progressID)
+    }
+
+    @Test func competitiveEditStagedDuringTrainingSaveStaysUnsaved() throws {
+        let stack = try populated()
+        var b = emptyBackup()
+        let inserted = UUID()
+        b.training.profiles = [.init(id: inserted, playerID: UUID(), createdAt: .now, updatedAt: .now)]
+        let token = afterTrainingSave(stack) {
+            let profile = try #require(stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first)
+            profile.name = "Unsaved"
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        #expect(throws: BackupError.pendingChanges) { try stack.importBackup(b.encoded()) }
+        #expect(stack.competitiveContext.hasChanges)
+        #expect(try stack.competitiveContext.fetch(FetchDescriptor<PlayerProfile>()).first?.name == "Unsaved")
+        #expect(try ModelContext(stack.competitiveContainer).fetch(FetchDescriptor<PlayerProfile>()).first?.name == "Ari")
+        #expect(try ModelContext(stack.trainingContainer).fetch(FetchDescriptor<TrainingProfile>()).allSatisfy { $0.id != inserted })
     }
 
     // F9: import never rolls back unrelated pending edits: it refuses to run while either context has

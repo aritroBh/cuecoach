@@ -171,8 +171,15 @@ struct BackupV1: Codable, Equatable, Sendable {
     }
 }
 
+/// Both commits failed: callers can inspect the competitive write and the training recovery independently.
+struct BackupRecoveryError: Error {
+    let importError: any Error
+    let recoveryError: any Error
+}
+
 enum BackupError: Error, Equatable {
     case unsupportedVersion(Int)
+    case embeddedNul
     /// A row references a parent that is neither in the backup nor on this device.
     case missingParent(child: String, childID: UUID, parentID: UUID)
     /// Import refused: a store has unsaved edits that a failed import would otherwise roll back.
@@ -226,7 +233,15 @@ extension BackupV1 {
         }
         let version = try d.decode(Header.self, from: data).version
         guard version == currentVersion else { throw BackupError.unsupportedVersion(version) }
-        return try d.decode(BackupV1.self, from: data)
+        let b = try d.decode(BackupV1.self, from: data)
+        // SwiftData truncates these SQLite text columns at NUL. Blobs and unknown legacy keys are unaffected.
+        func hasNul(_ s: String) -> Bool { s.utf8.contains(0) }
+        guard !b.competitive.profiles.contains(where: { hasNul($0.name) || hasNul($0.avatarSymbol) || hasNul($0.avatarColor) }),
+              !b.competitive.shots.contains(where: { $0.clipRef.map(hasNul) == true }),
+              !b.competitive.highlights.contains(where: { hasNul($0.clipFile) || hasNul($0.label) }),
+              !b.training.drillProgress.contains(where: { hasNul($0.drill) }),
+              !b.training.biases.contains(where: { hasNul($0.drill) }) else { throw BackupError.embeddedNul }
+        return b
     }
 
     func encoded() throws -> Data {
