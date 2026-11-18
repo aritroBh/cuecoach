@@ -142,7 +142,8 @@ final class GameSessionModel {
     @ObservationIgnored private var shotStrokeTimes: [UUID: Double] = [:]
     @ObservationIgnored private var shotSettledTimes: [UUID: Double] = [:]
     @ObservationIgnored private var lastLocalStrokeAt: Double?
-    @ObservationIgnored private var sealedClipShots: Set<UUID> = []
+    @ObservationIgnored private var nextLocalPhysicalOrdinal = 0
+    @ObservationIgnored private var pendingPhysicalEndCount = 0
     @ObservationIgnored private var recentIdentityFrames: [(timestamp: Double, frame: IdentityFrame)] = []
     @ObservationIgnored private var latchedStrokeFrames: [IdentityFrame]?
     @ObservationIgnored private var latchedStrokeTime: Double?
@@ -236,16 +237,20 @@ final class GameSessionModel {
         let id = UUID()
         let strokeTime = takeStroke()
         let settledTime = now()
-        let localExpectedIndex = shots.count
         shotStrokeTimes[id] = strokeTime
         shotSettledTimes[id] = settledTime
         isAimingOrMoving = false
-        if let recorder = clipRecorder {
-            if writesLog {
-                sealedClipShots.insert(id)
-                Task { await recorder.sealShot(shotID: id, strokeAt: strokeTime, settledAt: settledTime) }
-            } else {
-                Task { await recorder.sealPendingLocalIndex(localExpectedIndex, strokeAt: strokeTime, settledAt: settledTime) }
+        if pendingPhysicalEndCount > 0 {
+            pendingPhysicalEndCount -= 1
+        } else {
+            let ordinal = nextLocalPhysicalOrdinal
+            nextLocalPhysicalOrdinal += 1
+            if let recorder = clipRecorder {
+                Task { @MainActor [weak self] in
+                    if await recorder.sealPendingLocalIndex(ordinal, strokeAt: strokeTime, settledAt: settledTime) != nil {
+                        self?.scheduleEngineEvaluation()
+                    }
+                }
             }
         }
         let event = GameEvent.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
@@ -284,6 +289,11 @@ final class GameSessionModel {
     /// the shooter stays until a disc tap or the next aim. In a mesh it goes to `mesh.settled` like a settle.
     func shotLost() {
         isAimingOrMoving = false
+        if pendingPhysicalEndCount > 0 {
+            pendingPhysicalEndCount -= 1
+        } else {
+            nextLocalPhysicalOrdinal += 1
+        }
         let event = GameEvent.shotLost(shotID: UUID(), shooterTeam: shootingTeam)
         if let mesh {
             mesh.setPhase(.settled)
@@ -297,10 +307,26 @@ final class GameSessionModel {
     /// A new shot starting answers the ask: the current shooter keeps the turn (D38: never block play).
     func aimStarted() {
         isAimingOrMoving = true
+        nextLocalPhysicalOrdinal = max(nextLocalPhysicalOrdinal, shots.count)
         askAnsweredAt = events.count
         needsShooter = false
         badge.receive(.aimStarted)
         mesh?.setPhase(.aiming)
+    }
+
+    /// Seals `[start - 1.0, end + 2.0]` on the camera clock immediately when `ShotSegmenter` ends the physical shot
+    /// (`LiveModel.enqueue`), BEFORE any pocket-confirmation prompt can delay `shotSettled`.
+    func notePhysicalShotEnd(start: Double, end: Double) {
+        let ordinal = nextLocalPhysicalOrdinal
+        nextLocalPhysicalOrdinal += 1
+        pendingPhysicalEndCount += 1
+        if let recorder = clipRecorder {
+            Task { @MainActor [weak self] in
+                if await recorder.sealPendingLocalIndex(ordinal, strokeAt: start, settledAt: end) != nil {
+                    self?.scheduleEngineEvaluation()
+                }
+            }
+        }
     }
     func aimEnded() {
         let t = now()
@@ -367,10 +393,14 @@ final class GameSessionModel {
         events = committed
         fold()
         if let recorder = clipRecorder {
-            for s in shots where sealedClipShots.insert(s.id).inserted {
+            for s in shots {
                 let idx = s.index
                 let sid = s.id
-                Task { await recorder.bindPendingLocalIndexIfPresent(idx, to: sid) }
+                Task { @MainActor [weak self] in
+                    if await recorder.bindPendingLocalIndexIfPresent(idx, to: sid) {
+                        self?.scheduleEngineEvaluation()
+                    }
+                }
             }
         }
         applyCachedEnrichments()

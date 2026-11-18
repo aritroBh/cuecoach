@@ -162,9 +162,6 @@ struct ShotSegmenter: ShotSegmenting {
         }
         for id in returnSince.keys where !confirmed.contains(where: { $0.id == id && $0.measured }) { returnSince[id] = nil }
         let byID = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        if rec.firstContact == nil, rec.rails.isEmpty, let cue = byID[rec.cueID], cue.speed > movingSpeed {
-            rec.cueLaunchSpeed = max(rec.cueLaunchSpeed ?? 0, cue.speed)
-        }
         // First contact: an object ball near the cue ball starts moving.
         if rec.firstContact == nil, let cue = byID[rec.cueID] {
             for b in visible where b.id != rec.cueID && b.speed > startSpeed {
@@ -174,6 +171,17 @@ struct ShotSegmenter: ShotSegmenting {
                     rec.firstContact = b.id
                     break
                 }
+            }
+        }
+        // Sample free-flight cue launch speed ONLY after the contact check, while zero object balls have moved and
+        // the cue ball is well clear of every object ball (so close-range collisions never report post-impact speed).
+        if rec.firstContact == nil, rec.rails.isEmpty, moved.subtracting([rec.cueID]).isEmpty,
+           let cue = byID[rec.cueID], cue.speed > movingSpeed {
+            let clearOfObjects = visible.allSatisfy { b in
+                b.id == rec.cueID || cue.measuredPosition.distance(to: b.measuredPosition) > 2 * R + contactSlack + 0.03
+            }
+            if clearOfObjects {
+                rec.cueLaunchSpeed = max(rec.cueLaunchSpeed ?? 0, cue.speed)
             }
         }
         // Rails: a moving ball's normal velocity reverses near a cushion nose line.

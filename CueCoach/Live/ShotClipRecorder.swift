@@ -119,6 +119,8 @@ actor ShotClipRecorder {
     private var shotOrder: [UUID] = []
     private var activeWindows: [ActivePostSettleWindow] = []
     private var pendingByIndex: [Int: PendingIndexWindow] = [:]
+    private var waitingShotIDByIndex: [Int: UUID] = [:]
+    private var boundShotIDByIndex: [Int: UUID] = [:]
     private var lastPushedTimestamp: Double?
     private var lastPushUptime: Double?
 
@@ -156,21 +158,48 @@ actor ShotClipRecorder {
         registerCaptured(shotID: shotID, frames: initial, lo: lo, hi: hi)
     }
 
-    /// Joiners seal their local camera window immediately on physical settlement keyed by expected shot index,
-    /// then bind it to the host's committed `shotID` once the log entry arrives (avoiding commit-latency drift).
-    func sealPendingLocalIndex(_ index: Int, strokeAt: Double, settledAt: Double) {
+    /// Seals `[strokeAt - 1.0, settledAt + 2.0]` immediately on local physical shot-end (before any pocket-confirm FIFO).
+    /// Bidirectional with `bindPendingLocalIndexIfPresent`: works whether local settlement or mesh commit arrives first.
+    @discardableResult
+    func sealPendingLocalIndex(_ index: Int, strokeAt: Double, settledAt: Double) -> UUID? {
         let lo = strokeAt - 1.0
         let hi = max(settledAt, strokeAt) + 2.0
         let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        if let waitingID = waitingShotIDByIndex.removeValue(forKey: index) {
+            boundShotIDByIndex[index] = waitingID
+            registerCaptured(shotID: waitingID, frames: initial, lo: lo, hi: hi)
+            return waitingID
+        }
         pendingByIndex[index] = PendingIndexWindow(index: index, lo: lo, hi: hi, frames: initial)
         if pendingByIndex.count > Self.maxRetainedShots, let minKey = pendingByIndex.keys.min() {
             pendingByIndex.removeValue(forKey: minKey)
         }
+        return nil
     }
 
-    func bindPendingLocalIndexIfPresent(_ index: Int, to shotID: UUID) {
-        guard capturedShots[shotID] == nil, let pending = pendingByIndex.removeValue(forKey: index) else { return }
-        registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
+    @discardableResult
+    func bindPendingLocalIndexIfPresent(_ index: Int, to shotID: UUID) -> Bool {
+        if capturedShots[shotID] != nil {
+            waitingShotIDByIndex.removeValue(forKey: index)
+            boundShotIDByIndex[index] = shotID
+            return false
+        }
+        if let pending = pendingByIndex.removeValue(forKey: index) {
+            waitingShotIDByIndex.removeValue(forKey: index)
+            boundShotIDByIndex[index] = shotID
+            registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
+            return true
+        }
+        if let prevID = boundShotIDByIndex[index], prevID != shotID, let existing = capturedShots[prevID] {
+            boundShotIDByIndex[index] = shotID
+            capturedShots[shotID] = existing
+            return true
+        }
+        waitingShotIDByIndex[index] = shotID
+        if waitingShotIDByIndex.count > Self.maxRetainedShots, let minKey = waitingShotIDByIndex.keys.min() {
+            waitingShotIDByIndex.removeValue(forKey: minKey)
+        }
+        return false
     }
 
     private func registerCaptured(shotID: UUID, frames: [BufferedClipFrame], lo: Double, hi: Double) {

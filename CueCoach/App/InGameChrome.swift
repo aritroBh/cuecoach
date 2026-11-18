@@ -31,6 +31,7 @@ struct LiveScreenAdapter: View {
         }
         h.tableQuietChanged = { session.tableQuietChanged($0) }
         h.cameraFrame = { session.cameraFrame($0, timestamp: $1, cueBall: $2) }
+        h.shotPhysicallyEnded = { session.shotPhysicallyEnded(start: $0, end: $1) }
         if session.game != nil { h.shotLost = { session.shotLost() } }
         let game = session.game
         h.currentGame = { game?.rules }

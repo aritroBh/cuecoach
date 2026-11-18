@@ -501,6 +501,8 @@ struct LiveHooks {
     var tableQuietChanged: @MainActor (Bool) -> Void = { _ in }
     /// Throttled live camera frame + timestamp + normalized cue-ball position for SotG clips & stroke attribution.
     var cameraFrame: @MainActor (CGImage, Double, CGPoint) -> Void = { _, _, _ in }
+    /// Physical shot end (`ShotRecord.start`, `ShotRecord.end` on the camera clock), fired BEFORE pocket-confirm FIFO.
+    var shotPhysicallyEnded: @MainActor (Double, Double) -> Void = { _, _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

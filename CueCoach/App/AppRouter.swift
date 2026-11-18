@@ -108,6 +108,10 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
     func cameraFrame(_ image: CGImage, timestamp: Double, cueBall: CGPoint) {
         game?.noteCameraFrame(image, timestamp: timestamp, cueBall: cueBall)
     }
+
+    func shotPhysicallyEnded(start: Double, end: Double) {
+        game?.notePhysicalShotEnd(start: start, end: end)
+    }
 }
 
 /// What fills the full-screen cover above the navigation stack.

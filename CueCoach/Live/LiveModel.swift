@@ -223,6 +223,7 @@ final class LiveModel {
     }
 
     private func enqueue(_ record: ShotRecord, ids: [Int: BallID]) {
+        hooks.shotPhysicallyEnded(record.start, record.end)
         // Every pocketed ball with a rule id gets the look (a jaw-stopped "certain" make is overturned by a sighting);
         // only uncertain ones may be asked.
         let uncertain = record.uncertainPockets.filter { ids[$0.key] != nil }

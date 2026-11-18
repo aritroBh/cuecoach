@@ -183,6 +183,20 @@ import Testing
                 after: [.cue: Vec2(1.75, 0.50)],
                 targetPocket: .footRight))
         }
-        #expect(spinController.activeFeedback != nil, "Spin Control drill surfaces speed/distance/spin feedback on consistent overshoot")
+        #expect(spinController.activeFeedback != nil, "Spin Control drill surfaces speed/distance feedback on consistent overshoot")
+
+        // 3. Spin control excess draw (drawing backward behind the stop target) never falsely advises "More spin"!
+        let drawController = TrainingSessionController(drill: .spinControl, initialLevel: .full,
+                                                       tableSize: .sevenFoot, playerID: UUID(), stack: stack)
+        for _ in 0..<15 {
+            drawController.recordAttempt(SettledTrainingShot(
+                made: true,
+                before: [.cue: Vec2(0.60, 0.50), one: Vec2(1.15, 0.50)],
+                after: [.cue: Vec2(0.25, 0.50)],
+                targetPocket: .footRight))
+        }
+        #expect(drawController.activeFeedback != nil)
+        #expect(drawController.activeFeedback?.correction != .moreSpin,
+                "Drawing back behind the stop target must never advise More spin")
     }
 }

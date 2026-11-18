@@ -249,5 +249,16 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
             winnerTeam: 0, winProbSeries: [0.5, 1.0], startedAt: .now, endedAt: .now, shots: [recShot]))
         try gameRecorder.deleteGame(id: oldGameID, preservingClips: [rel])
         #expect(FileManager.default.fileExists(atPath: url.path), "Surviving shot clip must NOT be deleted when replacing old game ID")
+
+        // Verify bidirectional joiner binding when host commit arrives BEFORE local physical shot-end!
+        let hostCommittedShotID = UUID()
+        let boundEarly = await recorder.bindPendingLocalIndexIfPresent(3, to: hostCommittedShotID)
+        #expect(!boundEarly)
+        for t in [60.2, 60.8, 61.5] {
+            await recorder.pushFrame(sampleImg, timestamp: t)
+        }
+        let resolvedWaitingID = await recorder.sealPendingLocalIndex(3, strokeAt: 60.5, settledAt: 61.5)
+        #expect(resolvedWaitingID == hostCommittedShotID)
+        #expect(await recorder.capturedFrameCount(for: hostCommittedShotID) == 3)
     }
 }

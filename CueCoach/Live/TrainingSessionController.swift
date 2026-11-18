@@ -174,7 +174,6 @@ final class TrainingSessionController {
         var cutErr = 0.0
         var speedErr = 0.0
         var landingErr = 0.0
-        var spinObs = 0.0
 
         let objEntry = shot.before
             .filter({ !$0.key.isCue })
@@ -200,7 +199,8 @@ final class TrainingSessionController {
 
             // 2. Cue-ball landing target (`positionPlay` zone, or `spinControl` stop-shot ghost spot):
             // Measure Euclidean miss distance `dist` signed by along-approach projection so off-axis misses on the
-            // same-radius circle around `cueBefore` never report zero error.
+            // same-radius circle around `cueBefore` never report zero error. `spin` (`|tip offset| - |intended|`) is
+            // never synthesized from signed landing displacement because draw vs follow cannot map monotonically to spin magnitude.
             let cueTarget: Vec2? = if drill == .positionPlay {
                 zone
             } else if drill == .spinControl {
@@ -214,10 +214,6 @@ final class TrainingSessionController {
                 let dist = cueAfter.distance(to: cueTarget)
                 landingErr = dist <= TableSpec.ballRadius * 1.5 ? along : (along >= 0 ? dist : -dist)
                 errors[.cueBallDistance] = landingErr
-                if drill == .spinControl {
-                    spinObs = max(-1.0, min(1.0, along / max(0.30, cueBefore.distance(to: ghost))))
-                    errors[.spin] = spinObs
-                }
             }
 
             // 3. Speed: prefer pre-contact cue launch speed across all drills; fall back to signed target overshoot
@@ -234,7 +230,7 @@ final class TrainingSessionController {
 
         let stored = StoredAttemptFeatures(
             signedCutError: cutErr, signedSpeedError: speedErr,
-            cueLandingError: landingErr, spinIntended: 0, spinObserved: spinObs)
+            cueLandingError: landingErr, spinIntended: 0, spinObserved: 0)
         return (stored, errors)
     }
 
