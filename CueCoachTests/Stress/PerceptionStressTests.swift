@@ -309,25 +309,47 @@ struct PerceptionStressTests {
 
     // MARK: Stale table frame
 
-    /// Tracking came back < 1 s after a relocalization that moved the world 0.5 m: the controller keeps the
-    /// old table frame (no revalidate). What does perception hand the overlay?
-    @Test(.disabled("STRESS-FINDING B3: a table frame 0.5 m off yields 24 confirmed phantom balls, none real; ballScale stays 1.01 so D12 does not flag it"))
-    func staleTableFrameHalfAMetreOff() async throws {
-        let s = Self.base
-        var wrong = s.frame
-        wrong.tableToWorld.columns.3 += SIMD4(wrong.tableToWorld.columns.0.x, wrong.tableToWorld.columns.0.y,
-                                              wrong.tableToWorld.columns.0.z, 0) * 0.5
-        let img = try Stress.image(s)
-        let p = PerceptionPipeline()
-        await p.setTable(wrong)
-        var last: PerceptionResult?
-        for i in 0..<30 { last = await p.process(PerceptionFrame(image: img, camera: s.camera, timestamp: Double(i) / 30)) }
-        let r = try #require(last)
-        Stress.metric("stale0.5m.confirmed", r.confirmed.count)
-        Stress.metric("stale0.5m.aimShown", r.aim != nil)
-        Stress.metric("stale0.5m.ballScale", r.ballScale.map { String(format: "%.2f", $0) } ?? "nil")
-        Stress.metric("stale0.5m.trueBallsAmongConfirmed", r.confirmed.filter { c in s.balls.contains { $0.position.distance(to: c.position + Vec2(0.5, 0)) < 0.04 || $0.position.distance(to: c.position) < 0.04 } }.count)
-        #expect(r.confirmed.count <= s.balls.count, "\(r.confirmed.count) rings on a 6-ball table")
+    /// ARKit moved the world by half a metre during a single limited frame. Even if the next
+    /// status tick is lost, live detection must wait for a pose measured after that interruption.
+    @Test func staleTableFrameHalfAMetreOff() async throws {
+        let scene = Self.base
+        let image = try Stress.image(scene)
+        let pipeline = PerceptionPipeline()
+        var tracking = TableTracking()
+        let oldRevision = tracking.revision
+        var wrong = scene.frame
+        wrong.tableToWorld.columns.3 += wrong.tableToWorld.columns.0 * 0.5
+
+        func observe(_ table: TableFrame) async throws -> PerceptionResult {
+            await pipeline.setTable(table)
+            var result: PerceptionResult?
+            for i in 0..<30 {
+                result = await pipeline.process(PerceptionFrame(image: image, camera: scene.camera, timestamp: Double(i) / 30))
+            }
+            return try #require(result)
+        }
+
+        let stale = try await observe(wrong)
+        Stress.metric("stale0.5m.rawConfirmed", stale.confirmed.count)
+        #expect(TableHealth.isStale(stale), "impossible confirmed ball counts must trigger relock even at normal ball scale")
+        let oldMode = FrameMode.detecting(revision: oldRevision)
+        #expect(oldMode.permitted(by: tracking) == oldMode)
+        tracking.note(trackingNormal: false)
+        tracking.note(trackingNormal: true)
+        for _ in 0..<30 {
+            #expect(oldMode.permitted(by: tracking) == .idle)
+            #expect(oldMode.needsRelock(in: tracking))
+            tracking.note(trackingNormal: true)
+        }
+
+        let freshRevision = tracking.revision
+        let relocked = try await observe(scene.frame)
+        let freshMode = FrameMode.detecting(revision: freshRevision)
+        #expect(freshMode.permitted(by: tracking) == freshMode)
+        #expect(!freshMode.needsRelock(in: tracking))
+        #expect(!TableHealth.isStale(relocked))
+        let score = Self.score(relocked.detections, scene)
+        #expect(score.found > 0 && score.falsePos == 0, "a fresh lock restores detections on actual balls")
     }
 
     // MARK: Timing

@@ -519,6 +519,12 @@ struct LiveHooks {
 
 /// Table-frame health and the remembered size.
 enum TableHealth {
+    static func isStale(_ result: PerceptionResult) -> Bool {
+        // Predicted tracks can outlive a ball leaving view. Count only confirmed tracks measured in this frame.
+        result.confirmed.lazy.filter(\.measured).count > BallID.allObjectBalls.count + 1
+            || isStale(ballScale: result.ballScale, detections: result.detections.count)
+    }
+
     /// Detected balls' apparent size vs 57.15 mm at the current pose: > 25 % off with a few balls = stale frame.
     static func isStale(ballScale: Double?, detections: Int) -> Bool {
         guard let s = ballScale, detections >= 3 else { return false }
@@ -558,21 +564,34 @@ enum SizeAmbiguity {
     }
 }
 
-/// Latches any non-normal ARKit tracking seen on any frame until the next status tick takes it (Codex r6: a
-/// relocalization shorter than the 250 ms tick must still re-validate the table).
-/// Whether this AR frame hands anything to the controller (a status tick, or a processed result). The tracking
-/// latch is only taken by delivering frames, so a dropped frame can't swallow it (Codex r7).
-enum FrameDelivery {
-    static func delivers(statusTick: Bool, active: Bool, trackingNormal: Bool) -> Bool {
-        statusTick || (active && trackingNormal)
+/// A table pose belongs to one uninterrupted period of normal ARKit tracking. Frame drops and
+/// status delivery cannot restore trust after relocalization. Only a pose from the new revision can.
+struct TableTracking: Sendable {
+    private(set) var isNormal = true
+    private(set) var revision = 0
+
+    mutating func note(trackingNormal: Bool) {
+        if trackingNormal != isNormal {
+            isNormal = trackingNormal
+            revision += 1
+        }
     }
+
+    func trusts(_ tableRevision: Int) -> Bool { isNormal && revision == tableRevision }
 }
 
-struct LimitedLatch: Sendable {
-    private var seen = false
-    mutating func note(trackingNormal: Bool) { if !trackingNormal { seen = true } }
-    /// Returns whether a non-normal state was seen since the last call, and clears it.
-    mutating func take() -> Bool { defer { seen = false }; return seen }
+/// The frame delegate applies this decision under its lock before scheduling image conversion or detection.
+enum FrameMode: Equatable, Sendable {
+    case idle, locating, detecting(revision: Int)
+
+    func needsRelock(in tracking: TableTracking) -> Bool {
+        guard case let .detecting(revision) = self else { return false }
+        return tracking.isNormal && !tracking.trusts(revision)
+    }
+
+    func permitted(by tracking: TableTracking) -> Self {
+        tracking.isNormal && !needsRelock(in: tracking) ? self : .idle
+    }
 }
 
 /// D30 "look, then ask": after the balls settle, every pocketed ball is checked by looking for `window` seconds. The

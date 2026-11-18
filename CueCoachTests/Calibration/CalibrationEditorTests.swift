@@ -35,6 +35,17 @@ struct CalibrationEditorTests {
         #expect(e.confirm(viewer: nil) != nil)
     }
 
+    @Test func trackingChangeClearsEarlierCornerMeasurements() {
+        let editor = CalibrationEditor()
+        editor.useTrackingRevision(0)
+        editor.setProposal(world)
+        editor.useTrackingRevision(0)
+        #expect(editor.confirm(viewer: nil) != nil)
+        editor.useTrackingRevision(2)
+        #expect(editor.confirm(viewer: nil) == nil)
+        #expect(editor.add(world[0]) && editor.corners.count == 1)
+    }
+
     @Test func undoAndReset() {
         let e = CalibrationEditor()
         e.add(world[0]); e.add(world[1])

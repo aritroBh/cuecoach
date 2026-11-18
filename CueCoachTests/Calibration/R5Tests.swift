@@ -198,6 +198,24 @@ struct LockR5Tests {
         #expect(!lockedRug)
     }
 
+    @Test func aNewTrackingRevisionRequiresFreshLockEvidence() async throws {
+        let scene = SyntheticTableScene.demo()
+        let image = try Stress.image(scene)
+        let locator = AutoTableLocating(keypoints: try RealModelSwitch())
+        var frame = LocatorFrame(image: image, camera: scene.camera, planes: [Self.plane(scene)], timestamp: 0,
+                                 depth: scene.renderDepth(width: 256, height: 144))
+        var locked = false
+        for _ in 0..<60 where !locked {
+            locked = await locator.ingest(frame)?.locked == true
+            frame.timestamp += 1.0 / 15
+        }
+        try #require(locked)
+        // Same pixels and timestamp spacing: only the world revision changed.
+        frame.trackingRevision += 1
+        let first = await locator.ingest(frame)
+        #expect(first?.locked != true, "a single observation cannot inherit the old lock")
+    }
+
     /// The ARKit table plane under a scene's cloth (as on the phone).
     static func plane(_ s: SyntheticTableScene) -> LocatorPlane {
         LocatorPlane(center: s.frame.world(Vec2(s.frame.spec.length / 2, s.frame.spec.width / 2)), extent: SIMD2(1, 0.6), isTable: true)

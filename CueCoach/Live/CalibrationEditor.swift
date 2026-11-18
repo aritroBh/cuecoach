@@ -13,6 +13,18 @@ final class CalibrationEditor {
     /// Bumped on every change so 3D markers rebuild.
     private(set) var revision = 0
 
+    private var trackingRevision: Int?
+
+    /// World points and their fitted plane are only meaningful within one AR tracking revision.
+    @discardableResult
+    func useTrackingRevision(_ value: Int) -> Bool {
+        guard value != trackingRevision else { return false }
+        let changed = trackingRevision != nil
+        trackingRevision = value
+        if changed { reset() }
+        return changed
+    }
+
     var isComplete: Bool { corners.count == 4 }
 
     func setProposal(_ c: [SIMD3<Double>]) {

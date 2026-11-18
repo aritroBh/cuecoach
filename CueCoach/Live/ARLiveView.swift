@@ -52,7 +52,6 @@ final class ARLiveController: NSObject {
     private var locatingSince = Date()
     private var failureTimer = FailureTimer()
     private var tableFrame: TableFrame?
-    private var limitedSince: Date?
     private var revalidating = false
     private var convergenceLatch = ConvergenceLatch()
     private var illegalAimLatch = EntryLatch()
@@ -224,6 +223,7 @@ final class ARLiveController: NSObject {
     private func handleEstimate(_ e: TableEstimate?, _ s: FrameTap.Status) {
         guard let tap, estimateOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
         if !model.calibrated {
+            prepareEditor(revision: s.trackingRevision)
             model.lockFailure = e?.failure
             failureTimer.note(e?.failure, at: Date().timeIntervalSinceReferenceDate)
             // Candidate corners the user's drags snap to (the locator's current best guess).
@@ -243,7 +243,7 @@ final class ARLiveController: NSObject {
                 frame = fit.frame
             }
             revalidating = false
-            installThenDetect(frame) { [weak self] in
+            installThenDetect(frame, revision: s.trackingRevision) { [weak self] in
                 self?.model.relocking = false
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
@@ -254,14 +254,22 @@ final class ARLiveController: NSObject {
         if e.corners.count == 4 { model.editor.setProposal(e.corners) }
         model.ghostConfidence = e.confidence
         if e.locked {
-            if let frame = e.frame { lockAuto(frame) } else { confirm() }
+            if let frame = e.frame { lockAuto(frame, revision: s.trackingRevision) } else { confirm(revision: s.trackingRevision) }
         }
     }
 
     // MARK: Corners (correction drag, tap-4 fallback)
 
+    private func prepareEditor(revision: Int) {
+        if model.editor.useTrackingRevision(revision) {
+            model.snapTargets = []
+            if model.manualCorrection { model.tapMode = true }
+        }
+    }
+
     @objc private func tapped(_ g: UITapGestureRecognizer) {
-        guard let v = view, !model.calibrated else { return }
+        guard let v = view, !model.calibrated, let revision = tap?.normalRevision else { return }
+        prepareEditor(revision: revision)
         guard model.tapMode || model.editor.outlier != nil else { return }
         guard let w = worldPoint(at: g.location(in: v), in: v) else {
             model.notReadyTick += 1
@@ -287,6 +295,8 @@ final class ARLiveController: NSObject {
     /// Manual fallback keeps the best ghost: with 4 corners it opens straight into drag-to-correct;
     /// otherwise the user taps the corners (taps work before ARKit finds a plane via estimatedPlane).
     private func startTapMode() {
+        guard let revision = tap?.normalRevision else { return }
+        prepareEditor(revision: revision)
         model.manualCorrection = true
         model.showTapFallback = false
         if model.editor.isComplete {
@@ -309,7 +319,8 @@ final class ARLiveController: NSObject {
     }
 
     private func drag(_ i: Int, to p: CGPoint) {
-        guard let v = view, !model.calibrated else { return }
+        guard let v = view, !model.calibrated, let revision = tap?.normalRevision else { return }
+        prepareEditor(revision: revision)
         // Snap to the locator's candidate corners (rail/pocket evidence) when close.
         let targets = model.snapTargets.compactMap { v.project($0.f).map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) } }
         let snapped = DragSnap.snap(p, to: targets, radius: 30)
@@ -338,18 +349,19 @@ final class ARLiveController: NSObject {
     }
 
     /// Auto locked: install its exact pose (no re-fit of the corners).
-    private func lockAuto(_ frame: TableFrame) {
+    private func lockAuto(_ frame: TableFrame, revision: Int) {
         guard !model.calibrated else { return }
         TableHealth.rememberMeasured(frame.spec.size)
         model.showAimHint = true
         model.tableSize = frame.spec.size
         model.calibrated = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        installThenDetect(frame) {}
+        installThenDetect(frame, revision: revision) {}
     }
 
-    private func confirm() {
-        guard let v = view, !model.calibrated else { return }
+    private func confirm(revision: Int? = nil) {
+        guard let v = view, !model.calibrated, let capturedRevision = revision ?? tap?.normalRevision else { return }
+        prepareEditor(revision: capturedRevision)
         let t = v.cameraTransform.translation
         guard let fit = model.editor.confirm(viewer: SIMD3(Double(t.x), Double(t.y), Double(t.z))) else {
             if model.manualCorrection || model.tapMode { UINotificationFeedbackGenerator().notificationOccurred(.error) }
@@ -359,12 +371,12 @@ final class ARLiveController: NSObject {
         model.tableSize = fit.frame.spec.size
         model.calibrated = true
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        installThenDetect(fit.frame) {}
+        installThenDetect(fit.frame, revision: capturedRevision) {}
     }
 
     /// Shows the table overlay (with the lock-in settle animation) and only starts detecting once the
     /// perception pipeline has the new table — never against a stale frame.
-    private func installThenDetect(_ frame: TableFrame, then done: @escaping @MainActor () -> Void) {
+    private func installThenDetect(_ frame: TableFrame, revision: Int, then done: @escaping @MainActor () -> Void) {
         guard let v = view else { return }
         if let o = overlay { v.scene.removeAnchor(o.anchor) }
         let o = TableOverlay(frame: frame, visibility: model.visibility)
@@ -377,8 +389,8 @@ final class ARLiveController: NSObject {
         let pipeline = pipeline
         Task { @MainActor [weak self] in
             await pipeline.setTable(frame)
-            guard let self, self.tableFrame == nil || self.overlay === o else { return }
-            self.tap?.setMode(.detecting)
+            guard let self, self.overlay === o, !self.revalidating else { return }
+            self.tap?.setMode(.detecting(revision: revision))
             done()
         }
     }
@@ -432,29 +444,17 @@ final class ARLiveController: NSObject {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
         // Status ticks are ordered too: an older "tracking normal" must not overwrite a newer "limited".
-        let fresh = s.seq > lastStatusSeq
-        if fresh { lastStatusSeq = s.seq }
-        // A limited spell seen on any frame since the last tick (even one shorter than the tick): re-validate.
-        if s.limitedSeen, s.trackingOK, model.calibrated, limitedSince == nil, !revalidating { revalidate() }
-        if fresh, model.trackingOK != s.trackingOK {
+        if s.seq > lastStatusSeq {
+            lastStatusSeq = s.seq
             model.trackingOK = s.trackingOK
-            if !s.trackingOK {
-                limitedSince = Date()
-            } else if limitedSince != nil, model.calibrated {
-                // Any limited/relocalizing spell invalidates the table frame (stress B3: a stale frame produced
-                // 24 phantom balls) — re-validate however short it was.
-                limitedSince = nil
-                revalidate()
-            } else {
-                limitedSince = nil
-            }
         }
+        if model.calibrated, !revalidating, tap?.needsRelock == true { revalidate() }
         if let d = s.depthConfidence { model.depthConfidence = d }
         if let c = s.convertMs { model.convertMs = model.convertMs * 0.8 + c * 0.2 }
         guard model.calibrated, s.isResult, model.status.trustsTable, let tap,
               resultOrder.accept(seq: s.seq, epoch: s.epoch, currentEpoch: tap.epoch) else { return }
         // Balls whose image size doesn't match 57.15 mm at the table's pose: the frame is stale — drop and relock.
-        if let r, TableHealth.isStale(ballScale: r.ballScale, detections: r.detections.count) {
+        if let r, TableHealth.isStale(r) {
             revalidate()
             return
         }
@@ -503,24 +503,25 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         var planeFound: Bool; var trackingOK: Bool; var depthConfidence: Double?; var isResult = false
         var seq = 0; var epoch = 0
         var convertMs: Double?
-        /// Some frame since the last delivered status had non-normal tracking (latched per frame).
-        var limitedSeen = false
+        var trackingRevision = 0
         var sampledCGImage: CGImage? = nil
     }
-    enum Mode: Sendable { case idle, locating, detecting }
 
     let queue = DispatchQueue(label: "cuecoach.arframes", qos: .userInteractive)
     private let pipeline: PerceptionPipeline
     private let locator: any TableLocating
     private let onResult: @MainActor (PerceptionResult?, Status) -> Void
     private let onEstimate: @MainActor (TableEstimate?, Status) -> Void
-    private let state = Mutex((busy: false, mode: Mode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
+    private let state = Mutex((busy: false, mode: FrameMode.idle, planeFound: false, lastStatus: 0.0, lastRun: 0.0,
                                locateGate: LocatingGate(),
                                interval: 1.0 / 30, width: 960, lastPose: 0.0, wrists: [[Vec2]](),
-                               seq: 0, epoch: 0, lastTracking: true, limited: LimitedLatch()))
+                               seq: 0, epoch: 0, tracking: TableTracking()))
 
     /// Current epoch: results stamped with an older one are stale.
     var epoch: Int { state.withLock { $0.epoch } }
+    var trackingRevision: Int { state.withLock { $0.tracking.revision } }
+    var normalRevision: Int? { state.withLock { $0.tracking.isNormal ? $0.tracking.revision : nil } }
+    var needsRelock: Bool { state.withLock { $0.mode.needsRelock(in: $0.tracking) } }
     /// Used only on `queue`.
     private let poseRequest = VNDetectHumanBodyPoseRequest()
     /// Reused working-image storage (only touched on `queue`, and only while no job holds it).
@@ -535,7 +536,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
         self.onEstimate = onEstimate
     }
 
-    func setMode(_ m: Mode) { state.withLock { $0.mode = m; $0.epoch += 1 } }
+    func setMode(_ m: FrameMode) { state.withLock { $0.mode = m; $0.epoch += 1 } }
 
     func setTier(_ t: CapturePolicy.Tier) {
         state.withLock {
@@ -552,33 +553,31 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let trackingNow: Bool = { if case .normal = frame.camera.trackingState { return true } else { return false } }()
-        let (mode, sendStatus, plane, width, seq, epoch): (Mode, Bool, Bool, Int, Int, Int) = state.withLock { s in
+        let (mode, sendStatus, plane, width, seq, epoch): (FrameMode, Bool, Bool, Int, Int, Int) = state.withLock { s in
             let now = frame.timestamp
-            if trackingNow != s.lastTracking { s.lastTracking = trackingNow; s.epoch += 1 }
-            s.limited.note(trackingNormal: trackingNow)
+            if trackingNow != s.tracking.isNormal { s.epoch += 1 }
+            s.tracking.note(trackingNormal: trackingNow)
             s.seq += 1
             let seq = s.seq, epoch = s.epoch
             let status = now - s.lastStatus > 0.25
             if status { s.lastStatus = now }
+            let mode = s.mode.permitted(by: s.tracking)
             // Locating: the shared LocatingGate (~15 Hz + busy), no plane requirement (provisional LiDAR plane).
-            if s.mode == .locating {
+            if mode == .locating {
                 guard s.locateGate.offer(timestamp: now, busy: s.busy) else { return (.idle, status, s.planeFound, 0, seq, epoch) }
             } else {
-                guard s.mode != .idle, !s.busy, now - s.lastRun >= s.interval * 0.9 else {
+                guard mode != .idle, !s.busy, now - s.lastRun >= s.interval * 0.9 else {
                     return (.idle, status, s.planeFound, 0, seq, epoch)
                 }
             }
             s.busy = true
             s.lastRun = now
-            return (s.mode, status, s.planeFound, s.width, seq, epoch)
+            return (mode, status, s.planeFound, s.width, seq, epoch)
         }
         let tracking = trackingNow
         var status = Status(planeFound: plane, trackingOK: tracking,
                             depthConfidence: sendStatus ? Self.depthConfidence(frame) : nil, seq: seq, epoch: epoch)
-        // Hand the latch to whatever this frame delivers (a status tick or a result).
-        if FrameDelivery.delivers(statusTick: sendStatus, active: mode != .idle, trackingNormal: tracking) {
-            status.limitedSeen = state.withLock { $0.limited.take() }
-        }
+        status.trackingRevision = trackingRevision
         let onResult = onResult, onEstimate = onEstimate
         // World-anchored work is meaningless while ARKit is relocalizing: pause it.
         guard mode != .idle, tracking else {
@@ -604,7 +603,7 @@ final class FrameTap: NSObject, ARSessionDelegate, @unchecked Sendable {
                                     isTable: p.classification == .table)
             }
             let lf = LocatorFrame(image: img, camera: cam, planes: planes, timestamp: frame.timestamp,
-                                  depth: Self.depthMap(frame), trackingNormal: tracking)
+                                  depth: Self.depthMap(frame), trackingNormal: tracking, trackingRevision: status.trackingRevision)
             let locator = locator
             Task.detached(priority: .userInitiated) { [weak self] in
                 let e = await locator.ingest(lf)

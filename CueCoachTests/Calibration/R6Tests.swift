@@ -81,15 +81,15 @@ struct R6EvidenceTests {
 struct R6TrackingLatchTests {
     /// 2: a limited spell entirely between two status ticks still triggers revalidation.
     @Test func shortLimitedSpellIsLatched() {
-        var l = LimitedLatch()
-        l.note(trackingNormal: true)
-        l.note(trackingNormal: false)   // one frame of relocalization…
-        l.note(trackingNormal: true)    // …already over before the next tick
-        let first = l.take()
-        let again = l.take()            // consumed
-        l.note(trackingNormal: true)
-        let normal = l.take()
-        #expect(first && !again && !normal)
+        var tracking = TableTracking()
+        let before = tracking.revision
+        tracking.note(trackingNormal: false)
+        let limited = tracking.revision
+        #expect(!tracking.trusts(limited))
+        tracking.note(trackingNormal: true)
+        #expect(!tracking.trusts(before))
+        #expect(!tracking.trusts(limited))
+        #expect(tracking.trusts(tracking.revision))
     }
 }
 
@@ -196,14 +196,6 @@ struct R7Tests {
         #expect(c.lastMouths == 2)
         c.beginFrame(timestamp: 1)
         #expect(c.lastMouths == 0)   // this frame never called the model
-    }
-
-    /// The latch is only taken by frames that actually deliver a callback to the controller.
-    @Test func latchTakenOnlyWhenSomethingIsDelivered() {
-        #expect(FrameDelivery.delivers(statusTick: true, active: false, trackingNormal: false))
-        #expect(FrameDelivery.delivers(statusTick: false, active: true, trackingNormal: true))
-        #expect(!FrameDelivery.delivers(statusTick: false, active: true, trackingNormal: false))   // dropped frame
-        #expect(!FrameDelivery.delivers(statusTick: false, active: false, trackingNormal: true))
     }
 
     /// Order is only claimed when every pocketed (known) ball has a distinct time.

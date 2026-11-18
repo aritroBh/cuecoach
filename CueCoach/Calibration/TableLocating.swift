@@ -19,6 +19,7 @@ struct LocatorFrame: Sendable {
     var depth: DepthMap? = nil
     /// ARKit tracking is `.normal`.
     var trackingNormal: Bool = true
+    var trackingRevision: Int = 0
 }
 
 /// Current belief about where the table is.

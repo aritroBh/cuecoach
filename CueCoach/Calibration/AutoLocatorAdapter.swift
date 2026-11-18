@@ -17,6 +17,7 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
 
     private struct State {
         var lastT: Double?
+        var trackingRevision = 0
         var consecutiveFailures = 0
         var lastFailure: LockFailure?
         /// Pocket evidence seen since the last reset (keypoint mouths, or dark mouths at the fitted pockets).
@@ -68,13 +69,15 @@ final class AutoTableLocating: TableLocating, @unchecked Sendable {
     func flipHeadFoot() { auto.flipHeadFoot() }
 
     func ingest(_ f: LocatorFrame) async -> TableEstimate? {
-        // Expire stale history (codex-7): a gap means a different view; start fusion over.
-        let gap = state.withLock { s -> Bool in
-            defer { s.lastT = f.timestamp }
-            guard let t = s.lastT else { return false }
-            return f.timestamp - t > expireAfterGap
+        // A brief relocalization can change all world-space measurements without a timestamp gap.
+        let expired = state.withLock { s in
+            let expired = s.trackingRevision != f.trackingRevision || s.lastT.map { f.timestamp - $0 > expireAfterGap } == true
+            if expired { s = State() }
+            s.trackingRevision = f.trackingRevision
+            s.lastT = f.timestamp
+            return expired
         }
-        if gap { auto.reset(); state.withLock { $0.consecutiveFailures = 0; $0.pocketEvidence = 0; $0.evidenceAnchor = nil } }
+        if expired { auto.reset() }
 
         // Plane hint: an ARKit anchor (infinite plane at its height) or nothing — Auto then takes a provisional
         // plane from LiDAR. Either way the floor (> 1.4 m under the camera) is never the table.
