@@ -113,8 +113,8 @@ enum ShellSheet: String, Identifiable { case settings, profile; var id: String {
         game?.notePhysicalShotEnd(token: token, aheadInFIFO: aheadInFIFO, start: start, end: end)
     }
 
-    func physicalShotsReset() {
-        game?.notePhysicalShotsReset()
+    func strokeStarted(unclosedAhead: Int) {
+        game?.noteStrokeStarted(unclosedAhead: unclosedAhead)
     }
 }
 

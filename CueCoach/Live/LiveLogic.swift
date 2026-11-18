@@ -505,7 +505,8 @@ struct LiveHooks {
     var cameraFrame: @MainActor (CGImage, Double, CGPoint) -> Void = { _, _, _ in }
     /// Physical shot end (`token`, `aheadInFIFO`, `ShotRecord.start`, `ShotRecord.end` on the camera clock), fired BEFORE pocket-confirm FIFO.
     var shotPhysicallyEnded: @MainActor (UUID, Int, Double, Double) -> Void = { _, _, _, _ in }
-    var physicalShotsReset: @MainActor () -> Void = {}
+    /// Fired on a real stroke (`.aimEnded`, never `aimCancelled`) with the total unclosed shots ahead of the new stroke.
+    var strokeStarted: @MainActor (Int) -> Void = { _ in }
 
     init() {}
     init(aimStarted: @escaping @MainActor () -> Void, aimEnded: @escaping @MainActor () -> Void,

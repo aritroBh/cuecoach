@@ -143,7 +143,6 @@ final class GameSessionModel {
     @ObservationIgnored private var shotSettledTimes: [UUID: Double] = [:]
     @ObservationIgnored private var lastLocalStrokeAt: Double?
     @ObservationIgnored private var localClosedShotCount = 0
-    @ObservationIgnored private var openPhysicalTokens: Set<UUID> = []
     @ObservationIgnored private var recentIdentityFrames: [(timestamp: Double, frame: IdentityFrame)] = []
     @ObservationIgnored private var latchedStrokeFrames: [IdentityFrame]?
     @ObservationIgnored private var latchedStrokeTime: Double?
@@ -243,7 +242,6 @@ final class GameSessionModel {
         shotSettledTimes[id] = settledTime
         isAimingOrMoving = false
         if let token = shot.clipToken {
-            openPhysicalTokens.remove(token)
             if writesLog, let recorder = clipRecorder {
                 Task { @MainActor [weak self] in
                     if await recorder.bindToken(token, to: id, boundIndex: closedIndex) {
@@ -319,31 +317,26 @@ final class GameSessionModel {
     }
 
     /// Seals `[start - 1.0, end + 2.0]` on the camera clock immediately when `ShotSegmenter` ends the physical shot
-    /// (`LiveModel.enqueue`), BEFORE any pocket-confirmation prompt can delay `shotSettled`.
+    /// (`LiveModel.enqueue`), BEFORE any pocket-confirmation prompt can delay `shotSettled`. Always indexes by BOTH
+    /// `token` and `ordinal` so role transitions (`host ↔ joiner`, `discovering → joiner`) never orphan footage.
     func notePhysicalShotEnd(token: UUID, aheadInFIFO: Int, start: Double, end: Double) {
-        openPhysicalTokens.insert(token)
         let ordinal = localClosedShotCount + aheadInFIFO
         if let recorder = clipRecorder {
-            if writesLog {
-                Task { await recorder.sealToken(token, strokeAt: start, settledAt: end) }
-            } else {
-                Task { @MainActor [weak self] in
-                    if await recorder.sealPendingLocalIndex(ordinal, strokeAt: start, settledAt: end) != nil {
-                        self?.scheduleEngineEvaluation()
-                    }
+            Task { @MainActor [weak self] in
+                if await recorder.sealTokenAndIndex(token: token, index: ordinal, strokeAt: start, settledAt: end) != nil {
+                    self?.scheduleEngineEvaluation()
                 }
             }
         }
     }
 
-    func notePhysicalShotsReset() {
-        openPhysicalTokens.removeAll()
+    /// Catches up `localClosedShotCount` on a real stroke if this phone missed earlier turns, while subtracting
+    /// `unclosedAhead` (`LiveModel.shots.count`, including unclosed `.lost` FIFO entries) so lost entries never double-count.
+    func noteStrokeStarted(unclosedAhead: Int) {
+        localClosedShotCount = max(localClosedShotCount, max(0, shots.count - unclosedAhead))
     }
 
     func aimEnded() {
-        if openPhysicalTokens.isEmpty {
-            localClosedShotCount = max(localClosedShotCount, shots.count)
-        }
         let t = now()
         strokeAt = t
         lastLocalStrokeAt = t

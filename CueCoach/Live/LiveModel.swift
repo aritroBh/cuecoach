@@ -208,7 +208,6 @@ final class LiveModel {
     /// unclosed shot (and the one in flight) is lost: it closes unrated, in order, once the table is quiet.
     func perceptionReset() {
         if aimEvents.phase == .aiming { hooks.aimCancelled() }
-        hooks.physicalShotsReset()
         for i in shots.indices where shots[i].state != .lost { shots[i] = ShotEntry(id: shots[i].id, state: .lost) }
         // A guess still looking starts its look over on the new tracker (no shot since).
         for i in shots.indices { shots[i].guess?.restart() }
@@ -403,7 +402,10 @@ final class LiveModel {
                                   shotEnded: r.shot != nil, at: r.timestamp) {
             switch e {
             case .aimStarted: shotSettledNoAim = false; hooks.aimStarted()
-            case .aimEnded: hooks.aimEnded()
+            case .aimEnded:
+                let pendingAhead = shots.count + (r.shot != nil ? 1 : 0)
+                hooks.strokeStarted(pendingAhead)
+                hooks.aimEnded()
             case .aimCancelled: hooks.aimCancelled()
             case .settled: break   // the shot closes through the FIFO
             }

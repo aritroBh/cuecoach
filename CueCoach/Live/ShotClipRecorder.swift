@@ -105,6 +105,7 @@ actor ShotClipRecorder {
 
     private struct PendingIndexWindow {
         var index: Int
+        var token: UUID?
         var lo: Double
         var hi: Double
         var frames: [BufferedClipFrame]
@@ -112,6 +113,7 @@ actor ShotClipRecorder {
 
     private struct PendingTokenWindow {
         var token: UUID
+        var index: Int?
         var lo: Double
         var hi: Double
         var frames: [BufferedClipFrame]
@@ -174,6 +176,39 @@ actor ShotClipRecorder {
         registerCaptured(shotID: shotID, frames: initial, lo: lo, hi: hi)
     }
 
+    /// Seals `[strokeAt - 1.0, settledAt + 2.0]` under BOTH `token` and `index` so role transitions (`host ↔ joiner`,
+    /// `discovering → joiner`) between physical shot-end and FIFO/log settlement never orphan the captured footage.
+    @discardableResult
+    func sealTokenAndIndex(token: UUID, index: Int, strokeAt: Double, settledAt: Double) -> UUID? {
+        let lo = strokeAt - 1.0
+        let hi = max(settledAt, strokeAt) + 2.0
+        let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        if let waitingID = waitingShotIDByIndex.removeValue(forKey: index) {
+            boundShotIDByIndex[index] = waitingID
+            registerCaptured(shotID: waitingID, frames: initial, lo: lo, hi: hi)
+            return waitingID
+        }
+        if pendingByToken[token] == nil {
+            tokenOrder.append(token)
+            while tokenOrder.count > Self.maxRetainedShots {
+                let oldest = tokenOrder.removeFirst()
+                if let evicted = pendingByToken.removeValue(forKey: oldest), let idx = evicted.index,
+                   pendingByIndex[idx]?.token == oldest {
+                    pendingByIndex.removeValue(forKey: idx)
+                }
+            }
+        }
+        pendingByToken[token] = PendingTokenWindow(token: token, index: index, lo: lo, hi: hi, frames: initial)
+        pendingByIndex[index] = PendingIndexWindow(index: index, token: token, lo: lo, hi: hi, frames: initial)
+        if pendingByIndex.count > Self.maxRetainedShots, let minKey = pendingByIndex.keys.min() {
+            if let evicted = pendingByIndex.removeValue(forKey: minKey), let tok = evicted.token {
+                pendingByToken.removeValue(forKey: tok)
+                tokenOrder.removeAll { $0 == tok }
+            }
+        }
+        return nil
+    }
+
     /// Seals `[strokeAt - 1.0, settledAt + 2.0]` under an exact per-shot `token` (`LiveModel.enqueue`), bound 1-to-1 to `shotID`
     /// when `shotSettled` closes that FIFO entry.
     func sealToken(_ token: UUID, strokeAt: Double, settledAt: Double) {
@@ -187,14 +222,21 @@ actor ShotClipRecorder {
                 pendingByToken.removeValue(forKey: oldest)
             }
         }
-        pendingByToken[token] = PendingTokenWindow(token: token, lo: lo, hi: hi, frames: initial)
+        pendingByToken[token] = PendingTokenWindow(token: token, index: nil, lo: lo, hi: hi, frames: initial)
     }
 
     @discardableResult
     func bindToken(_ token: UUID, to shotID: UUID, boundIndex: Int? = nil) -> Bool {
         guard let pending = pendingByToken.removeValue(forKey: token) else { return false }
         tokenOrder.removeAll { $0 == token }
-        if let boundIndex { boundShotIDByIndex[boundIndex] = shotID }
+        if let idx = pending.index, pendingByIndex[idx]?.token == token {
+            pendingByIndex.removeValue(forKey: idx)
+        }
+        let resolvedIndex = boundIndex ?? pending.index
+        if let resolvedIndex {
+            waitingShotIDByIndex.removeValue(forKey: resolvedIndex)
+            boundShotIDByIndex[resolvedIndex] = shotID
+        }
         registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
         return true
     }
@@ -211,7 +253,7 @@ actor ShotClipRecorder {
             registerCaptured(shotID: waitingID, frames: initial, lo: lo, hi: hi)
             return waitingID
         }
-        pendingByIndex[index] = PendingIndexWindow(index: index, lo: lo, hi: hi, frames: initial)
+        pendingByIndex[index] = PendingIndexWindow(index: index, token: nil, lo: lo, hi: hi, frames: initial)
         if pendingByIndex.count > Self.maxRetainedShots, let minKey = pendingByIndex.keys.min() {
             pendingByIndex.removeValue(forKey: minKey)
         }
@@ -227,6 +269,10 @@ actor ShotClipRecorder {
         }
         if let pending = pendingByIndex.removeValue(forKey: index) {
             waitingShotIDByIndex.removeValue(forKey: index)
+            if let tok = pending.token {
+                pendingByToken.removeValue(forKey: tok)
+                tokenOrder.removeAll { $0 == tok }
+            }
             boundShotIDByIndex[index] = shotID
             registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
             return true

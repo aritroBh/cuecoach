@@ -277,5 +277,14 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
         let boundTok = await recorder.bindToken(tokenB, to: shotBID, boundIndex: 5)
         #expect(boundTok)
         #expect(await recorder.capturedFrameCount(for: shotBID) == 4)
+
+        // Verify `sealTokenAndIndex` survives a role transition (sealed as discovering/host, later bound by joiner index)!
+        let tokenC = UUID(), hostShotCID = UUID()
+        for t in [90.2, 90.8] { await recorder.pushFrame(sampleImg, timestamp: t) }
+        _ = await recorder.sealTokenAndIndex(token: tokenC, index: 6, strokeAt: 90.5, settledAt: 91.0)
+        let boundByJoinerIndex = await recorder.bindPendingLocalIndexIfPresent(6, to: hostShotCID)
+        #expect(boundByJoinerIndex)
+        #expect(await recorder.capturedFrameCount(for: hostShotCID) == 2)
+        #expect(await recorder.bindToken(tokenC, to: UUID()) == false, "Counterpart token entry was cleaned up on index bind")
     }
 }
