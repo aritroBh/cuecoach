@@ -16,7 +16,7 @@ Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; A
 7a. [x] Plan 015 (`D49` + `D54`): fix a recorded shot's shooter from Game Review by long-press (`.contextMenu`, winner recompute / unfinished rack delete)
 8. [x] Plan 005 follow-up MINOR: `.unusualSize` ruler hint on the settled-but-untrusted path (`AutoLocatorAdapter.swift`)
 8a. [x] Full app wiring (`D55`): Profile stats/archetypes/pro-comps/History→Review (`PersistenceProfileSources`), `ShotEngine` live/review evaluation (`SessionEngineEvaluator`), Solo Training loop (`TrainingSessionController` → `Training.store`), opt-in Identity enrollment + live attribution (`IdentityRegistrationSheet`), and rolling SotG `.mp4` clip recorder + in-app `ClipPlayerSheet`
-9. [~] Cross-vendor Codex review + final simulator QA pass (unit + XCUITest), then merge `phase/1-core` → `main`
+9. [x] Cross-vendor Codex review (`VERDICT: APPROVE`, 0 BLOCKER / 0 MAJOR / 0 MINOR) + full simulator QA pass (`CueCore` 716/716, unit/privacy/theme/migration green, XCUITest 45/45), merged `phase/1-core` → `main`
 
 Blocked on the user / phones:
 - [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max
