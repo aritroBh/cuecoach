@@ -1,5 +1,5 @@
-/// 2D vector in table coordinates (metres). Origin = foot-left cushion-nose corner,
-/// +x along the long axis toward the head rail, +y across the table.
+/// 2D vector in table coordinates (metres). Origin = head-left cushion-nose corner,
+/// +x along the long axis toward the foot rail, +y across the table.
 public struct Vec2: Hashable, Codable, Sendable, CustomStringConvertible {
     public var x: Double
     public var y: Double
@@ -8,9 +8,10 @@ public struct Vec2: Hashable, Codable, Sendable, CustomStringConvertible {
 
     public static let zero = Vec2(0, 0)
 
-    public var length: Double { (x * x + y * y).squareRoot() }
+    /// Overflow/underflow-safe (hypot), so large or tiny finite components keep a usable length.
+    public var length: Double { hypotApprox(x, y) }
     public var lengthSquared: Double { x * x + y * y }
-    public var normalized: Vec2 { let l = length; return l == 0 ? .zero : Vec2(x / l, y / l) }
+    public var normalized: Vec2 { let l = length; return l == 0 || !l.isFinite ? .zero : Vec2(x / l, y / l) }
     /// Rotated +90° (counter-clockwise).
     public var perpendicular: Vec2 { Vec2(-y, x) }
     public var angle: Double { atan2Approx(y, x) }
@@ -39,11 +40,13 @@ public struct Vec2: Hashable, Codable, Sendable, CustomStringConvertible {
 #if canImport(Darwin)
 import Darwin
 @inline(__always) func atan2Approx(_ y: Double, _ x: Double) -> Double { Darwin.atan2(y, x) }
+@inline(__always) func hypotApprox(_ x: Double, _ y: Double) -> Double { Darwin.hypot(x, y) }
 @inline(__always) func cosApprox(_ a: Double) -> Double { Darwin.cos(a) }
 @inline(__always) func sinApprox(_ a: Double) -> Double { Darwin.sin(a) }
 #else
 import Glibc
 @inline(__always) func atan2Approx(_ y: Double, _ x: Double) -> Double { Glibc.atan2(y, x) }
+@inline(__always) func hypotApprox(_ x: Double, _ y: Double) -> Double { Glibc.hypot(x, y) }
 @inline(__always) func cosApprox(_ a: Double) -> Double { Glibc.cos(a) }
 @inline(__always) func sinApprox(_ a: Double) -> Double { Glibc.sin(a) }
 #endif

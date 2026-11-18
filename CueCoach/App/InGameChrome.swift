@@ -1,0 +1,396 @@
+import SwiftUI
+import Geometry
+import Rules
+import Training
+
+/// The one place that constructs LiveScreen: mode, drill and the hooks that drive `LiveSession` (aim → menu
+/// closed + badge silenced; settled → rating recorded, badge, turn), with the shell's game injected for ratings
+/// and ring legality. Live's own ✕ dismisses; the cover's `onDismiss` maps it (`AppRouter.liveClosed`).
+struct LiveScreenAdapter: View {
+    @Bindable var session: LiveSession
+    var body: some View {
+        LiveScreen(mode: session.effectiveMode.liveMode, drill: session.drill, hooks: Self.hooks(for: session),
+                   tablePrior: Self.tablePrior(for: session))
+    }
+
+    /// D36 (C): the locator's size prior is the game's setup size, or in Training the Settings manual size (if any).
+    @MainActor static func tablePrior(for session: LiveSession, defaults: UserDefaults = .standard) -> TableSize? {
+        session.game?.config.tableSize ?? SetupDefaults.fromSettings(defaults).manualTable
+    }
+
+    @MainActor static func hooks(for session: LiveSession) -> LiveHooks {
+        var h = LiveHooks(aimStarted: { session.aimStarted() }, aimEnded: { session.aimEnded() },
+                          aimCancelled: { session.aimCancelled() }, ballsSettled: { session.ballsSettled() },
+                          settled: { _, _ in })
+        h.settledShot = { session.settled($0) }
+        h.trainingSettled = { session.trainingSettled($0) }
+        h.detectedBalls = { session.detectedBalls($0, tableSize: $1) }
+        h.trainingOverlayState = {
+            guard let t = session.training else { return nil }
+            return (Array(zip(t.ghostTargets, t.matchedGhosts)), t.positionZoneCenter)
+        }
+        h.tableQuietChanged = { session.tableQuietChanged($0) }
+        h.cameraFrame = { session.cameraFrame($0, timestamp: $1, cueBall: $2) }
+        h.shotPhysicallyEnded = { session.shotPhysicallyEnded(token: $0, aheadInFIFO: $1, start: $2, end: $3) }
+        h.strokeStarted = { session.strokeStarted(unclosedAhead: $0) }
+        if session.game != nil { h.shotLost = { session.shotLost() } }
+        let game = session.game
+        h.currentGame = { game?.rules }
+        h.legalSink = { sink in game?.legalChanged = sink }
+        return h
+    }
+}
+
+extension ShellLiveMode {
+    var liveMode: LiveMode {
+        switch self { case .game: .game; case .training(let level): .training(level: level) }
+    }
+}
+
+/// Live camera + the shell's minimal chrome.
+struct LiveHost: View {
+    let session: LiveSession
+    let router: AppRouter
+
+    var body: some View {
+        ZStack {
+            LiveScreenAdapter(session: session)
+            InGameChrome(session: session, router: router)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(session.mode == .game ? "shell.live.game" : "shell.live.training")
+    }
+}
+
+/// Top-right menu (LiveScreen keeps the top-left ✕), team discs (Game only), post-shot badge.
+/// No text while aiming: discs are avatars + team colour + ring shape; the menu is icon-only until opened.
+struct InGameChrome: View {
+    @Bindable var session: LiveSession
+    let router: AppRouter
+    private var menuOpen: Bool { session.isMenuOpen }
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(\.shellForceReduceMotion) private var forced
+
+    var body: some View {
+        ZStack {
+            if let game = session.game {
+                PostShotBadgeView(model: game.badge)
+                    .environment(\.sbForceReduceMotion, forced)
+            }
+            VStack(spacing: 12) {
+                HStack {
+                    Spacer()
+                    // Hidden while anyone aims: the menu has words (SPEC §2).
+                    if session.menuAvailable { menuButton } else { Color.clear.frame(width: 56, height: 56) }
+                }
+                if let game = session.game, game.hasLineup {
+                    TurnDiscs(game: game, reduceMotion: reduce || forced) { session.handTurn(toTeam: $0) }
+                }
+                if session.menuAvailable, session.isTableQuiet, !menuOpen, let training = session.training, !training.matchedGhosts.isEmpty {
+                    TrainingSetupGhostRow(matched: training.matchedGhosts)
+                }
+                Spacer()
+                // Solo Training post-shot tendency card (≤ 2 words + visual glyph, zero numbers, hidden while aiming/moving).
+                if session.menuAvailable, session.isTableQuiet, !menuOpen, let training = session.training,
+                   let fb = training.activeFeedback {
+                    TrainingFeedbackBanner(feedback: fb) { training.dismissFeedback() }
+                        .padding(.bottom, 68)
+                }
+                // D47/D52: icon-only side-by-side ball-glyph picker when reconnected phones disagreed on a shot;
+                // strictly hidden while aiming, during any motion, or when the menu is open (SPEC §2, D52).
+                if session.menuAvailable, session.isTableQuiet, !menuOpen, let game = session.game, let dispute = game.pendingDispute,
+                   let alt = dispute.alternateOutcome {
+                    ShotDisputeBanner(primary: dispute.outcome, alternate: alt) { chosen in
+                        session.resolveDispute(shotID: dispute.id, outcome: chosen)
+                    }
+                    .padding(.bottom, 68)
+                }
+            }
+            .padding(16)
+            if menuOpen { menu.transition(.opacity) }
+        }
+        .animation(reduce || forced ? nil : .smooth(duration: 0.3), value: menuOpen)
+        .onChange(of: session.isAiming) { _, aiming in
+            if aiming, session.game == nil {
+                UIAccessibility.post(notification: .announcement, argument: "")
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            Color.clear.frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier("chrome.mesh")
+                .accessibilityValue("peers:\(session.game?.mesh?.peerCount ?? 1)")
+        }
+        #if DEBUG
+        .task { await ShellLaunch.demoShotIfRequested(session.game) }
+        #endif
+    }
+
+    private var menuButton: some View {
+        Button { session.isMenuOpen = true } label: {
+            Image(systemName: "line.3.horizontal")
+                .font(AXGlyph.font(22, .semibold))
+                .foregroundStyle(AXLive.aim)
+                .frame(width: 56, height: 56)
+                .background(Circle().fill(AXLive.chip.opacity(0.7)))
+                .overlay(Circle().strokeBorder(AXLive.aim.opacity(0.25), lineWidth: 1))
+                .contentShape(Circle())
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityLabel("Menu")
+        .accessibilityIdentifier("chrome.menu")
+    }
+
+    private var menu: some View {
+        ZStack(alignment: .bottom) {
+            AXLive.scrim.ignoresSafeArea().onTapGesture { session.isMenuOpen = false }
+                .accessibilityHidden(true)
+            VStack(spacing: 16) {
+                if let game = session.game, game.hasLineup { OrderEditor(game: game) }
+                HStack(spacing: 16) {
+                    menuAction("Resume", symbol: "play.fill", tint: AX.accent, id: "chrome.resume") { session.isMenuOpen = false }
+                    if session.game != nil {
+                        menuAction("End game", symbol: "flag.checkered", tint: AX.danger, id: "chrome.endGame") {
+                            session.isMenuOpen = false
+                            router.endGame()
+                        }
+                    } else {
+                        menuAction("Stop", symbol: "stop.fill", tint: AX.danger, id: "chrome.stop") {
+                            session.isMenuOpen = false
+                            router.stopTraining()
+                        }
+                    }
+                }
+            }
+            .padding(AX.space.s4)
+            .axSurface(AX.raised, radius: AX.radius.page, elevated: true)
+            .padding(AX.space.s4)
+        }
+    }
+
+    private func menuAction(_ title: String, symbol: String, tint: Color, id: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: symbol).font(AXGlyph.font(26, .semibold)).foregroundStyle(tint)
+                Text(title).axFont(.headline).foregroundStyle(AX.ink)
+            }
+            .frame(maxWidth: .infinity, minHeight: 96)
+            .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.neutral))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous))
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityIdentifier(id)
+    }
+}
+
+/// One disc per team at the top edge: the shooter lit with their team ring, the waiting player dimmed.
+/// Tapping the dim disc hands the turn over (SPEC §5.8 one-tap correction).
+/// D38: after a lost shot with no guess both discs pulse inside a ring until one is tapped (Reduce Motion: the ring
+/// stays, no pulse). No text.
+struct TurnDiscs: View {
+    let game: GameSessionModel
+    let reduceMotion: Bool
+    /// Routed through `LiveSession`, which ignores it while a shot is live.
+    let handTurn: (Int) -> Void
+
+    var body: some View {
+        HStack {
+            disc(team: 0)
+            Spacer()
+            disc(team: 1)
+        }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: game.turnIndex)
+        .sensoryFeedback(.selection, trigger: game.turnIndex)
+    }
+
+    private func disc(team: Int) -> some View {
+        let active = game.shootingTeam == team
+        let p = active ? game.shooter : game.waitingShooter
+        return Button { handTurn(team) } label: {
+            SBAvatar(symbol: p?.symbol ?? "person.fill", colorName: p?.colorName ?? "blue", size: active ? 56 : 44,
+                     team: team, dimmed: !active)
+                .overlay { if game.needsShooter { Circle().strokeBorder(AXLive.aim, lineWidth: 3).padding(-4) } }
+                .modifier(Breathe(active: game.needsShooter && !reduceMotion))
+                .frame(width: 64, height: 64)
+                .contentShape(Circle())
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityLabel("Team \(GameSetupModel.teamLetter(team)), \(p?.name ?? "")")
+        // D38 (Codex review): the pulse has a VoiceOver equivalent.
+        .accessibilityValue(game.needsShooter ? "who shot next?" : (active ? "shooting" : "waiting"))
+        .accessibilityHint(game.needsShooter ? "Double tap if they shoot next" : (active ? "" : "Double tap to give them the turn"))
+        .accessibilityIdentifier("chrome.team.\(team)")
+    }
+}
+
+/// Mid-game shooting order (SPEC §4): tap one player, then another on the same team, to swap them.
+/// Only inside the menu, which can't open while anyone aims.
+struct OrderEditor: View {
+    let game: GameSessionModel
+    @State private var picked: (team: Int, slot: Int)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(0..<game.teams.count, id: \.self) { t in
+                HStack(spacing: 20) {
+                    TeamRing(team: t, size: 16)
+                    ForEach(Array(game.teams[t].enumerated()), id: \.element.id) { i, p in
+                        let isPicked = picked.map { $0.team == t && $0.slot == i } ?? false
+                        Button {
+                            if let pk = picked, pk.team == t {
+                                game.swap(team: t, pk.slot, i)
+                                picked = nil
+                            } else {
+                                picked = (t, i)
+                            }
+                        } label: {
+                            SBAvatar(symbol: p.symbol, colorName: p.colorName, size: 44, team: t)
+                                .overlay(Circle().stroke(AX.ink, lineWidth: isPicked ? 3 : 0).padding(-6))
+                                .frame(width: 56, height: 56)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(ShellPressStyle())
+                        .accessibilityLabel("\(p.name), team \(GameSetupModel.teamLetter(t)), position \(i + 1)")
+                        .accessibilityHint("Tap another player on this team to swap")
+                        .accessibilityIdentifier("chrome.order.\(t).\(i)")
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(AX.space.s3)
+        .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AX.neutral))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chrome.order")
+    }
+}
+
+/// D47/D52: icon-only side-by-side ball-glyph picker for a shot two reconnected islands disagreed on.
+/// Zero visible text; ≥ 56 pt touch targets; hidden the instant anyone aims (`session.menuAvailable`).
+struct ShotDisputeBanner: View {
+    let primary: ShotOutcome
+    let alternate: ShotOutcome
+    let onPick: (ShotOutcome) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            optionButton(primary, id: "chrome.dispute.primary")
+            Image(systemName: "arrow.left.arrow.right")
+                .font(AXGlyph.font(18, .semibold))
+                .foregroundStyle(AXLive.caution)
+                .accessibilityHidden(true)
+            optionButton(alternate, id: "chrome.dispute.alt")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous).fill(AXLive.chip.opacity(0.9)))
+        .overlay(RoundedRectangle(cornerRadius: AX.radius.container, style: .continuous)
+            .strokeBorder(AXLive.caution.opacity(0.75), lineWidth: 2))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chrome.dispute")
+    }
+
+    private func optionButton(_ outcome: ShotOutcome, id: String) -> some View {
+        let balls = outcome.pocketed.keys.filter { !$0.isCue }.sorted()
+        let scratched = outcome.pocketed[.cue] != nil || outcome.offTable.contains(.cue)
+        return Button { onPick(outcome) } label: {
+            HStack(spacing: 6) {
+                ForEach(balls.prefix(3), id: \.self) { ReviewBallGlyph(ball: $0) }
+                if scratched {
+                    Image(systemName: "xmark.octagon.fill")
+                        .font(AXGlyph.font(22, .semibold))
+                        .foregroundStyle(AXLive.danger)
+                } else if balls.isEmpty {
+                    Image(systemName: "circle.slash")
+                        .font(AXGlyph.font(22, .semibold))
+                        .foregroundStyle(AXLive.aim.opacity(0.8))
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(minWidth: 72, minHeight: 56)
+            .background(RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous).fill(AXLive.stage.opacity(0.65)))
+            .overlay(RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous)
+                .strokeBorder(AXLive.aim.opacity(0.35), lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: AX.radius.element, style: .continuous))
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityLabel(Self.spokenOutcome(balls: balls, scratched: scratched))
+        .accessibilityIdentifier(id)
+    }
+
+    static func spokenOutcome(balls: [BallID], scratched: Bool) -> String {
+        var parts = [balls.isEmpty ? "Nothing pocketed" : "Pocketed " + balls.map { "\($0.number)" }.joined(separator: ", ")]
+        if scratched { parts.append("Scratch") }
+        return parts.joined(separator: ". ")
+    }
+}
+
+/// Icon-only setup ghost indicator for Solo Training (`SetupMatcher` circles turn `AXLive.legal` when matched).
+struct TrainingSetupGhostRow: View {
+    let matched: [Bool]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(Array(matched.enumerated()), id: \.offset) { _, isMatched in
+                Circle()
+                    .fill(isMatched ? AXLive.legal : AXLive.stage.opacity(0.4))
+                    .frame(width: 18, height: 18)
+                    .overlay(Circle().strokeBorder(isMatched ? AXLive.legal : AXLive.aim.opacity(0.75), lineWidth: 2))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Capsule().fill(AXLive.chip.opacity(0.8)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(matched.allSatisfy { $0 } ? "Setup ready" : "Place balls on ghost circles")
+        .accessibilityIdentifier("chrome.training.setup")
+    }
+}
+
+/// Post-shot visual tendency coaching banner (SPEC §10: visual glyph + ≤2 words, zero numbers, hidden while aiming).
+struct TrainingFeedbackBanner: View {
+    let feedback: Feedback
+    let onDismiss: () -> Void
+
+    var body: some View {
+        Button(action: onDismiss) {
+            HStack(spacing: 12) {
+                visualGlyph
+                Text(feedback.label)
+                    .axFont(.headline)
+                    .foregroundStyle(AXLive.aim)
+                Image(systemName: "xmark")
+                    .font(AXGlyph.font(14, .semibold))
+                    .foregroundStyle(AXLive.aim.opacity(0.65))
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 52)
+            .background(Capsule().fill(AXLive.chip.opacity(0.92)))
+            .overlay(Capsule().strokeBorder(AXLive.caution.opacity(0.7), lineWidth: 1.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(ShellPressStyle())
+        .accessibilityLabel("Tendency: \(feedback.label). Tap to dismiss.")
+        .accessibilityIdentifier("chrome.training.feedback")
+    }
+
+    @ViewBuilder private var visualGlyph: some View {
+        switch feedback.visual {
+        case .averageLineVsCorrect:
+            Image(systemName: "angle")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        case .missHeatmap:
+            Image(systemName: "circle.dotted.and.circle")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        case .arrow(let dir):
+            Image(systemName: dir == .softer || dir == .shorter ? "arrow.down.circle.fill" : "arrow.up.circle.fill")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        case .spinDotVsIntended:
+            Image(systemName: "circle.circle.fill")
+                .font(AXGlyph.font(20, .semibold))
+                .foregroundStyle(AXLive.caution)
+        }
+    }
+}

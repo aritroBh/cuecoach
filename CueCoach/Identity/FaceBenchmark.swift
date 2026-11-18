@@ -1,0 +1,418 @@
+import Foundation
+import UIKit
+
+// F6 ship gate: face matching turns on only after an on-device, consented benchmark passes for that exact model.
+// Volunteers give a separate "Help test face recognition" consent; their aligned crops are embedded and dropped
+// at once, the embeddings live in RAM only for the run, and only aggregate numbers (no vectors, no subjects)
+// are ever kept. Nothing here leaves the phone or is committed (face-embedding.md §6).
+
+enum FaceBenchmark {
+    static let far = 1e-3
+    /// Proposed operating point (face-embedding.md §6.5); the user confirms the target before release.
+    static let requiredTAR = 0.90
+    static let minSubjects = 10
+    /// FAR 1e-3 needs ≥ 3 / FAR impostor pairs to rest on a few false accepts rather than none.
+    static let minImpostorPairs = 3_000
+
+    struct Operating: Hashable, Sendable { var threshold: Double; var tar: Double }
+
+    /// Accept ⇔ cosine > threshold. The threshold lets at most ⌊far·n⌋ impostors through. nil when the impostor
+    /// count cannot resolve `far` at all.
+    static func tarAtFAR(genuine: [Double], impostor: [Double], far: Double) -> Operating? {
+        guard !genuine.isEmpty, Double(impostor.count) * far >= 1 else { return nil }
+        let imp = impostor.sorted(by: >)
+        let k = Int((far * Double(imp.count)).rounded(.down))
+        let threshold = imp[min(k, imp.count - 1)]
+        let tar = Double(genuine.filter { $0 > threshold }.count) / Double(genuine.count)
+        return Operating(threshold: threshold, tar: tar)
+    }
+
+
+    /// Open-set gate (face-embedding.md §6.4.2): held-out (non-enrolled) volunteers' probes accepted as *any*
+    /// enrolled volunteer (FPIR), and enrolled probes accepted as the *wrong* one. Proposed targets; user confirms.
+    static let maxFPIR = 0.005
+    static let folds = 3
+
+    enum Verdict: Hashable, Sendable {
+        case pass(FaceShipGateRecord)
+        case fail(tar: Double, fpir: Double, misidentifications: Int)
+        case insufficientData
+    }
+
+    struct Probe { var subject: Int; var enrolled: Bool; var best: (subject: Int, score: Double)? }
+
+    /// Rotating folds: fold f holds out every `folds`-th volunteer (≈ 1/3) as non-enrolled. Enrolled volunteers
+    /// enrol with the first half of their embeddings and probe with the rest; held-out volunteers only probe.
+    /// Each probe keeps its top-1 enrolled match.
+    static func openSetProbes(_ sets: [[Embedding]]) -> [Probe] {
+        var out: [Probe] = []
+        for f in 0..<folds {
+            var gallery: [Int: [Embedding]] = [:]
+            var probes: [(Int, Bool, Embedding)] = []
+            for (i, s) in sets.enumerated() {
+                if i % folds == f { probes += s.map { (i, false, $0) } } else {
+                    let half = s.count / 2
+                    gallery[i] = Array(s.prefix(half))
+                    probes += s.dropFirst(half).map { (i, true, $0) }
+                }
+            }
+            for (subject, enrolled, e) in probes {
+                // Sorted keys: an exact score tie resolves the same way every run (not by Dictionary order).
+                let best = gallery.keys.sorted().compactMap { k -> (subject: Int, score: Double)? in
+                    gallery[k]!.compactMap { e.cosine($0) }.max().map { (k, $0) }
+                }.max { $0.score < $1.score }
+                out.append(Probe(subject: subject, enrolled: enrolled, best: best))
+            }
+        }
+        return out
+    }
+
+    /// Volunteers needed in *each* of the two disjoint halves (calibration, report).
+    static let minSubjectsPerHalf = 10
+
+    /// Disjoint, deterministic volunteer split: even positions calibrate the threshold, odd positions report on it.
+    static func split<T>(_ xs: [T]) -> (calibration: [T], report: [T]) {
+        (xs.enumerated().filter { $0.offset % 2 == 0 }.map(\.element), xs.enumerated().filter { $0.offset % 2 == 1 }.map(\.element))
+    }
+
+    /// 95 % Wilson score bounds for k of n. Pairs/probes within a volunteer are correlated, so these are optimistic;
+    /// a subject-level bootstrap is the stricter follow-up.
+    static func wilsonUpper(successes k: Int, n: Int, z: Double = 1.96) -> Double {
+        guard n > 0 else { return 1 }
+        let p = Double(k) / Double(n), nn = Double(n), z2 = z * z
+        return min(1, (p + z2 / (2 * nn) + z * (p * (1 - p) / nn + z2 / (4 * nn * nn)).squareRoot()) / (1 + z2 / nn))
+    }
+
+    static func wilsonLower(successes k: Int, n: Int, z: Double = 1.96) -> Double {
+        guard n > 0 else { return 0 }
+        let p = Double(k) / Double(n), nn = Double(n), z2 = z * z
+        return max(0, (p + z2 / (2 * nn) - z * (p * (1 - p) / nn + z2 / (4 * nn * nn)).squareRoot()) / (1 + z2 / nn))
+    }
+
+    /// Subject-level bootstrap (resample volunteers with replacement; deterministic seed) of a pooled rate from
+    /// per-volunteer (hits, n): 95 % (2.5th, 97.5th percentile) bounds. Respects within-volunteer correlation.
+    static func bootstrapRate(_ groups: [(Int, Int)], rounds: Int = 400, seed: UInt64 = 0xFACE) -> (Double, Double) {
+        guard !groups.isEmpty else { return (0, 1) }
+        var state = seed
+        func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9; z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+        var rates: [Double] = []
+        for _ in 0..<rounds {
+            var h = 0, n = 0
+            for _ in groups.indices { let g = groups[Int(next() % UInt64(groups.count))]; h += g.0; n += g.1 }
+            rates.append(n == 0 ? 0 : Double(h) / Double(n))
+        }
+        rates.sort()
+        return (rates[Int(0.025 * Double(rounds))], rates[min(rounds - 1, Int(0.975 * Double(rounds)))])
+    }
+
+    /// Pairs keyed by the volunteer they belong to (impostor pairs to the lower index), for the bootstrap.
+    static func groupedPairs(_ sets: [[Embedding]]) -> (genuine: [[Double]], impostor: [[Double]]) {
+        var genuine: [[Double]] = [], impostor: [[Double]] = []
+        for (i, s) in sets.enumerated() {
+            var g: [Double] = [], m: [Double] = []
+            for a in s.indices { for b in s.indices where b > a { if let c = s[a].cosine(s[b]) { g.append(c) } } }
+            for t in sets[(i + 1)...] { for x in s { for y in t { if let c = x.cosine(y) { m.append(c) } } } }
+            genuine.append(g); impostor.append(m)
+        }
+        return (genuine, impostor)
+    }
+
+    /// SplitMix64, seeded: every bootstrap is reproducible.
+    struct SeededRNG { var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9; z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// Volunteers in a canonical, content-defined order (lexicographic on their first embedding), so a bootstrap
+    /// with a fixed seed does not depend on the order volunteers were captured in.
+    static func canonical(_ sets: [[Embedding]]) -> [[Embedding]] {
+        sets.sorted { a, b in
+            let x = a.first?.vector ?? [], y = b.first?.vector ?? []
+            return x.lexicographicallyPrecedes(y)
+        }
+    }
+
+    /// Volunteer-level FAR bootstrap (r6): per volunteer pair (i ≠ j) the false accepts / comparisons at `threshold`;
+    /// each round resamples volunteers with replacement and recomputes the pooled FAR over every pair of *distinct*
+    /// drawn volunteers (k copies of i and l copies of j contribute k·l times their pair; copies of one volunteer
+    /// never form impostor pairs). Returns the 97.5th percentile (upper 95 % two-sided bound).
+    static func farUpperBootstrap(matrix m: [[(fa: Int, n: Int)]], rounds: Int = 400, seed: UInt64 = 0xFA12) -> Double {
+        let v = m.count
+        guard v >= 2 else { return 0 }
+        var rng = SeededRNG(state: seed)
+        var rates: [Double] = []
+        for _ in 0..<rounds {
+            var copies = [Int](repeating: 0, count: v)
+            for _ in 0..<v { copies[Int(rng.next() % UInt64(v))] += 1 }
+            var fa = 0.0, n = 0.0
+            for i in 0..<v where copies[i] > 0 {
+                for j in (i + 1)..<v where copies[j] > 0 {
+                    let w = Double(copies[i] * copies[j])
+                    fa += w * Double(m[i][j].fa); n += w * Double(m[i][j].n)
+                }
+            }
+            rates.append(n == 0 ? 0 : fa / n)
+        }
+        rates.sort()
+        return rates[min(rounds - 1, Int(0.975 * Double(rounds)))]
+    }
+
+    static func farUpperBootstrap(_ sets: [[Embedding]], threshold: Double, rounds: Int = 400, seed: UInt64 = 0xFA12) -> Double {
+        let c = canonical(sets)
+        var m = [[(fa: Int, n: Int)]](repeating: [(fa: Int, n: Int)](repeating: (0, 0), count: c.count), count: c.count)
+        for i in c.indices { for j in c.indices where j > i {
+            var fa = 0, n = 0
+            for x in c[i] { for y in c[j] { if let s = x.cosine(y) { n += 1; if s > threshold { fa += 1 } } } }
+            m[i][j] = (fa, n); m[j][i] = (fa, n)
+        } }
+        return farUpperBootstrap(matrix: m, rounds: rounds, seed: seed)
+    }
+
+    static func pairs(_ sets: [[Embedding]]) -> (genuine: [Double], impostor: [Double]) {
+        var genuine: [Double] = [], impostor: [Double] = []
+        for (i, s) in sets.enumerated() {
+            for a in s.indices { for b in s.indices where b > a { if let c = s[a].cosine(s[b]) { genuine.append(c) } } }
+            for t in sets[(i + 1)...] { for x in s { for y in t { if let c = x.cosine(y) { impostor.append(c) } } } }
+        }
+        return (genuine, impostor)
+    }
+
+    /// Per-volunteer embedding sets (same model) → verdict.
+    /// 1. Calibration half: impostor-side limit = the stricter of FAR 1e-3 on verification pairs and open-set
+    ///    FPIR ≤ `maxFPIR` on held-out volunteers' top-1 matches; the threshold sits halfway to the genuine-side limit.
+    /// 2. Report half (volunteers never seen in step 1): TAR, FPIR, misidentifications and coverage at that threshold,
+    ///    with 95 % Wilson bounds. Pass: TAR ≥ `requiredTAR`, FPIR ≤ `maxFPIR`, zero misidentifications (D28).
+    static func evaluate(subjects: [[Embedding]], modelID: String, now: Date = .now) -> Verdict {
+        let sets = subjects.map { $0.filter { $0.modelID == modelID } }.filter { $0.count >= 4 }
+        let (cal, rep) = split(sets)
+        guard cal.count >= minSubjectsPerHalf, rep.count >= minSubjectsPerHalf else { return .insufficientData }
+
+        let c = pairs(cal)
+        guard c.impostor.count >= minImpostorPairs, let op = tarAtFAR(genuine: c.genuine, impostor: c.impostor, far: far)
+        else { return .insufficientData }
+        let calUnknown = openSetProbes(cal).filter { !$0.enrolled }.map { $0.best?.score ?? -1 }.sorted(by: >)
+        guard !calUnknown.isEmpty else { return .insufficientData }
+        let k = Int((maxFPIR * Double(calUnknown.count)).rounded(.down))
+        // Impostor-side limit: the stricter of FAR 1e-3 and open-set FPIR. Genuine-side limit: the score at which
+        // calibration TAR would just reach `requiredTAR`. Operate halfway between them, so the unseen report half has
+        // margin on both sides (with ~100 report probes, one stray impostor already breaks FPIR 0.5 %).
+        let low = max(op.threshold, calUnknown[min(k, calUnknown.count - 1)])
+        let calGen = c.genuine.sorted()
+        let high = calGen.isEmpty ? low : calGen[min(calGen.count - 1, Int((1 - requiredTAR) * Double(calGen.count)))]
+        let threshold = high > low ? (low + high) / 2 : low
+
+        let r = groupedPairs(rep)
+        let gen = r.genuine.flatMap { $0 }, imp = r.impostor.flatMap { $0 }
+        guard imp.count >= minImpostorPairs else { return .insufficientData }
+        let tarHits = gen.filter { $0 > threshold }.count
+        let tar = gen.isEmpty ? 0 : Double(tarHits) / Double(gen.count)
+        // Held-out verification FAR at the operating threshold (D28: TAR is claimed *at* FAR 1e-3).
+        let fa = imp.filter { $0 > threshold }.count
+        let farObserved = Double(fa) / Double(imp.count)
+        let probes = openSetProbes(rep)
+        let unknownProbes = probes.filter { !$0.enrolled }
+        let fp = unknownProbes.filter { ($0.best?.score ?? -1) > threshold }.count
+        let fpir = unknownProbes.isEmpty ? 1 : Double(fp) / Double(unknownProbes.count)
+        let enrolled = probes.filter(\.enrolled)
+        func wrong(_ p: Probe) -> Bool { p.best.map { $0.score > threshold && $0.subject != p.subject } ?? false }
+        func right(_ p: Probe) -> Bool { p.best.map { $0.score > threshold && $0.subject == p.subject } ?? false }
+        let misID = enrolled.filter(wrong).count
+        let coverage = enrolled.isEmpty ? 0 : Double(enrolled.filter(right).count) / Double(enrolled.count)
+        guard tar >= requiredTAR, farObserved <= far, fpir <= maxFPIR, misID == 0 else {
+            return .fail(tar: tar, fpir: fpir, misidentifications: misID)
+        }
+        // Bounds: the more conservative of a subject-level bootstrap and Wilson (which ignores correlation).
+        let subjects = Array(Set(probes.map(\.subject))).sorted()
+        func groups(_ ps: [Probe], _ hit: (Probe) -> Bool) -> [(Int, Int)] {
+            subjects.map { s in let mine = ps.filter { $0.subject == s }; return (mine.filter(hit).count, mine.count) }
+        }
+        let tarB = bootstrapRate(r.genuine.map { g in (g.filter { $0 > threshold }.count, g.count) })
+        let fpirB = bootstrapRate(groups(unknownProbes) { ($0.best?.score ?? -1) > threshold })
+        let misB = bootstrapRate(groups(enrolled, wrong))
+        let farBoot = farUpperBootstrap(rep, threshold: threshold)
+        return .pass(FaceShipGateRecord(
+            modelID: modelID, threshold: threshold, tar: tar,
+            tarLower95: min(tarB.0, wilsonLower(successes: tarHits, n: gen.count)),
+            far: far, farObserved: farObserved,
+            farUpper95: max(farBoot, wilsonUpper(successes: fa, n: imp.count)), fpir: fpir,
+            fpirUpper95: max(fpirB.1, wilsonUpper(successes: fp, n: unknownProbes.count)),
+            misidentifications: misID,
+            misidentificationUpper95: max(misB.1, wilsonUpper(successes: misID, n: enrolled.count)),
+            coverage: coverage, folds: folds, calibrationSubjects: cal.count, reportSubjects: rep.count,
+            subjectCount: sets.count, passedAt: now))
+    }
+}
+
+/// What a passed benchmark leaves behind: aggregates only (no vectors, no per-volunteer rows).
+struct FaceShipGateRecord: Codable, Hashable, Sendable {
+    var modelID: String
+    var threshold: Double
+    var tar: Double
+    var tarLower95: Double
+    var far: Double
+    /// FAR measured on the report half's impostor pairs at `threshold`.
+    var farObserved: Double
+    /// 95 % upper bound on the held-out FAR (subject bootstrap vs Wilson, the larger).
+    var farUpper95: Double
+    var fpir: Double
+    var fpirUpper95: Double
+    var misidentifications: Int
+    var misidentificationUpper95: Double
+    /// Enrolled report probes decided correctly (not left unknown) at the threshold.
+    var coverage: Double
+    var folds: Int
+    var calibrationSubjects: Int
+    var reportSubjects: Int
+    var subjectCount: Int
+    var passedAt: Date
+
+    /// Re-validated wherever the record is trusted (a stale or hand-made record never opens face matching).
+    var meetsD28: Bool {
+        tar >= FaceBenchmark.requiredTAR && far <= 1e-3 && farObserved <= far && fpir <= FaceBenchmark.maxFPIR
+            && misidentifications == 0 && calibrationSubjects >= FaceBenchmark.minSubjectsPerHalf
+            && reportSubjects >= FaceBenchmark.minSubjectsPerHalf
+    }
+
+    /// Calibration earned by the benchmark: decision point at the threshold; lookalike rate = the FPIR upper bound.
+    var cueModel: CueModel {
+        CueModel(calibration: .init(threshold: threshold, slope: 25), lookalikeRate: max(far, fpirUpper95), lrRange: 0.01...100)
+    }
+}
+
+/// The separate "Help test face recognition" consent (face-embedding.md §6.2), distinct from product consent.
+/// Only `FaceBenchConsentFlow.grant` can make one (fileprivate init), and only a grant the flow still records is
+/// accepted, so no caller can fabricate or reuse a withdrawn consent.
+struct FaceBenchConsent: Hashable, Sendable {
+    static let currentVersion = 1
+    let id: UUID
+    let agreedAt: Date
+    let version: Int
+    fileprivate init(agreedAt: Date) { id = UUID(); self.agreedAt = agreedAt; version = Self.currentVersion }
+}
+
+/// The consent screen's only entry points: its deliberate "Agree" tap calls `grant`; "Withdraw" calls `withdraw`.
+@MainActor
+enum FaceBenchConsentFlow {
+    private static var granted: Set<UUID> = []
+
+    static func grant(agreedAt: Date = .now) -> FaceBenchConsent {
+        let c = FaceBenchConsent(agreedAt: agreedAt)
+        granted.insert(c.id)
+        return c
+    }
+
+    /// Withdrawal also purges that volunteer's embeddings from every live benchmark run, now.
+    static func withdraw(_ c: FaceBenchConsent) {
+        granted.remove(c.id)
+        FaceBenchmarkLifecycle.withdrawEverywhere(c.id)
+    }
+    static func isGranted(_ c: FaceBenchConsent) -> Bool { granted.contains(c.id) && c.version == FaceBenchConsent.currentVersion }
+}
+
+/// Persists the gate record (aggregate numbers only) on this phone.
+struct FaceShipGateStore: Sendable {
+    var key = "identity.faceShipGate.v1"
+
+    func load() -> FaceShipGateRecord? {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(FaceShipGateRecord.self, from: $0) }
+    }
+
+    func save(_ r: FaceShipGateRecord) throws { UserDefaults.standard.set(try JSONEncoder().encode(r), forKey: key) }
+    func clear() { UserDefaults.standard.removeObject(forKey: key) }
+}
+
+/// The benchmark run: consented volunteers' face embeddings in RAM, keyed by an anonymous code. Everything is
+/// deleted when the run finishes, on withdrawal, or after `maxAge` (7 days) at the latest.
+@MainActor
+final class FaceBenchmarkSession {
+    static let maxAge: TimeInterval = 7 * 86_400
+    let modelID: String
+    let startedAt: Date
+    private var subjects: [UUID: [Embedding]] = [:]
+
+    init(modelID: String, startedAt: Date = .now) {
+        self.modelID = modelID; self.startedAt = startedAt
+        FaceBenchmarkLifecycle.register(self)
+    }
+
+    /// Adds one volunteer's embeddings (from N aligned crops at registration). nil without the bench consent.
+    @discardableResult
+    func addSubject(_ embeddings: [Embedding], consent: FaceBenchConsent?, now: Date = .now) -> UUID? {
+        expireIfNeeded(now: now)
+        guard let consent, FaceBenchConsentFlow.isGranted(consent),
+              now.timeIntervalSince(startedAt) <= Self.maxAge else { return nil }
+        // One grant = one volunteer: a repeat capture under the same grant joins that volunteer, so nobody can appear
+        // as two pseudo-volunteers on both sides of the calibration/report split (r5).
+        let code = consent.id
+        subjects[code, default: []] += embeddings.filter { $0.modelID == modelID }.compactMap(\.normalised)
+        return code
+    }
+
+    /// Withdrawal: that volunteer's embeddings are gone now (results are only computed on demand).
+    func withdraw(_ code: UUID) { subjects[code] = nil }
+    func deleteAll() { subjects = [:] }
+    func expireIfNeeded(now: Date = .now) { if now.timeIntervalSince(startedAt) > Self.maxAge { deleteAll() } }
+
+    /// Reads expire first, so an idle run can't hold embeddings past `maxAge`.
+    func subjectCount(now: Date = .now) -> Int { expireIfNeeded(now: now); return subjects.count }
+    func embeddingCount(now: Date = .now) -> Int { expireIfNeeded(now: now); return subjects.values.reduce(0) { $0 + $1.count } }
+    var subjectCount: Int { subjectCount() }
+    /// What is held right now, without expiring anything first (for lifecycle checks).
+    var heldEmbeddingCount: Int { subjects.values.reduce(0) { $0 + $1.count } }
+    var embeddingCount: Int { embeddingCount() }
+
+    /// Evaluates, stores the aggregate record on a pass, and deletes every embedding either way (run over).
+    func finish(store: FaceShipGateStore = FaceShipGateStore(), now: Date = .now) -> FaceBenchmark.Verdict {
+        expireIfNeeded(now: now)
+        // Canonical volunteer order: `subjects.values` is in Dictionary order (per-process hash seed), and the split,
+        // folds and bootstrap are positional, so the verdict must not depend on it (review finding 7).
+        let v = FaceBenchmark.evaluate(subjects: FaceBenchmark.canonical(Array(subjects.values)), modelID: modelID, now: now)
+        if case .pass(let r) = v { try? store.save(r) }
+        deleteAll()
+        return v
+    }
+}
+
+/// Purges expired benchmark runs on app launch and every return to the foreground, not only when a run is touched.
+@MainActor
+enum FaceBenchmarkLifecycle {
+    private final class Weak { weak var session: FaceBenchmarkSession?; init(_ s: FaceBenchmarkSession) { session = s } }
+    private static var sessions: [Weak] = []
+    private static var observers: [NSObjectProtocol] = []
+
+    static func register(_ s: FaceBenchmarkSession) {
+        installObservers()
+        sessions.removeAll { $0.session == nil }
+        sessions.append(Weak(s))
+    }
+
+    static func withdrawEverywhere(_ code: UUID) {
+        sessions.removeAll { $0.session == nil }
+        for w in sessions { w.session?.withdraw(code) }
+    }
+
+    static func purgeExpired(now: Date = .now) {
+        sessions.removeAll { $0.session == nil }
+        for w in sessions { w.session?.expireIfNeeded(now: now) }
+    }
+
+    private static func installObservers() {
+        guard observers.isEmpty else { return }
+        let names = [UIApplication.didFinishLaunchingNotification, UIApplication.willEnterForegroundNotification,
+                     UIApplication.didBecomeActiveNotification]
+        observers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+                MainActor.assumeIsolated { purgeExpired() }
+            }
+        }
+    }
+}

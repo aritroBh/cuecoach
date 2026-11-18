@@ -15,6 +15,8 @@ settings:
 packages:
   CueCore:
     path: Packages/CueCore
+  Astryx:   # D34: Meta's Astryx design system, vendored (MIT, Packages/Astryx/LICENSE)
+    path: Packages/Astryx
 targets:
   CueCoach:
     type: application
@@ -23,6 +25,8 @@ targets:
     dependencies:
       - package: CueCore
         product: CueCore
+      - package: Astryx
+        product: Astryx
     info:
       path: CueCoach/Resources/Info.plist
       properties:
@@ -31,10 +35,13 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSCameraUsageDescription: CueCoach watches the table to draw aim lines and rate shots. Video stays on your phone.
         NSLocalNetworkUsageDescription: CueCoach links phones around the same table to share ball positions.
-        NSBonjourServices: [_cuecoach._tcp, _cuecoach._udp]
+        NSBonjourServices: [_cuecoach._tcp, _cuecoach._udp, _cuecoach-lb._tcp, _cuecoach-lb._udp]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aritrobh.cuecoach
+        # FaceEmbedding.mlpackage is optional (gitignored, fetched by tools/faceid); it is loaded by URL, never via a
+        # generated class, so the app builds identically with or without it.
+        COREML_CODEGEN_LANGUAGE: None
   CueCoachTests:
     type: bundle.unit-test
     platform: iOS

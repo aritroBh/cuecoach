@@ -1,10 +1,11 @@
 # Module interfaces (proposal — awaiting user review)
 
 All `CueCore` types are value types, `Sendable`, `Codable` where they cross the mesh or disk.
-Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = foot-left cushion nose, +x toward the head.
+Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = head-left cushion nose, +x toward the foot (head spot at 0.25 L, foot spot at 0.75 L).
 
 ## Geometry (merged)
-`Vec2`, `TableSize` (7/8/9 ft), `TableSpec` (dims, pocket centres + mouths, spots, head string),
+`Vec2`, `TableSize` (7 ft, 86″, Pro 8 = 88″, 8 ft, 9 ft; `allCases` in length order, raw values persisted and on the
+mesh inside major 2, D46), `TableSpec` (dims, pocket centres + mouths, spots, head string),
 `Pocket` (6), `BallID` (0 = cue, 1–15; `.group`), `BallGroup`, `BallState` (pos, vel, ω, `MotionState`),
 `TableState` (spec + balls).
 
@@ -13,7 +14,7 @@ Units: metres, seconds, radians, m/s, rad/s. Table frame: origin = foot-left cus
 public struct Stroke { var direction: Vec2; var speed: Double         // cue-ball launch speed, m/s
                        var tipOffset: Vec2 }                          // (side, top/draw) in ball radii, |·| ≤ 0.5
 public struct PhysicsParams { /* μ slide, μ roll, μ spin, ball-ball μ, cushion e(v), squirt factor … */ }
-public enum PhysicsEvent { case ballBall(BallID, BallID), cushion(BallID, Rail), pocket(BallID, Pocket),
+public enum PhysicsEvent { case ballBall(BallID, BallID), cushion(BallID, Rail), pocket(BallID, Pocket), offTable(BallID),
                            slideToRoll(BallID), spinOff(BallID), rest(BallID) }   // each with time t
 public struct ShotTrace { var events: [TimedEvent]; var final: TableState
                           func state(at t: Double) -> TableState
@@ -44,19 +45,706 @@ public struct RulesEngine { init(ruleSet: RuleSetID, teams: Int)
 public enum Vote { static func winner(_ ballots: [RuleSetID]) -> RuleSetID }        // tie/no vote → .barEight
 ```
 
-## Engine (Phase 2 — stub only now)
+## Engine (Phase 2)
 ```swift
-public actor ShotEngine { func candidates(_ s: TableState, _ g: GameState) -> [Candidate]
-                          func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel) async -> Evaluation
-                          func winProbability(_ s: TableState, _ g: GameState) -> Double
-                          func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation) -> (DecisionRating, ExecutionRating) }
+public actor ShotEngine { init(seed: UInt64 = 0, simulator: Simulator = Simulator(), budget: EngineBudget = .standard,
+                               defaultSkill: SkillModel = .reference, threeBallRule: Bool = true)
+    nonisolated func candidates(_ s: TableState, _ g: GameState) -> [Candidate]                       // defaultSkill
+    nonisolated func candidates(_ s: TableState, _ g: GameState, skill: SkillModel) -> [Candidate]    // same ids as evaluate(skill:)
+    func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel) async -> Evaluation             // opponent = defaultSkill
+    func evaluate(_ s: TableState, _ g: GameState, skill: SkillModel, opponentSkill: SkillModel,
+                  budget: EngineBudget? = nil) async -> Evaluation
+    nonisolated func winProbability(_ s: TableState, _ g: GameState) -> Double
+    nonisolated func winProbability(_ s: TableState, _ g: GameState, skill: SkillModel, opponentSkill: SkillModel) -> Double
+    func rate(chosen: Candidate, outcome: ShotTrace, eval: Evaluation,
+              offTable: Set<BallID> = []) -> (DecisionRating, ExecutionRating)
+    func record(chosen: Candidate, outcome: ShotTrace, eval: Evaluation, intentConfidence: Double = 1,
+                offTable: Set<BallID> = [], thresholds: RatingThresholds = .default) -> ShotRatingRecord
+    func ratingInput(chosen: Candidate, outcome: ShotTrace, eval: Evaluation, intentConfidence: Double = 1,
+                     offTable: Set<BallID> = []) -> RatingInput }
+// offTable: balls tracking saw leave the table (the simulator never does); they make the shot a foul.
+// Cancelling the evaluate() task stops the search; the result then has tier == .quick (Quick ranking or empty).
+// A chosen candidate is matched to the evaluation by intent (kind, target, ball, pocket, meter step, tip, placement),
+// not by id, so a candidate from any candidates() list can be rated.
+public struct EngineBudget { topK, safeties, pushOuts, initialSamples (even), rounds, chunk, maxParallel, ratingSamples;
+                             static let standard; var normalized: EngineBudget }   // the engine always uses .normalized
+public struct Candidate { id: UInt32, kind: ShotKind, target: BallID?, objectBall: BallID?, pocket: Pocket?, stroke: Stroke,
+                          meterStep: Int, cuePlacement: Vec2?, ghost: Vec2?; var intendsPot: Bool }
+public enum ShotKind { direct, bank(Rail), kick(Rail), combo(via: BallID), safety, pushOut, breakShot }
+public struct Evaluation { tier (.quick/.full), stateHash, state, game, shooter, skill, opponentSkill, winProbability,
+                           ranked: [CandidateScore], secondBestGap, shooterBestPot, naivePick, paired, stats; best }
+public struct RatingInput / RatingThresholds / ShotRating / ShotRatingRecord
+public enum Ratings { static func rate(_:_:) -> ShotRating; sotgScore; brilliantEligible; selectBrilliant; finalize }
+// DecisionRating (D18): brilliant, great, best, good, okay, book, inaccuracy, miss, mistake, blunder — rules in docs/RATING_CLASSES.md.
+// Brilliant is assigned post-game (max 1/game, must be Shot of the Game); live it shows as Great.
+// SotG baseline P: pots use the reference-skill analytic P(make); defensive shots use the player's own D (RATINGS §10).
 ```
 
-## Stats / Training (Phase 6 / 8 — stubs only now)
-`ShotFeatures.extract(pre:post:trace:) -> ShotFeatures`, `Aggregates`, `Archetypes`, `ProComp`;
-`DrillID`, `AssistLevel`, `LevelPolicy`, `BiasDetector`.
+## Stats (Phase 6 — implemented; depends on Geometry + Rules only)
+```swift
+// Per shot. Stats never imports Physics/Engine: the caller maps Physics `ShotTrace.events` (or tracker output)
+// into TraceEvent — ball–ball contact → .ballBall, ball–cushion → .cushion, drop → .pocket(ball, pocket),
+// cue ball leaves the cloth before first contact → .airborne(.cue).
+enum TraceEvent { case ballBall(BallID, BallID), cushion(BallID), pocket(BallID, Pocket), airborne(BallID) }
+struct ShotTraceSummary { var events: [TraceEvent] }                      // time order
+struct ShotIntent { target: BallID?, pocket: Pocket?, isSafety: Bool, isBank: Bool, isCombo: Bool }  // called / engine-chosen
+static func ShotFeatures.extract(pre: TableState, post: TableState, trace: ShotTraceSummary,
+                                 intent: ShotIntent = .unknown, thresholds: FeatureThresholds = .standard) -> ShotFeatures
+// ShotFeatures { cutBucket, distanceBucket, pocketType, kind }; bank/combo follow the attempt, not the outcome.
+// With a called target, combo = intent.isCombo (hitting another ball first on a direct call is a miss) and bank =
+// intent.isBank or no direct line to the called/dropped pocket; a cushion-then-drop never relabels a called shot.
+// No contact events: target = a ball seen dropping, else one missing from `post`, else the nearest.
+// Break-and-run needs at least one shot after the break (winning on the break alone is not a run).
+// Pass intent whenever known (engine's chosen candidate in 9-ball): without it a missed bank/combo that also
+// had a direct pot is classified as the direct attempt.
+
+// Competitive inputs (projection of the app's Shot/Game rows; training data has no path in).
+struct CompetitiveShot { shooterID, team, isBreak, features, made, onTarget, cueResult, fouls,
+                         objectBallsPocketed, wpaDelta, isClutch, timeOnShot,
+                         decisionRating: String? }   // Engine DecisionRating.rawValue, supplied by the app
+struct CompetitiveGame { ruleSet, startedAt, teamOf: [UUID: Int], winnerTeam: Int?, shots }
+
+static func Aggregates.game(_:player:policy:) / career(_:player:policy:) / perPlayer(_:policy:) / series(...)
+enum Trend { init(series: [Double?], window:tolerance:) }
+static func Archetypes.isUnlocked(_:policy:) / tags(for:friends:policy:) / snapshot(player:games:friends:at:...)
+struct ArchetypeHistory   // append-only
+static func ProProfiles.decode(_ data: Data) throws -> [ProProfile];  ProProfiles.bundled()
+static func ProComp.similarity(_ v: ArchetypeVector, _ pro: ProProfile) -> Double?   // cosine (SPEC §8), ≥3 shared dims
+static func ProComp.nearest(to:among:) -> ProComp?
+```
+House thresholds **pending user approval** (not in DECISIONS.md yet): `FeatureThresholds` (mid ≥ 0.4 L,
+long ≥ 0.9 L, rail gap R/2), `AggregatePolicy.minRunOutShots = 3`, `ArchetypePolicy` baselines and z = 1.0.
+Open spec question: SPEC §8 "source URL + confidence per trait" vs Phase 6 "sourced or `estimated`" — the
+validator currently accepts estimated traits without a URL.
+
+## Training (Phase 8 — `Packages/CueCore/Sources/Training`, imports Geometry only)
+```swift
+public enum DrillID { case straightIn, increasingCuts, long, rail, sidePocket, positionPlay, spinControl, banks
+                      var hasPositionZone: Bool; var trackedAxes: Set<BiasAxis> }   // trackedAxes: open question
+public enum OverlayElement { case liveAimLine, cueToGhostLine, ghostBall, objectToPocketLine,
+                             cueAfterContactLine, spinDot, powerMeter, positionZone }
+public enum AssistLevel: Int { case full = 1, objectLineOnly, ghostOnly, none     // D1
+                               var showsSuggestedShot: Bool; var harder/easier: AssistLevel?
+                               func visibleWhileAiming(in: DrillID) -> Set<OverlayElement>
+                               func visibleAfterShot(in: DrillID) -> Set<OverlayElement> }
+public struct LevelPolicy { init(window:promoteAt:demoteAt:) throws(LevelPolicyError)   // decoding validates too
+                            static let standard                                      // 10 attempts, ≥0.8 up, ≤0.4 down; gap > 2·epsilon
+                            func record(success:into: inout LevelProgress) -> LevelChange? }
+public struct LevelProgress { var level: AssistLevel; var recent: [Bool]; var successRate: Double? }
+public struct TrainingProgress { func level(for: DrillID) -> AssistLevel
+                                 mutating func record(drill:success:policy:) -> LevelChange? }  // Training store only
+public enum BiasAxis { case cut, side, speed, cueBallDistance, spin; var unit: String; var typicalNoise: Double }
+public struct BiasDetector { struct Config { deadZone, alternativeP, threshold, cap, minimumAttempts
+                                             static let standard /* σ units */; static let calibrated: [BiasAxis: Config]
+                                             func scaled(by:) -> Config }           // decoding validates
+                             init(config:) /* one unit for all axes */; init(configs: [BiasAxis: Config])
+                             mutating func observe(_: BiasAxis, error: Double); func activeBiases() -> [DetectedBias]
+                             mutating func reset(_: BiasAxis) }
+public struct DetectedBias { var key: BiasKey /* axis + BiasDirection */; var evidence: Double
+                             var meanError: Double /* sign == direction */; var attempts: Int; var consistency: Double }
+public enum Correction { hitThicker, hitThinner, favorLeft, favorRight, softer, firmer, shorter, longer, lessSpin, moreSpin
+                         init(for: BiasKey); var label: String /* ≤2 words, no digits */; var visual: FeedbackVisual }
+public enum FeedbackVisual { case averageLineVsCorrect, missHeatmap, arrow(ArrowDirection), spinDotVsIntended }
+public enum BiasStrength { case slight, clear, strong }                        // glow / line spread only
+public struct Feedback { var bias: BiasKey; var correction: Correction; var strength: BiasStrength }
+public struct FeedbackCoach { init(drill:configs: = .calibrated); init(drill:config:)
+                              var current: Feedback?                            // one correction at a time
+                              mutating func record(_: [BiasAxis: Double]); mutating func dismiss() }
+public enum SetupMatcher { static func match(ghosts: [Vec2], detected: [Vec2], tolerance: Double) -> [Bool]
+                           static func isReady(_: [Bool]) -> Bool }
+```
+Error contract for `record`/`observe`: actual − intended, positive = overcut / miss right / too hard /
+cue ball long / more spin. Units: cut rad; side m (object-ball lateral miss at the pocket mouth, shooter's
+right +); speed ratio (actual/intended − 1); cueBallDistance m (past target +); spin ball radii
+(|tip offset| − |intended|). `typicalNoise` per axis is provisional until tuned on real training data.
+
+## Identity (Phase 5, app target `CueCoach/Identity`)
+```swift
+protocol ShooterIdentifier: Sendable {
+  func identify(_ window: StrokeWindow, snapshot: IdentitySnapshot, expectedShooter: UUID,
+                teamInTurn: Set<UUID>?) async -> ShooterIdentification }
+struct StrokeWindow { frames: [IdentityFrame] }                 // ±0.5 s around stroke start
+struct IdentityFrame { image: CGImage; cueBall: CGPoint }       // Vision normalised, origin lower-left
+struct IdentitySnapshot { roster: IdentityRoster; appearanceGallery, faceGallery: [UUID: [Embedding]];
+                          appearanceClaimCeiling, faceClaimCeiling: [UUID: Double] }   // S9 negative signal
+struct ShooterIdentification { attribution: Attribution; shooterAppearance: Embedding?; evidence: [TrackEvidence] }
+enum AttributionDecision { case auto, turnOrder, tap, unknown }
+struct Attribution { playerID: UUID? /* nil only for .unknown */; source: AttributionDecision; confidence: Double;
+                    shooterTrackID: Int?; suggestedPlayerID: UUID?
+                    var needsConfirmation: Bool /* == .unknown: card asks, nobody credited */
+                    var storedSource: AttributionSource? /* nil = don't credit */ }
+protocol PersonAnalyzing: Sendable { func people(in: CGImage, wants: AnalysisWants) async throws -> [ObservedPerson] }
+struct AnalysisWants { appearance, face: Bool; cueBall: CGPoint; gate: ShooterGate }  // embed only gate-admitted people
+struct ObservedPerson { box; joints; appearance: Embedding?; face: Embedding?; faceQuality: Double? }
+struct ShooterGate { minPose = 0.5; maxDistance = 0.15 }        // "someone is shooting here", absolute, per track
+struct CueModel { calibration; lookalikeRate; lrRange }         // per cue, per modelID (IdentityCalibrationTable)
+enum StrokeFaceMatching { case off /* default, Q10 */, shooterOnly }   // honoured only with a matching FaceShipGateRecord
+protocol FaceCropping { func faces(in: CGImage) async -> [AlignedFace] }  // Vision landmarks → 5-pt → gate → 112² warp
+struct FaceEmbeddingExtractor: EmbeddingExtracting               // AuraFace Core ML, modelID fal.auraface.v1.fp16
+protocol RecognitionTemplateStore { templates(for:) / replaceTemplates(_:for:) / deleteTemplates(for:) / deletionGeneration }
+struct StoredRecognitionTemplates { faceEmbedding, appearanceEmbedding: Data?; optedInAt: Date; version: Int }
+@MainActor final class IdentitySession {                        // RAM only; owns roster + session templates
+  init(players: [(UUID, StoredRecognitionTemplates?)], guests:, faceModelID:, bodyModelID:)
+  func snapshot() -> IdentitySnapshot
+  func identifyShot(_ shot: UUID, window:, expectedShooter:, teamInTurn:, using:) async -> Attribution
+  func correct(shot: UUID, to: UUID) -> Attribution?            // one tap: fix or confirm; the only learning path
+  func bind(_ player: UUID, appearance: Embedding) -> Bool      // AppearanceBind (clothes consent only)
+  func addPlayer(id:, stored:); func addGuest(_: UUID); func removePlayer(_: UUID)
+  var needsReconsent: Set<UUID>                                 // stored consent outdated: nothing loaded
+  func grantGuestClothesConsent(_ guest: UUID); func revoke(_ player: UUID); func end() }
+IdentityPrivacy.deleteMyRecognitionData(stack:, session:, onRevoke:)   // onRevoke required (Mesh IdentityRevoke)
+IdentityPrivacy.deleteRecognitionData(of:, store:, session:, onRevoke:)  // same, through the template store
+FaceBenchmarkSession.addSubject(_:, consent: FaceBenchConsent?) -> UUID?   // separate bench consent; RAM; ≤ 7 days
+FaceBenchmark.evaluate(subjects:modelID:) -> .pass(FaceShipGateRecord) | .fail | .insufficientData   // F6
+```
+Rules (round 3): only tracks admitted by `ShooterGate` are evidence. Competitors for `.auto` are *every* roster
+member (off-team players and guests too) plus an explicit "someone else" (unmodelled person) whenever a guest or a
+non-consenting player is at the table; the pick must beat all of them by `minEvidenceRatio` with positive evidence.
+A registered profile is never credited (neither `.auto` nor silent turn order) while a guest is at the table:
+`.unknown`, one tap. Face consent enrols only frames with exactly one admissible face. Silent
+`.turnOrder` only when no guest is present (or the guest is the expected shooter) and evidence neither contradicts
+the expected shooter nor ties them with another recognisable player. Nothing is embedded unless a consented template
+exists to compare against (no bootstrap). Nothing is learned from turn order or `.auto`: only registration and a tap.
+`shooterAppearance` is held (RAM, `tapWindow` shots) only if it resembles a clothes-consented template, or on a
+consented player's turn at an all-clothes-consented table. A correction away from W caps W's claim on that look for
+the session (numbers only). Every roster/consent change bumps the epoch; revoke/end cancel in-flight work (checked per
+frame and before each embedding); retry exhaustion → `.unknown`. Stored consent for older terms/models → nothing
+loaded, `needsReconsent`. Face consent needs an identity-trained model (`isIdentityTrained`); generic feature prints
+are never face templates. `.shooterOnly` needs a passed on-device benchmark for that modelID (D28): threshold fitted on one volunteer half,
+then TAR ≥ 0.90, open-set FPIR ≤ 0.5 % and zero misidentifications on the other, disjoint half (Wilson bounds and
+coverage recorded). With a guest at the table a tap teaches nothing unless every guest has a session template and the
+sample beats each of them by `IdentitySession.guestMargin`. A tap teaches only a sample that already resembles the
+tapped player's template unless everyone at the table consented to clothes. Backups never carry
+recognition data. `RecognitionData.version` = consent-terms version.
 
 ## App-side protocols (later phases; declared now so wiring compiles)
 `FrameSource` (camera / replay `.mov`), `TableCalibrator`, `BallDetector`, `BallTracker`,
 `ShotSegmenter`, `MeshSession`, `ShooterIdentifier`, `OverlayRenderer`, `LabelGenerator`
 (Foundation Models + rule fallback).
+
+## Live table locking (capture ↔ Calibration/Auto) — lock plan 2026-11-07
+```swift
+protocol TableLocating: Sendable {                       // CueCoach/Calibration/TableLocating.swift
+    func ingest(_ f: LocatorFrame) async -> TableEstimate?
+    func reset() async
+}
+struct LocatorFrame { var image: PixelImage; var camera: CameraModel; var planes: [LocatorPlane]
+                      var timestamp: Double; var depth: DepthMap?; var trackingNormal: Bool }
+struct TableEstimate { var corners: [SIMD3<Double>]; var confidence: Double; var locked: Bool; var size: TableSize?
+                       var failure: LockFailure?        // glyph + dev HUD (never text on screen)
+                       var frame: TableFrame?           // exact pose when locked — install it, don't re-fit
+                       var generation: Int }            // bumps on (re)lock / held-size change
+enum LockFailure { case noPlane, noFelt, partialTable, tooFar, tooClose, badShape, unstable }
+```
+- **Lock source** = `AutoTableLocating` (adapter over `ClassicalAutoTableLocator`, Calibration/Auto). FeltQuad is a
+  ghost seed only (felt boundary at rail-top height, cushion inset from `AutoTableProfile`), never the lock.
+- Auto `diag.rejection` → `LockFailure`: cloth touches frame → partialTable; cloth too small / too small → tooFar;
+  no plane → noPlane; no cloth colour → noFelt; others → badShape; converging with spread > 2 cm → unstable.
+- **Cadence**: `LocatingGate` (~15 Hz, busy flag) shared by FrameTap and the VirtualTable harness; no locator throttle.
+- **Planes**: an ARKit anchor is an infinite plane at its height (no extent test); without one, Auto takes a
+  provisional LiDAR plane. A level > 1.4 m below the camera is the floor, never the table.
+- **History** expires after a > 1 s timestamp gap or 5 consecutive rejections.
+- **Keypoints**: `TableKeypointModel.provider()` → `TableKeypointProvider` (tablekp .mlpackage, ANE). Paced at ≤ 10 Hz of
+  *frame* time by `MouthCountingProvider.beginFrame(timestamp:)` (not wall clock), so replays and the VirtualTable
+  harness see the phone's cadence.
+- **Live screen (D24)**: `LiveScreen(mode: LiveMode, drill: DrillID?, hooks: LiveHooks, onClose: (() -> Void)?)`
+  with `.game` | `.training(level: Int)`; visibility per `OverlayVisibility.of(mode, drill:, afterShot:)`, read live
+  from `LiveModel.visibility` (D1: the aiming set while an aim is open; once the last shot has settled with no aim
+  open, Training shows `AssistLevel.visibleAfterShot` — level 4 included; the next aim hides it again).
+  `LiveHooks` (closures, all `@MainActor`) is how Live drives the shell's `LiveSession`:
+  `aimStarted / aimEnded / aimCancelled / ballsSettled / settled(DecisionRating, turnPasses)`, emitted by the pure
+  `AimEvents` state machine. With hooks set, the shell draws the post-shot badge; standalone, Live does (hidden
+  the moment the next aim starts or any ball moves). Ratings: `RuleRating` (RulesEngine; any foul ≤ Mistake,
+  a game-losing foul = Blunder) until a live ShotEngine evaluation is wired.
+- **Measured size**: on lock Live writes `UserDefaults "cc.table.measured"` (TableSize raw value).
+- **Lock safety**: a lock needs pocket evidence (≥ 2 keypoint mouths or ≥ 4 dark fitted mouths, 3 frames, all on the
+  surface being locked: a candidate pose > 0.3 m from the one the evidence was seen on starts the count over) and a
+  measured length that isn't ambiguous between two presets; keypoints come from `CoreMLTableKeypointProvider`
+  (tablekp YOLO26n-pose, ANE, ≤ 10 Hz).
+- **Snap candidates (D50)**: every auto size check (per-frame verdict, ambiguity margin, one-axis `uniquePreset`,
+  corner-partial and side-pocket presets, `SizeAmbiguity`, `TableSizing.snap`) uses
+  `TableSize.autoSnapCandidates(prior:)`: 7/8/9 ft, plus the picked size (the D36 C prior) when it is Pro 8 or 86″.
+  With no size picked, Pro 8 and 86″ never lock (an 86″ table reads as between presets; a Pro 8 as 8 ft).
+- **Manual fallback**: tap the 2 nearest corner pockets (any order) → `TwoTapTable` fills the table from the plane +
+  preset → drag any corner (loupe + snap) → ✓.
+- **Acceptance**: `CueCoachTests/VirtualTable` matrix + `LockGate` (0 false locks always; accurate-lock / TTL floors
+  ratcheted per step). Baselines in `CueCoachTests/VirtualTable/Results/`.
+
+### AutoTableLocator (Calibration/Auto, zero-tap table pose)
+`AutoTableLocator.process(AutoTableFrame) -> AutoTableEstimate` (thread-safe; calls are serialised,
+`latest` / `flipHeadFoot()` / `reset()` never wait for a detection; a detection in flight during `reset()`
+is dropped). `AutoTableEstimate.state` is `.locked` after ≥ 6 agreeing frames at ≤ 1 cm robust corner
+spread, or 15 at ≤ 2 cm; `generation` bumps on every new lock and on an adopted size change (size changes
+need 10 consistent frames plus a ±15 % vote-share band). `frame.rejection` strings start with one of:
+"tracking", "duplicate frame", "no plane", "no cloth colour", "cloth too small", "cloth touches frame",
+"no quad", "edge refine", "reprojection", "view too shallow", "reset" (a failed partial fit appends "(partial: …)"). Keypoint plug-in: `TableKeypointProvider` returns
+`AutoTableKeypoint`s of kind `.cornerMouth` / `.sideMouth` / `.noseCorner`, the tablekp model's three
+groups; `AutoTableKeypointModel` adapts its 10 rows (model-input pixels, Ultralytics letterbox).
+
+## App shell (CueCoach/App, docs/design/app-shell.md)
+```swift
+enum ShellLiveMode { case game; case training(level: Int) }       // mirrors Live's LiveMode (D24); LiveScreenAdapter is the one call site
+struct GameConfig: Codable { var ruleSet; var tableSize; var teams: [[ShellPlayer]]; var sessionTag: UInt16?
+                             var rotation: [ShellPlayer] }          // D17 A1, B1, A2, B2, …
+@MainActor protocol GameLobbyMesh { var onEvent: ((LobbyEvent) -> Void)?
+    func browse(); func stopBrowsing(); func join(gameID:); func leave()
+    func host(_: NearbyGame); func stopHosting(); func publish(lineup: LobbyLineup); func announceStart(_: GameConfig) }
+enum LobbyEvent { gamesChanged, joined, rejectedFull, hostLeft, started(GameConfig), lineupChanged(LobbyLineup), unavailable, phonesChanged }
+```
+`MPCGameLobby` implements it on its own MPC service `cuecoach-lb` (adverts in discovery info, JSON messages,
+encryption required). Advert version `LobbyWire.version = "2"` since D46 (v1 builds can't decode Pro 8 / 86″, so v1
+and v2 lobbies don't see each other). On Start every phone opens `MultipeerMeshSession.multipeer(sessionTag:)` with the
+host's random tag (`MeshGameLink`). `FakeGameLobbyMesh` drives tests; `OfflineGameLobby` = one phone.
+Guests are `ShellPlayer(isGuest: true)` in memory only, never written to SwiftData.
+Measured table size: Live writes `UserDefaults "cc.table.measured"` (TableSize raw value); setup preselects it.
+
+## Recognition persistence (privacy round; docs/SCHEMA.md "Recognition store")
+`PersistenceStack`: `recognition(for:)`, `storeRecognition(profileID:faceEmbedding:appearanceEmbedding:optedInAt:version:)`
+(throws `RecognitionError.revoked`), `beginRecognitionDeletion() -> RecognitionUndo`, `undoRecognitionDeletion(_:)`,
+`deleteMyRecognitionData(now:)` (commit, empties the store), `purgeSessionGuests()`,
+`promoteSessionGuest(_:keepRecognition:)`, `deleteProfile(_:)`, `importBackup(_:keepingRecognitionOf:)`,
+`exportBackup(exportedAt:)` (never includes templates), `register(_: RecognitionGallery)`.
+`@MainActor protocol RecognitionGallery: AnyObject { func recognitionDidChange(_: RecognitionChange) }`,
+`RecognitionChange = .purgedAll | .purged(Set<UUID>) | .restored(Set<UUID>)`. Identity's in-memory galleries
+(`IdentitySession` face/appearance) register so a delete, purge or promotion clears them synchronously.
+
+## Integration wiring (wt/integration, 2026-11-08)
+```swift
+protocol BallDetector { … func detect(in:geometry:feltReference:timestamp:) -> [BallDetection] }   // pipeline passes frame time
+final class HybridBallDetector: BallDetector   // shipped: trained YOLO26n (BallDetector.mlpackage) when due (≤ 30 Hz of frame
+                                               // time), classical v0 otherwise; UserDefaults "cc.detector.classical" forces classical
+enum BallDetectorOutput { decode(confidence:columns:coordinates:count:letterbox:minConfidence:)   // only columns 0..<16
+                          kind(forClass:) /* 0 cue, 8 eight, 1–7 solid, 9–15 stripe */; detections(_:image:geometry:) }
+static func PerceptionPipeline.defaultDetector() -> any BallDetector   // the app's call sites; init default stays classical
+struct TrackedBall { … var numberShare: Double }                       // share of number votes held by tentativeNumber
+struct ShotRecord { … var pocketTimes: [Int: Double] }                 // → RuleRating pocket order
+struct ShotIdentities                                                  // track → rule ids held across a shot
+struct LiveHooks { … var gameAdvanced: @MainActor (GameState) -> Void } // rules state after each settled shot
+func LiveModel.perceptionReset()                                       // closes an open aim/shot for the shell
+static func TargetLegality.startingGame(_ ruleSet:teams:)              // post-break start (8-ball .open, 9-ball .inPlay)
+GameSessionModel.rules: (RulesEngine, GameState)   // injected via LiveHooks.currentGame (shooter = chrome's turn)
+static func IdentitySession.registered(on: PersistenceStack, players:guests:faceModelID:bodyModelID:) -> IdentitySession
+extension IdentitySession: RecognitionGallery      // purgedAll / purged(ids) revoke; restored(ids) reloads from the store
+struct StackRecognitionTemplateStore: RecognitionTemplateStore   // on the backup-excluded recognition store; delete fences
+```
+- D30 held shots and `LiveHooks` (LiveModel's shot FIFO). Every ended shot gets an entry, in shot order:
+  `.looking` (its own post-settle look; only the newest entry; a later `shotStarted`, any motion or a later shot
+  end freezes it, unseen uncertain pockets becoming questions) → `.decided` (may ask; only the front entry asks) →
+  closed. A relock cancels an open aim first, then turns every unclosed entry (and the shot in flight) into
+  `.lost`. A lost entry that had already ended (a held D30 shot) closes unrated. **D31** (best guess, no prompt): the
+  shot in flight at the relock carries a `LostShotGuess` from the table's last known rule-id state (`ballIDs` of the
+  confirmed tracks on the last frame with no shot open, nothing moving and no shot start/end). Its look takes every
+  still frame (no shot open, nothing moving) with ≥ 1 measured ball for 1 s, **aim evidence or not** (the next shooter
+  may already be down on the cue ball; the close itself still waits for quiet). A further relock restarts an
+  unfinished look; a new shot start/end cuts an unfinished look short (no guess) but keeps a finished one. A pre-shot
+  ball counts as pocketed only if confidently gone: not seen (by rule id, among measured confirmed tracks) anywhere in
+  the look, **and** the pocket nearest where it was last measured in `pocketsInView` on ≥ 80 % of the look's frames
+  (D30's bar); it is pocketed at that pocket. Otherwise it stays on the table. An unidentified measured ball in the
+  look could be any of them, so then none count (D29). It closes **rated** through the normal settled path (Rules, rating, turn,
+  `gameAdvanced`, badge) on a record keyed by ball number (cue = 0; no first contact, rails or pocket order). It
+  closes **unrated** (`ballsSettled`) when no pre-shot state is known (e.g. a relock before any quiet table since the
+  last relock), the look was cut short before it finished, or no pre-shot ball was seen again. Invariants (checked by
+  `ShotLifecycleInvariantTests` over seeded random sequences):
+  - aims started = ended + cancelled whenever no aim is open (at most one open); the aim lifecycle is always
+    forwarded live, held shot or not; a shot-end frame that already shows the next shooter opens that aim;
+  - exactly one close per shot (`settled` rated, or `ballsSettled` unrated), strictly in shot order, and a rated
+    close carries that shot's own record (a lost shot: its guessed record, as computed by the oracle's own model);
+  - no close, settle, badge or visible confirm while someone aims (aim phase, or physical evidence: addressing / live
+    cue line / **a cue stick near the cue ball, stroke or not (D33, `PerceptionResult.stickNearCue`, the cue tracker's
+    1 s hold)**) or anything moves. With no aim open, aim evidence opens the aim at once, at rest or not (a stick put
+    down while the cue ball still creeps hides the shell's badge and menu); a shot start keeps priority. Motion is ONE signal: `!atRest` OR the pipeline's raw `motionOnset` (a measured
+    ball's position moved > 4 mm and > 5 cm/s since its last measurement, raw positions kept across short misses; or
+    a new track appearing within 20 cm of a coasting one) OR a ball's speed OR a partial dropout (a confirmed ball
+    measured within the last 0.3 s but not this frame); a frame with no balls seen is not quiet either. A shot-end
+    frame that already moves freezes the new shot's look at once (it is never that shot's look). A tap during motion is recorded and applied once quiet;
+  - a relock cancels an open aim and never closes anything itself: closes wait for a fresh post-relock frame with
+    no aim evidence and no motion. Addressing while the segmenter still holds a shot open (`.moving`) opens no shell
+    aim (the shell is still gated on that shot); the aim opens on the shot-end frame or the first frame after a relock;
+  - nothing stays pending except an unanswered question.
+  The shell treats a late `settled` as standalone (`LiveSession.settled` records the shot, shows its badge, rotates).
+- **Settled shot result (Live → shell → Review, wt/review-shots).** A rated close hands the shell what the Rules
+  engine saw, not only the rating:
+  ```swift
+  struct SettledShot: Hashable, Sendable {          // Live/LiveLogic.swift
+      var rating: DecisionRating; var turnPasses: Bool
+      var pocketed: [BallID: Pocket] = [:]          // the ShotOutcome's balls (rule ids; .cue = scratch), with their pocket
+      var fouls: [Foul] = []                        // RuleResult.fouls
+      var isGuess = false                           // D31 lost shot: pocketed + pockets are a best guess, not camera-confirmed
+      var before: [BallID: Vec2] = [:]              // identified balls only (D29), table metres, at shot start
+      var after: [BallID: Vec2] = [:]               // identified balls only (D29), table metres; balls off the table absent
+  }
+  struct LiveHooks { … var settledShot: @MainActor (SettledShot) -> Void }   // the rated close; `settled(rating, turnPasses)`
+                                                    // stays as a two-value view of it (get wraps, set drops the result)
+  func LiveSession.settled(_: SettledShot); func GameSessionModel.shotSettled(_: SettledShot) -> PostShotRating
+  struct ReviewShot { … var isGuess = false }      // GameSessionModel.reviewData() fills pocketed, fouls, isGuess per rated shot
+  ```
+  `LiveScreenAdapter` binds `settledShot` → `LiveSession.settled(_:)`. Unrated closes (`ballsSettled`, incl. a D31
+  shot with no guess in Training) record nothing.
+- **Lost shot with no guess (D38, D41, plan 008).** In a game, a lost shot that closes with no D31 guess calls
+  `LiveHooks.shotLost` instead of `ballsSettled` (Training, or hooks without `shotLost`, still get `ballsSettled`):
+  ```swift
+  struct LiveHooks { … var shotLost: (@MainActor () -> Void)? }   // nil = fall back to ballsSettled
+  func LiveSession.shotLost()            // clears aiming, then GameSessionModel.shotLost()
+  struct SessionShot { … var rating: DecisionRating? }            // nil = a gap (lost shot, unknown result)
+  func GameSessionModel.shotLost()       // appends a gap (current shooter + team, nothing pocketed, no fouls) and sets
+  var GameSessionModel.needsShooter: Bool   // true until a disc tap or the next aim
+  ```
+  While `needsShooter`, both turn discs pulse (a steady ring with Reduce Motion; no text). Tapping either disc sets
+  that team as shooting (the active disc confirms the same team), pushes its legal targets and clears the ask; it
+  never changes the gap's recorded shooter (D41). The next aim clears the ask and keeps the current shooter.
+  `reviewData()` maps a gap to `ReviewShot(rating: nil)` (dashed unrated style; never MVP). `SessionShot` carries `before`/`after`; `reviewData()` builds `pre`/`post` `TableState`s on `config.tableSize` from them (pocketed balls `.pocketed` in `post`), and straight `paths` (`pathsAreTraced = false`). A shot with an empty `before`, or a D31 guess (`isGuess`: no after table), stays without states. Ball positions only (no pixels, embeddings or track data); in memory, not persisted.
+- D29: `.illegal` (red ring + buzz) only for a numbered ball whose kind and number votes are both ≥ 0.8; group-only or dark
+  balls can show a legal ring, never a warning. Shots start from an impulsive launch without a stick; the shooter
+  addressing the cue ball (wrists) also opens the aim for the shell.
+- `PersistenceStack.recognition(for:)` never returns a row opted in at/before the profile's revocation tombstone.
+- No text in Live/Perception/Calibration: standalone Live shows `PostShotRatingBadge` (Screens/PostShot); `BadgeStyle` is
+  `RatingBadgeStyle`.
+
+## Shot log (plan 009; D38, D39, D41)
+
+One replicated log is the game's source of truth. The host (or the solo phone) appends; every phone builds `shots`,
+the badge, the turn and the rules state by folding the committed prefix. In memory only (no SwiftData).
+
+```swift
+// Wire: protocol major 2. ProtocolVersion.current = (2, 0), supportedMajors = [2].
+// Adding GameEvent cases is a wire break (an older build fails to decode a whole logEntries batch), so the major is
+// bumped: an old build now gets a clean Reject at Hello instead of silently undecodable logs.
+struct MeshShotRecord: Hashable, Codable, Sendable {
+    var shotID: UUID
+    var shooterTeam: Int
+    var outcome: ShotOutcome
+    var postState: TableState?                  // SettledShot.after on config.tableSize; nil = empty after
+    var preState: TableState? = nil             // SettledShot.before; nil = empty before (review stays without states)
+    var decisionRating: DecisionRating? = nil   // the host's rating; nil = the fold classifies the RuleResult
+    var isGuess: Bool = false                   // D31; in memory and on the wire only
+    // init(from:) reads the three new keys with decodeIfPresent: a missing key decodes as nil / nil / false.
+}
+
+enum GameEvent: Hashable, Codable, Sendable {
+    case ruleSetChosen(RuleSetID)
+    case shot(MeshShotRecord)
+    case shooterCorrection(shotID: UUID, team: Int, id: UUID? = UUID())
+                                                     // fix a recorded shot (no UI yet): attribution .tap, D17 replayed;
+                                                     // id as for nextShooter
+    case nextShooter(team: Int, id: UUID? = UUID())  // D41 disc tap: only who shoots next; works before the first shot.
+                                                     // id tells identical taps apart (decodeIfPresent: nil = absent)
+    case shotLost(shotID: UUID, shooterTeam: Int)    // D38 gap: rating nil, no rules change, asks for the shooter
+}
+
+@MainActor protocol GameMeshLink: AnyObject {
+    var peerCount: Int { get }
+    var isStopped: Bool { get }
+    var isHost: Bool { get }
+    var commitSeq: UInt64 { get }
+    var hasGameQuorum: Bool { get }             // plan 011: current roster > half of every phone seen in this game
+    var onCommittedLog: (@MainActor (_ log: [LogEntry], _ commitSeq: UInt64) -> Void)? { get set }
+    func start()
+    func stop()
+    func append(_ event: GameEvent)             // host writes; a client sends .proposal
+}
+// MeshGameLink (plan 010) wraps any MeshSession; init(session:) is the test seam, init(sessionTag:) production.
+
+struct SettledShot { … var outcome: ShotOutcome }   // what Live rated: RuleRating.outcome(record, ids:, pocketTimes:)
+static func RuleRating.classify(_ result: RuleResult, shooter: Int, pocketedObjectBall: Bool) -> DecisionRating
+                                                    // the classification RuleRating.rate uses
+struct SessionShot { … var attribution: AttributionSource }   // .turnOrder, or .tap after a shooterCorrection
+```
+
+`GameSessionModel` rules:
+- `shotSettled(_:)`: host or solo appends `.shot(MeshShotRecord)` built from the `SettledShot` (fresh `shotID`,
+  `shooterTeam` = shooting team, `outcome`, `before`/`after` as `preState`/`postState`, `decisionRating` = its
+  rating, `isGuess`). Plan 013a: in a mesh the record goes to `mesh.settled(_:strokeAt:)` on every phone (the host
+  logs it; a client keeps it for a re-run, never proposes it, D39). Badge, shot and turn come from the fold, never from
+  this call (an island's own provisional badge aside, D48). Returns the badge signal when the shot folded at once
+  (solo), else nil.
+- `shotLost()`: solo appends `.shotLost(shotID:shooterTeam:)`; in a mesh it goes to `mesh.settled` like a settle.
+- `handTurn(toTeam:)`: when the team differs from the shooting team, or a lost shot asks for the shooter, appends
+  `.nextShooter(team:)` (a client's `append` is a proposal). Never edits a recorded shot (D41). No shot needed.
+- `MeshGameLink` turns each `logChanged` into one `onCommittedLog(log.prefix(through: commitSeq), commitSeq)` call from
+  a fresh `snapshot()`, on the main actor, in order (a snapshot older than the last forwarded `commitSeq` is dropped;
+  plan 013a: one at the same `commitSeq` is forwarded only when an island merge rewrote that committed prefix).
+  The role comes from `roleChanged` and from each forwarded snapshot. `isHost` only as `.host` (never while
+  discovering: plan 011 saves on `isHost`); `isJoiner` only as a client; the model writes unless `isJoiner`.
+  Inputs made while discovering are buffered and flushed in order when the role resolves: a host appends all; a
+  joiner drops its own `.shot`/`.shotLost` (D39) and proposes the rest (D41 disc taps survive). Otherwise `append`
+  forwards to `MeshSession.append`, in call order. `commitSeq` is the last forwarded value and stays readable after `stop()`.
+- `isJoiner` (default `!isHost`) and `drain(until:) async` (default: returns at once) on `GameMeshLink`. Drain:
+  host, every local input seen committed; joiner, every proposal seen committed (matched by event identity: shots and lost shots by shotID, taps and corrections by id;
+  `.ruleSetChosen` is appended only by the host node at a vote close, never proposed), then no
+  uncommitted tail and no `commitSeq` advance for 300 ms. Always ends at the deadline.
+- `AppRouter.endGame()` leaves Live at once: the review stage gets a loading `GameReviewModel` whose
+  `MeshReviewSource` awaits the drain (cancelled at End + 2 s, D42), snapshots `reviewData()`, then stops the link.
+  It loads once; a repeat `endGame()` / `liveClosed()` is a no-op. Solo games review at once.
+- `ingest(log:commitSeq:)`: folds the entries with `seq ≤ commitSeq`, in `seq` order. The uncommitted tail never shows.
+  The model sets `mesh.onCommittedLog` to it when `mesh` is set.
+- Fold (pure, from scratch on every change, from the `GameConfig` lineup and `TargetLegality.startingGame`):
+  - `.shot`: the shooter is the folded D17 shooter; a later `.shooterCorrection` for that `shotID` hands the turn to
+    its team first (a hand-over, like a disc tap) and marks the shot `.tap`. `rulesState = engine.apply(outcome, to:
+    state with shooter = folded team).nextState` (equals Live's own `result.nextState`). Rating = `decisionRating`, else
+    `RuleRating.classify`. The turn passes (D17) when the result says so. The ask is cleared.
+  - `.shotLost`: a gap `SessionShot` (rating nil) for the folded shooter; no rules change; `needsShooter = true`.
+  - `.nextShooter`: hands the turn to that team if it is not already theirs and clears the ask.
+  - Every fold with newly committed events pushes the folded shooter's legal targets (`legalChanged`). A client's
+    dropped settle or lost shot re-pushes them too, so the committed state overrides Live's local result.
+  - `.ruleSetChosen`: ignored (the rule set comes from `GameConfig`).
+  - Local mid-game swaps are not logged: kept as `(afterEvent, team, a, b)` and replayed at their place in the fold.
+  - The badge fires once per `shotID`: for the newest newly committed rated shot only.
+- Solo (`mesh == nil`): the same fold over an in-memory log that commits at once.
+- `rulesAdvanced(_:)`, `record(rating:)` and the two-value `shotSettled(rating:turnPasses:)` /
+  `LiveSession.settled(rating:turnPasses:)` are gone (callers pass a `SettledShot` with its outcome): the shell no longer binds `LiveHooks.gameAdvanced`; the fold owns the rules state.
+
+## Game saving (plan 011; D37, D40, D45)
+
+```swift
+// CueCoach/Persistence/GameRecorder.swift. Main actor: PersistenceStack is @MainActor.
+@MainActor protocol GameRecorder: AnyObject {
+    func record(_ game: FinishedGame) throws   // upsert by id: a repeat changes nothing
+    func deleteGame(id: UUID) throws           // D54: remove a saved rack that replay un-finished
+}
+extension GameRecorder { func deleteGame(id: UUID) throws {} }
+@MainActor final class StackGameRecorder: GameRecorder { init(stack: PersistenceStack) }   // competitiveContext only
+
+struct FinishedGame: Hashable, Sendable {
+    var id: UUID                        // first committed shot's shotID (a gap counts); also the Session's id
+    var ruleSet: RuleSetID
+    var tableSize: TableSize            // on Session (Game has no table size)
+    var format: GameFormat              // on Session; from the even team size (setup forbids uneven teams)
+    var teams: [StoredTeam]             // config lineup; mid-game swaps are not logged yet (orderChanges [])
+    var winnerTeam: Int                 // D40: only a rack with a winner is saved
+    var winProbSeries: [Double]         // [] until the engine runs; profile WPA skips an empty series
+    var startedAt: Date                 // the GameSessionModel's creation
+    var endedAt: Date                   // when the winning commit folded
+    var shots: [RecordedShot]           // D38 gap shots omitted; others (D31 guesses too) keep their index
+}
+
+struct RecordedShot: Hashable, Sendable {
+    var id: UUID
+    var index: Int                      // the folded shot index (gaps leave holes)
+    var shooterID: UUID                 // ShellPlayer.id (guests as plain ids, design §6)
+    var team: Int                       // not a Shot column: saved review derives it from StoredTeam.memberIDs
+    var attributionSource: AttributionSource   // .turnOrder, or .tap after shooterCorrection
+    var preState: TableState            // empty ball map when unknown
+    var postState: TableState
+    var calledPocket: Pocket?           // nil
+    var firstContact: BallID?           // ShotOutcome.firstContact
+    var railsAfterContact: Int          // 0 means unknown, not "no rail"
+    var pocketed: [BallID: Pocket]
+    var fouls: [Foul]
+    var features: StoredShotFeatures    // ShotFeatures.extract(pre:post:empty trace) when the cue is in pre; else neutral
+                                        // (the Shot → CompetitiveShot projection must skip neutral ones: no column says so)
+    var made: Bool                      // an object ball was pocketed
+    var onTarget: Bool                  // made (nothing is called)
+    var cueResult: CueResult            // .notApplicable
+    var decisionRating: DecisionRating
+    var executionRating: ExecutionRating // .made / .miss from `made`; position .notApplicable
+    var wpaDelta: Double                // 0 until the engine runs
+    var isClutch: Bool                  // false until win probability exists
+    var timeOnShot: Double              // -1 = not measured (Aggregates ignores negatives)
+    var clipRef: String?                // nil
+    var isGuess: Bool                   // D31/D43: pocketed is a best guess; stored as Shot.isGuess (Competitive V3)
+}
+
+// GameSessionModel
+@ObservationIgnored var recorder: (any GameRecorder)?   // AppRouter.recorder, from ShellEnvironment.recorder
+func finishedGame() -> FinishedGame?                    // nil while the folded rules state has no winner
+```
+
+Rules:
+- One writer: solo (`mesh == nil`), or `mesh.isHost && mesh.hasGameQuorum`. `isHost` is role `.host` only; never
+  `!isJoiner`: a discovering phone never saves. Plan 013a: `MeshNode` now commits only with a strict majority of
+  the game's members, so a lone survivor of two phones commits nothing; the guard stays. `GameMeshLink.hasGameQuorum` is true only when the
+  current roster is a strict majority of the game's members (every phone seen in this game's roster; a late joiner
+  only raises the bar). An island never saves; plan 013 saves island games after the merge.
+- The saved rack is the folded shots up to and including the one that gave it its winner. A retry after a failed
+  save sends the same rack; shots committed after the win are never added.
+- D45: the save runs in `GameSessionModel` on the commit that gives the folded rack its winner, not in `endGame`.
+  `endGame` never writes. Once saved, later commits and `endGame` write nothing more; a save that throws is logged
+  (`os.Logger`) and retried on the next commit, and never blocks review.
+- D40: no winner, no row. A quit or kill mid-rack leaves nothing.
+- `StackGameRecorder` inserts `Session` + `Game` (index 0) + `Shot`s into `competitiveContext` only, upserting by id
+  (an existing row is updated in place, never duplicated), and saves once. It never takes a training context.
+- Training has no `GameSessionModel` (`LiveSession.game == nil`), so it can't reach the recorder.
+- D43: a guessed shot is saved with `isGuess = true`. Saved review (`GameReviewData(game:)`) sets `ReviewShot.isGuess`
+  and, like live review, draws no replay for it (no pre/post states, no paths). The `Shot → CompetitiveShot` stats
+  projection (not built yet) must skip `isGuess` rows for pot %, cut, distance and pocket buckets.
+
+## Shooter correction in Game Review (plan 015; D49, D54)
+
+Post-game only (never in `CueCoach/Live`): long-pressing a shot on the Game Review timeline opens a `.contextMenu`
+listing every player in the game (current shooter checked). Picking one appends `.shooterCorrection` and replays from
+that shot.
+
+```swift
+// MeshMessage.swift (inside protocol major 2; shooter is optional via decodeIfPresent)
+enum GameEvent {
+    …
+    case shooterCorrection(shotID: UUID, team: Int, shooter: UUID? = nil, id: UUID? = UUID())
+}
+
+// GameSessionModel.swift
+func correctShooter(shotID: UUID, to player: ReviewPlayer) -> GameReviewData?   // nil on a joiner or unknown player/shot
+
+// GameReviewModel.swift
+@ObservationIgnored var onCorrectShooter: ((UUID, ReviewPlayer) -> GameReviewData?)?
+var canCorrectShooter: Bool { get }
+var allPlayers: [ReviewPlayer] { get }
+func correctShooter(_ shotID: UUID, to player: ReviewPlayer)   // applies returned data and keeps selection on shotID
+```
+
+Rules:
+- Fold: `.shooterCorrection` maps `shotID → (team, shooter)`. For a `.shot` or `.shotLost` with a correction, if `team`
+  differs from `currentTeam`, `hand(to: team)` runs first (replaying the D17 rotation for subsequent shots); if
+  `shooter` names a member of `team`, that player is credited on the `SessionShot` (same-team fix changes only that
+  shot's `shooter`; cross-team fix sets `currentSlot` to that player's slot). `attribution` becomes `.tap`; a D38 gap
+  keeps `rating == nil`.
+- Joiners (`isJoiner`, or a session that was a joiner before `endGame` stopped its link) never expose `onCorrectShooter`
+  and `correctShooter` returns `nil` (D39).
+- D54: when a correction re-folds an already-saved rack: if the rack still has a winner, `recorder.record(finishedGame)`
+  upserts the updated shots and `winnerTeam` (removing any orphaned post-win `Shot` rows); if the rack no longer has a
+  winner (`winner == nil`), `recorder.deleteGame(id:)` deletes the saved `Game` (and empty `Session`) so unfinished
+  racks never remain in `Competitive.store` (D40).
+
+## Host loss and islands (plan 013a; D44, D47, D48; mesh-identity.md §2.5)
+
+Losing the host or the link keeps the game: every phone keeps its own settles, a phone cut off from a majority keeps
+playing as an island, and on heal the islands' shots merge into one log. 013a builds the engine only: `needsTap` is a
+flag (D47's side-by-side pick and D51's unconfirmed save are plan 013b). No new screen, no SwiftData change.
+
+```swift
+// Packages/CueCore/Sources/Sync (new target, depends on Geometry + Rules). Pure and deterministic.
+public struct IslandShot: Hashable, Sendable {
+    public var id: UUID
+    public var strokeTime: Double              // seconds on the game clock (below)
+    public var preState: [BallID: Vec2]        // empty = unknown: time alone aligns
+    public var outcome: ShotOutcome
+    public var confidence: Double              // higher wins a disagreement; ties go to the smaller id
+}
+public struct MergedShot: Hashable, Sendable {
+    public var shot: IslandShot                // the kept view
+    public var needsTap: Bool                  // the views disagreed on the outcome (D47 asks one tap, 013b)
+    public var members: [UUID]                 // every view folded into it, sorted
+}
+public enum IslandMerge {
+    public static let timeTolerance = 0.5      // s
+    // Same physical shot: same id, or |Δt| ≤ 0.5 s and every ball seen by both within one ball radius
+    // (an empty pre-state on either side matches on time alone; two non-empty states with no common ball never match).
+    public static func aligned(_ a: IslandShot, _ b: IslandShot, ballRadius: Double = TableSpec.ballRadius) -> Bool
+    // One entry per physical shot that any island saw, sorted by (earliest stroke time, kept id). At most one view
+    // per island per shot. Same outcome → one shot; different → the higher-confidence view, needsTap. Unmatched → kept.
+    // Independent of island order and of the order inside an island.
+    public static func merge(_ islands: [[IslandShot]], ballRadius: Double = TableSpec.ballRadius) -> [MergedShot]
+    // THE same-stroke rule (Codex 013a review 3), used at every site: a host's own settle, kept-settle clearing,
+    // heal grouping and dedupe, flag amendments, and (through MeshUpdate.settleAbsorbed) the link's drain.
+    // Same id; or both timed: |Δt| ≤ 0.5 s and, for two shots, pre-states agree (unknown = time alone), a gap matches
+    // any result in the window; or a side untimed: two shots whose known pre-states share ≥ 2 balls, all within one
+    // radius. An untimed gap matches only its own id.
+    public static func sameStroke(_ a: StrokeView, _ b: StrokeView, ballRadius: Double = TableSpec.ballRadius) -> Bool
+}
+public struct StrokeView: Hashable, Sendable { var id: UUID; var time: Double?; var preState: [BallID: Vec2]; var isGap: Bool }
+
+// Wire (minor, additive; protocol major unchanged). Missing keys decode as nil / false.
+struct MeshShotRecord { …
+    var strokeHostTime: Int64? = nil           // stroke start on the game clock, ns; nil = unknown (legacy / no fit)
+    var needsTap: Bool = false                 // a merge kept one of two disagreeing views (flag only in 013a)
+}
+struct Heartbeat { …
+    var gameOffset: Int64? = nil               // game clock − this host's clock, ns, at send time; nil = 0
+    var gameTimeUnknown: Bool? = nil           // true = this host has no game clock: clients stamp no time; nil = known
+}
+enum GameEvent { … case shotLost(shotID: UUID, shooterTeam: Int, strokeHostTime: Int64? = nil) }   // gaps are timed
+struct LogEntry { … var epoch: UInt64? = nil } // host's rewrite count when written; nil = 0
+struct LogAck { … var epoch: UInt64? = nil }   // the acked entry's epoch: an ack for a replaced version never counts
+struct IslandSettle: Hashable, Codable, Sendable { var event: GameEvent; var strokeHostTime: Int64? }
+struct IslandLog: Hashable, Codable, Sendable {   // MeshMessage.islandLog, any → host, reliable
+    var commitSeq: UInt64                      // sender's commit point
+    var entries: [LogEntry]                    // sender's whole log, one batch (≤ logBatch entries) per message
+    var settles: [IslandSettle] = []           // sender's own unlogged settles (last batch only)
+    var last: Bool                             // the host merges once the last batch arrives
+}
+
+// MeshNode
+enum MeshUpdate { … case island(Bool)        // on every change
+                   case settleAbsorbed(shotID: UUID) }  // an own settle answered by another entry of its stroke
+var isIsland: Bool { get }                     // after first joining: discovering, or hosting without a majority
+                                               // (roster × 2 ≤ commit quorum). A client is never an island.
+mutating func settled(_ e: GameEvent, strokeAt: Double, now: Double) -> MeshStep
+                                               // e = .shot / .shotLost; strokeAt = this phone's clock (s).
+                                               // Host: stamps record.strokeHostTime on the game clock, appends.
+                                               // Otherwise: kept as an unlogged settle (see "Every phone keeps…").
+// MeshSession: func settled(_ event: GameEvent, strokeAt: Double) async
+// GameMeshLink: var isIsland: Bool { get }                    (default false)
+//               func settled(_ event: GameEvent, strokeAt: Double)  (default: append unless isJoiner)
+// PostShotRating: var isProvisional = false   (D48: an island's own badge; the merged commit replaces it)
+// GameSessionModel: var now: () -> Double     (stroke clock, default MultipeerMeshSession.hostNow)
+// SessionShot: var needsTap = false            (from the record; no UI in 013a)
+```
+
+Rules:
+- **Game clock.** Stroke times live on one clock: the first host's. A host that took over keeps its last clock fit to
+  the old host (frozen, plus that host's `gameOffset`) and maps its own times through it; it sends the difference as
+  `Heartbeat.gameOffset`, and a client's game time is `clock.hostTime(fromLocal:) + gameOffset`. A phone without a
+  fit (a client, or a host that was ever a client) has no game time: its settle keeps `strokeHostTime == nil` and
+  aligns by shot id only. Only a phone that never was a client uses its own clock. Such a host sends
+  `gameTimeUnknown`, and its clients stamp no time either (their offset is unknown until a heartbeat says otherwise). Fits drift ≈ 3 ms/min (§2.5).
+- **Every phone keeps its own settles.** `GameSessionModel.shotSettled` / `shotLost` hand the record to
+  `mesh.settled(_:strokeAt:)` with the time of the last `aimEnded()` (else now). The node stamps it on the game clock
+  at once (if it can) and keeps it in `kept` until a committed entry answers its stroke under the same rule
+  (`sameStroke`); answered under another id it is reported `settleAbsorbed`. A host appends it unless any log entry
+  (any term) already answers the stroke; then it is absorbed. On becoming host (after collecting) the node re-runs its
+  kept settles; a phone that adopts a host sends them in an `IslandLog` and keeps them until it sees them committed
+  (that host may die first). A kept `.shotLost` (no confident record) is a D38 gap unless a result of the same stroke
+  exists. Real strokes are seconds apart: two settles of one stroke time and position are one stroke.
+- **Island.** While `isIsland`: tracking, overlay and appends go on as before. `GameSessionModel` fires its own settle's badge with `isProvisional`
+  (D48), never saves (`saveIfWon` refuses while `mesh.isIsland`, besides `isHost && hasGameQuorum`).
+- **Commits** (head decision, Codex 013a review 3). A host commits only with a strict majority of the game's
+  members: every phone seen in a roster since joining, minus graceful leavers (the same membership as
+  `hasGameQuorum`). Phones going silent never shrink it, so two sides of a split can never both commit. Any side
+  without that majority is an island, the lone survivor of a two-phone game included: it keeps playing provisionally
+  (D48), commits nothing, and merges on heal (D44); D51 covers a rack that never reconnects (plan 013b). Committed
+  entries never change.
+- **Heal.** Higher term hosts (unchanged). Every phone that adopts a host sends, after its full log and before its
+  `Hello`, `IslandLog` batches of its whole log with its `commitSeq`, plus its kept settles. The host merges a
+  sender's `IslandLog` when its `Hello` admits it (while collecting: after collecting, after its own re-run), so the
+  sender counts toward the commit of whatever the merge adds:
+  - `p` = the common prefix (equal events). If the sender committed entries after `p` and I did not, those are
+    pulled in as they are (a minority that won the term never loses the majority's commits); else mine up to my
+    commit point stay. Everything committed, my uncommitted tail and the sender's tail + settles are grouped by
+    stroke: timed shots through `IslandMerge`, then timed gaps and untimed shots join a group by `sameStroke`. Other
+    events (taps, corrections, rule set, untimed gaps) follow the timed result before them on their own island; the
+    sender's are dropped if equal to one of mine. An id's first occurrence is its result; later ones are copies or
+    flag amendments, and a flag on any occurrence reaches its stroke.
+  - Per group: with a committed result, nothing new, or an amendment (the committed record again with `needsTap`)
+    when its results disagree or any is flagged and the log lacks the flag; the fold reads it as a flag, never a new
+    shot. Otherwise shots beat gaps; agreeing shots keep my logged record; disagreeing ones keep the most confident
+    view, flagged. One gap per stroke; a committed gap stands (views of its stroke go).
+  - The host rewrites after the longest unchanged prefix (never at or before its commit point). A rewrite sets the
+    log epoch above every epoch in the log, inherited ones included (new entries carry it; acks clamp to the cut and only an ack naming the current epoch of its seq
+    counts) and the node reports `logChanged` on any content change. A client that receives a replacement drops its
+    commit point below it. `MeshGameLink` forwards a rewritten prefix at the same `commitSeq`; the fold pushes Live's
+    legality whenever the committed events change by content.
+- Out of 013a: D47's pick UI (013b, reuses plan 015's replay), D51's unconfirmed save (013b, schema change),
+  resume after a kill. Known limits: the other island's unmatched shots follow the winner's committed ones (committed
+  entries keep their place); a committed gap beats a later-arriving confident view of its stroke (D38's ask stands);
+  a phone without a clock fit settles untimed (it matches by id, or a shot by its pre-state; an untimed gap cannot
+  be reconciled with another phone's result of its stroke); a host's own `.tableState` captureTime stays on its own
+  clock. A phone that adopts a host freezes its fit to the old one first, so its kept settles keep their game time.
+
+## Full App Wiring (Plan 013b + D52–D55)
+
+- **Disagreement resolution (`D47` / `D52`, plan 013b):** `MergedShot.alternateOutcome: ShotOutcome?` carries the runner-up island outcome on disagreeing strokes; `GameEvent.outcomeResolution(shotID:outcome:at:)` clears `needsTap` and replays the rules state from that shot. `ShotDisputeBanner` in `InGameChrome` (icon-only, hidden while aiming) and `disputeRow` in `GameReviewView` let the user pick with one tap.
+- **Unconfirmed island games (`D51` / `D53`, plan 013b):** an island host (`mesh.isHost && mesh.isIsland`) saves finished racks with `Game.isUnconfirmed = true` (`CompetitiveSchemaV4`). `PersistenceProfileStatsSource` excludes `isUnconfirmed` games from all competitive stats/archetypes/make-grids/badges/pro-comps while surfacing them marked in History; `PersistedGameReviewEditor` provides one-tap Confirm / Delete in `GameReviewView`, and `PersistenceStack.importBackup` auto-confirms when a peer backup carries the same `Game.id`.
+- **Engine evaluation (`D55`):** `SessionEngineEvaluator` runs `CueCore/Engine.ShotEngine` off-actor over non-guess shots with cue-ball positions, computing 10-class `DecisionRating`s + post-rack `Ratings.selectBrilliant` promotion, `wpaDelta`, `winProbSeries` (`shots.count + 1` points), `EngineAlternative` ghost replays, and the `Shot of the Game` `Highlight`, upserting into `Competitive.store`.
+- **Solo Training loop (`D55`):** `TrainingSessionController` drives per-drill `SetupMatcher` ghost circles, records `TrainingAttempt`s + `LevelPolicy.standard` auto level-up (`1…4`) + `FeedbackCoach` non-numeric visual tendency cards (`Training.store` only, never `Competitive.store`).
+- **Identity & SotG Clips (`D55`):** `SettingsSheetHost` presents `IdentityRegistrationSheet` (`RecognitionRegistrar` → `Recognition.store`); `AppRouter` wires `IdentitySession.registered(on: stack, ...)` (`D28` guest safety + immediate RAM purge on one-tap Delete) and `ShotClipRecorder` (`Application Support/Clips/<shotID>.mp4` with burned-in trajectories, post-settle `MeshGameLink.offerClip`, and in-app `ClipPlayerSheet` playback).
+
+## Proposed (plan 006 — not approved)
+
+Do not implement until the product questions in `docs/research/game-log-and-saving.md` are answered. No Swift source changes in the spike. (`Shot.isGuess` shipped separately as the Competitive V3 migration, plan 012.)
+
+Plan 002 adds `before` and `after` on `SettledShot` and `SessionShot`. This section uses that shape.
+
+```swift
+// The widened MeshShotRecord, the new GameEvent cases (a protocol major-2 bump, since adding a case breaks
+// logEntries on an older build), the GameMeshLink log members and the GameSessionModel fold moved to
+// "Shot log (plan 009)" above; GameRecorder, FinishedGame and RecordedShot moved to "Game saving (plan 011)".
+```

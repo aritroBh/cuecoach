@@ -1,0 +1,82 @@
+condition,axis,locator,n,lock_pct,accurate_lock_pct,false_lock_pct,ttl_median_s,ttl_p90_s,ttl_from_plane_median_s,corner_err_median_cm,corner_err_p90_cm,yaw_err_median_deg,size_ok_pct_of_locks,failure_reason_reported_pct,top_failure,mean_cpu_ms,table_fully_in_view_pct
+baseline,baseline,AppLocator,20,40.0,40.0,0.0,1.93,3.00,0.93,0.4,1.2,0.02,100,100,"partialTable ×7",10.0,35
+baseline,baseline,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+baseline,baseline,ClassicalAutoTableLocator,20,40.0,40.0,0.0,4.90,6.75,2.80,0.3,1.2,0.02,100,100,"cloth touches frame ×8",4.9,35
+felt-blue,felt,AppLocator,20,45.0,45.0,0.0,1.93,3.33,0.93,0.5,0.9,0.01,100,100,"partialTable ×6",10.0,35
+felt-blue,felt,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+felt-blue,felt,ClassicalAutoTableLocator,20,45.0,45.0,0.0,4.93,7.93,2.80,0.4,1.0,0.01,100,100,"cloth touches frame ×7",4.5,35
+felt-red,felt,AppLocator,20,30.0,30.0,0.0,1.80,3.60,0.93,0.9,1.2,0.04,100,100,"partialTable ×10",10.2,35
+felt-red,felt,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+felt-red,felt,ClassicalAutoTableLocator,20,30.0,30.0,0.0,4.93,6.70,3.00,0.9,1.2,0.02,100,100,"cloth touches frame ×10",5.1,35
+felt-grey,felt,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"noFelt ×16",13.3,35
+felt-grey,felt,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+felt-grey,felt,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"no cloth colour ×16",7.3,35
+felt-tan,felt,AppLocator,20,30.0,30.0,0.0,3.40,7.53,2.53,0.5,0.7,0.02,100,100,"partialTable ×10",10.9,35
+felt-tan,felt,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+felt-tan,felt,ClassicalAutoTableLocator,20,20.0,20.0,0.0,4.90,5.62,3.00,0.5,0.8,0.05,100,100,"cloth touches frame ×11",5.3,35
+light-lamp,lighting,AppLocator,20,45.0,45.0,0.0,1.93,4.40,1.07,0.5,1.4,0.03,100,100,"badShape ×6",3.1,60
+light-lamp,lighting,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+light-lamp,lighting,ClassicalAutoTableLocator,20,40.0,40.0,0.0,4.53,9.63,3.40,0.5,1.4,0.02,100,100,"no quad ×6",2.8,60
+light-dim,lighting,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"badShape ×16",9.3,35
+light-dim,lighting,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+light-dim,lighting,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"no quad ×13",4.0,35
+light-neon,lighting,AppLocator,20,30.0,30.0,0.0,3.47,8.20,2.47,0.7,1.1,0.05,100,100,"partialTable ×11",9.6,25
+light-neon,lighting,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+light-neon,lighting,ClassicalAutoTableLocator,20,25.0,25.0,0.0,6.85,9.60,4.95,0.6,1.2,0.06,100,100,"cloth touches frame ×11",4.9,25
+light-cueShadow,lighting,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"badShape ×15",7.3,60
+light-cueShadow,lighting,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+light-cueShadow,lighting,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"no quad ×16",3.3,60
+clutter-secondTable,clutter,AppLocator,20,50.0,50.0,0.0,1.87,3.93,1.07,0.4,1.2,0.03,100,100,"partialTable ×5",6.9,35
+clutter-secondTable,clutter,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+clutter-secondTable,clutter,ClassicalAutoTableLocator,20,45.0,45.0,0.0,4.87,8.42,3.00,0.3,1.1,0.02,100,100,"cloth touches frame ×6",4.2,35
+clutter-coffeeTable,clutter,AppLocator,20,40.0,40.0,0.0,1.87,3.07,1.00,0.3,1.2,0.02,100,100,"partialTable ×7",9.9,35
+clutter-coffeeTable,clutter,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+clutter-coffeeTable,clutter,ClassicalAutoTableLocator,20,35.0,35.0,0.0,4.25,5.87,2.75,0.2,1.1,0.01,100,100,"cloth touches frame ×9",4.9,35
+clutter-people,clutter,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"badShape ×9",9.4,35
+clutter-people,clutter,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+clutter-people,clutter,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"cloth touches frame ×10",4.5,35
+clutter-railObjects,clutter,AppLocator,20,40.0,40.0,0.0,1.80,2.27,0.93,0.4,0.9,0.04,100,100,"partialTable ×5",9.6,35
+clutter-railObjects,clutter,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+clutter-railObjects,clutter,ClassicalAutoTableLocator,20,35.0,35.0,0.0,4.48,5.05,2.80,0.2,1.1,0.01,100,100,"cloth touches frame ×8",4.9,35
+dist-1.0m,distance,AppLocator,20,50.0,50.0,0.0,1.93,2.13,0.93,0.5,1.0,0.03,100,100,"partialTable ×6",4.2,25
+dist-1.0m,distance,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+dist-1.0m,distance,ClassicalAutoTableLocator,20,45.0,45.0,0.0,4.67,5.03,2.80,0.4,0.6,0.02,100,100,"cloth touches frame ×7",3.7,25
+dist-2.0m,distance,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"partialTable ×12",10.5,60
+dist-2.0m,distance,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+dist-2.0m,distance,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"cloth touches frame ×13",5.4,60
+dist-3.0m,distance,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"partialTable ×13",10.8,100
+dist-3.0m,distance,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+dist-3.0m,distance,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"cloth touches frame ×13",5.0,100
+elev-25deg,elevation,AppLocator,20,15.0,15.0,0.0,3.93,7.67,3.40,0.4,0.5,0.01,100,100,"partialTable ×13",10.5,0
+elev-25deg,elevation,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+elev-25deg,elevation,ClassicalAutoTableLocator,20,10.0,10.0,0.0,9.47,9.47,8.00,0.4,0.4,0.02,100,100,"cloth touches frame ×13",4.9,0
+elev-45deg,elevation,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"partialTable ×20",11.9,0
+elev-45deg,elevation,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+elev-45deg,elevation,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"cloth touches frame ×20",6.1,0
+elev-60deg,elevation,AppLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"partialTable ×20",11.7,0
+elev-60deg,elevation,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+elev-60deg,elevation,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"cloth touches frame ×20",5.9,0
+path-endPan,trajectory,AppLocator,20,55.0,55.0,0.0,1.67,2.27,0.93,0.4,0.9,0.02,100,100,"partialTable ×5",3.4,65
+path-endPan,trajectory,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+path-endPan,trajectory,ClassicalAutoTableLocator,20,55.0,55.0,0.0,4.33,5.62,2.80,0.3,0.9,0.02,100,100,"cloth touches frame ×5",3.7,65
+path-sideWalk,trajectory,AppLocator,20,15.0,15.0,0.0,1.53,1.93,0.93,0.5,0.9,0.06,100,100,"partialTable ×13",10.0,5
+path-sideWalk,trajectory,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+path-sideWalk,trajectory,ClassicalAutoTableLocator,20,5.0,5.0,0.0,4.33,4.33,2.80,0.2,0.2,0.00,100,100,"cloth touches frame ×15",5.0,5
+path-partial,trajectory,AppLocator,20,25.0,25.0,0.0,1.93,3.60,0.93,0.3,0.7,0.01,100,100,"partialTable ×14",11.4,5
+path-partial,trajectory,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+path-partial,trajectory,ClassicalAutoTableLocator,20,25.0,25.0,0.0,4.70,7.43,2.80,0.3,0.7,0.02,100,100,"cloth touches frame ×14",5.6,5
+hold-portrait,orientation,AppLocator,20,35.0,35.0,0.0,1.93,3.00,0.93,0.2,1.2,0.03,100,100,"partialTable ×9",9.7,20
+hold-portrait,orientation,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+hold-portrait,orientation,ClassicalAutoTableLocator,20,35.0,35.0,0.0,4.90,5.62,3.00,0.2,1.2,0.02,100,100,"cloth touches frame ×10",4.7,20
+hold-landscape,orientation,AppLocator,20,50.0,50.0,0.0,1.93,9.67,0.93,0.4,0.8,0.01,100,100,"noFelt ×4",5.1,70
+hold-landscape,orientation,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+hold-landscape,orientation,ClassicalAutoTableLocator,20,40.0,40.0,0.0,4.52,6.75,2.80,0.4,0.8,0.02,100,100,"no cloth colour ×4",4.5,70
+fps-30,frame rate,AppLocator,20,40.0,40.0,0.0,1.93,3.00,0.93,0.4,1.2,0.02,100,100,"partialTable ×7",9.4,35
+fps-30,frame rate,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+fps-30,frame rate,ClassicalAutoTableLocator,20,35.0,35.0,0.0,4.33,5.97,2.80,0.2,1.1,0.02,100,100,"cloth touches frame ×9",4.8,35
+fps-60,frame rate,AppLocator,20,40.0,40.0,0.0,1.93,2.93,0.93,0.4,1.2,0.02,100,100,"partialTable ×7",9.6,35
+fps-60,frame rate,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+fps-60,frame rate,ClassicalAutoTableLocator,20,40.0,40.0,0.0,4.65,6.75,2.75,0.4,1.2,0.02,100,100,"cloth touches frame ×8",4.5,35
+bar-rive-combo,combo,AppLocator,20,5.0,5.0,0.0,5.20,5.20,4.27,0.4,0.4,0.03,100,100,"badShape ×12",7.0,60
+bar-rive-combo,combo,FeltQuadLocator,0,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"",–,0
+bar-rive-combo,combo,ClassicalAutoTableLocator,20,0.0,0.0,0.0,–,–,–,–,–,–,0,100,"no quad ×13",3.0,60

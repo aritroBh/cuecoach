@@ -1,0 +1,1234 @@
+{
+  "appBundleMB" : 30.71484375,
+  "device" : "iPhone18,2",
+  "info" : {
+    "mlxKernelCompileSeconds" : "0.00",
+    "weightsMB" : "3417"
+  },
+  "loadSeconds" : 1.9510875000269152,
+  "memoryAfterLoad" : {
+    "availableMB" : 3167.0898208618164,
+    "footprintMB" : 2976.9101791381836,
+    "peakFootprintMB" : 2976.9101791381836
+  },
+  "memoryBeforeLoad" : {
+    "availableMB" : 6133.779632568359,
+    "footprintMB" : 10.220367431640625,
+    "peakFootprintMB" : 10.220367431640625
+  },
+  "memoryEnd" : {
+    "availableMB" : 3149.9959564208984,
+    "footprintMB" : 2994.0352935791016,
+    "peakFootprintMB" : 4406.894668579102
+  },
+  "model" : "gemma4-e2b",
+  "os" : "Version 27.2 (Build 24B115)",
+  "questions" : [
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          10,
+          12
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.1006674999953248,
+      "id" : "balls_00",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 1.6833088750136085,
+      "outputTokens" : 26,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 10, 12], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.0686837499961257,
+      "id" : "kitchen_00",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.3327999589964747,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          10,
+          11,
+          12,
+          13
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.248003292013891,
+      "id" : "balls_01",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.039221083978191,
+      "outputTokens" : 34,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 10, 11, 12, 13], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.1111111111111111
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.1867865420063026,
+      "id" : "kitchen_01",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.4580871249781922,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.2261022500460967,
+      "id" : "pocket_01",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.507323042023927,
+      "outputTokens" : 12,
+      "promptTokens" : 528,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.062583666993305,
+      "id" : "balls_02",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 1.8752195420092903,
+      "outputTokens" : 38,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 10, 11, 12, 13, 14], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.3
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.109760042047128,
+      "id" : "kitchen_02",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.353098333987873,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.159134500019718,
+      "id" : "balls_03",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.6011840000282973,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.6
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.189660832984373,
+      "id" : "kitchen_03",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.4349912500474602,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.3279574160114862,
+      "id" : "pocket_03",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.5912970419740304,
+      "outputTokens" : 12,
+      "promptTokens" : 528,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.2182907920214348,
+      "id" : "balls_04",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.671289582969621,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.7333333333333333
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.254939541046042,
+      "id" : "kitchen_04",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.5751489999820478,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.4834218749892898,
+      "id" : "balls_05",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 3.128269500040915,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.4672322500264272,
+      "id" : "kitchen_05",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.7904054580139928,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.436019207991194,
+      "id" : "balls_06",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.0551319580408745,
+      "outputTokens" : 24,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.16666666666666666
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.3397563750040717,
+      "id" : "kitchen_06",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.652887875039596,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.4352552079944871,
+      "id" : "pocket_06",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.7604983749915846,
+      "outputTokens" : 12,
+      "promptTokens" : 529,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.3793243329855613,
+      "id" : "balls_07",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 3.0061208329861984,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.4
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.48356020799838,
+      "id" : "kitchen_07",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.8066234590369277,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          10,
+          11
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.4417754580499604,
+      "id" : "balls_08",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.1061142079997808,
+      "outputTokens" : 26,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 10, 11], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.2222222222222222
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.3402413749718107,
+      "id" : "kitchen_08",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.6515802500071004,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.4262712500058115,
+      "id" : "pocket_08",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.7505253750132397,
+      "outputTokens" : 12,
+      "promptTokens" : 529,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          1
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.3854520830209367,
+      "id" : "balls_09",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 1.9309752499684691,
+      "outputTokens" : 21,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 1], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.3333333333333333
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.336320500005968,
+      "id" : "kitchen_09",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.6444349579978734,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.4198029580293223,
+      "id" : "balls_10",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.0442126249545254,
+      "outputTokens" : 24,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.2
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.366403917025309,
+      "id" : "kitchen_10",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.6806179999839514,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : true
+      },
+      "firstTokenSeconds" : 1.445749500009697,
+      "id" : "balls_11",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 3.1071300000185147,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": true}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.3333333333333333
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.5253910830360837,
+      "id" : "kitchen_11",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.8520876659895293,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.5061159579781815,
+      "id" : "pocket_11",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.841524874966126,
+      "outputTokens" : 12,
+      "promptTokens" : 529,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.4289958750014193,
+      "id" : "balls_12",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 3.0949148340150714,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.4666666666666667
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.5432690409943461,
+      "id" : "kitchen_12",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.8695845840265974,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "fair"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          10,
+          12,
+          1,
+          5,
+          11,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.5052755829528905,
+      "id" : "balls_13",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.661078582983464,
+      "outputTokens" : 45,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [10, 12, 1, 5, 11, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.4166666666666667
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.4712785839801654,
+      "id" : "kitchen_13",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.7963481249753386,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.5152778750052676,
+      "id" : "pocket_13",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.8566837089601904,
+      "outputTokens" : 12,
+      "promptTokens" : 528,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          5,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.4474727499764413,
+      "id" : "balls_14",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.6014963329653256,
+      "outputTokens" : 45,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 5, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.5833333333333334
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.4657871249946766,
+      "id" : "kitchen_14",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.7904373750207014,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : true
+      },
+      "firstTokenSeconds" : 1.511237416008953,
+      "id" : "balls_15",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 3.21081849996699,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": true}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.5606434169458225,
+      "id" : "kitchen_15",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.8889127500005998,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.529420958016999,
+      "id" : "balls_16",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.1852272920077667,
+      "outputTokens" : 24,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.16666666666666666
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.418431915983092,
+      "id" : "kitchen_16",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.743498208001256,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.5227300410042517,
+      "id" : "pocket_16",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.86653625004692,
+      "outputTokens" : 12,
+      "promptTokens" : 528,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          1,
+          10
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.4796908749849536,
+      "id" : "balls_17",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.1546213339897804,
+      "outputTokens" : 25,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 1, 10], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.2857142857142857
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.4258728330023587,
+      "id" : "kitchen_17",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.7485038750455715,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "cueBallPresent" : true
+      },
+      "firstTokenSeconds" : 1.4970127500128,
+      "id" : "balls_18",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 3.2103922920068726,
+      "outputTokens" : 66,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], \"cueBallPresent\": true}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.5333333333333333
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.5822265000315383,
+      "id" : "kitchen_18",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.9109363339957781,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "pocket" : "headLeft"
+      },
+      "firstTokenSeconds" : 1.5655622080084868,
+      "id" : "pocket_18",
+      "kind" : "pocketDrop",
+      "latencySeconds" : 1.9140887500252575,
+      "outputTokens" : 12,
+      "promptTokens" : 528,
+      "raw" : "```json\n{\"pocket\": \"headLeft\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "balls" : [
+          8,
+          10
+        ],
+        "cueBallPresent" : false
+      },
+      "firstTokenSeconds" : 1.502772375009954,
+      "id" : "balls_19",
+      "kind" : "ballsOnTable",
+      "latencySeconds" : 2.1214204159914516,
+      "outputTokens" : 22,
+      "promptTokens" : 514,
+      "raw" : "```json\n{\"balls\": [8, 10], \"cueBallPresent\": false}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0.3333333333333333
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "inKitchen" : false
+      },
+      "firstTokenSeconds" : 1.467525707965251,
+      "id" : "kitchen_19",
+      "kind" : "cueInKitchen",
+      "latencySeconds" : 1.7928117499686778,
+      "outputTokens" : 11,
+      "promptTokens" : 498,
+      "raw" : "```json\n{\"inKitchen\": false}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "label" : "rack smash"
+      },
+      "firstTokenSeconds" : 1.5140286670066416,
+      "id" : "label_00",
+      "kind" : "shotLabel",
+      "latencySeconds" : 1.8582384159672074,
+      "outputTokens" : 12,
+      "promptTokens" : 517,
+      "raw" : "```json\n{\"label\": \"rack smash\"}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "label" : "early 8-ball"
+      },
+      "firstTokenSeconds" : 1.4942947090021335,
+      "id" : "label_01",
+      "kind" : "shotLabel",
+      "latencySeconds" : 1.9182390000205487,
+      "outputTokens" : 15,
+      "promptTokens" : 526,
+      "raw" : "```json\n{\"label\": \"early 8-ball\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : false,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "label" : "direct pocket"
+      },
+      "firstTokenSeconds" : 1.5121762090129778,
+      "id" : "label_02",
+      "kind" : "shotLabel",
+      "latencySeconds" : 1.8595850830315612,
+      "outputTokens" : 12,
+      "promptTokens" : 524,
+      "raw" : "```json\n{\"label\": \"direct pocket\"}\n```",
+      "score" : {
+        "correct" : false,
+        "formatValid" : true,
+        "partial" : 0
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "label" : "perfect cut"
+      },
+      "firstTokenSeconds" : 1.5096879579941742,
+      "id" : "label_03",
+      "kind" : "shotLabel",
+      "latencySeconds" : 1.854980375035666,
+      "outputTokens" : 12,
+      "promptTokens" : 528,
+      "raw" : "```json\n{\"label\": \"perfect cut\"}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "label" : "winning bank"
+      },
+      "firstTokenSeconds" : 1.489747834042646,
+      "id" : "label_04",
+      "kind" : "shotLabel",
+      "latencySeconds" : 1.836165041953791,
+      "outputTokens" : 12,
+      "promptTokens" : 525,
+      "raw" : "```json\n{\"label\": \"winning bank\"}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    },
+    {
+      "answer" : {
+        "label" : "snooker setup"
+      },
+      "firstTokenSeconds" : 1.4936121250502765,
+      "id" : "label_05",
+      "kind" : "shotLabel",
+      "latencySeconds" : 1.86596704198746,
+      "outputTokens" : 13,
+      "promptTokens" : 525,
+      "raw" : "```json\n{\"label\": \"snooker setup\"}\n```",
+      "score" : {
+        "correct" : true,
+        "formatValid" : true,
+        "partial" : 1
+      },
+      "thermal" : "serious"
+    }
+  ],
+  "startedAt" : "2026-11-07T04:47:10Z",
+  "summary" : {
+    "acc.ballsOnTable" : 0.05,
+    "acc.cueInKitchen" : 0.5,
+    "acc.pocketDrop" : 0.25,
+    "acc.shotLabel" : 0.6666666666666666,
+    "accuracy" : 0.3148148148148148,
+    "firstTokenMedian" : 1.446611125,
+    "labelFormatValidRate" : 0.8333333333333334,
+    "latencyMedian" : 1.858911749,
+    "latencyMedian.ballsOnTable" : 2.393205646,
+    "latencyMedian.cueInKitchen" : 1.746001042,
+    "latencyMedian.pocketDrop" : 1.801011625,
+    "latencyMedian.shotLabel" : 1.858911749,
+    "latencyP90" : 2.905671458,
+    "n" : 54,
+    "partial.ballsOnTable" : 0.40928571428571425,
+    "partial.cueInKitchen" : 0.5,
+    "partial.pocketDrop" : 0.25,
+    "partial.shotLabel" : 0.6666666666666666,
+    "schemaValidRate" : 1
+  },
+  "thermalEnd" : "serious",
+  "thermalStart" : "fair",
+  "wallSeconds" : 110.54139212501468
+}

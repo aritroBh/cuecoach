@@ -37,6 +37,28 @@ struct TableSpecTests {
         #expect(abs(spec.width - width) < 0.002)
     }
 
+    // D46: Pro 8 = 88" x 44", 86" = 86" x 43" (2:1). allCases runs in length order (pickers iterate it).
+    @Test func proEightAndEightySixInchPresetsHaveTheirPlayingSurface() {
+        #expect(TableSize.proEight.playingLength == 88 * 0.0254)
+        #expect(TableSize.eightySixInch.playingLength == 86 * 0.0254)
+        for size in [TableSize.proEight, .eightySixInch] {
+            let spec = TableSpec(size: size)
+            #expect(spec.width == spec.length / 2)
+        }
+        #expect(TableSize.allCases == [.sevenFoot, .eightySixInch, .proEight, .eightFoot, .nineFoot])
+        #expect(TableSize(rawValue: "proEight") == .proEight)
+        #expect(TableSize(rawValue: "eightySixInch") == .eightySixInch)
+    }
+
+    // D50: with no size picked, auto-calibration snaps only to 7/8/9 ft; a picked Pro 8 / 86″ joins the candidates.
+    @Test func autoSnapCandidatesAreTheStandardPresetsPlusAPickedNewOne() {
+        let standard: [TableSize] = [.sevenFoot, .eightFoot, .nineFoot]
+        #expect(TableSize.autoSnapCandidates(prior: nil) == standard)
+        for p in standard { #expect(TableSize.autoSnapCandidates(prior: p) == standard) }
+        #expect(TableSize.autoSnapCandidates(prior: .proEight) == [.sevenFoot, .proEight, .eightFoot, .nineFoot])
+        #expect(TableSize.autoSnapCandidates(prior: .eightySixInch) == [.sevenFoot, .eightySixInch, .eightFoot, .nineFoot])
+    }
+
     @Test func standardBallRadius() {
         #expect(abs(TableSpec.ballRadius - 0.028575) < 1e-9)
     }
@@ -44,7 +66,7 @@ struct TableSpecTests {
     @Test func sixPocketsAtCornersAndSides() {
         let spec = TableSpec(size: .nineFoot)
         #expect(spec.pockets.count == 6)
-        #expect(spec.pocketCenter(.footLeft) == Vec2(0, 0) || spec.pocketCenter(.footLeft).length < 0.05)
+        #expect(spec.pocketCenter(.headLeft) == Vec2(0, 0))
         let side = spec.pocketCenter(.sideRight)
         #expect(abs(side.x - spec.length / 2) < 1e-9)
         #expect(Pocket.sideLeft.isSide && !Pocket.headRight.isSide)
@@ -81,4 +103,12 @@ struct TableStateTests {
         let back = try JSONDecoder().decode(TableState.self, from: data)
         #expect(back == state)
     }
+}
+
+// Head end (kitchen, head spot at L/4) and head pockets must be on the same end of the table.
+@Test func headPocketsAreAtHeadEnd() {
+    let t = TableSpec(size: .sevenFoot)
+    for p in [Pocket.headLeft, .headRight] { #expect(t.pocketCenter(p).x < t.headStringX) }
+    for p in [Pocket.footLeft, .footRight] { #expect(t.pocketCenter(p).x > t.footSpot.x - 0.001) }
+    #expect(t.pocketCenter(.headLeft).y == 0 && t.pocketCenter(.footLeft).y == 0)
 }

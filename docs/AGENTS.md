@@ -10,15 +10,63 @@ Head orchestrator (main Claude session) — plan, checklist, contracts, merges, 
 Vendors: Claude subagents · Codex (`codex exec`) · Cursor (`cursor-agent -p`) · Antigravity (`agy`) · OmniRoute.
 Rule: **a module is never reviewed by the vendor that wrote it.**
 
+## Build hygiene (every worker, every vendor — paste into worker prompts)
+
+The dev Mac's disk has hit 0 GB free during parallel builds. These rules are mandatory:
+
+- **One `xcodebuild` owner at a time:** the head, or the single active worker the head names (it builds on `CueCoach iPhone 15 Pro` with the shared derived data). Every other worker only writes code and runs `swift test` in `Packages/CueCore`.
+- **One writer, one reviewer from a different vendor** (Claude writes, Codex reviews; Grok 4.7 via Cursor when Codex is out). Re-review only for BLOCKER/MAJOR; the head lands MINORs. No extra multi-model passes on the same diff.
+- Close the plan's row in `docs/CHECKLIST.md` › NOW the day it merges; refresh the next plan's code excerpts against the new head before dispatch.
+- Create worktrees with `tools/new-worktree.sh <name>` (it copies the local build guard hook into the worktree).
+- One `xcodebuild` build/test at a time across all agents. Don't start one while another runs (`pgrep -x xcodebuild`).
+- Every `xcodebuild test` passes `-parallel-testing-enabled NO` (parallel testing clones the simulator, ~5 GB each) and `-collect-test-diagnostics never` (otherwise a failing run spends ~10 min in `simctl diagnose`).
+- Check `df -h /` first; under 40 GB free, stop and report instead of building.
+- Use the shared `-derivedDataPath` the head gives you; never the default DerivedData, never one per worktree.
+- Don't create simulators. Use `CueCoach iPhone 15 Pro`.
+- After merge the head removes the worktree, branch, logs and derived data.
+
 ## Phase 1 assignments
 | Module | Worker | Supervisor | Extra review |
 |---|---|---|---|
 | Rules | Claude | Codex | OmniRoute |
 | Physics + pooltool fixtures | Codex | Claude | Cursor |
-| Persistence (SwiftData, backup JSON) | Cursor | Claude | Codex |
+| Persistence (SwiftData, backup JSON) | Claude ✱ | Codex † | — |
 | Virtual table UI | Claude | Antigravity (design + code) | Codex |
+
+✱ Cursor was the planned worker, but auto mode blocks `cursor-agent --force` (unattended command execution). Cursor reviews instead until the user allows it.
 
 ## Ledger
 | Date | Module | Wrote | Reviewed | Result |
 |---|---|---|---|---|
 | 2026-11-06 | Geometry contracts | Claude (head) | — (contract, reviewed with Phase 1) | merged to bootstrap |
+| 2026-11-06 | Engine (candidates, evaluator, win model, ratings) | Claude (worker subagent) | Phase-2 supervisor, with Codex findings | round 1 rejected (4 major, 4 minor); fixes on `wt/engine`, awaiting re-review |
+| 2026-11-08 | Tracking + shot segmentation + classical detector fixes (wt/tracker: stress findings A0-A8, B1, B2, C1-C3, E1; Codex r5 M3, M6, M7) | Claude (tracker worker) | Codex (2 adversarial rounds, both REJECT; r1 F1-F8 fixed or narrowed, r2 residuals reported to head) | awaiting head merge decision |
+| 2026-11-07 | App shell (Home, Game setup, Join nearby, Training picker, in-game chrome, MPC lobby) | Claude (worker subagent) | Codex (code, 6 rounds) + Codex (UX from screenshots, 4 rounds) ‡ | code APPROVE (r6), UX APPROVE (r5); Live/calibration/Training owner items open |
+| 2026-11-08 | Privacy round: recognition store split + migration, one-tap delete/Undo (wt/audit, wt/screens-a) | Claude (privacy worker) | Codex r1 REJECT (3 fixed, 3 rebutted and accepted in r2) · Codex r2 REJECT (3 fixed, not re-reviewed) | awaiting head merge |
+| 2026-11-08 | Integration (wt/integration): 8 branches merged, detector/hooks/gallery wiring, D29 in Live | Claude (integration worker) | Codex ×4 areas (capture-r8, autocal-r4, privacy-r3, wiring): all REJECT r1; fixes test-first; r2 REJECT (MAJORs only); fixes; r3 combined: all r2 MAJORs FIXED, 1 new MAJOR fixed; final combined rerun (autocal-r4, tracker-r2, strides, UI-QA fixes) blocked by the Codex usage limit | awaiting head merge decision |
+| 2026-11-09 | Integration rounds 2026-11-08/09: D30 look-then-ask, shot-lifecycle FIFO state machine + invariant fuzz, touch targets, relock fixes (8ede140/f046ff8/c43f44b by head) | Claude (integration worker; head for 3 relock commits) | GPT-5.3 Codex, Grok 4.7, Gemini 3.7 (Cursor), Kimi K3 (opencode/Bedrock), GPT-5.6 Sol (Cursor) across 7 rounds; final: GPT-5.6 APPROVE (4e42342), Gemini APPROVE (3590c25 code) | merged to phase/1-core 4e42342 |
+| 2026-11-09 | D34 Astryx design system: vendored Packages/Astryx (zero-network), theme bridge, every screen + Live overlays restyled (wt/astryx-ui) | Claude (UI worker) | GLM-5 (Bedrock), Kimi K2.5 (Bedrock) APPROVE; Grok 4.7 (Cursor) REJECT (light contrast) → fixed 552600a → APPROVE | merged to phase/1-core |
+| 2026-11-09 | D32 detector benchmark (wt/d32-bench): sim3d renderer, bench harness, scorer, fine-tune, DetectorChoice default | Claude (d32 worker) | Grok 4.7 (Cursor), Kimi K2.5 (Bedrock) APPROVE | merged to phase/1-core |
+| 2026-11-09 | D31 lost shot = best guess + D33 stick near the cue ball = aiming (wt/d31-d33) | Claude (d31-d33 worker) | Grok 4.7 r1 REJECT at 7d77e5b (2 BLOCKERs, 1 MAJOR, all fixed test-first) + coordinator D1 MAJOR (fixed); r2 Grok 4.7 + Kimi K2.5 APPROVE | merged to phase/1-core |
+| 2026-11-09 | Fix round wt/fix-app: 7 review MAJORs (turn discs, swap, review header, lobby Start, HUD key, store recovery, FaceBenchmark order) + Grok BLOCKERs on fix 1 (legalSink, mounted-model install) | Claude worker | Kimi K2.5 APPROVE 1–7; Grok 4.7 APPROVE 2–7, BLOCKER on 1 fixed in 8eecfc0; Grok re-review BLOCKER on 8eecfc0 fixed in 27ce0d2; Grok 4.7 re-review APPROVE for 27ce0d2 | merged to phase/1-core |
+| 2026-11-10 | Review shot results (wt/review-shots): `SettledShot` Live → shell contract, pocketed/fouls/D31 guess in `reviewData()`, review card result row | Claude worker | Grok 4.7 r1–r2 MAJOR (cue-ball outline on white card, fixed 539ca9c) · r3 APPROVE | merged to phase/1-core |
+| 2026-11-10 | Size lock (wt/size-lock): guessed partial-fit sizes never vote or lock, sizes between presets never lock, pose only from size-consistent frames (matrix false 1 → 0) | Claude worker | Grok 4.7 REJECT (1 MAJOR, fixed) · GLM-5 REJECT (BLOCKER hardened, MAJOR refuted by tests); Grok 4.7 r2 REJECT (lone borderline snap poisons measured size, fixed b9d0117) · r3 APPROVE | merged to phase/1-core |
+| 2026-11-10 | AimStressTests waits for the off-actor physics preview (b21f994, test-only) | Claude (head) | Grok 4.7 APPROVE | merged to phase/1-core |
+| 2026-11-10 | Plan 001: team MVP deterministic; no-WPA fallback = winning team's best-rated shooter (D35) | Claude worker | Grok 4.7 APPROVE (MINOR test gaps → 4 tests added, e0af36c) | merged to phase/1-core |
+| 2026-11-10 | Plan 004: ball model I/O contract pinned; hybrid proven to run the model (mutation: renamed output fails 2 tests) | Claude worker | Grok 4.7 APPROVE (2 MINOR: type/shape checks are indirect, covered by the ≥5-raws and shading guards) | merged to phase/1-core |
+| 2026-11-10 | Plan 003: device-runnable ball-model latency test (warm, letterbox/predict split, 3 compute-units), dev HUD model/lb ms | Claude worker | Grok 4.7 APPROVE (MINOR: doc wording fixed at merge; p50 rank off by one, gate uses p95) | merged to phase/1-core |
+| 2026-11-10 | Plan 006 design: authoritative mesh shot log + game saving (docs/research/game-log-and-saving.md, INTERFACES 'Proposed') | Cursor Grok 4.7 (read-only draft) | Claude head (citations spot-checked; D37–D41 folded in) | merged to phase/1-core |
+| 2026-11-10 | Plan 002: live shots carry before/after ball positions → Game Review rates + replays live shots; a D31 guess keeps no replay | Claude worker (+ head fix round) | Grok 4.7 REJECT (MAJOR: guessed shot's after table empty) → fixed → APPROVE (MINOR: INTERFACES wording fixed at merge; pocket-path assert loose) | merged to phase/1-core |
+| 2026-11-11 | Plan 005: chosen table size is the lock prior (settles the 8/9 ft overlap), between-presets size hint; D36 A dropped (D46) | Claude worker (2 rounds) | Grok 4.7 REJECT (prior never voted on ambiguous fits) → fixed → Codex APPROVE (MINOR: size hint missed on the settled-but-untrusted path; follow-up) | merged to phase/1-core |
+| 2026-11-11 | Plan 007: ✕ in a game asks "End game?"; open and in-flight shots settle before review; D42 ~5 s give-up / second ✕ forces, unresolved pockets → guess, late frames ignored | Claude worker + head fix rounds | Grok 4.7 REJECT (2 BLOCKERs) → fixed; Codex REJECT (in-flight shot dropped) → fixed; Codex REJECT (late record closes twice) → fixed → Codex APPROVE | merged to phase/1-core |
+| 2026-11-11 | Plan 008: a lost shot with no guess records a review gap; turn discs ring + pulse until the shooter is tapped (D38, D41); gap never MVP; VoiceOver value | Claude worker + head fix | Codex REJECT (gap-only review = "No shots"; a11y MINOR) → fixed → Codex APPROVE | merged to phase/1-core |
+| 2026-11-11 | Plan 009: every phone folds one shot log (D39 host rates, D41 `.nextShooter`, D38 `.shotLost`); widened `MeshShotRecord`; protocol major 2; committed folds drive legality | Claude worker | Codex REJECT (MAJOR legality not refreshed; MINOR 2-value helpers) → fixed → Codex APPROVE (MINOR: test-only `LiveHooks.settled` bridge left) | merged to phase/1-core (38ac5c3) |
+| 2026-11-12 | Plan 010: real `MeshGameLink` forwards the committed log; role tri-state (`isHost` only as host); startup inputs buffered; End leaves Live at once, review loads after a ≤ 2 s drain; disc taps/corrections carry ids; 009 cleanup (`LiveHooks.settled` bridge removed) | Claude worker | Codex REJECT ×4 (final-shot drain, startup inputs, host while discovering, D42 second ✕, joiner drain target, proposal identity ×2) → fixed → Codex APPROVE | merged to phase/1-core (eaa717d) |
+| 2026-11-12 | Plan 011: `GameRecorder` saves the finished rack on its winning commit (D45) — solo, or mesh host with game quorum (`hasGameQuorum`: > half of every phone seen this game); endGame doesn't write; retry keeps the winning boundary | Claude worker | Codex REJECT (lone survivor of a 2-phone partition could save; retry added post-win shots) → fixed → Codex APPROVE | merged to phase/1-core (acd3ebd) |
+| 2026-11-12 | Plan 012: Competitive V3 `Shot.isGuess` (D43); Session/Game/Shot/Highlight frozen as nested V2 copies (guard test pins shipped V1/V2 hashes); lightweight V2→V3; recorder saves guesses flagged; backup field optional | Claude worker | Codex APPROVE (first pass) | merged to phase/1-core (e50bac2) |
+| 2026-11-12 | Plan 014: Pro 8 (88″) and 86″ presets in length order, engine seeds pinned (D46); auto snap/ambiguity/uniquePreset use `TableSize.autoSnapCandidates(prior:)` = 7/8/9 ft plus a picked Pro 8/86″ (D50); lobby wire v2; lobby sizes in eager Grid. Matrix 540 runs: 0 false locks, in-scope 92.7 % | Claude worker | Codex APPROVE (rerun; first run killed for low memory) | merged to phase/1-core (cfe8949) |
+| 2026-11-17 | Plans 013a, 005 follow-up, 015 (`D49`/`D54`), 013b (`D47`/`D52`, `D51`/`D53`), and `D55` full-app wiring (Profile stats/archetypes/pro-comps/History→Review, `ShotEngine` live/review EV + Win-Prob + ghost alternatives + SotG, Solo Training loop + 3D/2D setup ghosts, opt-in Identity enrollment + live attribution, and rolling SotG `.mp4` clip recorder + `ClipPlayerSheet`) | Antigravity (coordinator + 4-agent QA workflow) | GPT-6.1-Sol (`codex exec`, 5 adversarial rounds → 0 BLOCKER / 0 MAJOR / 0 MINOR, `VERDICT: APPROVE`) | merged to phase/1-core & main |
+
+† Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
+
+‡ Antigravity (planned UX reviewer) returned 429 quota exhausted (resets in ~7 days), so Codex did the UX pass from the screenshots too.

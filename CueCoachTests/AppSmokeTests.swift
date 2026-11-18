@@ -1,6 +1,6 @@
 import Testing
 @testable import CueCoach
 
-@Test func appModuleLoads() {
-    _ = HomeView()
+@MainActor @Test func appModuleLoads() {
+    _ = AppShellRoot()
 }
