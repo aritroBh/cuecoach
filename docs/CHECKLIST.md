@@ -26,9 +26,12 @@ Follow-up on the seven skips from that run (2026-11-18):
 - [x] `e808106` discards poses and corner measurements across tracking loss and rejects physically impossible ball counts. All 17 targeted calibration and perception tests passed, including the 0.5 m stale-frame regression. The app also built for generic iOS with signing disabled.
 - [x] The opt-in detector benchmark ran all three candidates on 544 synthetic frames. Identity F1 reproduced at 77.5% for hybrid and model and 24.2% for classical. Reproduction details are in [the benchmark report](research/detector-benchmark.md).
 - [x] The final build passed 14 privacy checks and two UI checks covering launch and cancellation of a backup import.
+- [x] Full verification at `f333f0d` on 2026-11-18: all 717 CueCore tests passed. With the detector benchmark enabled, Xcode reported 1,466 passing tests, 0 failures and 3 hardware-only skips on the iOS 27 iPhone 15 Pro simulator. The 45 passing UI tests are included in that count.
+- [x] Packaged the Release simulator app, extracted the ZIP, verified its signature and bundled models, installed the extracted app on the iPhone 15 Pro simulator, and confirmed Home showed Game and Training.
 - [!] Two Vision checks and the two-phone UI test require physical devices.
 
-Blocked on the user / phones (hardware-only; simulator & virtual-table QA complete per D32/D39):
+Remaining device and field checks:
+- [!] Device signing on this Mac: Xcode reports no configured Apple account and no development profile for `com.aritrobh.cuecoach`. The signed Release build needs the project's Personal Team account in Xcode Settings → Accounts.
 - [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max (phones currently disconnected)
 - [!] Real-table footage (The Rive) → detector validation, default detector choice
 - [x] Recognition & pro-profile questions: resolved in D25 (AuraFace-v1), D26 (clothing on disk, no auto-expiry, backup-excluded store), D27 (pro profiles v2), D28 (guest safety), D29/D33 (unknown-ball warning & stick-near-cue aim)
