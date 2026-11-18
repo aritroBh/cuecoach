@@ -26,6 +26,38 @@ public struct SkillModel: Hashable, Codable, Sendable {
     /// Reference skill for baseline P(make) (RATINGS UD-8) and the default for new players.
     public static let reference = amateur
 
+    /// Per-player execution noise learned from competitive pot history (SPEC §5.5(2)).
+    /// Returns `.reference` until `attempts >= minAttempts`, then Bayesian-shrinks toward 0.55 and interpolates
+    /// monotonically across `[.beginner, .amateur, .strong]`.
+    public static func learned(attempts: Int, makes: Int, minAttempts: Int = 12) -> SkillModel {
+        guard attempts >= max(1, minAttempts) else { return .reference }
+        let clampedMakes = Double(max(0, min(makes, attempts)))
+        let priorWeight = 6.0
+        let p = (clampedMakes + priorWeight * 0.55) / (Double(attempts) + priorWeight)
+        func lerp(_ a: SkillModel, _ b: SkillModel, _ t: Double) -> SkillModel {
+            let u = min(1.0, max(0.0, t))
+            return SkillModel(
+                sigmaAim: a.sigmaAim + (b.sigmaAim - a.sigmaAim) * u,
+                sigmaSpeedRel: a.sigmaSpeedRel + (b.sigmaSpeedRel - a.sigmaSpeedRel) * u,
+                sigmaTip: a.sigmaTip + (b.sigmaTip - a.sigmaTip) * u)
+        }
+        if p <= 0.55 {
+            return lerp(.beginner, .amateur, (p - 0.30) / 0.25)
+        } else {
+            return lerp(.amateur, .strong, (p - 0.55) / 0.25)
+        }
+    }
+
+    /// Mean execution noise across a lineup (falls back to `.reference` when empty).
+    public static func averaged(_ models: [SkillModel]) -> SkillModel {
+        guard !models.isEmpty else { return .reference }
+        let n = Double(models.count)
+        return SkillModel(
+            sigmaAim: models.reduce(0) { $0 + $1.sigmaAim } / n,
+            sigmaSpeedRel: models.reduce(0) { $0 + $1.sigmaSpeedRel } / n,
+            sigmaTip: models.reduce(0) { $0 + $1.sigmaTip } / n)
+    }
+
     /// Tip offsets beyond this radius miscue (engine.md §5.1).
     public static let miscueRadius = 0.5
 

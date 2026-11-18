@@ -89,4 +89,134 @@ import Testing
             }
         }
     }
+
+    @Test func foundationModelLabelValidatorEnforcesTwoWordsNoDigitsAndRefusalFallback() {
+        let fb = "Rack Winner"
+        #expect(FoundationModelLabeller.validated("bank wizard", fallback: fb) == "Bank Wizard")
+        #expect(FoundationModelLabeller.validated("  clutch  ", fallback: fb) == "Clutch")
+        // Rejects digits (D23 / vlm-benchmark Gemma "early 8-ball" failure mode).
+        #expect(FoundationModelLabeller.validated("Early 8-Ball", fallback: fb) == fb)
+        #expect(FoundationModelLabeller.validated("9 Ball", fallback: fb) == fb)
+        // Rejects > 2 words, empty, game-echo tokens, and guardrail refusal strings.
+        #expect(FoundationModelLabeller.validated("Three Word Label", fallback: fb) == fb)
+        #expect(FoundationModelLabeller.validated("Eight Ball", fallback: fb) == fb)
+        #expect(FoundationModelLabeller.validated("   ", fallback: fb) == fb)
+        #expect(FoundationModelLabeller.validated("Sorry cannot", fallback: fb) == fb)
+        #expect(FoundationModelLabeller.validated(nil, fallback: fb) == fb)
+        // Sanitizes even a malformed fallback to the ultimate 2-word constant.
+        #expect(FoundationModelLabeller.validated(nil, fallback: "Bad 9 Fallback") == FoundationModelLabeller.ultimateFallback)
+    }
+
+    private struct StubHighlightLabeller: HighlightLabelling {
+        let response: String?
+        func rawCandidate(for context: HighlightLabelContext) async -> String? { response }
+    }
+
+    @Test func evaluatorUsesFoundationModelLabelPostRackAndFallsBackOnInvalidOutput() async {
+        let spec = TableSpec(size: .sevenFoot)
+        let corner = spec.pocketCenter(.footRight)
+        let one = BallID(1)!
+        let pre: [BallID: Vec2] = [
+            .cue: Vec2(0.8, 0.5),
+            one: Vec2(corner.x - 0.12, corner.y - 0.10),
+            .nine: Vec2(corner.x - 0.22, corner.y - 0.08),
+        ]
+        let post: [BallID: Vec2] = [.cue: Vec2(1.0, 0.55), one: Vec2(1.3, 0.65)]
+        let winShot = SessionShot(
+            id: UUID(), index: 0, shooter: p1, team: 0, rating: .great,
+            pocketed: [.nine: .footRight], fouls: [], isGuess: false,
+            before: pre, after: post, attribution: .turnOrder, firstContact: one,
+            outcome: ShotOutcome(firstContact: one, pocketed: [.nine: .footRight]))
+
+        let validEval = SessionEngineEvaluator(seed: 7, labeller: StubHighlightLabeller(response: "golden combo"))
+        let validSummary = await validEval.evaluateRack(
+            ruleSet: .wpaNine, tableSize: .sevenFoot, teamsCount: 2, shots: [winShot])
+        #expect(validSummary.shotOfGame?.label == "Golden Combo")
+
+        let badEval = SessionEngineEvaluator(seed: 7, labeller: StubHighlightLabeller(response: "Early 9 Ball"))
+        let badSummary = await badEval.evaluateRack(
+            ruleSet: .wpaNine, tableSize: .sevenFoot, teamsCount: 2, shots: [winShot])
+        #expect(badSummary.shotOfGame?.label == "Rack Winner")
+    }
+
+    @Test func learnedSkillsFromCompetitiveHistoryExcludeUnconfirmedGamesAndDefaultNewPlayers() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let ctx = stack.competitiveContext
+        let veteran = PlayerProfile(name: "Veteran", avatarSymbol: "star.fill", avatarColor: "teal", isLocalOwner: true)
+        let rookie = PlayerProfile(name: "Rookie", avatarSymbol: "bolt.fill", avatarColor: "orange", isLocalOwner: false)
+        ctx.insert(veteran)
+        ctx.insert(rookie)
+
+        let tbl = TableState(spec: TableSpec(size: .sevenFoot), balls: [.cue: BallState(position: Vec2(0.5, 0.5))])
+        let features = StoredShotFeatures(cutBucket: .c15to30, distanceBucket: .mid, pocketType: .corner, kind: .plain)
+        let teams = [
+            StoredTeam(memberIDs: [veteran.id], shootingOrder: [veteran.id]),
+            StoredTeam(memberIDs: [rookie.id], shootingOrder: [rookie.id]),
+        ]
+        let confirmedGame = Game(index: 0, ruleSet: .barEight, teams: teams, winnerTeam: 0,
+                                 startedAt: .now, endedAt: .now, isUnconfirmed: false)
+        ctx.insert(confirmedGame)
+
+        // 16 clean pots for veteran → stronger (tighter noise) than `.reference`.
+        for idx in 0..<16 {
+            let s = Shot(
+                index: idx, shooterID: veteran.id, attributionSource: .turnOrder,
+                preState: tbl, postState: tbl, calledPocket: nil, firstContact: BallID(1),
+                railsAfterContact: 1, pocketed: [BallID(1)!: .footRight], fouls: [],
+                features: features, made: true, onTarget: true, cueResult: .inZone,
+                decisionRating: .good, executionRating: ExecutionRating(result: .made, position: .inZone),
+                wpaDelta: 0.05, isClutch: false, timeOnShot: 8.0, clipRef: nil, isGuess: false)
+            s.game = confirmedGame
+            ctx.insert(s)
+        }
+
+        // Unconfirmed island game for rookie (20 misses) MUST be ignored per D51/D53.
+        let islandGame = Game(index: 0, ruleSet: .barEight, teams: teams, winnerTeam: 1,
+                              startedAt: .now, endedAt: .now, isUnconfirmed: true)
+        ctx.insert(islandGame)
+        for idx in 0..<20 {
+            let s = Shot(
+                index: idx, shooterID: rookie.id, attributionSource: .turnOrder,
+                preState: tbl, postState: tbl, calledPocket: nil, firstContact: BallID(2),
+                railsAfterContact: 1, pocketed: [:], fouls: [],
+                features: features, made: false, onTarget: false, cueResult: .notApplicable,
+                decisionRating: .okay, executionRating: ExecutionRating(result: .miss, position: .notApplicable),
+                wpaDelta: -0.05, isClutch: false, timeOnShot: 8.0, clipRef: nil, isGuess: false)
+            s.game = islandGame
+            ctx.insert(s)
+        }
+        // 15 intentional safeties + 15 disputed needsTap shots on confirmedGame for rookie MUST NOT count as missed pots.
+        let safetyFeatures = StoredShotFeatures(cutBucket: .c15to30, distanceBucket: .mid, pocketType: .corner, kind: .safety)
+        for idx in 16..<31 {
+            let s = Shot(
+                index: idx, shooterID: rookie.id, attributionSource: .turnOrder,
+                preState: tbl, postState: tbl, calledPocket: nil, firstContact: BallID(2),
+                railsAfterContact: 1, pocketed: [:], fouls: [],
+                features: safetyFeatures, made: false, onTarget: true, cueResult: .notApplicable,
+                decisionRating: .good, executionRating: ExecutionRating(result: .miss, position: .notApplicable),
+                wpaDelta: 0.04, isClutch: false, timeOnShot: 8.0, clipRef: nil, isGuess: false,
+                fullOutcome: ShotOutcome(firstContact: BallID(2), calledSafety: true))
+            s.game = confirmedGame
+            ctx.insert(s)
+        }
+        for idx in 31..<46 {
+            let s = Shot(
+                index: idx, shooterID: rookie.id, attributionSource: .turnOrder,
+                preState: tbl, postState: tbl, calledPocket: nil, firstContact: BallID(2),
+                railsAfterContact: 1, pocketed: [:], fouls: [],
+                features: features, made: false, onTarget: false, cueResult: .notApplicable,
+                decisionRating: .okay, executionRating: ExecutionRating(result: .miss, position: .notApplicable),
+                wpaDelta: -0.04, isClutch: false, timeOnShot: 8.0, clipRef: nil, isGuess: false,
+                needsTap: true)
+            s.game = confirmedGame
+            ctx.insert(s)
+        }
+        try ctx.save()
+
+        let skills = PersistenceProfileStatsSource.learnedSkills(in: ctx, excludingGameID: nil)
+        let vetSkill = try #require(skills[veteran.id])
+        #expect(vetSkill.sigmaAim < SkillModel.reference.sigmaAim)
+        #expect(skills[rookie.id] == nil, "Unconfirmed games, safeties, and disputed shots must not train competitive SkillModel")
+        #expect(PersistenceProfileStatsSource.learnedSkills(in: ctx, excludingGameID: confirmedGame.id)[veteran.id] == nil)
+    }
 }

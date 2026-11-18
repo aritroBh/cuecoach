@@ -35,6 +35,37 @@ final class PersistenceProfileStatsSource: ProfileStatsSource, @unchecked Sendab
         throw SetupError.notOwner
     }
 
+    /// Per-player `SkillModel` learned from confirmed, finished competitive racks (SPEC §5.5(2), D43, D51/D53).
+    /// Excludes breaks, guesses, unresolved disputed (`needsTap`) shots, safeties, and non-roster shooters.
+    /// Players with fewer than `minAttempts` eligible pot attempts are omitted so callers default to `SkillModel.reference`.
+    @MainActor static func learnedSkills(in ctx: ModelContext,
+                                         excludingGameID: UUID?,
+                                         minAttempts: Int = 12) -> [UUID: SkillModel] {
+        guard let games = try? ctx.fetch(FetchDescriptor<Game>()) else { return [:] }
+        var counts: [UUID: (attempts: Int, makes: Int)] = [:]
+        for g in games where !g.isUnconfirmed && g.winnerTeam != nil && g.endedAt != nil && g.id != excludingGameID {
+            let rosterIDs = Set(g.teams.flatMap(\.memberIDs))
+            let ordered = g.shots.sorted { $0.index < $1.index }
+            for s in ordered where !s.isGuess && !s.needsTap && rosterIDs.contains(s.shooterID) {
+                let isBreak = s.index == 0 && (s.decisionRating == .book || (ordered.count > 1 && s.preState.balls.count >= 9))
+                guard !isBreak, s.preState.balls[.cue] != nil else { continue }
+                let isSafety = s.features.kind == .safety || s.fullOutcome?.calledSafety == true
+                guard !isSafety else { continue }
+                var entry = counts[s.shooterID, default: (0, 0)]
+                entry.attempts += 1
+                if s.made && s.fouls.isEmpty {
+                    entry.makes += 1
+                }
+                counts[s.shooterID] = entry
+            }
+        }
+        var out: [UUID: SkillModel] = [:]
+        for (pid, c) in counts where c.attempts >= minAttempts {
+            out[pid] = SkillModel.learned(attempts: c.attempts, makes: c.makes, minAttempts: minAttempts)
+        }
+        return out
+    }
+
     /// Confirmed, finished competitive games projected into `CueCore/Stats.CompetitiveGame`.
     @MainActor static func competitiveGames(in ctx: ModelContext) throws -> [(model: Game, stats: CompetitiveGame)] {
         let rows = try ctx.fetch(FetchDescriptor<Game>()).sorted { $0.startedAt < $1.startedAt }
@@ -517,9 +548,18 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
                 outcome: reconstructedOutcome(for: s), clipRef: s.clipRef)
         }
         let tableSize = game.session?.tableSize ?? .sevenFoot
-        let summary = await SessionEngineEvaluator().evaluateRack(
+        let learned = PersistenceProfileStatsSource.learnedSkills(in: ctx, excludingGameID: gameID)
+        let shellTeams: [[ShellPlayer]] = game.teams.map { t in
+            t.memberIDs.map { pid in
+                let p = byID[pid]
+                return ShellPlayer(id: pid, name: p?.name ?? "Player",
+                                   symbol: p?.avatarSymbol ?? "person.fill",
+                                   colorName: p?.avatarColor ?? "teal")
+            }
+        }
+        let summary = await SessionEngineEvaluator(skillsByPlayerID: learned).evaluateRack(
             ruleSet: game.ruleSet, tableSize: tableSize,
-            teamsCount: max(2, game.teams.count), shots: sessionShots)
+            teamsCount: max(2, game.teams.count), teams: shellTeams, shots: sessionShots)
         guard !Task.isCancelled,
               let freshGame = try ctx.fetch(FetchDescriptor<Game>(predicate: #Predicate { $0.id == gameID })).first else {
             return nil
