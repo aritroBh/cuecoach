@@ -235,8 +235,19 @@ final class GameSessionModel {
     func shotSettled(_ shot: SettledShot) -> PostShotRating? {
         let id = UUID()
         let strokeTime = takeStroke()
+        let settledTime = now()
+        let localExpectedIndex = shots.count
         shotStrokeTimes[id] = strokeTime
+        shotSettledTimes[id] = settledTime
         isAimingOrMoving = false
+        if let recorder = clipRecorder {
+            if writesLog {
+                sealedClipShots.insert(id)
+                Task { await recorder.sealShot(shotID: id, strokeAt: strokeTime, settledAt: settledTime) }
+            } else {
+                Task { await recorder.sealPendingLocalIndex(localExpectedIndex, strokeAt: strokeTime, settledAt: settledTime) }
+            }
+        }
         let event = GameEvent.shot(MeshShotRecord(shotID: id, shooterTeam: shootingTeam, outcome: shot.outcome,
                                                   postState: table(shot.after), preState: table(shot.before),
                                                   decisionRating: shot.rating, isGuess: shot.isGuess))
@@ -355,14 +366,11 @@ final class GameSessionModel {
         let changed = committed != events   // by content: an island merge can rewrite without growing (Codex P2-9)
         events = committed
         fold()
-        let settledNow = now()
-        for s in shots where sealedClipShots.insert(s.id).inserted {
-            let st = shotSettledTimes[s.id] ?? settledNow
-            shotSettledTimes[s.id] = st
-            let strokeT = shotStrokeTimes[s.id] ?? lastLocalStrokeAt ?? st
-            shotStrokeTimes[s.id] = strokeT
-            if let recorder = clipRecorder {
-                Task { await recorder.sealShot(shotID: s.id, strokeAt: strokeT, settledAt: st) }
+        if let recorder = clipRecorder {
+            for s in shots where sealedClipShots.insert(s.id).inserted {
+                let idx = s.index
+                let sid = s.id
+                Task { await recorder.bindPendingLocalIndexIfPresent(idx, to: sid) }
             }
         }
         applyCachedEnrichments()
@@ -398,12 +406,20 @@ final class GameSessionModel {
         let healInFlight = (mesh?.hasPendingCommits == true) || hasUncommittedLogEntries
 
         // D53: if this phone was an island host that saved an unconfirmed rack and then lost host election on heal
-        // (becoming a joiner), reconcile that existing local row once quorum commits settle — while still never writing
-        // a brand-new rack as a joiner (D45).
+        // (becoming a joiner), reconcile and keep updating that existing local row once quorum commits settle — while
+        // still never creating a brand-new rack from scratch as a joiner (D45).
         if isJoinerSession {
-            guard saved, lastSaved?.isUnconfirmed == true,
-                  let mesh, mesh.hasGameQuorum, !mesh.isIsland, !healInFlight else { return }
-            if winner != nil, let game = finishedGame(isUnconfirmed: false) {
+            let quorumReady: Bool
+            if let mesh {
+                quorumReady = mesh.hasGameQuorum && !mesh.isIsland && !healInFlight
+            } else if hadMeshSession {
+                quorumReady = hadQuorumAtEnd && !wasIslandAtEnd
+            } else {
+                quorumReady = false
+            }
+            guard saved, quorumReady else { return }
+            if winner != nil {
+                guard let game = finishedGame(isUnconfirmed: false), lastSaved != game else { return }
                 if let oldID = savedGameID, oldID != game.id {
                     pruneAndPreserveClips(replacing: oldID, with: game, recorder: recorder)
                 }
@@ -667,6 +683,8 @@ final class GameSessionModel {
                self.shotClipFiles[sotg.shotID] == nil,
                let recorder = self.clipRecorder,
                let s = self.shots.first(where: { $0.id == sotg.shotID }) {
+                await recorder.waitForPostSettleIfStreaming(shotID: sotg.shotID)
+                guard !Task.isCancelled, self.engineGeneration == gen, !self.manuallyDeletedRack else { return }
                 let realFrames = await recorder.capturedFrameCount(for: sotg.shotID)
                 // Joiners without real camera footage skip generating a redundant synthetic fallback over the host's.
                 if self.isJoinerSession && realFrames == 0 { return }

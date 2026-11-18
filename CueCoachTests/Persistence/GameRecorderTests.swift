@@ -529,6 +529,15 @@ import Training
         #expect(try gameCount(stack) == 1)
         #expect(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first?.isUnconfirmed == false,
                 "Returning island joiner auto-confirms on quorum commit")
+
+        // 4. Subsequent committed corrections and clips MUST still update that confirmed local row on the returning joiner!
+        if case .shot(let earlyEightRec) = e3.event {
+            let e4 = LogEntry(seq: 4, term: 2, event: .shooterCorrection(shotID: earlyEightRec.shotID, team: 1, shooter: b.id))
+            link.commitSeq = 4
+            link.onCommittedLog?([e1, e2, e3, e4], 4)
+            let updatedGame = try #require(try stack.competitiveContext.fetch(FetchDescriptor<Game>()).first)
+            #expect(updatedGame.winnerTeam == 0, "Post-confirmation corrections continue updating the returning joiner's saved row")
+        }
     }
 }
 

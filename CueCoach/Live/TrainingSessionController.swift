@@ -11,6 +11,11 @@ struct SettledTrainingShot: Hashable, Sendable {
     var after: [BallID: Vec2] = [:]
     var targetPocket: Pocket = .footRight
     var tableSize: TableSize = .sevenFoot
+    /// Pre-rail initial post-contact departure direction of the target object ball (avoids jaw/cushion rebound sign flips).
+    var objectDepartureDir: Vec2? = nil
+    /// Pre-contact cue-ball launch speed (m/s).
+    var cueLaunchSpeed: Double? = nil
+    var objectHitRail: Bool = false
     /// Optional explicit signed errors (used by synthetic replay or unit tests when camera positions are minimal).
     var explicitErrors: [Training.BiasAxis: Double]? = nil
 }
@@ -95,7 +100,8 @@ final class TrainingSessionController {
         let now = Date()
         if shot.tableSize != tableSize { tableSize = shot.tableSize }
         let spec = TableSpec(size: tableSize)
-        let (storedFeatures, axisErrors) = Self.extractErrors(shot: shot, spec: spec, zone: positionZoneCenter)
+        let (storedFeatures, axisErrors) = Self.extractErrors(
+            shot: shot, drill: drill, spec: spec, zone: positionZoneCenter)
 
         let previousLevel = level
         let change = policy.record(success: shot.made, into: &progress)
@@ -152,7 +158,7 @@ final class TrainingSessionController {
 
     // MARK: - Error Extraction
 
-    private static func extractErrors(shot: SettledTrainingShot, spec: TableSpec,
+    private static func extractErrors(shot: SettledTrainingShot, drill: DrillID, spec: TableSpec,
                                       zone: Vec2?) -> (StoredAttemptFeatures, [Training.BiasAxis: Double]) {
         if let explicit = shot.explicitErrors {
             let stored = StoredAttemptFeatures(
@@ -168,33 +174,67 @@ final class TrainingSessionController {
         var cutErr = 0.0
         var speedErr = 0.0
         var landingErr = 0.0
+        var spinObs = 0.0
 
-        let objEntry = shot.before.first { !$0.key.isCue }
-        if let cueBefore = shot.before[.cue], let (objID, objBefore) = objEntry {
+        let objEntry = shot.before
+            .filter({ !$0.key.isCue })
+            .sorted(by: { $0.key < $1.key })
+            .first
+        if let cueBefore = shot.before[.cue], let (_, objBefore) = objEntry {
             let pocketPos = spec.pocketCenter(shot.targetPocket)
-            // Post-collision cue-ball displacement includes natural tangent deflection, spin throw, and cushion rebound,
-            // so we NEVER compare `cueAfter - cueBefore` against `ghost - cueBefore`. Instead, measure cut error from the
-            // missed object ball's observed departure direction relative to `pocketPos - objBefore`, and measure cue landing
-            // error only in `.positionPlay` against `zone`.
-            if !shot.made, let objAfter = shot.after[objID], objAfter.distance(to: objBefore) > 0.015 {
-                let idealObjDir = (pocketPos - objBefore).normalized
-                let actualObjDir = (objAfter - objBefore).normalized
-                cutErr = atan2(idealObjDir.cross(actualObjDir), idealObjDir.dot(actualObjDir))
+            let ghost = AimPlanner.ghostBall(object: objBefore, pocket: pocketPos)
+            let idealObjDir = (pocketPos - objBefore).normalized
+            let cueToObj = (objBefore - cueBefore).normalized
+
+            // 1. Cut & side miss: use ONLY pre-rail initial object-ball departure (`objectDepartureDir`) so cushion/jaw
+            // rebounds into `shot.after` never invert coaching advice.
+            if !shot.made, let depDir = shot.objectDepartureDir, depDir.length > 0.5 {
+                let normDep = depDir.normalized
+                let neededCut = abs(atan2(cueToObj.cross(idealObjDir), cueToObj.dot(idealObjDir)))
+                let actualCut = abs(atan2(cueToObj.cross(normDep), cueToObj.dot(normDep)))
+                cutErr = actualCut - neededCut
                 errors[.cut] = cutErr
-                let missVec = objAfter - pocketPos
-                errors[.side] = idealObjDir.cross(missVec)
+                let rightNormal = Vec2(idealObjDir.y, -idealObjDir.x)
+                errors[.side] = normDep.dot(rightNormal) * objBefore.distance(to: pocketPos)
             }
-            if let zone, let cueAfter = shot.after[.cue] {
-                landingErr = cueAfter.distance(to: cueBefore) - zone.distance(to: cueBefore)
+
+            // 2. Cue-ball landing target (`positionPlay` zone, or `spinControl` stop-shot ghost spot):
+            // Measure Euclidean miss distance `dist` signed by along-approach projection so off-axis misses on the
+            // same-radius circle around `cueBefore` never report zero error.
+            let cueTarget: Vec2? = if drill == .positionPlay {
+                zone
+            } else if drill == .spinControl {
+                ghost
+            } else {
+                nil
+            }
+            if let cueTarget, let cueAfter = shot.after[.cue] {
+                let approach = (cueTarget - cueBefore).normalized
+                let along = (cueAfter - cueTarget).dot(approach)
+                let dist = cueAfter.distance(to: cueTarget)
+                landingErr = dist <= TableSpec.ballRadius * 1.5 ? along : (along >= 0 ? dist : -dist)
                 errors[.cueBallDistance] = landingErr
-                speedErr = max(-1.0, min(1.5, landingErr / max(0.25, zone.distance(to: cueBefore))))
+                if drill == .spinControl {
+                    spinObs = max(-1.0, min(1.0, along / max(0.30, cueBefore.distance(to: ghost))))
+                    errors[.spin] = spinObs
+                }
+            }
+
+            // 3. Speed: prefer pre-contact cue launch speed across all drills; fall back to signed target overshoot
+            // in drills with an explicit cue-ball resting target (`positionPlay`, `spinControl`).
+            if let launch = shot.cueLaunchSpeed, launch > 0.05 {
+                let intended = max(0.85, min(2.5, 0.85 + 0.55 * cueBefore.distance(to: ghost)))
+                speedErr = max(-1.0, min(1.5, launch / intended - 1.0))
+                errors[.speed] = speedErr
+            } else if let cueTarget, shot.after[.cue] != nil {
+                speedErr = max(-1.0, min(1.5, landingErr / max(0.35, cueBefore.distance(to: cueTarget))))
                 errors[.speed] = speedErr
             }
         }
 
         let stored = StoredAttemptFeatures(
             signedCutError: cutErr, signedSpeedError: speedErr,
-            cueLandingError: landingErr, spinIntended: 0, spinObserved: 0)
+            cueLandingError: landingErr, spinIntended: 0, spinObserved: spinObs)
         return (stored, errors)
     }
 

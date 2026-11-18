@@ -342,13 +342,23 @@ final class LiveModel {
         } else {
             let madeObject = shotOutcome.pocketed.keys.contains { !$0.isCue } && result.fouls.isEmpty
             let fallbackPocket = TrainingSessionController.defaultPocket(for: drill ?? .straightIn)
-            let targetPocket = shotOutcome.pocketed.first(where: { !$0.key.isCue })?.value ?? fallbackPocket
+            let targetPocket = shotOutcome.pocketed
+                .filter({ !$0.key.isCue })
+                .sorted(by: { $0.key < $1.key })
+                .first?.value ?? fallbackPocket
+            let objTrackID = record.firstContact
+                ?? ids.filter({ !$0.value.isCue }).sorted(by: { $0.value < $1.value }).first?.key
+            let depDir = objTrackID.flatMap { record.departureDir[$0] }
+            let hitRail = objTrackID.map { tid in record.rails.contains { $0.id == tid } } ?? !record.rails.isEmpty
             hooks.trainingSettled(SettledTrainingShot(
                 made: madeObject,
                 before: identified(record.preState),
                 after: identified(record.finalState),
                 targetPocket: targetPocket,
-                tableSize: tableSize ?? tablePrior ?? .sevenFoot))
+                tableSize: tableSize ?? tablePrior ?? .sevenFoot,
+                objectDepartureDir: depDir,
+                cueLaunchSpeed: record.cueLaunchSpeed,
+                objectHitRail: hitRail))
             hooks.ballsSettled()
         }
     }

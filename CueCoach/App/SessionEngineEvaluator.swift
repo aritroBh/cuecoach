@@ -208,7 +208,10 @@ actor SessionEngineEvaluator {
         if game.phase == .breakShot {
             return ranked.first { $0.candidate.kind == .breakShot } ?? ranked.first
         }
-        if let (obj, pock) = shot.pocketed.first(where: { !$0.key.isCue }) {
+        if let (obj, pock) = shot.pocketed
+            .filter({ !$0.key.isCue })
+            .sorted(by: { $0.key < $1.key })
+            .first {
             if let exact = ranked.first(where: {
                 $0.candidate.objectBall == obj && $0.candidate.pocket == pock
                     && (shot.firstContact == nil || $0.candidate.target == shot.firstContact)

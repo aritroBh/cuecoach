@@ -144,4 +144,45 @@ import Testing
         let biases = try stack.trainingContext.fetch(FetchDescriptor<BiasRecord>())
         #expect(biases.isEmpty)
     }
+
+    @Test func positionPlaySameRadiusMissAndSpinControlOvershootSurfaceFeedback() throws {
+        let stack = try PersistenceStack(inMemory: true)
+        let one = BallID(1)!
+
+        // 1. Position play: cue ball lands on the SAME-RADIUS circle around `cueBefore` as `positionZoneCenter`,
+        //    but 0.55 m laterally away from the zone → error must NOT be zero!
+        let posController = TrainingSessionController(drill: .positionPlay, initialLevel: .full,
+                                                      tableSize: .sevenFoot, playerID: UUID(), stack: stack)
+        let zone = try #require(posController.positionZoneCenter)
+        let cueStart = Vec2(0.30, 0.30)
+        let radius = cueStart.distance(to: zone)
+        // Rotate `zone - cueStart` by 60° so `|sameRadiusMiss - cueStart| == |zone - cueStart|` while `|sameRadiusMiss - zone| == radius`!
+        let d = zone - cueStart
+        let cos60 = 0.5, sin60 = 0.8660254037844386
+        let rotated = Vec2(d.x * cos60 - d.y * sin60, d.x * sin60 + d.y * cos60)
+        let sameRadiusMiss = cueStart + rotated
+        #expect(abs(sameRadiusMiss.distance(to: cueStart) - radius) < 1e-6)
+        #expect(sameRadiusMiss.distance(to: zone) > 0.35)
+
+        for _ in 0..<15 {
+            posController.recordAttempt(SettledTrainingShot(
+                made: true,
+                before: [.cue: cueStart, one: Vec2(1.2, 0.65)],
+                after: [.cue: sameRadiusMiss],
+                targetPocket: .footRight))
+        }
+        #expect(posController.activeFeedback != nil, "Off-axis miss on same-radius circle around cueStart is detected")
+
+        // 2. Spin control (no positionZone): consistent stop-shot overshoots past the ghost contact point surface feedback!
+        let spinController = TrainingSessionController(drill: .spinControl, initialLevel: .full,
+                                                       tableSize: .sevenFoot, playerID: UUID(), stack: stack)
+        for _ in 0..<15 {
+            spinController.recordAttempt(SettledTrainingShot(
+                made: true,
+                before: [.cue: Vec2(0.60, 0.50), one: Vec2(1.15, 0.50)],
+                after: [.cue: Vec2(1.75, 0.50)],
+                targetPocket: .footRight))
+        }
+        #expect(spinController.activeFeedback != nil, "Spin Control drill surfaces speed/distance/spin feedback on consistent overshoot")
+    }
 }

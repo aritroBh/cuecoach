@@ -21,6 +21,10 @@ struct ShotRecord: Sendable, Equatable {
     var uncertainPockets: [Int: Pocket] = [:]
     /// Estimated drop time of each pocketed ball (s, same clock as start/end), for the pocketing order.
     var pocketTimes: [Int: Double] = [:]
+    /// Observed cue-ball launch speed (m/s) before first contact or rail bounce (for Training speed bias).
+    var cueLaunchSpeed: Double? = nil
+    /// Observed initial post-contact departure unit vector per object ball BEFORE any rail bounce (for Training cut bias).
+    var departureDir: [Int: Vec2] = [:]
 
     static func == (a: ShotRecord, b: ShotRecord) -> Bool {
         a.start == b.start && a.end == b.end && a.preState == b.preState && a.finalState == b.finalState
@@ -158,6 +162,9 @@ struct ShotSegmenter: ShotSegmenting {
         }
         for id in returnSince.keys where !confirmed.contains(where: { $0.id == id && $0.measured }) { returnSince[id] = nil }
         let byID = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        if rec.firstContact == nil, rec.rails.isEmpty, let cue = byID[rec.cueID], cue.speed > movingSpeed {
+            rec.cueLaunchSpeed = max(rec.cueLaunchSpeed ?? 0, cue.speed)
+        }
         // First contact: an object ball near the cue ball starts moving.
         if rec.firstContact == nil, let cue = byID[rec.cueID] {
             for b in visible where b.id != rec.cueID && b.speed > startSpeed {
@@ -184,6 +191,13 @@ struct ShotSegmenter: ShotSegmenting {
             }
             lastVel[b.id] = b.velocity
             lastSeen[b.id] = (p, t)
+            if b.id != rec.cueID,
+               rec.departureDir[b.id] == nil,
+               !rec.rails.contains(where: { $0.id == b.id }),
+               let prePos = rec.preState[b.id],
+               p.distance(to: prePos) >= 0.035 {
+                rec.departureDir[b.id] = (p - prePos).normalized
+            }
             hist[b.id, default: []].append((p, t))
             if hist[b.id]!.count > 4 { hist[b.id]!.removeFirst() }
             if b.speed > movingSpeed { moved.insert(b.id) }

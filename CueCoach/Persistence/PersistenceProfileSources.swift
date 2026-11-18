@@ -243,33 +243,44 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
 
 /// Post-game mutations on a persisted `Game` opened from Profile History (D49 shooter fix, D47 dispute pick, D53 confirm/delete).
 @MainActor enum PersistedGameReviewEditor {
+    private static var engineRefreshGeneration: [UUID: Int] = [:]
+    private static var engineRefreshTasks: [UUID: Task<Void, Never>] = [:]
+
+    private static func cancelEngineRefresh(for gameID: UUID) {
+        engineRefreshGeneration[gameID, default: 0] += 1
+        engineRefreshTasks[gameID]?.cancel()
+        engineRefreshTasks.removeValue(forKey: gameID)
+    }
+
     static func makeModel(stack: PersistenceStack, gameID: UUID, onChanged: @escaping () -> Void,
                           onDismiss: @escaping () -> Void) -> GameReviewModel {
         let m = GameReviewModel(source: PersistenceGameReviewSource(stack: stack, gameID: gameID))
-        var refreshTask: Task<Void, Never>?
-        var refreshGen = 0
         func scheduleAsyncRefresh() {
-            refreshTask?.cancel()
-            refreshGen += 1
-            let gen = refreshGen
-            refreshTask = Task { @MainActor [weak m] in
+            engineRefreshTasks[gameID]?.cancel()
+            let gen = (engineRefreshGeneration[gameID] ?? 0) + 1
+            engineRefreshGeneration[gameID] = gen
+            engineRefreshTasks[gameID] = Task { @MainActor [weak m] in
+                defer {
+                    if engineRefreshGeneration[gameID] == gen {
+                        engineRefreshTasks.removeValue(forKey: gameID)
+                    }
+                }
                 guard let updated = try? await refreshEngineMetrics(gameID: gameID, stack: stack),
-                      !Task.isCancelled, gen == refreshGen else { return }
+                      !Task.isCancelled, engineRefreshGeneration[gameID] == gen else { return }
                 m?.refresh(updated)
                 onChanged()
             }
         }
-        m.onDone = {
-            refreshTask?.cancel()
-            onDismiss()
-        }
+        // Do NOT cancel `engineRefreshTasks[gameID]` on Done so closing Review immediately after an edit still finishes
+        // persisting full ShotEngine metrics into `Competitive.store`.
+        m.onDone = onDismiss
         m.onConfirmGame = {
             try? StackGameRecorder(stack: stack).confirmGame(id: gameID)
             onChanged()
             return try? loadData(stack: stack, gameID: gameID)
         }
         m.onDeleteGame = {
-            refreshTask?.cancel()
+            cancelEngineRefresh(for: gameID)
             try? StackGameRecorder(stack: stack).deleteGame(id: gameID)
             onChanged()
             onDismiss()
@@ -277,7 +288,7 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         m.onCorrectShooter = { shotID, player in
             let next = try? correctShooter(
                 gameID: gameID, shotID: shotID, to: player, stack: stack,
-                onDeleted: { refreshTask?.cancel(); onDismiss() })
+                onDeleted: { cancelEngineRefresh(for: gameID); onDismiss() })
             onChanged()
             if next != nil { scheduleAsyncRefresh() }
             return next
@@ -285,7 +296,7 @@ final class PersistenceTrainingSource: TrainingProfileSource, @unchecked Sendabl
         m.onResolveOutcome = { shotID, outcome in
             let next = try? resolveOutcome(
                 gameID: gameID, shotID: shotID, to: outcome, stack: stack,
-                onDeleted: { refreshTask?.cancel(); onDismiss() })
+                onDeleted: { cancelEngineRefresh(for: gameID); onDismiss() })
             onChanged()
             if next != nil { scheduleAsyncRefresh() }
             return next

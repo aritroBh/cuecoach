@@ -83,7 +83,7 @@ final class IdentityRegistrationModel {
                 #endif
             }
             guard !Task.isCancelled, enrollGeneration == gen else {
-                if step == .capturing { step = .consent }
+                if enrollGeneration == gen, step == .capturing { step = .consent }
                 return false
             }
             let decision = ConsentDecision(consent: effectiveConsent, agreedAt: .now)
@@ -99,7 +99,7 @@ final class IdentityRegistrationModel {
             step = .done
             return true
         } catch is CancellationError {
-            if step == .capturing { step = .consent }
+            if enrollGeneration == gen, step == .capturing { step = .consent }
             return false
         } catch DeviceRegistrationCamera.CaptureError.permissionDenied {
             if enrollGeneration == gen { step = .failed("Camera permission is needed to enroll.") }

@@ -103,6 +103,13 @@ actor ShotClipRecorder {
         var hi: Double
     }
 
+    private struct PendingIndexWindow {
+        var index: Int
+        var lo: Double
+        var hi: Double
+        var frames: [BufferedClipFrame]
+    }
+
     static let maxRetainedShots = 24
     static let maxFramesPerShot = 150
 
@@ -111,6 +118,9 @@ actor ShotClipRecorder {
     private var capturedShots: [UUID: [BufferedClipFrame]] = [:]
     private var shotOrder: [UUID] = []
     private var activeWindows: [ActivePostSettleWindow] = []
+    private var pendingByIndex: [Int: PendingIndexWindow] = [:]
+    private var lastPushedTimestamp: Double?
+    private var lastPushUptime: Double?
 
     init(baseDirectory: URL = ShotClipStore.defaultBaseDirectory) {
         self.baseDirectory = baseDirectory
@@ -119,12 +129,20 @@ actor ShotClipRecorder {
     func pushFrame(_ image: CGImage, timestamp: Double) {
         let frame = BufferedClipFrame(timestamp: timestamp, image: image)
         buffer.append(frame)
+        lastPushedTimestamp = timestamp
+        lastPushUptime = ProcessInfo.processInfo.systemUptime
         activeWindows.removeAll { timestamp > $0.hi }
         for win in activeWindows where timestamp >= win.lo && timestamp <= win.hi {
             var arr = capturedShots[win.shotID] ?? []
             if arr.count < Self.maxFramesPerShot {
                 arr.append(frame)
                 capturedShots[win.shotID] = arr
+            }
+        }
+        for (idx, var pending) in pendingByIndex where timestamp >= pending.lo && timestamp <= pending.hi {
+            if pending.frames.count < Self.maxFramesPerShot {
+                pending.frames.append(frame)
+                pendingByIndex[idx] = pending
             }
         }
     }
@@ -135,6 +153,27 @@ actor ShotClipRecorder {
         let lo = strokeAt - 1.0
         let hi = max(settledAt, strokeAt) + 2.0
         let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        registerCaptured(shotID: shotID, frames: initial, lo: lo, hi: hi)
+    }
+
+    /// Joiners seal their local camera window immediately on physical settlement keyed by expected shot index,
+    /// then bind it to the host's committed `shotID` once the log entry arrives (avoiding commit-latency drift).
+    func sealPendingLocalIndex(_ index: Int, strokeAt: Double, settledAt: Double) {
+        let lo = strokeAt - 1.0
+        let hi = max(settledAt, strokeAt) + 2.0
+        let initial = Array(buffer.frames.filter { $0.timestamp >= lo && $0.timestamp <= hi }.prefix(Self.maxFramesPerShot))
+        pendingByIndex[index] = PendingIndexWindow(index: index, lo: lo, hi: hi, frames: initial)
+        if pendingByIndex.count > Self.maxRetainedShots, let minKey = pendingByIndex.keys.min() {
+            pendingByIndex.removeValue(forKey: minKey)
+        }
+    }
+
+    func bindPendingLocalIndexIfPresent(_ index: Int, to shotID: UUID) {
+        guard capturedShots[shotID] == nil, let pending = pendingByIndex.removeValue(forKey: index) else { return }
+        registerCaptured(shotID: shotID, frames: pending.frames, lo: pending.lo, hi: pending.hi)
+    }
+
+    private func registerCaptured(shotID: UUID, frames: [BufferedClipFrame], lo: Double, hi: Double) {
         if capturedShots[shotID] == nil {
             shotOrder.append(shotID)
             while shotOrder.count > Self.maxRetainedShots {
@@ -143,9 +182,26 @@ actor ShotClipRecorder {
                 activeWindows.removeAll { $0.shotID == oldest }
             }
         }
-        capturedShots[shotID] = initial
+        capturedShots[shotID] = frames
         activeWindows.removeAll { $0.shotID == shotID }
-        activeWindows.append(ActivePostSettleWindow(shotID: shotID, lo: lo, hi: hi))
+        if (lastPushedTimestamp ?? lo) <= hi {
+            activeWindows.append(ActivePostSettleWindow(shotID: shotID, lo: lo, hi: hi))
+        }
+    }
+
+    /// When live camera frames are actively streaming on the final winning shot, waits up to the remaining `settle + 2 s`
+    /// window (cancellable immediately) before exporting the `.mp4`.
+    func waitForPostSettleIfStreaming(shotID: UUID) async {
+        for _ in 0..<20 {
+            guard !Task.isCancelled,
+                  let win = activeWindows.first(where: { $0.shotID == shotID }),
+                  !(capturedShots[shotID]?.isEmpty ?? true),
+                  let lastTS = lastPushedTimestamp,
+                  let lastWall = lastPushUptime,
+                  ProcessInfo.processInfo.systemUptime - lastWall < 0.35,
+                  lastTS < win.hi else { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     func capturedFrameCount(for shotID: UUID) -> Int {
