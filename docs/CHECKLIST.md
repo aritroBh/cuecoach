@@ -2,7 +2,7 @@
 
 Legend: [ ] todo · [~] in progress · [x] done · [!] blocked on user
 
-## NOW — single source of truth (updated 2026-11-18; earlier rounds follow below)
+## NOW — single source of truth (updated 2026-11-19; earlier rounds follow below)
 Order from the 2026-11-11 cross-vendor process review (Codex + Grok 4.7 agree; Antigravity out of quota): integrate serially, one build at a time, head owns all builds; prepare in parallel with `swift test` only.
 
 1. [x] Combined gate: unit 1253/1253; UI 41 + 1 skip, 3 ScreensB failures = the "empty review" sample still held one unrated shot, which D38/plan 008 now shows as a gap → sample emptied, ScreensB 11/11; pushed
@@ -31,8 +31,9 @@ Follow-up on the seven skips from that run (2026-11-18):
 - [!] Two Vision checks and the two-phone UI test require physical devices.
 
 Remaining device and field checks:
-- [!] Device signing on this Mac: Xcode reports no configured Apple account and no development profile for `com.aritrobh.cuecoach`. The signed Release build needs the project's Personal Team account in Xcode Settings → Accounts.
-- [!] Device: D32 Neural Engine latency + 4 mm motion check on the 15 Pro Max; second-phone mesh on the 17 Pro Max (phones currently disconnected)
+- [x] On 2026-11-19, Xcode signed the iPhone Release build and installed it on the paired 17 Pro Max. The development profile for `com.aritrobh.cuecoach` expires 2026-11-27 01:27 UTC.
+- [!] On the unlocked 17 Pro Max, Xcode reported that the Developer App certificate must be trusted before the app or hardware tests can launch. The device test bundle now compiles, and its four identity and clip wiring tests passed on Simulator.
+- [!] The 15 Pro Max is still needed for D32 Neural Engine latency, the 4 mm motion check and two-phone mesh testing with the 17 Pro Max.
 - [!] Real-table footage (The Rive) → detector validation, default detector choice
 - [x] Recognition & pro-profile questions: resolved in D25 (AuraFace-v1), D26 (clothing on disk, no auto-expiry, backup-excluded store), D27 (pro profiles v2), D28 (guest safety), D29/D33 (unknown-ball warning & stick-near-cue aim)
 

@@ -70,6 +70,7 @@ The dev Mac's disk has hit 0 GB free during parallel builds. These rules are man
 | 2026-11-18 | D42 game close invoked both callbacks on a repeated request | Codex | Claude | APPROVE. Force the pending close with its original callback and ignore requests after the game ends. |
 | 2026-11-18 | Backup import and recovery (F5/F12) | Codex | Claude | REJECT → APPROVE after restoring pre-save race coverage and protecting independent writes during compensation. |
 | 2026-11-18 | Tracking loss and stale pose (B3) | Codex | Claude | REJECT → APPROVE after resetting locator history and manual points across tracking revisions and testing the live gate. |
+| 2026-11-19 | Device test fixtures for identity enrollment and clip capture | Codex | Claude | APPROVE. Tests use generated images on both platforms. Device test bundle signed and compiled. All four wiring tests passed on Simulator. |
 
 † Cursor review attempted 2026-11-06 but its plan hit the monthly usage limit on all models (resets 2026-11-09); Codex reviewed instead.
 

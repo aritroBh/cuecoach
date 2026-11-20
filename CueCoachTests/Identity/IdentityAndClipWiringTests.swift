@@ -14,6 +14,11 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
     }
 }
 
+@MainActor private func bodySamples(for consent: RecognitionConsent) -> RegistrationCapture {
+    let images = consent.clothes ? Array(repeating: testImage(width: 64, height: 64), count: RecognitionRegistrar.minSamples) : []
+    return RegistrationCapture(faceImages: [], bodyImages: images)
+}
+
 @MainActor
 @Suite(.serialized) struct IdentityAndClipWiringTests {
     @Test func optInEnrollmentWritesTemplatesAndOneTapDeletePurgesActiveSession() async throws {
@@ -32,7 +37,8 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
 
         let bodyExtractor = DeterministicTestBodyExtractor()
         let enrollModel = IdentityRegistrationModel(
-            stack: stack, faceExtractor: nil, bodyExtractor: bodyExtractor)
+            stack: stack, faceExtractor: nil, bodyExtractor: bodyExtractor,
+            sampleProvider: { await bodySamples(for: $0) })
         let ok = await enrollModel.enroll()
         #expect(ok)
         #expect(enrollModel.step == .done)
@@ -190,7 +196,7 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
             stack: stack, faceExtractor: nil, bodyExtractor: bodyExtractor,
             sampleProvider: { consent in
                 try await Task.sleep(for: .milliseconds(300))
-                return await IdentityRegistrationModel.syntheticSamples(for: consent)
+                return await bodySamples(for: consent)
             })
         let task = Task { await enrollModel.enroll() }
         try await Task.sleep(for: .milliseconds(40))
@@ -206,7 +212,7 @@ private struct DeterministicTestBodyExtractor: EmbeddingExtracting {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let recorder = ShotClipRecorder(baseDirectory: tempDir)
-        let sampleImg = try #require(IdentityRegistrationModel.makeSampleImage(seed: 7, size: 64))
+        let sampleImg = testImage(width: 64, height: 64)
         let earlyShotID = UUID()
         for t in [9.2, 9.8, 10.0, 11.0, 12.0] {
             await recorder.pushFrame(sampleImg, timestamp: t)
