@@ -28,11 +28,12 @@ Follow-up on the seven skips from that run (2026-11-18):
 - [x] The final build passed 14 privacy checks and two UI checks covering launch and cancellation of a backup import.
 - [x] Full verification at `f333f0d` on 2026-11-18: all 717 CueCore tests passed. With the detector benchmark enabled, Xcode reported 1,466 passing tests, 0 failures and 3 hardware-only skips on the iOS 27 iPhone 15 Pro simulator. The 45 passing UI tests are included in that count.
 - [x] Packaged the Release simulator app, extracted the ZIP, verified its signature and bundled models, installed the extracted app on the iPhone 15 Pro simulator, and confirmed Home showed Game and Training.
-- [!] Two Vision checks and the two-phone UI test require physical devices.
+- [x] Both device-only Vision checks passed on the 17 Pro Max on 2026-11-19: empty-frame analysis and stable feature prints. The four identity and clip wiring tests also passed on the phone.
 
 Remaining device and field checks:
 - [x] On 2026-11-19, Xcode signed the iPhone Release build and installed it on the paired 17 Pro Max. The development profile for `com.aritrobh.cuecoach` expires 2026-11-27 01:27 UTC.
-- [!] On the unlocked 17 Pro Max, Xcode reported that the Developer App certificate must be trusted before the app or hardware tests can launch. The device test bundle now compiles, and its four identity and clip wiring tests passed on Simulator.
+- [x] After the developer certificate was trusted, the installed Release app launched on the physical 17 Pro Max on 2026-11-19.
+- [!] On the 17 Pro Max, one 60-frame default detector measurement returned 4.0 ms total p95. The runner exited before all compute-unit settings completed, and a repeat also exited early. The full latency check is open. See [the benchmark report](research/detector-benchmark.md).
 - [!] The 15 Pro Max is still needed for D32 Neural Engine latency, the 4 mm motion check and two-phone mesh testing with the 17 Pro Max.
 - [!] Real-table footage (The Rive) → detector validation, default detector choice
 - [x] Recognition & pro-profile questions: resolved in D25 (AuraFace-v1), D26 (clothing on disk, no auto-expiry, backup-excluded store), D27 (pro profiles v2), D28 (guest safety), D29/D33 (unknown-ball warning & stick-near-cue aim)

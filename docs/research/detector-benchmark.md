@@ -135,6 +135,10 @@ the CPU and do not predict phone latency. Two runs of the targeted test, p50/p95
 All settings returned ≥ 5 detections on the 6-ball demo frame, so the model really ran. On the simulator the
 letterbox step (~26–28 ms) costs about as much as prediction; plan 003 only records this.
 
-Device: not yet run (no phone connected). Run on the iPhone 15 Pro Max (perf gate) and iPhone 17 Pro Max with
-`-destination 'platform=iOS,name=<phone>' -only-testing:CueCoachTests/BallModelLatencyTests` and add the `[latency]`
-lines here. The device `.all` p95 decides plan 005.
+On 2026-11-19 the iPhone 17 Pro Max (iOS 27.3) returned the following result on the six-ball demo. This diagnostic run used the same 10 warm-ups and 60 timed inferences, with an autorelease pool around each inference.
+
+| Compute units | Letterbox p50 / p95 (ms) | Predict p50 / p95 (ms) | Total p50 / p95 (ms) |
+|---|---:|---:|---:|
+| All | 0.7 / 1.3 | 2.2 / 3.0 | 3.0 / 4.0 |
+
+The runner exited during the CPU and Neural Engine case before it printed a result. A repeat also exited before reporting the default case. The full three-setting benchmark and the iPhone 15 Pro Max performance gate remain open.
